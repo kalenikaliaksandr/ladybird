@@ -1,9 +1,9 @@
 device pixels per CSS pixel: 1
-snap container (viewport: true) snapport=0,0 800x600 min=0,0 max=0,213 strictness=proximity snapsX=false snapsY=true horizontalWritingMode=true
+snap container (viewport: true) snapport=0,0 788x600 min=0,0 max=0,213 strictness=proximity snapsX=false snapsY=true horizontalWritingMode=true
   2 areas with 2 distinct node IDs, all non-zero: true
-  area rect=0,200 800x300 alignX=start alignY=start alwaysStop=false pseudoElementType=0
-  area rect=0,500 800x300 alignX=start alignY=start alwaysStop=false pseudoElementType=0
-snap container (viewport: false) snapport=10,10 180x180 min=0,0 max=0,250 strictness=mandatory snapsX=true snapsY=true horizontalWritingMode=true
+  area rect=0,200 788x300 alignX=start alignY=start alwaysStop=false pseudoElementType=0
+  area rect=0,500 788x300 alignX=start alignY=start alwaysStop=false pseudoElementType=0
+snap container (viewport: false) snapport=9.390625,10 169.21875x168 min=0,0 max=0,262 strictness=mandatory snapsX=true snapsY=true horizontalWritingMode=true
   5 areas with 5 distinct node IDs, all non-zero: true
   area rect=0,0 50x50 alignX=start alignY=start alwaysStop=false pseudoElementType=3
   area rect=-5,45 110x110 alignX=start alignY=start alwaysStop=false pseudoElementType=0

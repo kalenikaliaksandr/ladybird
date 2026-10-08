@@ -58,7 +58,8 @@ pub unsafe extern "C" fn layout_row_paintable_compute_scrollbar_data(
     slot: NodeSlotId,
     direction: ScrollDirection,
     metrics: FfiChromeMetrics,
-    enlarged: bool,
+    // NB: Every scrollbar fills its gutter, so hovering no longer changes where it is.
+    _enlarged: bool,
     has_device_scroll_offset: bool,
     device_scroll_offset: f32,
     device_pixels_per_css_pixel: f64,
@@ -69,7 +70,6 @@ pub unsafe extern "C" fn layout_row_paintable_compute_scrollbar_data(
             crate::painting::chrome_geometry::ChromeGeometry { arena: rows, metrics }.compute_scrollbar_data(
                 slot,
                 direction,
-                enlarged,
                 has_device_scroll_offset.then_some(crate::painting::chrome_geometry::ScrollbarScrollState {
                     device_scroll_offset,
                     device_pixels_per_css_pixel,

@@ -6514,6 +6514,19 @@ CSSPixelRect Document::viewport_rect() const
     return CSSPixelRect {};
 }
 
+CSSPixelSize Document::viewport_size_excluding_scrollbars(Layout::BegunRead const& read) const
+{
+    auto size = viewport_rect().size();
+    auto const* viewport = layout_node(read);
+    if (!viewport || !Painting::has_committed_box(*viewport))
+        return size;
+    auto gutter = Painting::box_model(*viewport).scrollbar_gutter;
+    return {
+        max(CSSPixels(0), size.width() - gutter.left - gutter.right),
+        max(CSSPixels(0), size.height() - gutter.top - gutter.bottom),
+    };
+}
+
 GC::Ref<CSS::VisualViewport> Document::visual_viewport()
 {
     if (!m_visual_viewport)
@@ -8860,17 +8873,16 @@ static Element* retarget_from_ua_internal_shadow_root(Element& element)
 Element const* Document::element_from_point(double x, double y)
 {
     Layout::ForcedReadScope read { *this };
+    // Ensure the layout tree exists prior to hit testing.
+    update_layout(UpdateLayoutReason::DocumentElementFromPoint);
+
     // 1. If either argument is negative, x is greater than the viewport width excluding the size of a rendered scroll
     //    bar (if any), or y is greater than the viewport height excluding the size of a rendered scroll bar (if any), or
     //    there is no viewport associated with the document, return null and terminate these steps.
-    auto viewport_rect = this->viewport_rect();
+    auto viewport_size = viewport_size_excluding_scrollbars(read);
     CSSPixelPoint position { x, y };
-    // FIXME: This should account for the size of the scroll bar.
-    if (x < 0 || y < 0 || position.x() > viewport_rect.width() || position.y() > viewport_rect.height())
+    if (x < 0 || y < 0 || position.x() > viewport_size.width() || position.y() > viewport_size.height())
         return nullptr;
-
-    // Ensure the layout tree exists prior to hit testing.
-    update_layout(UpdateLayoutReason::DocumentElementFromPoint);
 
     // 2. If there is a box in the viewport that would be a target for hit testing at coordinates x,y, when applying the transforms
     //    that apply to the descendants of the viewport, return the associated element and terminate these steps.
@@ -8902,17 +8914,16 @@ GC::RootVector<GC::Ref<Element>> Document::elements_from_point(double x, double 
     // 1. Let sequence be a new empty sequence.
     GC::RootVector<GC::Ref<Element>> sequence;
 
+    // Ensure the layout tree exists prior to hit testing.
+    update_layout(UpdateLayoutReason::DocumentElementsFromPoint);
+
     // 2. If either argument is negative, x is greater than the viewport width excluding the size of a rendered scroll bar (if any),
     //    or y is greater than the viewport height excluding the size of a rendered scroll bar (if any),
     //    or there is no viewport associated with the document, return sequence and terminate these steps.
-    auto viewport_rect = this->viewport_rect();
+    auto viewport_size = viewport_size_excluding_scrollbars(read);
     CSSPixelPoint position { x, y };
-    // FIXME: This should account for the size of the scroll bar.
-    if (x < 0 || y < 0 || position.x() > viewport_rect.width() || position.y() > viewport_rect.height())
+    if (x < 0 || y < 0 || position.x() > viewport_size.width() || position.y() > viewport_size.height())
         return sequence;
-
-    // Ensure the layout tree exists prior to hit testing.
-    update_layout(UpdateLayoutReason::DocumentElementsFromPoint);
 
     // 3. For each box in the viewport, in paint order, starting with the topmost box, that would be a target for
     //    hit testing at coordinates x,y even if nothing would be overlapping it, when applying the transforms that
@@ -8951,18 +8962,17 @@ static bool shadow_root_is_allowed_for_caret_position(ShadowRoot const& shadow_r
 GC::Ptr<CaretPosition> Document::caret_position_from_point(double x, double y, CaretPositionFromPointOptions const& options)
 {
     Layout::ForcedReadScope read { *this };
+    // Ensure the layout tree exists prior to hit testing.
+    update_layout(UpdateLayoutReason::DocumentCaretPositionFromPoint);
+
     // 1. If there is no viewport associated with the document, return null.
     // 2. If either argument is negative, x is greater than the viewport width excluding the size of a rendered scroll
     //    bar (if any), or y is greater than the viewport height excluding the size of a rendered scroll bar (if any),
     //    return null.
-    auto viewport_rect = this->viewport_rect();
+    auto viewport_size = viewport_size_excluding_scrollbars(read);
     CSSPixelPoint position { x, y };
-    // FIXME: This should account for the size of the scroll bar.
-    if (x < 0 || y < 0 || position.x() > viewport_rect.width() || position.y() > viewport_rect.height())
+    if (x < 0 || y < 0 || position.x() > viewport_size.width() || position.y() > viewport_size.height())
         return nullptr;
-
-    // Ensure the layout tree exists prior to hit testing.
-    update_layout(UpdateLayoutReason::DocumentCaretPositionFromPoint);
 
     // 3. If at the coordinates x,y in the viewport no text insertion point indicator would have been inserted when
     //    applying the transforms that apply to the descendants of the viewport, return null.

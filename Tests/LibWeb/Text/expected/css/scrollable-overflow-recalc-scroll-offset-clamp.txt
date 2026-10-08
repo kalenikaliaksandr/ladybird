@@ -1,5 +1,5 @@
 initial scrollHeight: 550
-scrollTop clamped to: 450
+scrollTop clamped to: 462
 scrollHeight after shrink: 200
-scrollTop re-clamped to: 100
+scrollTop re-clamped to: 112
 relayouts performed: 0

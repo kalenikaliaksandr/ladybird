@@ -1,6 +1,6 @@
-Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children: not-inline overflow: [0,0 800x976]
-  BlockContainer <html> at [0,0] [0+0+0 800 0+0+0] [0+0+0 976 0+0+0] [BFC] children: not-inline
-    BlockContainer <body> at [8,8] [8+0+0 600 0+0+192] [8+0+0 960 0+0+8] children: not-inline
+Viewport <#document> at [0,0] [0+0+0 788 0+0+0] [0+0+0 600 0+0+0] scrollbar-gutters: [0 12] [0 0] [BFC] children: not-inline overflow: [0,0 788x976]
+  BlockContainer <html> at [0,0] [0+0+0 788 0+0+0] [0+0+0 976 0+0+0] [BFC] children: not-inline
+    BlockContainer <body> at [8,8] [8+0+0 600 0+0+180] [8+0+0 960 0+0+8] children: not-inline
       BlockContainer <div.normal> at [18,18] [0+10+0 300 0+10+280] [0+10+0 300 0+10+0] children: not-inline
       BlockContainer <div#top> at [8,328] floating [0+0+0 100 0+0+0] [0+0+0 100 0+0+0] [BFC] children: inline
         frag 0 from TextNode start: 0, length: 3, rect: [8,328 26.640625x16] baseline: 12.796875
@@ -17,5 +17,5 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
       BlockContainer <div.normal> at [18,338] [0+10+0 300 0+10+280] [0+10+0 300 0+10+0] children: not-inline
       BlockContainer <div.normal> at [18,658] [0+10+0 300 0+10+280] [0+10+0 300 0+10+0] children: not-inline
 
-SC for Viewport<#document> [0,0 800x600] (z-index: auto)
- SC for BlockContainer<HTML> [0,0 800x976] (z-index: auto)
+SC for Viewport<#document> [0,0 788x600] (z-index: auto)
+ SC for BlockContainer<HTML> [0,0 788x976] (z-index: auto)

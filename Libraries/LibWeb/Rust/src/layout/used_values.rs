@@ -313,6 +313,14 @@ pub(crate) struct UsedValues {
     pub padding_top: SealableCell<CssPixels>,
     pub padding_bottom: SealableCell<CssPixels>,
 
+    /// The room kept for scrollbars between the border and the padding.
+    pub scrollbar_gutter_left: SealableCell<CssPixels>,
+    pub scrollbar_gutter_right: SealableCell<CssPixels>,
+    pub scrollbar_gutter_top: SealableCell<CssPixels>,
+    pub scrollbar_gutter_bottom: SealableCell<CssPixels>,
+    pub has_vertical_scrollbar: Cell<bool>,
+    pub has_horizontal_scrollbar: Cell<bool>,
+
     pub inset_left: SealableCell<CssPixels>,
     pub inset_right: SealableCell<CssPixels>,
     pub inset_top: SealableCell<CssPixels>,
@@ -383,6 +391,12 @@ impl Default for UsedValues {
             padding_right: SealableCell::new(zero),
             padding_top: SealableCell::new(zero),
             padding_bottom: SealableCell::new(zero),
+            scrollbar_gutter_left: SealableCell::new(zero),
+            scrollbar_gutter_right: SealableCell::new(zero),
+            scrollbar_gutter_top: SealableCell::new(zero),
+            scrollbar_gutter_bottom: SealableCell::new(zero),
+            has_vertical_scrollbar: Cell::new(false),
+            has_horizontal_scrollbar: Cell::new(false),
             inset_left: SealableCell::new(zero),
             inset_right: SealableCell::new(zero),
             inset_top: SealableCell::new(zero),
@@ -513,6 +527,10 @@ impl UsedValues {
         self.padding_right.seal();
         self.padding_top.seal();
         self.padding_bottom.seal();
+        self.scrollbar_gutter_left.seal();
+        self.scrollbar_gutter_right.seal();
+        self.scrollbar_gutter_top.seal();
+        self.scrollbar_gutter_bottom.seal();
         self.inset_left.seal();
         self.inset_right.seal();
         self.inset_top.seal();
@@ -540,6 +558,10 @@ impl UsedValues {
         self.padding_right.seal();
         self.padding_top.seal();
         self.padding_bottom.seal();
+        self.scrollbar_gutter_left.seal();
+        self.scrollbar_gutter_right.seal();
+        self.scrollbar_gutter_top.seal();
+        self.scrollbar_gutter_bottom.seal();
     }
 }
 
@@ -583,6 +605,12 @@ used_values_cell_state! {
     padding_right: CssPixels,
     padding_top: CssPixels,
     padding_bottom: CssPixels,
+    scrollbar_gutter_left: CssPixels,
+    scrollbar_gutter_right: CssPixels,
+    scrollbar_gutter_top: CssPixels,
+    scrollbar_gutter_bottom: CssPixels,
+    has_vertical_scrollbar: bool,
+    has_horizontal_scrollbar: bool,
     inset_left: CssPixels,
     inset_right: CssPixels,
     inset_top: CssPixels,
@@ -633,6 +661,7 @@ impl UsedValues {
         scratch.padding_right.set(self.padding_right.get());
         scratch.padding_top.set(self.padding_top.get());
         scratch.padding_bottom.set(self.padding_bottom.get());
+        scratch.set_scrollbar_gutters(self.scrollbar_gutters());
         scratch.content_inline_size.set(self.content_inline_size.get());
         scratch.content_block_size.set(self.content_block_size.get());
         scratch.inline_size_constraint.set(self.inline_size_constraint.get());
@@ -677,6 +706,32 @@ impl UsedValues {
         self.padding_right.set(fragment.padding_right);
         self.padding_top.set(fragment.padding_top);
         self.padding_bottom.set(fragment.padding_bottom);
+        self.set_scrollbar_gutters(fragment.scrollbar_gutters());
+    }
+
+    pub(crate) fn scrollbar_gutters(&self) -> super::scrollbars::ScrollbarGutters {
+        super::scrollbars::ScrollbarGutters {
+            left: self.scrollbar_gutter_left.get(),
+            right: self.scrollbar_gutter_right.get(),
+            top: self.scrollbar_gutter_top.get(),
+            bottom: self.scrollbar_gutter_bottom.get(),
+            has_vertical_scrollbar: self.has_vertical_scrollbar.get(),
+            has_horizontal_scrollbar: self.has_horizontal_scrollbar.get(),
+        }
+    }
+
+    pub(crate) fn set_scrollbar_gutters(&self, gutters: super::scrollbars::ScrollbarGutters) {
+        self.scrollbar_gutter_left.set(gutters.left);
+        self.scrollbar_gutter_right.set(gutters.right);
+        self.scrollbar_gutter_top.set(gutters.top);
+        self.scrollbar_gutter_bottom.set(gutters.bottom);
+        self.has_vertical_scrollbar.set(gutters.has_vertical_scrollbar);
+        self.has_horizontal_scrollbar.set(gutters.has_horizontal_scrollbar);
+    }
+
+    /// The room kept for scrollbars at the left and right edges.
+    pub(crate) fn horizontal_scrollbar_gutters(&self) -> CssPixels {
+        self.scrollbar_gutter_left.get() + self.scrollbar_gutter_right.get()
     }
 
     fn collapsed_border_share(&self, width: CssPixels, start_edge: bool) -> CssPixels {
@@ -715,27 +770,30 @@ impl UsedValues {
         }
     }
 
+    /// The border, scrollbar gutter and padding at the left edge.
     pub(crate) fn border_box_left(&self, collapsed: bool) -> CssPixels {
-        self.border_left_collapsed(collapsed) + self.padding_left.get()
+        self.border_left_collapsed(collapsed) + self.scrollbar_gutter_left.get() + self.padding_left.get()
     }
 
     pub(crate) fn border_box_right(&self, collapsed: bool) -> CssPixels {
-        self.border_right_collapsed(collapsed) + self.padding_right.get()
+        self.border_right_collapsed(collapsed) + self.scrollbar_gutter_right.get() + self.padding_right.get()
     }
 
     pub(crate) fn border_box_top(&self, collapsed: bool) -> CssPixels {
-        self.border_top_collapsed(collapsed) + self.padding_top.get()
+        self.border_top_collapsed(collapsed) + self.scrollbar_gutter_top.get() + self.padding_top.get()
     }
 
     pub(crate) fn border_box_bottom(&self, collapsed: bool) -> CssPixels {
-        self.border_bottom_collapsed(collapsed) + self.padding_bottom.get()
+        self.border_bottom_collapsed(collapsed) + self.scrollbar_gutter_bottom.get() + self.padding_bottom.get()
     }
 
     pub(crate) fn horizontal_margin_border_padding(&self) -> CssPixels {
         self.margin_left.get()
             + self.border_left.get()
+            + self.scrollbar_gutter_left.get()
             + self.padding_left.get()
             + self.padding_right.get()
+            + self.scrollbar_gutter_right.get()
             + self.border_right.get()
             + self.margin_right.get()
     }
@@ -863,6 +921,8 @@ pub(crate) fn create_used_values(
     // they are assigned through set_content_inline_size() or
     // set_content_block_size().
     let used = UsedValues::default();
+    let gutters = callbacks.scrollbar_gutters(node);
+    used.set_scrollbar_gutters(gutters);
 
     #[derive(Clone, Copy)]
     enum Axis {
@@ -943,11 +1003,14 @@ pub(crate) fn create_used_values(
         } else {
             crate::layout::CssPixels::default()
         };
-        Some(clamp_to_max_dimension_value(adjust_for_box_sizing(
-            size.to_px(basis),
-            size,
-            axis,
-        )))
+        // A size property includes the room kept for scrollbars, so the content box is what remains of it.
+        let gutters = match axis {
+            Axis::Inline => gutters.horizontal_sum(),
+            Axis::Block => gutters.vertical_sum(),
+        };
+        Some(clamp_to_max_dimension_value(
+            (adjust_for_box_sizing(size.to_px(basis), size, axis) - gutters).max(crate::layout::CssPixels::default()),
+        ))
     };
 
     let min_inline_size = is_definite_size(style.min_width(), Axis::Inline);
@@ -990,10 +1053,29 @@ pub(crate) fn used_values_from_committed_fragment_link(callbacks: &LayoutPass<'_
     // the previously committed value immediately.
     let used = UsedValues::default();
     used.set_box_metrics_from_fragment(fragment);
+    // The border box stays as committed. Where the scrollbars of the box changed since, the gutters
+    // take their room from the content box or give it back.
+    let committed_gutters = fragment.scrollbar_gutters();
+    let gutters = callbacks.scrollbar_gutters(node);
+    used.set_scrollbar_gutters(gutters);
+    used.set_content_inline_size(
+        fragment.content_inline_size + committed_gutters.horizontal_sum() - gutters.horizontal_sum(),
+    );
+    used.set_content_block_size(
+        fragment.content_block_size + committed_gutters.vertical_sum() - gutters.vertical_sum(),
+    );
     used.has_definite_inline_size.set(true);
     used.has_definite_block_size.set(true);
-    used.content_offset.set(link.committed_offset);
+    used.content_offset.set(FfiCssPixelPoint {
+        x: link.committed_offset.x + gutters.left - committed_gutters.left,
+        y: link.committed_offset.y + gutters.top - committed_gutters.top,
+    });
     used.placed_in.set(link.containing_block);
+    // An ancestor sets these while it lays out the box, and the relayout starts below it.
+    used.is_invisible_for_line_clamp
+        .set(fragment.is_invisible_for_line_clamp);
+    used.uses_collapsing_borders_model
+        .set(fragment.uses_collapsing_borders_model);
     used.table_column_index.set(fragment.table_column_index);
     used.table_column_span.set(fragment.table_column_span);
     used.hidden_by_collapsed_columns

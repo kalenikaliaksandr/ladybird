@@ -812,8 +812,10 @@ impl<'iterator, 'context> InlineLevelIteratorGenerator<'iterator, 'context> {
             item.content_baselines = self.context_mut().dimension_box_on_line(node);
             item.min_content_inline_size = self.context().paired_min_content_inline_size_for_atomic_root(node);
             item.inline_size = used.content_inline_size.get();
-            item.padding_start = used.padding_left.get();
-            item.padding_end = used.padding_right.get();
+            // NB: The room kept for scrollbars lies between the border and the padding, so the line
+            //     counts it as padding.
+            item.padding_start = used.padding_left.get() + used.scrollbar_gutter_left.get();
+            item.padding_end = used.padding_right.get() + used.scrollbar_gutter_right.get();
             item.border_start = used.border_left.get();
             item.border_end = used.border_right.get();
             item.margin_start = used.margin_left.get();

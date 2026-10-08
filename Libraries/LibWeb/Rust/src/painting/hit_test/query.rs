@@ -5,7 +5,7 @@
  */
 
 use super::*;
-use crate::painting::chrome_geometry::{ChromeGeometry, scrollbar_is_enlarged};
+use crate::painting::chrome_geometry::ChromeGeometry;
 use crate::painting::ffi::ScrollDirection;
 use crate::painting::host::FfiHitTestQueryCallbacks;
 use crate::painting::paint_read::PaintRead;
@@ -140,7 +140,7 @@ impl HitTestList {
                             ScrollDirection::Vertical
                         };
                         chrome_geometry
-                            .absolute_scrollbar_rect(node, direction, scrollbar_is_enlarged(rows, node, direction))
+                            .absolute_scrollbar_rect(node, direction)
                             .is_some_and(|rect| rect.contains_point(local_point))
                     }
                     _ => false,

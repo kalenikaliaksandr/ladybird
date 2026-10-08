@@ -1,0 +1,20 @@
+Harness status: OK
+
+Found 15 tests
+
+15 Pass
+Pass	overflow auto, scrollbar-gutter auto
+Pass	overflow scroll, scrollbar-gutter auto
+Pass	overflow visible, scrollbar-gutter auto
+Pass	overflow hidden, scrollbar-gutter auto
+Pass	overflow clip, scrollbar-gutter auto
+Pass	overflow auto, scrollbar-gutter stable
+Pass	overflow scroll, scrollbar-gutter stable
+Pass	overflow visible, scrollbar-gutter stable
+Pass	overflow hidden, scrollbar-gutter stable
+Pass	overflow clip, scrollbar-gutter stable
+Pass	overflow auto, scrollbar-gutter stable both-edges
+Pass	overflow scroll, scrollbar-gutter stable both-edges
+Pass	overflow visible, scrollbar-gutter stable both-edges
+Pass	overflow hidden, scrollbar-gutter stable both-edges
+Pass	overflow clip, scrollbar-gutter stable both-edges

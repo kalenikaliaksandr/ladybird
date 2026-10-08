@@ -67,7 +67,7 @@ fn paint_box_model_highlight<O: Observer>(
 ) {
     let content_rect = paintable_geometry::absolute_rect(recorder.source, paintable);
     let margin = paintable_geometry::committed_margin(recorder.source, paintable);
-    let border = paintable_geometry::committed_border(recorder.source, paintable);
+    let border = paintable_geometry::committed_border_and_gutter_edges(recorder.source, paintable);
     let padding = paintable_geometry::committed_padding(recorder.source, paintable);
     let margin_rect = content_rect.inflated(
         margin.top + border.top + padding.top,

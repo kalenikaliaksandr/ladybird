@@ -1,0 +1,26 @@
+short:
+  inner=800x600
+  client=800x600
+  body.offsetWidth=800
+tall:
+  inner=800x600
+  client=788x600
+  body.offsetWidth=788
+  elementFromPoint in the scrollbar: null
+  scrollWidth=788
+tall and wide:
+  inner=800x600
+  client=788x588
+  body.offsetWidth=788
+short again:
+  inner=800x600
+  client=800x600
+  body.offsetWidth=800
+overflow: scroll:
+  inner=800x600
+  client=788x588
+  body.offsetWidth=788
+scrollbar-gutter: stable:
+  inner=800x600
+  client=788x600
+  body.offsetWidth=788

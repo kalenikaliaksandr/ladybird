@@ -1,6 +1,6 @@
-Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children: not-inline overflow: [0,0 800x700]
-  BlockContainer <html> at [0,0] [0+0+0 800 0+0+0] [0+0+0 700 0+0+0] [BFC] children: not-inline
-    BlockContainer <body> at [50,50] [50+0+0 700 0+0+50] [50+0+0 600 0+0+50] children: inline
+Viewport <#document> at [0,0] [0+0+0 788 0+0+0] [0+0+0 600 0+0+0] scrollbar-gutters: [0 12] [0 0] [BFC] children: not-inline overflow: [0,0 788x700]
+  BlockContainer <html> at [0,0] [0+0+0 788 0+0+0] [0+0+0 700 0+0+0] [BFC] children: not-inline
+    BlockContainer <body> at [50,50] [50+0+0 688 0+0+50] [50+0+0 600 0+0+50] children: inline
       frag 0 from SVGSVGBox start: 0, length: 0, rect: [50,150 200x100] baseline: 100
       frag 1 from TextNode start: 0, length: 1, rect: [250,237 8x16] baseline: 12.796875
           " "
@@ -92,5 +92,5 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
         TextNode <#text> (not painted)
       TextNode <#text> (not painted)
 
-SC for Viewport<#document> [0,0 800x600] (z-index: auto)
- SC for BlockContainer<HTML> [0,0 800x700] (z-index: auto)
+SC for Viewport<#document> [0,0 788x600] (z-index: auto)
+ SC for BlockContainer<HTML> [0,0 788x700] (z-index: auto)

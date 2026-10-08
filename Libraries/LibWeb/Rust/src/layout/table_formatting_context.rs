@@ -1581,13 +1581,23 @@ impl<'pass> TableFormattingContext<'pass> {
                     self.calculate_max_content_inline_size(cell.box_),
                 )
             };
+            // A content-based size leaves out the room kept for scrollbars, which the size properties include.
+            let gutters = self.run.callbacks.scrollbar_gutters(cell.box_);
+            let (inline_gutters, block_gutters) = if fixed {
+                (CssPixels::default(), CssPixels::default())
+            } else {
+                (gutters.horizontal_sum(), gutters.vertical_sum())
+            };
             // The outer min-content inline size of a table cell is its minimum inline size adjusted by the cell intrinsic offsets.
-            self.cells[cell_index].outer_min_inline_size = min_inline.max(min_content_inline) + inline_offsets;
+            self.cells[cell_index].outer_min_inline_size =
+                min_inline.max(min_content_inline + inline_gutters) + inline_offsets;
             self.cells[cell_index].max_content_inline_size = (!fixed).then_some(max_content_inline);
 
             if include_rows {
-                let min_content_block = self.calculate_min_content_block_size(cell.box_, max_content_inline);
-                let max_content_block = self.calculate_max_content_block_size(cell.box_, min_content_inline);
+                let min_content_block =
+                    self.calculate_min_content_block_size(cell.box_, max_content_inline) + block_gutters;
+                let max_content_block =
+                    self.calculate_max_content_block_size(cell.box_, min_content_inline) + block_gutters;
                 let block_offsets = padding_block_start + padding_block_end + border_block_start + border_block_end;
                 let mut min_block = style.min_height().to_px(block_basis);
                 if style.box_sizing() == box_sizing::BORDER_BOX {
@@ -1636,6 +1646,8 @@ impl<'pass> TableFormattingContext<'pass> {
                 };
             }
 
+            let min_content_inline = min_content_inline + inline_gutters;
+            let max_content_inline = max_content_inline + inline_gutters;
             // See the explanation for block_size and max_block_size above.
             self.cells[cell_index].outer_max_inline_size = if self.columns[cell.column_index].is_constrained {
                 // The outer max-content width of a table-cell in a constrained column is
@@ -2095,7 +2107,8 @@ impl<'pass> TableFormattingContext<'pass> {
                     + style.border_right_width()
                     + style.margin_right().to_px(basis)
             };
-            let mut contribution = outer(self.calculate_min_content_inline_size(caption));
+            let gutters = self.run.callbacks.scrollbar_gutters(caption).horizontal_sum();
+            let mut contribution = outer(self.calculate_min_content_inline_size(caption) + gutters);
             let width = style.width();
             if width.is_length_percentage() && !width.contains_percentage() {
                 let mut preferred = width.to_px(basis);
@@ -2110,7 +2123,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 }
                 contribution = contribution.max(outer(preferred));
             } else if width.is_max_content() {
-                contribution = contribution.max(outer(self.calculate_max_content_inline_size(caption)));
+                contribution = contribution.max(outer(self.calculate_max_content_inline_size(caption) + gutters));
             }
             capmin = capmin.max(contribution);
         }

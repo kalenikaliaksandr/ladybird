@@ -1,6 +1,6 @@
-Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children: not-inline overflow: [0,0 800x684]
-  BlockContainer <html> at [0,0] [0+0+0 800 0+0+0] [0+0+0 684 0+0+0] [BFC] children: not-inline
-    Box <body> at [28,28] flex-container(row) [8+0+20 744 20+0+8] [8+0+20 628 20+0+8] [FFC] children: not-inline
+Viewport <#document> at [0,0] [0+0+0 788 0+0+0] [0+0+0 600 0+0+0] scrollbar-gutters: [0 12] [0 0] [BFC] children: not-inline overflow: [0,0 788x684]
+  BlockContainer <html> at [0,0] [0+0+0 788 0+0+0] [0+0+0 684 0+0+0] [BFC] children: not-inline
+    Box <body> at [28,28] flex-container(row) [8+0+20 732 20+0+8] [8+0+20 628 20+0+8] [FFC] children: not-inline
       Box <div.container> at [30,30] flex-item [0+2+0 120 0+2+0] [0+2+0 300 0+2+0] [GFC] children: not-inline
         BlockContainer <(anonymous)> (not painted) [BFC] children: inline
           TextNode <#text> (not painted)
@@ -226,5 +226,5 @@ Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children
       BlockContainer <(anonymous)> (not painted) [BFC] children: inline
         TextNode <#text> (not painted)
 
-SC for Viewport<#document> [0,0 800x600] (z-index: auto)
- SC for BlockContainer<HTML> [0,0 800x684] (z-index: auto)
+SC for Viewport<#document> [0,0 788x600] (z-index: auto)
+ SC for BlockContainer<HTML> [0,0 788x684] (z-index: auto)

@@ -77,6 +77,10 @@ pub(crate) fn paint_phase_mask<O: Observer>(
         || recorder.data(paintable).own_scroll_node_index
             != crate::painting::display_list::commands::VISUAL_VIEWPORT_NODE_INDEX
         || crate::painting::chrome_geometry::has_resizer(recorder.source, paintable)
+        || {
+            let gutters = crate::painting::paintable_geometry::committed_scrollbar_gutters(recorder.source, paintable);
+            gutters.has_vertical_scrollbar || gutters.has_horizontal_scrollbar
+        }
     {
         phases |= PaintPhase::Overlay.bit();
     }

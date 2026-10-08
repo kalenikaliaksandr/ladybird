@@ -700,13 +700,20 @@ impl<'pass> FlexFormattingContext<'pass> {
         let padding_right = style.padding_right().to_px(basis);
         let padding_top = style.padding_top().to_px(basis);
         let padding_bottom = style.padding_bottom().to_px(basis);
-        {
+        let gutters = {
             let used = self.item_used(index);
             used.padding_left.set(padding_left);
             used.padding_right.set(padding_right);
             used.padding_top.set(padding_top);
             used.padding_bottom.set(padding_bottom);
-        }
+            used.scrollbar_gutters()
+        };
+        // NB: The flex algorithm only adds up an item's edges, so the room kept for scrollbars,
+        //     which lies between the border and the padding, counts as padding here.
+        let padding_left = padding_left + gutters.left;
+        let padding_right = padding_right + gutters.right;
+        let padding_top = padding_top + gutters.top;
+        let padding_bottom = padding_bottom + gutters.bottom;
 
         let main_axis_is_horizontal = self.main_axis_is_horizontal();
         let item = &mut self.flex_items[index];

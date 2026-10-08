@@ -37,15 +37,6 @@ pub(crate) struct PhysicalAxes {
     pub(crate) vertical: bool,
 }
 
-impl PhysicalAxes {
-    fn along(self, direction: ScrollDirection) -> bool {
-        match direction {
-            ScrollDirection::Horizontal => self.horizontal,
-            ScrollDirection::Vertical => self.vertical,
-        }
-    }
-}
-
 fn primary_size(rect: CssPixelRect, direction: ScrollDirection) -> CssPixels {
     match direction {
         ScrollDirection::Horizontal => rect.width,
@@ -209,27 +200,57 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
         }
     }
 
-    fn wheel_scrollable_axes(&self, slot: NodeSlotId) -> PhysicalAxes {
-        wheel_scrollable_axes(self.arena, slot)
+    /// The strip of the box's vertical scrollbar gutter beside its padding box, as x and width,
+    /// where the box shows a vertical scrollbar.
+    fn vertical_scrollbar_strip(&self, slot: NodeSlotId, padding_rect: CssPixelRect) -> Option<(CssPixels, CssPixels)> {
+        let gutters = paintable_geometry::committed_scrollbar_gutters(self.arena, slot);
+        if !gutters.has_vertical_scrollbar {
+            return None;
+        }
+        // NB: Layout puts the scrollbar on the left for a mirrored box, but the viewport keeps it on the right.
+        let on_left = gutters.left > CssPixels::from_raw(0)
+            && (gutters.right == CssPixels::from_raw(0)
+                || (is_chrome_mirrored(self.arena, slot)
+                    && self.arena.node_kind_if_live(slot) != Some(NodeKind::Viewport)));
+        Some(if on_left {
+            (padding_rect.x - gutters.left, gutters.left)
+        } else {
+            (padding_rect.right(), gutters.right)
+        })
     }
 
+    /// The strip of the box's horizontal scrollbar gutter below its padding box, as y and height,
+    /// where the box shows a horizontal scrollbar.
+    fn horizontal_scrollbar_strip(
+        &self,
+        slot: NodeSlotId,
+        padding_rect: CssPixelRect,
+    ) -> Option<(CssPixels, CssPixels)> {
+        let gutters = paintable_geometry::committed_scrollbar_gutters(self.arena, slot);
+        gutters
+            .has_horizontal_scrollbar
+            .then_some((padding_rect.bottom(), gutters.bottom))
+    }
+
+    /// Where the resizer goes: in the corner the scrollbar gutters leave, or in the corner of the
+    /// padding box on the side the box has no scrollbar.
     pub(crate) fn absolute_resizer_rect(&self, slot: NodeSlotId) -> Option<CssPixelRect> {
         if !has_resizer(self.arena, slot) {
             return None;
         }
         let padding_rect = paintable_geometry::absolute_padding_box_rect(self.arena, slot);
         let gripper_size = self.metrics.resize_gripper_size;
-        let x = if is_chrome_mirrored(self.arena, slot) {
-            padding_rect.x
-        } else {
-            padding_rect.right() - gripper_size
-        };
-        Some(CssPixelRect::new(
-            x,
-            padding_rect.bottom() - gripper_size,
-            gripper_size,
-            gripper_size,
-        ))
+        let (x, width) = self.vertical_scrollbar_strip(slot, padding_rect).unwrap_or_else(|| {
+            if is_chrome_mirrored(self.arena, slot) {
+                (padding_rect.x, gripper_size)
+            } else {
+                (padding_rect.right() - gripper_size, gripper_size)
+            }
+        });
+        let (y, height) = self
+            .horizontal_scrollbar_strip(slot, padding_rect)
+            .unwrap_or((padding_rect.bottom() - gripper_size, gripper_size));
+        Some(CssPixelRect::new(x, y, width, height))
     }
 
     pub(crate) fn resizer_contains(&self, slot: NodeSlotId, point: CssPixelPoint) -> bool {
@@ -250,89 +271,59 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
         rect.contains_point(point)
     }
 
-    fn available_scrollbar_length(&self, slot: NodeSlotId, direction: ScrollDirection) -> CssPixels {
+    /// The corner between the box's two scrollbars, where it shows both.
+    pub(crate) fn absolute_scroll_corner_rect(&self, slot: NodeSlotId) -> Option<CssPixelRect> {
         if !self.arena.paintable_row_is_populated(slot) {
-            return CssPixels::from_raw(0);
+            return None;
         }
-        let mut length = primary_size(
-            paintable_geometry::absolute_padding_box_rect(self.arena, slot),
-            direction,
-        );
-        let axes = self.wheel_scrollable_axes(slot);
-        let other_axis_scrolls = match direction {
-            ScrollDirection::Horizontal => axes.vertical,
-            ScrollDirection::Vertical => axes.horizontal,
-        };
-        if has_resizer(self.arena, slot) {
-            length -= self.metrics.resize_gripper_size;
-        } else if other_axis_scrolls {
-            length -= self.metrics.scroll_gutter_thickness;
-        }
-        length
+        let padding_rect = paintable_geometry::absolute_padding_box_rect(self.arena, slot);
+        let (x, width) = self.vertical_scrollbar_strip(slot, padding_rect)?;
+        let (y, height) = self.horizontal_scrollbar_strip(slot, padding_rect)?;
+        Some(CssPixelRect::new(x, y, width, height))
     }
 
-    pub(crate) fn absolute_scrollbar_rect(
-        &self,
-        slot: NodeSlotId,
-        direction: ScrollDirection,
-        with_gutter: bool,
-    ) -> Option<CssPixelRect> {
+    /// The scrollbar's track: the strip of its gutter along the padding box, less the resizer where
+    /// the resizer shares the strip.
+    pub(crate) fn absolute_scrollbar_rect(&self, slot: NodeSlotId, direction: ScrollDirection) -> Option<CssPixelRect> {
         if !self.arena.paintable_row_is_populated(slot) {
             return None;
         }
-        let axes = self.wheel_scrollable_axes(slot);
-        if !axes.along(direction) {
-            return None;
-        }
-        let style = self.arena.node_style_if_live(slot)?;
-        if style.misc_reset().scrollbar_width == css_enums::scrollbar_width::NONE {
-            return None;
-        }
-
-        let metrics = self.metrics;
-        let adjusting_for_resizer = has_resizer(self.arena, slot);
-        let mirrored = is_chrome_mirrored(self.arena, slot);
-        let rect_thickness = if with_gutter {
-            metrics.scroll_gutter_thickness
-        } else {
-            metrics.scroll_thumb_thickness_thin + metrics.scroll_thumb_padding_thin
-        };
+        let padding_rect = paintable_geometry::absolute_padding_box_rect(self.arena, slot);
+        let vertical_strip = self.vertical_scrollbar_strip(slot, padding_rect);
+        let horizontal_strip = self.horizontal_scrollbar_strip(slot, padding_rect);
+        let resizer = self.absolute_resizer_rect(slot);
         let zero = CssPixels::from_raw(0);
-        let mut rect = paintable_geometry::absolute_padding_box_rect(self.arena, slot);
         match direction {
-            ScrollDirection::Horizontal => {
-                if !adjusting_for_resizer && axes.vertical {
-                    rect.width = (rect.width - metrics.scroll_gutter_thickness).max(zero);
-                    if mirrored {
-                        rect.x += metrics.scroll_gutter_thickness;
-                    }
-                } else if adjusting_for_resizer {
-                    rect.width = self.available_scrollbar_length(slot, direction);
-                    if mirrored {
-                        rect.x += metrics.resize_gripper_size;
-                    }
-                }
-                rect.y = (rect.bottom() - rect_thickness).max(zero);
-                rect.height = rect_thickness;
-            }
             ScrollDirection::Vertical => {
-                if adjusting_for_resizer {
-                    rect.height = self.available_scrollbar_length(slot, direction);
+                let (x, width) = vertical_strip?;
+                let mut rect = CssPixelRect::new(x, padding_rect.y, width, padding_rect.height);
+                if let Some(resizer) = resizer
+                    && horizontal_strip.is_none()
+                {
+                    rect.height = (rect.height - resizer.height).max(zero);
                 }
-                if !mirrored {
-                    rect.x = (rect.right() - rect_thickness).max(zero);
+                Some(rect)
+            }
+            ScrollDirection::Horizontal => {
+                let (y, height) = horizontal_strip?;
+                let mut rect = CssPixelRect::new(padding_rect.x, y, padding_rect.width, height);
+                if let Some(resizer) = resizer
+                    && vertical_strip.is_none()
+                {
+                    rect.width = (rect.width - resizer.width).max(zero);
+                    if is_chrome_mirrored(self.arena, slot) {
+                        rect.x += resizer.width;
+                    }
                 }
-                rect.width = rect_thickness;
+                Some(rect)
             }
         }
-        Some(rect)
     }
 
     pub(crate) fn compute_scrollbar_data(
         &self,
         slot: NodeSlotId,
         direction: ScrollDirection,
-        enlarged: bool,
         scroll_state: Option<ScrollbarScrollState>,
     ) -> Option<ScrollbarData> {
         let arena = self.arena;
@@ -341,49 +332,49 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
             return None;
         }
         let style = arena.node_style_if_live(slot)?;
-        let overflow = match direction {
-            ScrollDirection::Horizontal => style.box_values().overflow_x,
-            ScrollDirection::Vertical => style.box_values().overflow_y,
-        };
-        if overflow != css_enums::overflow::SCROLL && !self.wheel_scrollable_axes(slot).along(direction) {
-            return None;
-        }
         if arena.paintable_data(slot).own_scroll_node_index == VISUAL_VIEWPORT_NODE_INDEX {
             return None;
         }
-        let overflow_length = primary_size(paintable_geometry::scrollable_overflow_rect(arena, slot)?, direction);
-        if overflow_length == CssPixels::from_raw(0) {
-            return None;
-        }
-        let scrollbar_rect = self.absolute_scrollbar_rect(slot, direction, enlarged)?;
-        let (thumb_thickness, thumb_margin) = if enlarged {
-            (
-                metrics.scroll_thumb_thickness,
-                (metrics.scroll_gutter_thickness - metrics.scroll_thumb_thickness) / 2,
-            )
-        } else {
-            (metrics.scroll_thumb_thickness_thin, metrics.scroll_thumb_padding_thin)
+        let track_rect = self.absolute_scrollbar_rect(slot, direction)?;
+        let zero = CssPixels::from_raw(0);
+        let gutter_thickness = match direction {
+            ScrollDirection::Horizontal => track_rect.height,
+            ScrollDirection::Vertical => track_rect.width,
         };
-        let usable_length = (primary_size(scrollbar_rect, direction) - thumb_margin * 2).max(CssPixels::from_raw(0));
+        let thumb_thickness = if style.misc_reset().scrollbar_width == css_enums::scrollbar_width::THIN {
+            metrics.scroll_thumb_thickness_thin
+        } else {
+            metrics.scroll_thumb_thickness
+        }
+        .min(gutter_thickness);
+        let thumb_margin = (gutter_thickness - thumb_thickness) / 2;
+
+        // A scrollbar with nothing to scroll shows its track and no thumb.
+        let overflow_length = paintable_geometry::scrollable_overflow_rect(arena, slot)
+            .map_or(zero, |overflow| primary_size(overflow, direction));
         let scrollport_size = primary_size(paintable_geometry::absolute_padding_box_rect(arena, slot), direction);
+        if overflow_length <= scrollport_size {
+            return Some(ScrollbarData {
+                gutter_rect: track_rect,
+                thumb_rect: CssPixelRect::default(),
+                track_rect,
+                thumb_travel_to_scroll_ratio: CssPixelFraction::zero(),
+            });
+        }
+
+        let usable_length = (primary_size(track_rect, direction) - thumb_margin * 2).max(zero);
         let min_thumb_length = usable_length.min(metrics.scroll_thumb_min_length);
         let thumb_length = usable_length
             .mul_by_fraction(CssPixelFraction::ratio_of(scrollport_size, overflow_length))
             .max(min_thumb_length);
-        let ratio = if overflow_length > scrollport_size {
-            CssPixelFraction::ratio_of(usable_length - thumb_length, overflow_length - scrollport_size)
-        } else {
-            CssPixelFraction::zero()
-        };
-        let mut thumb_rect = scrollbar_rect;
+        let ratio = CssPixelFraction::ratio_of(usable_length - thumb_length, overflow_length - scrollport_size);
+        let mut thumb_rect = track_rect;
         let thumb = axis_view(&mut thumb_rect, direction);
         *thumb.primary_size = thumb_length;
         *thumb.secondary_size = thumb_thickness;
         let minimum_offset = primary_offset(minimum_scroll_offset(arena, slot), direction);
         *thumb.primary_offset += thumb_margin - minimum_offset.mul_by_fraction(ratio);
-        if enlarged || (direction == ScrollDirection::Vertical && is_chrome_mirrored(arena, slot)) {
-            *thumb.secondary_offset += thumb_margin;
-        }
+        *thumb.secondary_offset += thumb_margin;
         if let Some(scroll_state) = scroll_state {
             let scroll_offset = CssPixels::nearest_value_for_f32(
                 scroll_state.device_scroll_offset / scroll_state.device_pixels_per_css_pixel as f32,
@@ -391,13 +382,9 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
             *thumb.primary_offset += scroll_offset.mul_by_fraction(ratio);
         }
         Some(ScrollbarData {
-            gutter_rect: if enlarged {
-                scrollbar_rect
-            } else {
-                CssPixelRect::default()
-            },
+            gutter_rect: track_rect,
             thumb_rect,
-            track_rect: scrollbar_rect,
+            track_rect,
             thumb_travel_to_scroll_ratio: ratio,
         })
     }

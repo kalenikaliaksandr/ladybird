@@ -1,5 +1,5 @@
-initial scrollWidth: 100
-initial scrollHeight: 100
+initial scrollWidth: 88
+initial scrollHeight: 88
 scrollWidth after transform change: 250
 scrollHeight after transform change: 550
 relayouts performed: 0

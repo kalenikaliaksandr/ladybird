@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<style>
+    body {
+        margin: 0;
+    }
+</style>
+<div id="filler" style="width: 10px; height: 10px"></div>
+<script src="../include.js"></script>
+<script>
+    // NB: Short lines keep the printed results from widening the page.
+    function dump(label) {
+        const root = document.documentElement;
+        println(`${label}:`);
+        println(`  inner=${window.innerWidth}x${window.innerHeight}`);
+        println(`  client=${root.clientWidth}x${root.clientHeight}`);
+        println(`  body.offsetWidth=${document.body.offsetWidth}`);
+    }
+
+    test(() => {
+        const filler = document.getElementById("filler");
+        dump("short");
+
+        filler.style.height = "2000px";
+        dump("tall");
+        println(`  elementFromPoint in the scrollbar: ${document.elementFromPoint(window.innerWidth - 2, 10)}`);
+        println(`  scrollWidth=${document.documentElement.scrollWidth}`);
+
+        filler.style.width = "2000px";
+        dump("tall and wide");
+
+        filler.style.height = "10px";
+        filler.style.width = "10px";
+        dump("short again");
+
+        document.documentElement.style.overflow = "scroll";
+        dump("overflow: scroll");
+
+        document.documentElement.style.overflow = "";
+        document.documentElement.style.scrollbarGutter = "stable";
+        dump("scrollbar-gutter: stable");
+    });
+</script>

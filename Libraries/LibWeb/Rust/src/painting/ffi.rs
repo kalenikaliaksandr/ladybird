@@ -80,6 +80,7 @@ pub struct FfiChromeMetrics {
     pub scroll_gutter_thickness: CssPixels,
     pub resize_gripper_size: CssPixels,
     pub resize_gripper_padding: CssPixels,
+    pub scroll_gutter_thickness_thin: CssPixels,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -237,6 +238,7 @@ pub struct FfiBoxModelMetrics {
     pub padding: crate::painting::paintable_data::FfiPixelBox,
     pub border: crate::painting::paintable_data::FfiPixelBox,
     pub inset: crate::painting::paintable_data::FfiPixelBox,
+    pub scrollbar_gutter: crate::painting::paintable_data::FfiPixelBox,
 }
 
 /// # Safety

@@ -719,7 +719,7 @@ impl LayoutNodeArena {
         self.scrollable_overflow.rows_to_measure.borrow_mut().push(slot);
     }
 
-    fn ensure_scrollable_overflow(&self, slot: NodeSlotId) {
+    pub(crate) fn ensure_scrollable_overflow(&self, slot: NodeSlotId) {
         if !self.paintable_row_is_populated(slot)
             || !self
                 .scrollable_overflow
@@ -756,6 +756,58 @@ impl LayoutNodeArena {
 fn box_holds_scroll_state(arena: &LayoutNodeArena, slot: NodeSlotId) -> bool {
     crate::painting::style_queries::is_scroll_container(arena, slot)
         || arena.node_flags_if_live(slot) & crate::layout::node_data::NodeFlag::HasScrollOffset as u32 != 0
+}
+
+/// The scroll containers whose overflow the commits since the last rendering preparation may have
+/// changed: the ones the preparation settles first, found the same way. Finding them leaves the
+/// scheduled recalculation to the preparation.
+pub(crate) fn scroll_containers_awaiting_overflow_settlement(arena: &LayoutNodeArena) -> Vec<NodeSlotId> {
+    let mut scroll_containers = Vec::new();
+    let Some(viewport) = arena.scrollable_overflow.viewport.get() else {
+        return scroll_containers;
+    };
+    let (pending_boxes, needs_full_recalculation) = arena.peek_scrollable_overflow_recalculation_state();
+    if (pending_boxes.is_empty() && !needs_full_recalculation) || !arena.paintable_row_is_populated(viewport) {
+        return scroll_containers;
+    }
+    let full_layout_commit = arena.scrollable_overflow.full_layout_commit.get();
+    let mut seen = crate::fast_hash::FastSet::default();
+    let mut add = |slot: NodeSlotId| {
+        if !arena.paintable_row_is_populated(slot) || !seen.insert(slot) {
+            return false;
+        }
+        if slot == viewport || crate::painting::style_queries::is_scroll_container(arena, slot) {
+            scroll_containers.push(slot);
+        }
+        true
+    };
+    if needs_full_recalculation {
+        arena.for_each_node_in_layout_subtree_in_pre_order(viewport, |slot| {
+            add(slot);
+        });
+        return scroll_containers;
+    }
+    for slot in pending_boxes {
+        if !arena.slot_is_live(slot) || !arena.paintable_row_is_populated(slot) {
+            continue;
+        }
+        if !full_layout_commit && !arena.paintable_side_data(slot).overflow_measured_this_commit.get() {
+            arena.for_each_node_in_layout_subtree_in_pre_order(slot, |child| {
+                if crate::painting::style_queries::is_scroll_container(arena, child) {
+                    add(child);
+                }
+            });
+        }
+        add(slot);
+        let mut block = arena.node_containing_block_if_live(slot);
+        while let Some(slot) = block {
+            if !add(slot) {
+                break;
+            }
+            block = arena.node_containing_block_if_live(slot);
+        }
+    }
+    scroll_containers
 }
 
 /// Settles the scheduled recalculation, then measures every other row left unmeasured. Answers the scroll offsets the

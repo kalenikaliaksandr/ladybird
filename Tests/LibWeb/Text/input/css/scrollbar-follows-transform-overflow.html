@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<div id="scroller" style="width: 100px; height: 100px; overflow: auto">
+    <div id="child" style="width: 50px; height: 50px"></div>
+</div>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const scroller = document.getElementById("scroller");
+        println(`before: clientWidth=${scroller.clientWidth}`);
+        document.getElementById("child").style.transform = "translateY(200px)";
+        println(`moved out by a transform: clientWidth=${scroller.clientWidth}`);
+        document.getElementById("child").style.transform = "";
+        println(`moved back: clientWidth=${scroller.clientWidth}`);
+    });
+</script>

@@ -424,6 +424,15 @@ pub unsafe extern "C" fn layout_script_paintable_box_model(
             padding: crate::painting::paintable_geometry::committed_padding(arena, slot),
             border: crate::painting::paintable_geometry::committed_border(arena, slot),
             inset: crate::painting::paintable_geometry::committed_inset(arena, slot),
+            scrollbar_gutter: {
+                let gutters = crate::painting::paintable_geometry::committed_scrollbar_gutters(arena, slot);
+                crate::painting::paintable_data::FfiPixelBox {
+                    top: gutters.top,
+                    right: gutters.right,
+                    bottom: gutters.bottom,
+                    left: gutters.left,
+                }
+            },
         }
     })
 }

@@ -247,8 +247,9 @@ void Page::process_screenshot_requests()
             navigable->active_document()->update_layout(DOM::UpdateLayoutReason::ProcessScreenshot);
             auto const* layout_node = navigable->active_document()->layout_node(read);
             VERIFY(layout_node && Painting::has_committed_box(*layout_node));
-            auto scrollable_overflow_rect = Painting::scrollable_overflow_rect(*layout_node);
-            auto rect = enclosing_device_rect(scrollable_overflow_rect.value());
+            // The viewport's scrollbar gutters lie outside its scrollable overflow, but the screenshot shows them too.
+            auto scrollable_overflow_rect = Painting::scrollable_overflow_rect(*layout_node).value().united(Painting::absolute_border_box_rect(*layout_node));
+            auto rect = enclosing_device_rect(scrollable_overflow_rect);
             auto bitmap_or_error = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, rect.size().to_type<int>());
             if (bitmap_or_error.is_error()) {
                 client.page_did_take_screenshot({});

@@ -44,6 +44,7 @@ mod replaced_with_children_formatting_context;
 pub(crate) mod row_reads;
 pub(crate) mod run_records;
 pub(crate) mod script_entries;
+pub(crate) mod scrollbars;
 pub(crate) mod shell_reads;
 pub(crate) mod sizing_context;
 pub(crate) mod style_snapshot;

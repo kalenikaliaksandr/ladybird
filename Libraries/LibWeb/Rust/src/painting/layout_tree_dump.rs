@@ -333,6 +333,20 @@ fn push_box_model(output: &mut Vec<u8>, arena: &LayoutNodeArena, slot: NodeSlotI
         ],
     );
     output.push(b']');
+    // The room kept for scrollbars lies between the border and the padding: [left right] [top bottom].
+    let gutters = paintable_geometry::committed_scrollbar_gutters(arena, slot);
+    if gutters.horizontal_sum() != Default::default() || gutters.vertical_sum() != Default::default() {
+        let mut sink = Utf8Sink(output);
+        sink.0.extend_from_slice(b" scrollbar-gutters: [");
+        push_css_pixels(&mut sink, gutters.left);
+        sink.0.push(b' ');
+        push_css_pixels(&mut sink, gutters.right);
+        sink.0.extend_from_slice(b"] [");
+        push_css_pixels(&mut sink, gutters.top);
+        sink.0.push(b' ');
+        push_css_pixels(&mut sink, gutters.bottom);
+        sink.0.push(b']');
+    }
 }
 
 fn push_position_and_box_model(

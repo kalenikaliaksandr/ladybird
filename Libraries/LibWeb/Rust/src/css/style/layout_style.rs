@@ -212,8 +212,11 @@ impl LayoutStyle {
         });
     }
 
-    pub(crate) fn set_scrollbar_width(&mut self, width: u8) {
-        self.edit::<MiscResetValues>(|values| values.scrollbar_width = width);
+    pub(crate) fn set_scrollbar_width_and_gutter(&mut self, width: u8, gutter: u8) {
+        self.edit::<MiscResetValues>(|values| {
+            values.scrollbar_width = width;
+            values.scrollbar_gutter = gutter;
+        });
     }
 
     // CSS table wrappers carry positioning and margins, and act as the table's grid item.

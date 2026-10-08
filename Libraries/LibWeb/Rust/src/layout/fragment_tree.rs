@@ -24,6 +24,12 @@ pub(crate) struct Fragment {
     pub(crate) padding_right: CssPixels,
     pub(crate) padding_top: CssPixels,
     pub(crate) padding_bottom: CssPixels,
+    pub(crate) scrollbar_gutter_left: CssPixels,
+    pub(crate) scrollbar_gutter_right: CssPixels,
+    pub(crate) scrollbar_gutter_top: CssPixels,
+    pub(crate) scrollbar_gutter_bottom: CssPixels,
+    pub(crate) has_vertical_scrollbar: bool,
+    pub(crate) has_horizontal_scrollbar: bool,
     pub(crate) uses_collapsing_borders_model: bool,
     pub(crate) is_collapsed_borders_table_box: bool,
     pub(crate) table_column_index: u32,
@@ -53,6 +59,9 @@ pub(crate) struct FragmentLink {
     pub(crate) containing_line_box_index: Option<usize>,
     pub(crate) abspos_layout_inputs: Option<abspos_inputs::AbsposLayoutInputs>,
     pub(crate) containing_block: crate::layout::node_data::NodeSlotId,
+    /// The baselines the box derived from its content. Painting does not read them, so they are not
+    /// part of its placement.
+    pub(crate) baselines: formatting_context::DerivedBaselines,
 }
 
 fn same_allocation<T>(left: Option<&std::sync::Arc<T>>, right: Option<&std::sync::Arc<T>>) -> bool {
@@ -64,6 +73,17 @@ fn same_allocation<T>(left: Option<&std::sync::Arc<T>>, right: Option<&std::sync
 }
 
 impl Fragment {
+    pub(crate) fn scrollbar_gutters(&self) -> scrollbars::ScrollbarGutters {
+        scrollbars::ScrollbarGutters {
+            left: self.scrollbar_gutter_left,
+            right: self.scrollbar_gutter_right,
+            top: self.scrollbar_gutter_top,
+            bottom: self.scrollbar_gutter_bottom,
+            has_vertical_scrollbar: self.has_vertical_scrollbar,
+            has_horizontal_scrollbar: self.has_horizontal_scrollbar,
+        }
+    }
+
     fn builds_identically_to(&self, previous: &Fragment) -> bool {
         self.has_same_box_properties(previous)
             && same_allocation(self.line_data.as_ref(), previous.line_data.as_ref())
@@ -93,6 +113,7 @@ impl Fragment {
             && self.padding_right == previous.padding_right
             && self.padding_top == previous.padding_top
             && self.padding_bottom == previous.padding_bottom
+            && self.scrollbar_gutters() == previous.scrollbar_gutters()
             && self.uses_collapsing_borders_model == previous.uses_collapsing_borders_model
             && self.is_collapsed_borders_table_box == previous.is_collapsed_borders_table_box
             && self.table_column_index == previous.table_column_index
@@ -153,6 +174,12 @@ impl FragmentLink {
                 padding_right: CssPixels::default(),
                 padding_top: CssPixels::default(),
                 padding_bottom: CssPixels::default(),
+                scrollbar_gutter_left: CssPixels::default(),
+                scrollbar_gutter_right: CssPixels::default(),
+                scrollbar_gutter_top: CssPixels::default(),
+                scrollbar_gutter_bottom: CssPixels::default(),
+                has_vertical_scrollbar: false,
+                has_horizontal_scrollbar: false,
                 uses_collapsing_borders_model: false,
                 is_collapsed_borders_table_box: false,
                 table_column_index: 0,
@@ -178,6 +205,7 @@ impl FragmentLink {
             containing_line_box_index: None,
             abspos_layout_inputs: None,
             containing_block: crate::layout::node_data::NodeSlotId::INVALID,
+            baselines: formatting_context::DerivedBaselines::default(),
         }
     }
 
@@ -381,6 +409,12 @@ fn snapshot_fragment(
         padding_right: used.padding_right.get(),
         padding_top: used.padding_top.get(),
         padding_bottom: used.padding_bottom.get(),
+        scrollbar_gutter_left: used.scrollbar_gutter_left.get(),
+        scrollbar_gutter_right: used.scrollbar_gutter_right.get(),
+        scrollbar_gutter_top: used.scrollbar_gutter_top.get(),
+        scrollbar_gutter_bottom: used.scrollbar_gutter_bottom.get(),
+        has_vertical_scrollbar: used.has_vertical_scrollbar.get(),
+        has_horizontal_scrollbar: used.has_horizontal_scrollbar.get(),
         uses_collapsing_borders_model: used.uses_collapsing_borders_model.get(),
         is_collapsed_borders_table_box: used.is_collapsed_borders_table_box.get(),
         table_column_index: used.table_column_index.get(),
@@ -414,6 +448,7 @@ pub(crate) struct PlacementData {
     pub(crate) containing_line_box_index: Option<usize>,
     pub(crate) abspos_layout_inputs: Option<abspos_inputs::AbsposLayoutInputs>,
     pub(crate) containing_block: crate::layout::node_data::NodeSlotId,
+    pub(crate) baselines: formatting_context::DerivedBaselines,
 }
 
 impl PlacementData {
@@ -431,6 +466,7 @@ impl PlacementData {
             containing_line_box_index,
             abspos_layout_inputs: used.rare_data.get().and_then(|cell| cell.borrow().abspos_layout_inputs),
             containing_block: used.placed_in.get(),
+            baselines: used.content_baselines_from_cells(),
         }
     }
 }
@@ -446,6 +482,7 @@ fn link_fragment(fragment: std::sync::Arc<Fragment>, placement: PlacementData) -
         containing_line_box_index: placement.containing_line_box_index,
         abspos_layout_inputs: placement.abspos_layout_inputs,
         containing_block: placement.containing_block,
+        baselines: placement.baselines,
     }
 }
 

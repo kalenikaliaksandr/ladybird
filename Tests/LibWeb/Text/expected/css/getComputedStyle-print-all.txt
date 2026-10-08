@@ -210,7 +210,7 @@ grid-template-areas: none
 grid-template-columns: none
 grid-template-rows: none
 height: 2743px
-inline-size: 784px
+inline-size: 772px
 inset-block-end: auto
 inset-block-start: auto
 inset-inline-end: auto
@@ -331,7 +331,7 @@ top: auto
 touch-action: auto
 transform: none
 transform-box: view-box
-transform-origin: 392px 2164.5px
+transform-origin: 386px 2164.5px
 transform-style: flat
 transition-behavior: normal
 transition-delay: 0s
@@ -348,7 +348,7 @@ view-timeline-inset: auto
 view-timeline-name: none
 view-transition-name: none
 white-space-trim: none
-width: 784px
+width: 772px
 will-change: auto
 x: 0px
 y: 0px

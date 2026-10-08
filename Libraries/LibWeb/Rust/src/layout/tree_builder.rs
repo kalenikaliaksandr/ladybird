@@ -1362,28 +1362,6 @@ impl TreeBuildJob {
                 host.arena().set_needs_full_scrollable_overflow_recalculation();
                 fixup_tables(host, document_layout_node);
             }
-
-            // https://drafts.csswg.org/css-scrollbars/#scrollbar-width
-            // UAs must apply the scrollbar-color value set on the root element to the viewport.
-            // The document element is the document's only DOM child the style mirror holds: a doctype, a
-            // comment and a processing instruction hold no place in its child sequence, and a document
-            // can have no text child.
-            let root_layout_node = host
-                .first_dom_child(document_identity)
-                .map_or(NodeSlotId::INVALID, |document_element| {
-                    host.arena().bound_row(document_element)
-                });
-            if !root_layout_node.is_invalid() {
-                let scrollbar_width = host
-                    .style(root_layout_node)
-                    .expect("the document element's box publishes its style during the build")
-                    .misc_reset()
-                    .scrollbar_width;
-                host.arena()
-                    .update_layout_style(host.host_calls(), document_layout_node, |style| {
-                        style.set_scrollbar_width(scrollbar_width);
-                    });
-            }
         }
 
         for &element in &state.layout_tree_rebuild_requests {

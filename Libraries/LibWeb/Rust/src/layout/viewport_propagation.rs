@@ -30,6 +30,9 @@ pub(crate) struct ViewportPropagationFacts {
     pub root_direction: u8,
     /// Any of size, inline-size, layout, style or paint containment.
     pub root_has_containment: bool,
+    /// The root element's scrollbar-width and scrollbar-gutter, which apply to the viewport.
+    pub root_scrollbar_width: u8,
+    pub root_scrollbar_gutter: u8,
     /// The root element has an HTML body child element with computed style.
     pub has_styled_body: bool,
     /// Invalid when the body has no box.
@@ -83,6 +86,8 @@ pub(crate) fn viewport_propagation_facts(arena: &LayoutNodeArena) -> ViewportPro
         root_writing_mode: 0,
         root_direction: 0,
         root_has_containment: false,
+        root_scrollbar_width: 0,
+        root_scrollbar_gutter: 0,
         has_styled_body: false,
         body_layout_node: NodeSlotId::INVALID,
         body_display_is_none: false,
@@ -110,6 +115,8 @@ pub(crate) fn viewport_propagation_facts(arena: &LayoutNodeArena) -> ViewportPro
         facts.root_writing_mode = root_style.writing_mode();
         facts.root_direction = root_style.direction();
         facts.root_has_containment = has_any_containment(root_style);
+        facts.root_scrollbar_width = root_style.misc_reset().scrollbar_width;
+        facts.root_scrollbar_gutter = root_style.misc_reset().scrollbar_gutter;
 
         let Some(body_element) = first_html_body_child(engine, root_element) else {
             return;
@@ -303,6 +310,12 @@ pub(crate) fn propagate_root_styles_to_viewport(
         });
     };
 
+    // https://drafts.csswg.org/css-scrollbars/#scrollbar-width
+    // https://drafts.csswg.org/css-overflow-3/#scrollbar-gutter-property
+    // UAs must apply the scrollbar-width and scrollbar-gutter values set on the root element to the viewport.
+    arena.update_layout_style(host_calls, viewport, |style| {
+        style.set_scrollbar_width_and_gutter(facts.root_scrollbar_width, facts.root_scrollbar_gutter);
+    });
     let Some(styles) = decide_viewport_propagation(facts) else {
         apply_overflow(viewport, (overflow::AUTO, overflow::AUTO));
         return;
@@ -335,6 +348,8 @@ mod tests {
             root_writing_mode: writing_mode::HORIZONTAL_TB,
             root_direction: direction::LTR,
             root_has_containment: false,
+            root_scrollbar_width: 0,
+            root_scrollbar_gutter: 0,
             has_styled_body: true,
             body_layout_node: NodeSlotId::new(2, 1),
             body_display_is_none: false,

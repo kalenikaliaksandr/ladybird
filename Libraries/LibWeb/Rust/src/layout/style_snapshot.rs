@@ -58,7 +58,15 @@ impl LayoutNodeArena {
         let rows = self.paintable_rows();
         let has_committed_box = rows.paintable_row_is_populated(node);
         let size = if has_committed_box {
-            crate::painting::paintable_geometry::committed_content_size(&rows, node)
+            let content_size = crate::painting::paintable_geometry::committed_content_size(&rows, node);
+            match crate::layout::node_facts::node_style_view(self.data(node)) {
+                Some(style) => crate::layout::scrollbars::content_size_for_container_queries(
+                    style,
+                    crate::painting::paintable_geometry::committed_scrollbar_gutters(&rows, node),
+                    content_size,
+                ),
+                None => content_size,
+            }
         } else {
             FfiCssPixelSize::default()
         };

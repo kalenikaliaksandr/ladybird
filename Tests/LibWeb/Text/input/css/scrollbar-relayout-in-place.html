@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<style>
+    /* The viewport keeps its scrollbar, so that the copies below do not lay the document out again. */
+    html {
+        overflow-y: scroll;
+    }
+    .scroller {
+        width: 200px;
+        height: 100px;
+        overflow: auto;
+        border: 2px solid black;
+    }
+    .rtl {
+        direction: rtl;
+    }
+    .shrink {
+        float: left;
+        width: auto;
+    }
+    .flex {
+        display: flex;
+    }
+    .inline {
+        display: inline-block;
+        font: 20px/20px serif;
+    }
+    .short {
+        height: 50px;
+    }
+    .tall {
+        height: 300px;
+    }
+</style>
+<div><div id="fixed" class="scroller"><div class="short"></div></div></div>
+<div><div id="rtl" class="scroller rtl"><div class="short"></div></div></div>
+<div style="display: flow-root"><div id="shrink" class="scroller shrink"><div class="short" style="width: 150px"></div></div></div>
+<div class="flex"><div id="flex-item" class="scroller"><div class="short"></div></div></div>
+<div class="flex" style="align-items: baseline"><div id="sibling" style="font: 20px/20px serif">x</div><div id="baseline" class="scroller"><span style="display: inline-block; width: 150px; height: 10px"></span><span style="display: inline-block; width: 45px; height: 60px"></span></div></div>
+<div>before<div id="inline" class="scroller inline">a b c d e f g h i j k l m n o p q r s t u v w</div><span id="after">after</span></div>
+<script src="../include.js"></script>
+<script>
+    // A copy of the scroller and its parent that shows its vertical scrollbar from the start, so that it is laid out
+    // once, with the scrollbar in place.
+    function freshCopy(scroller) {
+        const copy = scroller.parentElement.cloneNode(true);
+        copy.querySelectorAll("[id]").forEach(element => element.removeAttribute("id"));
+        const copyScroller = copy.querySelector(".scroller");
+        copyScroller.style.overflowY = "scroll";
+        scroller.parentElement.after(copy);
+        return copyScroller;
+    }
+
+    // The geometry of the scroller, and the offset of the first box beside it, if any, from the scroller.
+    function geometry(scroller) {
+        const child = scroller.firstElementChild ?? scroller;
+        const scrollerRect = scroller.getBoundingClientRect();
+        const childRect = child.getBoundingClientRect();
+        let result = `client=${scroller.clientWidth}x${scroller.clientHeight} offset=${scroller.offsetWidth}x${scroller.offsetHeight} child-left=${childRect.left - scrollerRect.left} child-width=${childRect.width}`;
+        const sibling = scroller.previousElementSibling;
+        if (sibling)
+            result += ` sibling-top=${sibling.getBoundingClientRect().top - scrollerRect.top}`;
+        return result;
+    }
+
+    function grow(id, mutate) {
+        const scroller = document.getElementById(id);
+        println(`${id} before: ${geometry(scroller)}`);
+        const partialBefore = internals.partialLayoutCount();
+        const fullBefore = internals.fullLayoutCount();
+        mutate(scroller);
+        const result = geometry(scroller);
+        println(`${id} after: ${result} partial=${internals.partialLayoutCount() - partialBefore} full=${internals.fullLayoutCount() - fullBefore}`);
+        const copy = freshCopy(scroller);
+        println(`${id} matches a fresh layout: ${geometry(copy) === result}`);
+        copy.parentElement.remove();
+    }
+
+    test(() => {
+        // The scroller keeps its border box, so only its content is laid out again for the new scrollbar.
+        grow("fixed", scroller => scroller.firstElementChild.className = "tall");
+        grow("rtl", scroller => scroller.firstElementChild.className = "tall");
+        grow("flex-item", scroller => scroller.firstElementChild.className = "tall");
+        // A scroller whose size follows its content is laid out again with its ancestors.
+        grow("shrink", scroller => scroller.firstElementChild.className = "tall");
+
+        // A flex container aligns the scroller by its first baseline. The narrower content box wraps the first line,
+        // which moves that baseline, so the flex container is laid out again.
+        grow("baseline", scroller => scroller.insertAdjacentHTML("beforeend", '<div class="tall"></div>'));
+
+        // An inline-block that is a scroll container is aligned by the bottom of its margin box, so the lines of its
+        // content do not move it.
+        const after = document.getElementById("after");
+        const afterTopBefore = after.getBoundingClientRect().top;
+        const inline = document.getElementById("inline");
+        const partialBefore = internals.partialLayoutCount();
+        const fullBefore = internals.fullLayoutCount();
+        inline.textContent += " x y z".repeat(30);
+        const afterTop = after.getBoundingClientRect().top;
+        println(`inline: partial=${internals.partialLayoutCount() - partialBefore} full=${internals.fullLayoutCount() - fullBefore}`);
+        const copy = freshCopy(inline);
+        const copyAfter = copy.parentElement.querySelector("span");
+        println(`inline: after moved=${afterTop !== afterTopBefore} matches a fresh layout: ${afterTop - inline.getBoundingClientRect().top === copyAfter.getBoundingClientRect().top - copy.getBoundingClientRect().top} ${geometry(inline) === geometry(copy)}`);
+        copy.parentElement.remove();
+    });
+</script>

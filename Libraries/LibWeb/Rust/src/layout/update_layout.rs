@@ -120,6 +120,9 @@ pub struct FfiLayoutUpdateDocumentFacts {
     pub document_in_quirks_mode: bool,
     pub viewport_inline_size_raw: i32,
     pub viewport_block_size_raw: i32,
+    /// How thick a scrollbar is, and a thin one, in CSS pixels at the page's zoom.
+    pub scrollbar_thickness_raw: i32,
+    pub thin_scrollbar_thickness_raw: i32,
     /// The document's style node, which a layout tree build walks from.
     pub document_style_node: u32,
     /// The document holds list owners whose item counters went stale without changing what they
@@ -306,6 +309,26 @@ fn host_layout_is_up_to_date(host: &DocumentHost, read: &BegunRead, facts: &FfiL
     read_arena(host, read, *facts, |arena, facts| layout_is_up_to_date(arena, &facts))
 }
 
+/// Decides again which `overflow: auto` scrollbars the boxes whose overflow changed since the last
+/// layout show, where a rendering preparation waits to settle that overflow. The first pass of a
+/// layout update first lets go of the scrollbars the update before it kept. Answers whether any
+/// changed, which leaves their boxes to lay out again.
+fn auto_scrollbars_changed_without_layout(host: &DocumentHost, read: &BegunRead, unfreezes: bool) -> bool {
+    if host
+        .known_arena_facts()
+        .is_some_and(|facts| !facts.rendering_preparation_pending)
+    {
+        return false;
+    }
+    host.run(read, true, |state| {
+        let arena = state.arena_mut();
+        if unfreezes {
+            arena.unfreeze_auto_scrollbars();
+        }
+        arena.update_auto_scrollbars_from_overflow()
+    })
+}
+
 const ORDINARY_STABILIZATION_ROUND_LIMIT: u64 = 8;
 
 /// One round of a layout update past its style, which the host sends its document's render state: the layout tree
@@ -323,6 +346,9 @@ pub(crate) struct LayoutRoundJob {
     /// that may lay out partially reads.
     container_query_evaluation_is_pending: bool,
     container_length_bases: super::layout_pass::ContainerLengthBasesQuery,
+    /// Whether the round is the first of a layout update, which lets go of the `overflow: auto`
+    /// scrollbars the update before it kept.
+    unfreezes_auto_scrollbars: bool,
 }
 
 /// Which layout a round lays its tree out with.
@@ -503,6 +529,7 @@ impl ClockRound {
             layout: RoundLayout::PartialIfPlanned,
             container_query_evaluation_is_pending: false,
             container_length_bases: self.container_length_bases,
+            unfreezes_auto_scrollbars: true,
         }
         .run(state);
         // A box the build gave an image has none until the host attaches it.
@@ -563,6 +590,9 @@ impl LayoutRoundJob {
 
     fn run_with(mut self, state: &mut ArenaHandle, work: &OwedHostWork) -> LayoutRoundAnswer {
         let facts = self.facts;
+        if self.unfreezes_auto_scrollbars {
+            state.arena().unfreeze_auto_scrollbars();
+        }
         let mut answer = LayoutRoundAnswer {
             build: None,
             work: HostWorkDue::default(),
@@ -576,8 +606,13 @@ impl LayoutRoundJob {
             container_length_bases: self.container_length_bases,
             viewport_inline_size_raw: facts.viewport_inline_size_raw,
             viewport_block_size_raw: facts.viewport_block_size_raw,
+            scrollbar_thicknesses: super::scrollbars::ScrollbarThicknesses {
+                auto: super::CssPixels::from_raw(facts.scrollbar_thickness_raw),
+                thin: super::CssPixels::from_raw(facts.thin_scrollbar_thickness_raw),
+            },
             document_in_quirks_mode: facts.document_in_quirks_mode,
         };
+        state.arena().note_scrollbar_thicknesses(stage.scrollbar_thicknesses);
         // The round cannot call the host, which hears of the boxes nodes gain and lose once it is over.
         state.arena().queue_box_presence();
         if self
@@ -630,6 +665,7 @@ impl LayoutRoundJob {
                 }
                 state.arena().note_partial_layout();
                 answer.end = LayoutRoundEnd::PartialLayout;
+                Self::lay_out_again_for_auto_scrollbars(state, work, stage, facts, partial_relayout_facts, &mut answer);
                 return answer;
             }
         }
@@ -666,7 +702,62 @@ impl LayoutRoundJob {
         );
         answer.commits.push(commit);
         state.arena().note_full_layout();
+        Self::lay_out_again_for_auto_scrollbars(state, work, stage, facts, partial_relayout_facts, &mut answer);
         answer
+    }
+
+    /// Lays the document out again while the `overflow: auto` scrollbars it was laid out with differ
+    /// from the ones its overflow asks for, a few times at most. A layout is always followed by the
+    /// scrollbars it was laid out with, so the last one is consistent whether or not they settled.
+    /// A partial layout that left work for its ancestors, as a scroll container that moved its
+    /// baselines does, is followed by a full one.
+    fn lay_out_again_for_auto_scrollbars(
+        state: &mut ArenaHandle,
+        work: &OwedHostWork,
+        stage: LayoutStageFacts,
+        facts: FfiLayoutUpdateDocumentFacts,
+        partial_relayout_facts: FfiPartialRelayoutHostFacts,
+        answer: &mut LayoutRoundAnswer,
+    ) {
+        const MAX_SCROLLBAR_RELAYOUTS: usize = 3;
+        let layout_is_owed = |arena: &LayoutNodeArena| {
+            arena.has_partial_relayout_boundary_roots() || arena.node_needs_layout_update(arena.layout_root())
+        };
+        for _ in 0..MAX_SCROLLBAR_RELAYOUTS {
+            if !layout_is_owed(state.arena()) && !state.arena().update_auto_scrollbars_from_overflow() {
+                return;
+            }
+            let arena = state.arena();
+            let layout_root = arena.layout_root();
+            if arena.partial_relayout_may_be_attempted(
+                layout_root,
+                arena.partial_relayout_boundary_roots.borrow().roots(),
+                partial_relayout_facts,
+            ) {
+                let boundaries = arena.take_partial_relayout_boundary_roots();
+                if let Some(planned) = arena.plan_partial_relayout(layout_root, &boundaries, &[], false) {
+                    sync_enrolled_content_for_layout(state.arena_mut());
+                    for boundary in planned {
+                        answer.commits.push(lay_out_boundary(state, boundary, stage));
+                    }
+                    state.arena().note_partial_layout();
+                    if !layout_is_owed(state.arena()) {
+                        continue;
+                    }
+                }
+            }
+            drop(state.arena().take_partial_relayout_boundary_roots());
+            let commit = lay_out_root(
+                state,
+                work,
+                layout_root,
+                stage,
+                facts.should_collect_devtools_layout_data,
+            );
+            answer.commits.push(commit);
+            state.arena().note_full_layout();
+            answer.end = LayoutRoundEnd::FullLayout;
+        }
     }
 
     /// Runs `build`, records it, and answers how the round goes on from it. A build that shows the value of a
@@ -798,6 +889,7 @@ fn next_round(
             layout: RoundLayout::PartialIfPlanned,
             container_query_evaluation_is_pending: host.container_query_evaluation_is_pending(main_thread, read),
             container_length_bases: layout_host.container_length_bases_query(main_thread),
+            unfreezes_auto_scrollbars: true,
         },
         rebuilds_tree,
     }
@@ -978,6 +1070,11 @@ unsafe fn update_layout(
                     inspection_round_pending && facts.should_collect_devtools_layout_data;
                 inspection_round_pending = false;
                 if host_layout_is_up_to_date(document_host, read, &facts) && !force_devtools_layout_data_collection {
+                    // Overflow can change with no layout at all, as a transform changes, and the
+                    // scrollbars that follow it then need one.
+                    if auto_scrollbars_changed_without_layout(document_host, read, layout_pass == 1) {
+                        continue;
+                    }
                     host.prepare_for_rendering(main_thread, read);
                     return;
                 }
@@ -987,7 +1084,8 @@ unsafe fn update_layout(
                     return;
                 }
 
-                let round = next_round(main_thread, document_host, read, &host, facts, false);
+                let mut round = next_round(main_thread, document_host, read, &host, facts, false);
+                round.job.unfreezes_auto_scrollbars = layout_pass == 1;
                 (round.rebuilds_tree, NextRound::Job(round.job))
             }
         };
@@ -999,7 +1097,9 @@ unsafe fn update_layout(
             unsafe { answer.pay(main_thread, document_host, read) };
             if matches!(answer.end, LayoutRoundEnd::NeedsDocumentStyle) {
                 let facts = host.document_facts(main_thread, read);
-                next = NextRound::Job(next_round(main_thread, document_host, read, &host, facts, true).job);
+                let mut round = next_round(main_thread, document_host, read, &host, facts, true);
+                round.job.unfreezes_auto_scrollbars = false;
+                next = NextRound::Job(round.job);
                 continue;
             }
             let built = matches!(answer.end, LayoutRoundEnd::Built { .. });
@@ -1029,6 +1129,7 @@ unsafe fn update_layout(
                 container_query_evaluation_is_pending: layout == RoundLayout::PartialIfPlanned
                     && host.container_query_evaluation_is_pending(main_thread, read),
                 container_length_bases: layout_host.container_length_bases_query(main_thread),
+                unfreezes_auto_scrollbars: false,
             });
         };
 
@@ -1131,6 +1232,8 @@ mod tests {
             document_in_quirks_mode: false,
             viewport_inline_size_raw: 0,
             viewport_block_size_raw: 0,
+            scrollbar_thickness_raw: 0,
+            thin_scrollbar_thickness_raw: 0,
             document_style_node: 0,
             has_stale_list_item_counters: false,
         }

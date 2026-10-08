@@ -1,0 +1,3 @@
+before: clientWidth=100
+moved out by a transform: clientWidth=88
+moved back: clientWidth=100

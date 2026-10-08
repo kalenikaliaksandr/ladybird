@@ -727,6 +727,14 @@ impl LayoutNodeArena {
             || !self.boxes_needing_scrollable_overflow_recalculation.borrow().is_empty()
     }
 
+    /// What [`Self::take_scrollable_overflow_recalculation_state`] would take, left in place.
+    pub(crate) fn peek_scrollable_overflow_recalculation_state(&self) -> (Vec<NodeSlotId>, bool) {
+        (
+            self.boxes_needing_scrollable_overflow_recalculation.borrow().clone(),
+            self.needs_full_scrollable_overflow_recalculation.get(),
+        )
+    }
+
     pub(crate) fn take_scrollable_overflow_recalculation_state(&self) -> (Vec<NodeSlotId>, bool) {
         (
             std::mem::take(&mut *self.boxes_needing_scrollable_overflow_recalculation.borrow_mut()),

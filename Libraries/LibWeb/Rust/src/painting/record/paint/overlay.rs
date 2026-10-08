@@ -12,20 +12,22 @@ use crate::layout::node_data::{NodeKind, NodeSlotId};
 use crate::painting::chrome_geometry::{
     ChromeGeometry, is_chrome_mirrored, scrollbar_colors_for_paint, scrollbar_is_enlarged,
 };
+use crate::painting::display_list::builder::PendingInlineClip;
 use crate::painting::display_list::commands::VISUAL_VIEWPORT_NODE_INDEX;
 use crate::painting::display_list::recorder::{FillPathParams, PaintStyleOrColor};
 use crate::painting::ffi::ScrollDirection;
 use crate::painting::force_dark::ForceDarkRole;
 use crate::painting::record::PaintRecorder;
+use crate::painting::visual_context::node_values::inner_border_edge_radii;
 use libgfx_rust::{Color, FloatPoint, IntRect, LineStyle, ShouldAntiAlias, WindingRule};
 
 pub(crate) fn paint_overlay<O: Observer>(recorder: &mut PaintRecorder<'_, O>, paintable: NodeSlotId) {
     let is_viewport = recorder.source.node_kind_if_live(paintable) == Some(NodeKind::Viewport);
     let own_scroll_node_index = recorder.data(paintable).own_scroll_node_index;
-    if !is_viewport
-        && own_scroll_node_index == VISUAL_VIEWPORT_NODE_INDEX
-        && !recorder.hit_test_facts(paintable).has_resizer
-    {
+    let has_own_scroll_node = own_scroll_node_index != VISUAL_VIEWPORT_NODE_INDEX;
+    let gutters = crate::painting::paintable_geometry::committed_scrollbar_gutters(recorder.source, paintable);
+    let shows_scrollbars = gutters.has_vertical_scrollbar || gutters.has_horizontal_scrollbar;
+    if !is_viewport && !has_own_scroll_node && !shows_scrollbars && !recorder.hit_test_facts(paintable).has_resizer {
         return;
     }
     let converter = recorder.converter;
@@ -35,7 +37,7 @@ pub(crate) fn paint_overlay<O: Observer>(recorder: &mut PaintRecorder<'_, O>, pa
         !is_viewport && style.misc_reset().scrollbar_width != crate::css::css_enums::scrollbar_width::NONE
     });
 
-    if paints_scrollbars {
+    if paints_scrollbars && let Some(style) = style {
         let (thumb_color, track_color) = scrollbar_colors_for_paint(
             recorder.source,
             paintable,
@@ -46,30 +48,64 @@ pub(crate) fn paint_overlay<O: Observer>(recorder: &mut PaintRecorder<'_, O>, pa
                 .canvas_color
                 .blend(recorder.inputs.uncaptured.background_color),
         );
-        let scroll_node_index = own_scroll_node_index;
-        for direction in [ScrollDirection::Vertical, ScrollDirection::Horizontal] {
-            let enlarged = scrollbar_is_enlarged(recorder.source, paintable, direction);
-            let Some(scrollbar) = chrome_geometry.compute_scrollbar_data(paintable, direction, enlarged, None) else {
-                continue;
-            };
-            recorder.record_compositor_scrollbar_painted_by_display_list(
-                paintable,
-                direction,
-                (thumb_color, track_color),
-                enlarged,
-            );
-            recorder.recorder.paint_scrollbar(
-                scroll_node_index,
-                converter.rounded_device_rect(scrollbar.gutter_rect),
-                converter.rounded_device_rect(scrollbar.thumb_rect),
-                converter.rounded_device_rect(scrollbar.track_rect),
-                scrollbar.thumb_travel_to_scroll_ratio.to_double(),
-                thumb_color,
-                track_color,
-                direction == ScrollDirection::Vertical,
-                ForceDarkRole::Background,
-            );
-        }
+        // The scrollbars lie inside the inner border edge, which rounded corners shape.
+        let inner_border_radii = inner_border_edge_radii(style, recorder.source, paintable);
+        let inline_clips = if inner_border_radii.has_any_radius() {
+            let mut inner_border_rect =
+                crate::painting::paintable_geometry::absolute_border_box_rect(recorder.source, paintable);
+            let border = crate::painting::paintable_geometry::committed_border_box_edges(recorder.source, paintable);
+            inner_border_rect.shrink(border.top, border.right, border.bottom, border.left);
+            vec![PendingInlineClip::intersecting_rounded_rect(
+                converter.rounded_device_rect(inner_border_rect).to_float(),
+                inner_border_radii.corners_unconditionally(&converter),
+            )]
+        } else {
+            Vec::new()
+        };
+        recorder.record_with_inline_clips(&inline_clips, |recorder| {
+            for direction in [ScrollDirection::Vertical, ScrollDirection::Horizontal] {
+                // A box with nothing to scroll has no scroll node of its own, and shows only the tracks of its
+                // scrollbars.
+                if !has_own_scroll_node {
+                    if let Some(track) = chrome_geometry.absolute_scrollbar_rect(paintable, direction) {
+                        recorder.recorder.fill_rect(
+                            converter.rounded_device_rect(track),
+                            track_color,
+                            ForceDarkRole::Background,
+                        );
+                    }
+                    continue;
+                }
+                let enlarged = scrollbar_is_enlarged(recorder.source, paintable, direction);
+                let Some(scrollbar) = chrome_geometry.compute_scrollbar_data(paintable, direction, None) else {
+                    continue;
+                };
+                recorder.record_compositor_scrollbar_painted_by_display_list(
+                    paintable,
+                    direction,
+                    (thumb_color, track_color),
+                    enlarged,
+                );
+                recorder.recorder.paint_scrollbar(
+                    own_scroll_node_index,
+                    converter.rounded_device_rect(scrollbar.gutter_rect),
+                    converter.rounded_device_rect(scrollbar.thumb_rect),
+                    converter.rounded_device_rect(scrollbar.track_rect),
+                    scrollbar.thumb_travel_to_scroll_ratio.to_double(),
+                    thumb_color,
+                    track_color,
+                    direction == ScrollDirection::Vertical,
+                    ForceDarkRole::Background,
+                );
+            }
+            if let Some(corner) = chrome_geometry.absolute_scroll_corner_rect(paintable) {
+                recorder.recorder.fill_rect(
+                    converter.rounded_device_rect(corner),
+                    track_color,
+                    ForceDarkRole::Background,
+                );
+            }
+        });
     }
 
     if let Some(mut css_rect) = chrome_geometry.absolute_resizer_rect(paintable) {

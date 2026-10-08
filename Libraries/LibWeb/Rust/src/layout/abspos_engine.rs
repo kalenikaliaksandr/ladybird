@@ -1136,8 +1136,10 @@ impl AbsposEngine<'_> {
         let used = self.used(node);
         let border_left = style.border_left_width();
         let border_right = style.border_right_width();
-        let padding_left = used.padding_left.get();
-        let padding_right = used.padding_right.get();
+        // NB: The room kept for scrollbars lies between the border and the padding, so the equations
+        //     count it as padding.
+        let padding_left = used.padding_left.get() + used.scrollbar_gutter_left.get();
+        let padding_right = used.padding_right.get() + used.scrollbar_gutter_right.get();
         let computed_left = style.inset_left();
         let computed_right = style.inset_right();
         let mut left = style.inset_left().to_px(containing_block_inline_size);
@@ -1478,8 +1480,8 @@ impl AbsposEngine<'_> {
         let containing_block_inline_size = available_space.inline_size.to_px_or_zero();
         let containing_block_block_size = available_space.block_size.to_px_or_zero();
         let used = self.used(node);
-        let padding_top = used.padding_top.get();
-        let padding_bottom = used.padding_bottom.get();
+        let padding_top = used.padding_top.get() + used.scrollbar_gutter_top.get();
+        let padding_bottom = used.padding_bottom.get() + used.scrollbar_gutter_bottom.get();
         let mut solution = BlockAxisSolution {
             block_size,
             top: resolve_or_auto(style.inset_top(), containing_block_block_size),
