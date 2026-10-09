@@ -330,6 +330,7 @@ fn measure_scrollable_overflow_impl(
     }
 
     let overflow_directions = physical_overflow_directions(layout_arena, box_node);
+    let box_is_scroll_container = style_queries::is_scroll_container(layout_arena, box_node);
 
     // - All line boxes it directly contains.
     if crate::painting::node_painting::has_lines(layout_arena, box_paintable) {
@@ -370,7 +371,7 @@ fn measure_scrollable_overflow_impl(
     }
 
     // - The border boxes of all boxes for which it is the containing block and whose border boxes are positioned not
-    //   wholly in the negative scrollable overflow region,
+    //   wholly within its unreachable scrollable overflow region (if any),
     //   FIXME: accounting for 3D transforms by projecting each box onto the plane of the element that establishes
     //          its 3D rendering context. [CSS3-TRANSFORMS]
     // OPTIMIZATION: The layout tree already indexes direct children. Retain only boxes whose
@@ -458,19 +459,23 @@ fn measure_scrollable_overflow_impl(
         if !child_is_absolutely_positioned {
             child_border_box = clip_in_flow(child_border_box);
         }
-        // NOTE: Only boxes that are not wholly in the unreachable scrollable overflow region contribute.
-        let wholly_in_unreachable_horizontal_axis = if overflow_directions.horizontal_axis_is_positive {
-            child_border_box.right() < paintable_absolute_padding_box.x
-        } else {
-            child_border_box.x > paintable_absolute_padding_box.right()
-        };
-        let wholly_in_unreachable_vertical_axis = if overflow_directions.vertical_axis_is_positive {
-            child_border_box.bottom() < paintable_absolute_padding_box.y
-        } else {
-            child_border_box.y > paintable_absolute_padding_box.bottom()
-        };
-        if wholly_in_unreachable_horizontal_axis || wholly_in_unreachable_vertical_axis {
-            continue;
+        // NOTE: Only boxes that are not wholly in the unreachable scrollable overflow region contribute. Only a scroll
+        //       container has that region. Another box keeps the overflow of such a child, and the clip below trims
+        //       what is on the start side of the box in each axis.
+        if box_is_scroll_container {
+            let wholly_in_unreachable_horizontal_axis = if overflow_directions.horizontal_axis_is_positive {
+                child_border_box.right() < paintable_absolute_padding_box.x
+            } else {
+                child_border_box.x > paintable_absolute_padding_box.right()
+            };
+            let wholly_in_unreachable_vertical_axis = if overflow_directions.vertical_axis_is_positive {
+                child_border_box.bottom() < paintable_absolute_padding_box.y
+            } else {
+                child_border_box.y > paintable_absolute_padding_box.bottom()
+            };
+            if wholly_in_unreachable_horizontal_axis || wholly_in_unreachable_vertical_axis {
+                continue;
+            }
         }
 
         // Border boxes with zero area do not affect the scrollable overflow area.
@@ -555,7 +560,6 @@ fn measure_scrollable_overflow_impl(
     //       except in a few cases--such as when an out-of-flow positioned element, or the visible overflow of a
     //       descendent, has already increased the size of the scrollable overflow rectangle outside the conceptual
     //       “content edge” of the scroll container’s content.
-    let box_is_scroll_container = style_queries::is_scroll_container(layout_arena, box_node);
     in_flow_and_floated_content_bounds = clip_in_flow(in_flow_and_floated_content_bounds);
     if box_is_scroll_container {
         scrollable_overflow_rect.unite(padding_inflated_scrollable_overflow(
