@@ -53,6 +53,7 @@ unsafe extern "C" {
     fn ladybird_utf16_string_unref(raw: usize);
     fn ladybird_utf16_validate(data: *const u16, length: usize) -> bool;
     fn ladybird_utf16_validate_prefix(data: *const u16, length: usize, valid_code_units: *mut usize) -> bool;
+    fn ladybird_utf8_length_from_valid_utf16(data: *const u16, length: usize) -> usize;
     fn ladybird_convert_valid_utf16_to_utf8(data: *const u16, length: usize, output: *mut u8) -> usize;
     fn ladybird_utf16_string_from_utf8(data: *const u8, length: usize) -> usize;
     fn ladybird_utf16_string_to_well_formed(data: *const u16, length: usize) -> usize;
@@ -403,6 +404,25 @@ impl Utf16String {
 pub fn validate_utf16(string: &[u16]) -> bool {
     // SAFETY: The slice remains alive for the duration of the call.
     unsafe { ladybird_utf16_validate(string.as_ptr(), string.len()) }
+}
+
+/// The number of bytes of the UTF-8 encoding of a well-formed UTF-16 string.
+pub fn utf8_length_from_valid_utf16(string: &[u16]) -> usize {
+    // SAFETY: The slice remains alive for the duration of the call.
+    unsafe { ladybird_utf8_length_from_valid_utf16(string.as_ptr(), string.len()) }
+}
+
+/// Writes the UTF-8 encoding of a well-formed UTF-16 string to the start of `output`, and returns its length.
+///
+/// # Safety
+///
+/// `string` must be well-formed UTF-16, and `output` must have room for its UTF-8 encoding, which is
+/// utf8_length_from_valid_utf16(string) bytes.
+pub unsafe fn convert_valid_utf16_to_utf8(string: &[u16], output: &mut [u8]) -> usize {
+    debug_assert!(validate_utf16(string));
+    debug_assert!(output.len() >= utf8_length_from_valid_utf16(string));
+    // SAFETY: The caller guarantees that the string is well-formed and that the output has room for its encoding.
+    unsafe { ladybird_convert_valid_utf16_to_utf8(string.as_ptr(), string.len(), output.as_mut_ptr()) }
 }
 
 pub fn append_utf16_as_utf8_up_to_unpaired_surrogate(output: &mut Vec<u8>, string: &[u16]) -> usize {
