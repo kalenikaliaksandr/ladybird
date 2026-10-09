@@ -858,6 +858,7 @@ version = "0.1.0"
 dependencies = [
  "ak",
  "libjs_abi",
+ "libjs_runtime_macros",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

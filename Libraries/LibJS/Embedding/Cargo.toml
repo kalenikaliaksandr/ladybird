@@ -17,6 +17,7 @@ thread-sanitizer = []
 [dependencies]
 ak = { path = "../../../AK/Rust" }
 libjs_abi = { path = "../ABI" }
+libjs_runtime_macros = { path = "../Rust/macros" }
 
 [build-dependencies]
 libjs_abi = { path = "../ABI" }
