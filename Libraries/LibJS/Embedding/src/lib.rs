@@ -33,3 +33,17 @@ pub mod abi {
 pub mod layout {
     include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 }
+
+pub mod array_buffer;
+pub mod completion;
+pub mod error;
+pub mod gc;
+pub mod host_object;
+pub mod native_function;
+pub mod object;
+pub mod property_key;
+pub mod realm;
+pub mod string;
+pub mod typed_array;
+pub mod value;
+pub mod vm;
