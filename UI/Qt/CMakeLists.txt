@@ -81,6 +81,7 @@ if (APPLE)
         LadybirdAccessibilityElement.mm
         MacWindow.mm
         Menu.mm
+        ScrollerStyleMac.mm
         WebContentViewAccessibility.mm
         WebContentViewMac.mm
     )

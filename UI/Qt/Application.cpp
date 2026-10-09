@@ -24,6 +24,7 @@
 
 #if defined(AK_OS_MACOS)
 #    include <UI/Qt/MacWindow.h>
+#    include <UI/Qt/ScrollerStyleMac.h>
 #endif
 
 #include <QAction>
@@ -558,6 +559,9 @@ Core::EventLoop& Application::create_platform_event_loop()
         qputenv("NO_AT_BRIDGE", "1");
 #endif
         m_application = make<LadybirdQApplication>(arguments());
+#if defined(AK_OS_MACOS)
+        install_preferred_scroller_style_observer();
+#endif
 #if defined(AK_OS_LINUX)
         QGuiApplication::setDesktopFileName(QStringLiteral("org.ladybird.Ladybird"));
 #endif
