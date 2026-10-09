@@ -109,6 +109,9 @@ void Application::create_platform_options(WebView::BrowserOptions& browser_optio
     // Ensure tests are resilient to minor changes to the viewport scrollbar.
     web_content_options.paint_viewport_scrollbars = WebView::PaintViewportScrollbars::No;
 
+    // Ensure layout doesn't depend on the scrollbar style the host is set to.
+    browser_options.forced_scrollbar_style = Web::ScrollbarStyle::Classic;
+
     // Ensure consistent time zone operations across different machine configurations.
     web_content_options.default_time_zone = "UTC"sv;
 

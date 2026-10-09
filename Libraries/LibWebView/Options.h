@@ -11,6 +11,7 @@
 #include <AK/String.h>
 #include <AK/Vector.h>
 #include <LibURL/URL.h>
+#include <LibWebCommon/Page/ScrollbarStyle.h>
 #include <LibWebCommon/WebView/SiteIsolation.h>
 #include <LibWebView/ProcessType.h>
 
@@ -103,6 +104,7 @@ struct BrowserOptions {
     EnableContentBlocker enable_content_blocker { EnableContentBlocker::Yes };
     DisableSandbox disable_sandbox { DisableSandbox::No };
     Vector<ByteString> content_blocker_list_paths {};
+    Optional<Web::ScrollbarStyle> forced_scrollbar_style {};
 };
 
 enum class HTTPDiskCacheMode {

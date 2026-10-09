@@ -235,6 +235,7 @@ private:
     virtual void set_preferred_color_scheme(Web::PageId page_id, Web::CSS::PreferredColorScheme) override;
     virtual void set_preferred_contrast(Web::PageId page_id, Web::CSS::PreferredContrast) override;
     virtual void set_preferred_motion(Web::PageId page_id, Web::CSS::PreferredMotion) override;
+    virtual void set_scrollbar_style(Web::PageId page_id, Web::ScrollbarStyle) override;
     virtual void set_preferred_languages(Web::PageId page_id, Vector<String>) override;
     virtual void set_browsing_behavior(Web::PageId page_id, WebView::BrowsingBehavior) override;
     virtual void set_enable_global_privacy_control(Web::PageId page_id, bool) override;

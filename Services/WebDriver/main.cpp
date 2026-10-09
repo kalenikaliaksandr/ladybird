@@ -64,6 +64,7 @@ static Vector<ByteString> create_arguments(ByteString const& webdriver_endpoint,
         arguments.append(ByteString::formatted("--profile-path={}", profile_path.value()));
     arguments.append("--enable-autoplay"sv);
     arguments.append("--disable-scrollbar-painting"sv);
+    arguments.append("--scrollbar-style=classic"sv);
     if (expose_experimental_interfaces)
         arguments.append("--expose-experimental-interfaces"sv);
     if (expose_internals_object)

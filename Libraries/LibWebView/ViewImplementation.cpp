@@ -996,6 +996,13 @@ void ViewImplementation::set_preferred_motion(Web::CSS::PreferredMotion motion)
     });
 }
 
+void ViewImplementation::set_scrollbar_style(Web::ScrollbarStyle style)
+{
+    traversable().for_each_hosting_page([&](WebContentPage& page) {
+        page.async_set_scrollbar_style(style);
+    });
+}
+
 static void send_browsing_behavior(WebContentPage const& page)
 {
     page.async_set_browsing_behavior(Application::settings().browsing_behavior());
@@ -1036,6 +1043,7 @@ void ViewImplementation::send_preferences_to_page(WebContentPage& page)
     page.async_set_preferred_color_scheme(m_preferred_color_scheme);
     page.async_set_preferred_contrast(m_preferred_contrast);
     page.async_set_preferred_motion(m_preferred_motion);
+    page.async_set_scrollbar_style(Application::the().scrollbar_style());
     page.async_set_preferred_languages(Application::settings().languages());
     page.async_set_zoom_level(m_zoom_level);
     if (m_user_style_sheet.has_value())

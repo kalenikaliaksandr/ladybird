@@ -46,6 +46,7 @@
 #include <LibWebCommon/Page/NavigationTarget.h>
 #include <LibWebCommon/Page/PageId.h>
 #include <LibWebCommon/Page/PendingDialog.h>
+#include <LibWebCommon/Page/ScrollbarStyle.h>
 #include <LibWebCommon/Page/ViewportIsFullscreen.h>
 #include <LibWebCommon/ReferrerPolicy/ReferrerPolicy.h>
 #include <LibWebCommon/StorageAPI/StorageEndpoint.h>
@@ -242,6 +243,7 @@ endpoint WebContentServer routed by Web::PageId page_id
     set_preferred_color_scheme(Web::PageId page_id, Web::CSS::PreferredColorScheme color_scheme) =|
     set_preferred_contrast(Web::PageId page_id, Web::CSS::PreferredContrast contrast) =|
     set_preferred_motion(Web::PageId page_id, Web::CSS::PreferredMotion motion) =|
+    set_scrollbar_style(Web::PageId page_id, Web::ScrollbarStyle style) =|
     set_preferred_languages(Web::PageId page_id, Vector<String> preferred_languages) =|
     set_browsing_behavior(Web::PageId page_id, WebView::BrowsingBehavior browsing_behavior) =|
     set_enable_global_privacy_control(Web::PageId page_id, bool enable) =|

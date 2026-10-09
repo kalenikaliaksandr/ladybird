@@ -450,6 +450,11 @@ void PageClient::set_preferred_motion(Web::CSS::PreferredMotion motion)
     page().invalidate_style_for_preference_change();
 }
 
+void PageClient::set_scrollbar_style(Web::ScrollbarStyle style)
+{
+    page().set_scrollbar_style(style);
+}
+
 void PageClient::set_is_scripting_enabled(bool is_scripting_enabled)
 {
     page().set_is_scripting_enabled(is_scripting_enabled);

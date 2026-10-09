@@ -339,6 +339,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     bool force_fontconfig = false;
     bool collect_garbage_on_every_allocation = false;
     bool disable_scrollbar_painting = false;
+    Optional<Web::ScrollbarStyle> forced_scrollbar_style;
     bool file_scheme_urls_have_tuple_origins = false;
 
     Core::ArgsParser args_parser;
@@ -443,6 +444,23 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
     args_parser.add_option(force_fontconfig, "Force using fontconfig for font loading", "force-fontconfig");
     args_parser.add_option(collect_garbage_on_every_allocation, "Collect garbage after every JS heap allocation", "collect-garbage-on-every-allocation", 'g');
     args_parser.add_option(disable_scrollbar_painting, "Don't paint horizontal or vertical scrollbars on the main viewport", "disable-scrollbar-painting");
+    args_parser.add_option(Core::ArgsParser::Option {
+        .argument_mode = Core::ArgsParser::OptionArgumentMode::Required,
+        .help_string = "Set the scrollbar style. Style may be 'system' (default), 'classic', or 'overlay'.",
+        .long_name = "scrollbar-style",
+        .value_name = "style",
+        .accept_value = [&](StringView value) {
+            if (value == "system"sv)
+                forced_scrollbar_style = {};
+            else if (value == "classic"sv)
+                forced_scrollbar_style = Web::ScrollbarStyle::Classic;
+            else if (value == "overlay"sv)
+                forced_scrollbar_style = Web::ScrollbarStyle::Overlay;
+            else
+                return false;
+            return true;
+        },
+    });
     args_parser.add_option(dns_server_address, "Set the DNS server address", "dns-server", 0, "host|address");
     args_parser.add_option(dns_server_port, "Set the DNS server port", "dns-port", 0, "port (default: 53 or 853 if --dot)");
     args_parser.add_option(use_dns_over_tls, "Use DNS over TLS", "dot");
@@ -624,6 +642,7 @@ ErrorOr<void> Application::initialize(Main::Arguments const& arguments)
         .devtools_port = devtools_port,
         .enable_content_blocker = disable_content_blocker ? EnableContentBlocker::No : EnableContentBlocker::Yes,
         .disable_sandbox = disable_sandbox ? DisableSandbox::Yes : DisableSandbox::No,
+        .forced_scrollbar_style = forced_scrollbar_style,
     };
     rebuild_content_blocker_list_paths();
 
@@ -2765,6 +2784,24 @@ void Application::initialize_actions()
 }
 
 // The options every page hosting the tab's document runs with.
+Web::ScrollbarStyle Application::scrollbar_style() const
+{
+    return m_browser_options.forced_scrollbar_style.value_or(m_system_scrollbar_style);
+}
+
+void Application::set_system_scrollbar_style(Web::ScrollbarStyle style)
+{
+    auto previous_style = scrollbar_style();
+    m_system_scrollbar_style = style;
+    if (scrollbar_style() == previous_style)
+        return;
+
+    ViewImplementation::for_each_view([&](ViewImplementation& view) {
+        view.set_scrollbar_style(scrollbar_style());
+        return IterationDecision::Continue;
+    });
+}
+
 void Application::apply_view_options(Badge<ViewImplementation>, ViewImplementation& view, WebContentPage& page)
 {
     view.set_preferred_color_scheme(m_color_scheme);

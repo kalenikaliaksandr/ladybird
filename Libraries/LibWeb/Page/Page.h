@@ -88,6 +88,7 @@
 #include <LibWebCommon/Page/PageId.h>
 #include <LibWebCommon/Page/PendingDialog.h>
 #include <LibWebCommon/Page/QueuedInputEvent.h>
+#include <LibWebCommon/Page/ScrollbarStyle.h>
 #include <LibWebCommon/Page/ViewportIsFullscreen.h>
 #include <LibWebCommon/PixelUnits.h>
 #include <LibWebCommon/StorageAPI/StorageEndpoint.h>
@@ -182,6 +183,9 @@ public:
     DevicePixelRect enclosing_device_rect(CSSPixelRect) const;
     DevicePixelRect rounded_device_rect(CSSPixelRect) const;
     ChromeMetrics chrome_metrics() const;
+
+    ScrollbarStyle scrollbar_style() const { return m_scrollbar_style; }
+    void set_scrollbar_style(ScrollbarStyle style) { m_scrollbar_style = style; }
 
     EventResult handle_mouseup(HTML::LocalNavigable& root, DevicePixelPoint, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers, Optional<RemoteInputEventTarget>* remote_target);
     EventResult handle_mousedown(HTML::LocalNavigable& root, DevicePixelPoint, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers, int click_count, Optional<Web::ScrollbarDraggedByCompositor> const&, Optional<RemoteInputEventTarget>* remote_target);
@@ -459,6 +463,8 @@ private:
         Optional<UniqueNodeID> node_id;
     };
     Queue<ScreenshotTask> m_screenshot_tasks;
+
+    ScrollbarStyle m_scrollbar_style { ScrollbarStyle::Classic };
 
     bool m_is_scripting_enabled { true };
     bool m_should_block_pop_ups { true };

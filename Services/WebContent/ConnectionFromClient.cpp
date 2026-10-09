@@ -3132,6 +3132,12 @@ void ConnectionFromClient::set_preferred_motion(Web::PageId page_id, Web::CSS::P
         page->set_preferred_motion(motion);
 }
 
+void ConnectionFromClient::set_scrollbar_style(Web::PageId page_id, Web::ScrollbarStyle style)
+{
+    if (auto page = this->page(page_id); page.has_value())
+        page->set_scrollbar_style(style);
+}
+
 void ConnectionFromClient::set_preferred_languages(Web::PageId, Vector<String> preferred_languages)
 {
     // FIXME: Whenever the user agent needs to make the navigator.languages attribute of a Window or WorkerGlobalScope

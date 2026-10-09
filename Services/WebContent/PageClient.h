@@ -87,6 +87,7 @@ public:
     void set_preferred_color_scheme(Web::CSS::PreferredColorScheme);
     void set_preferred_contrast(Web::CSS::PreferredContrast);
     void set_preferred_motion(Web::CSS::PreferredMotion);
+    void set_scrollbar_style(Web::ScrollbarStyle);
     virtual void set_has_focus(bool) override;
     void set_window_handle(Utf16String);
     void run_webdriver_user_prompt_handling(u64 request_id);

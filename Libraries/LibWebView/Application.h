@@ -41,6 +41,7 @@
 #include <LibWebCommon/HTML/VisibilityState.h>
 #include <LibWebCommon/Page/InputEvent.h>
 #include <LibWebCommon/Page/PageId.h>
+#include <LibWebCommon/Page/ScrollbarStyle.h>
 #include <LibWebView/BlobURLStore.h>
 #include <LibWebView/BookmarkStore.h>
 #include <LibWebView/BrowserProcess.h>
@@ -107,6 +108,9 @@ public:
 
     bool claim_cpu_profiler(ProcessType);
     void set_cpu_profiler_process(Core::Process, OwnPtr<Core::File> control_socket);
+
+    Web::ScrollbarStyle scrollbar_style() const;
+    void set_system_scrollbar_style(Web::ScrollbarStyle);
 
     virtual Optional<String> system_font_family() const { return {}; }
     virtual Optional<String> ui_font_family() const { return {}; }
@@ -638,6 +642,8 @@ private:
 
     RefPtr<Menu> m_motion_menu;
     Web::CSS::PreferredMotion m_motion { Web::CSS::PreferredMotion::Auto };
+
+    Web::ScrollbarStyle m_system_scrollbar_style { Web::ScrollbarStyle::Classic };
 
     RefPtr<Action> m_toggle_vertical_tabs_expanded_action;
 
