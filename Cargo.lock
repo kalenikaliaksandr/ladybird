@@ -853,6 +853,16 @@ name = "libjs_abi"
 version = "0.1.0"
 
 [[package]]
+name = "libjs_embedding"
+version = "0.1.0"
+dependencies = [
+ "libjs_abi",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "libjs_jit"
 version = "0.1.0"
 dependencies = [

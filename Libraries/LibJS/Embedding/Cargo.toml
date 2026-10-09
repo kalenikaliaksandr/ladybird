@@ -1,0 +1,24 @@
+[package]
+name = "libjs_embedding"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# Defines every function of LibJS that the crate declares as one that must never run, for the test binaries
+# that do not link LibJS.
+test-stubs = []
+thread-sanitizer = []
+
+# After changing dependencies, regenerate the Flatpak sources:
+#   python3 Meta/CMake/flatpak/generate-cargo-sources.py
+[build-dependencies]
+libjs_abi = { path = "../ABI" }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "visit-mut"] }
+
+[lints]
+workspace = true

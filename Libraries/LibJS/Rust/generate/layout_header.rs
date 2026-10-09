@@ -60,6 +60,12 @@ const PREAMBLE: &str = "\
 #include <LibJS/HostObjectABI.h>
 ";
 
+const RUST_CONSTANTS_PREAMBLE: &str = "\
+// Generated from the layout module of libjs_rust -- DO NOT EDIT
+//
+// The offsets, sizes and constants of LibJS/Embedding/Layout.h.
+";
+
 /// The start of the header's C++ section, which checks the layout module's mirror of LibJS/HostObjectABI.h against
 /// that header.
 const HOST_OBJECT_ABI_CHECKS_PREAMBLE: &str = "\
@@ -95,9 +101,15 @@ constexpr bool has_exactly_fields = initializes_from_initializers<Aggregate>(std
 
 ";
 
+#[allow(
+    dead_code,
+    reason = "each build script that includes this module reads only some of the fields"
+)]
 pub struct LayoutHeader {
     pub text: String,
     pub static_assertions: String,
+    /// The same definitions as Rust constants, for an embedder written in Rust.
+    pub rust_constants: String,
 }
 
 struct HeaderWriter {
@@ -105,6 +117,7 @@ struct HeaderWriter {
     defined_names: HashSet<String>,
     host_object_abi_checks: String,
     static_assertions: String,
+    rust_constants: String,
 }
 
 impl HeaderWriter {
@@ -114,6 +127,7 @@ impl HeaderWriter {
             defined_names: HashSet::new(),
             host_object_abi_checks: String::new(),
             static_assertions: STATIC_ASSERTIONS_PREAMBLE.to_string(),
+            rust_constants: RUST_CONSTANTS_PREAMBLE.to_string(),
         }
     }
 
@@ -127,6 +141,7 @@ impl HeaderWriter {
             "JS_LAYOUT_{name} is defined twice"
         );
         let _ = writeln!(self.definitions, "#define JS_LAYOUT_{name} {value}");
+        let _ = writeln!(self.rust_constants, "pub const JS_LAYOUT_{name}: usize = {value};");
     }
 
     fn define_hex(&mut self, name: &str, value: u64) {
@@ -168,6 +183,7 @@ impl HeaderWriter {
         LayoutHeader {
             text,
             static_assertions: self.static_assertions,
+            rust_constants: self.rust_constants,
         }
     }
 }

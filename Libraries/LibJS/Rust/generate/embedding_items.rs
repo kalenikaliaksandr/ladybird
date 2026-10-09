@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! Reads the functions that the embedding ABI exports from the crate's sources, which build.rs writes the export lists
-//! of the LibJS library from.
+//! Reads the items of the embedding ABI from the crate's sources: the functions it exports, and the C types and
+//! constants their signatures can name. build.rs writes the export lists of the LibJS library from them, and the build
+//! script of the libjs_embedding crate writes the Rust declarations of the ABI from them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,13 +14,27 @@ use std::path::{Path, PathBuf};
 pub struct EmbeddingItems {
     /// Every exported js_* function, in a stable order.
     pub functions: Vec<syn::ItemFn>,
+    /// Every struct, enum, union and type alias, which can be more than one per name under different cfgs.
+    pub types: Vec<syn::Item>,
+    /// The names that opaque_c_types! declares.
+    pub opaque_types: Vec<syn::Ident>,
+    /// Every public constant whose name starts with JS_.
+    pub constants: Vec<syn::ItemConst>,
 }
 
-/// The sources the functions come from.
+/// The files outside src/embedding whose types and constants the ABI names.
+const OTHER_SOURCES: &[&str] = &[
+    "src/layout/host_class.rs",
+    "src/layout/host_object.rs",
+    "src/gc/capi.rs",
+];
+
+/// The sources the items come from, which a build script reruns on.
 pub fn sources(crate_directory: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::new();
     collect_rust_files(&crate_directory.join("src/embedding"), &mut sources);
     sources.sort();
+    sources.extend(OTHER_SOURCES.iter().map(|source| crate_directory.join(source)));
     sources
 }
 
@@ -36,16 +51,41 @@ fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
 }
 
 pub fn read(crate_directory: &Path) -> EmbeddingItems {
-    let mut items = EmbeddingItems { functions: Vec::new() };
+    let mut items = EmbeddingItems {
+        functions: Vec::new(),
+        types: Vec::new(),
+        opaque_types: Vec::new(),
+        constants: Vec::new(),
+    };
     for source in sources(crate_directory) {
         let text = fs::read_to_string(&source).unwrap_or_else(|error| panic!("read {}: {error}", source.display()));
         let file = syn::parse_file(&text).unwrap_or_else(|error| panic!("parse {}: {error}", source.display()));
+        let is_embedding_source = source.starts_with(crate_directory.join("src/embedding"));
         for item in file.items {
-            if let syn::Item::Fn(function) = item
-                && !is_test_only(&function.attrs)
-                && is_exported_function(&function)
-            {
-                items.functions.push(function);
+            if is_test_only(item_attributes(&item)) {
+                continue;
+            }
+            match item {
+                syn::Item::Fn(function) if is_embedding_source && is_exported_function(&function) => {
+                    items.functions.push(function);
+                }
+                syn::Item::Struct(_) | syn::Item::Enum(_) | syn::Item::Union(_) | syn::Item::Type(_) => {
+                    items.types.push(item);
+                }
+                syn::Item::Const(constant)
+                    if matches!(constant.vis, syn::Visibility::Public(_))
+                        && constant.ident.to_string().starts_with("JS_") =>
+                {
+                    items.constants.push(constant);
+                }
+                syn::Item::Macro(invocation) if invocation.mac.path.is_ident("opaque_c_types") => {
+                    let names = invocation
+                        .mac
+                        .parse_body_with(syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated)
+                        .unwrap_or_else(|error| panic!("parse opaque_c_types! in {}: {error}", source.display()));
+                    items.opaque_types.extend(names);
+                }
+                _ => {}
             }
         }
     }
@@ -63,6 +103,19 @@ impl EmbeddingItems {
         names.sort();
         names.dedup();
         names
+    }
+}
+
+fn item_attributes(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Fn(item) => &item.attrs,
+        syn::Item::Struct(item) => &item.attrs,
+        syn::Item::Enum(item) => &item.attrs,
+        syn::Item::Union(item) => &item.attrs,
+        syn::Item::Type(item) => &item.attrs,
+        syn::Item::Const(item) => &item.attrs,
+        syn::Item::Mod(item) => &item.attrs,
+        _ => &[],
     }
 }
 
