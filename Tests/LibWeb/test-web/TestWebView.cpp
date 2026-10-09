@@ -51,6 +51,12 @@ void TestWebView::reset_geolocation_emulated_position()
     geolocation_settings_changed();
 }
 
+// internals.setScrollbarStyle() changes the style of the page, so a test that sets it would otherwise hand it to the next.
+void TestWebView::reset_scrollbar_style()
+{
+    set_scrollbar_style(WebView::Application::the().scrollbar_style());
+}
+
 NonnullRefPtr<Core::Promise<Empty>> TestWebView::reset_session_history()
 {
     return WebView::ViewImplementation::reset_session_history_for_testing();

@@ -99,6 +99,7 @@ enum class RootNodeComposed {
     X(SVGImageElementFetchTheDocument)                \
     X(SVGResourceElementAttributeChange)              \
     X(SVGViewBoxChange)                               \
+    X(ScrollbarStyleChange)                           \
     X(StyleChange)
 
 enum class SetNeedsLayoutReason {

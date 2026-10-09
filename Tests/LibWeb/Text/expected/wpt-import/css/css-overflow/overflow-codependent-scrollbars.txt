@@ -1,0 +1,6 @@
+Harness status: OK
+
+Found 1 tests
+
+1 Pass
+Pass	appearance of one scrollbar caused the other scrollbar to appear.

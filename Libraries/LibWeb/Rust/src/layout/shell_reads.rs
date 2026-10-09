@@ -273,7 +273,15 @@ pub unsafe extern "C" fn layout_row_bound_committed_content_size(
         if !rows.paintable_row_is_populated(row) {
             return false;
         }
-        *size = crate::painting::paintable_geometry::committed_content_size(rows, row);
+        let content_size = crate::painting::paintable_geometry::committed_content_size(rows, row);
+        *size = match rows.node_style_if_live(row) {
+            Some(style) => crate::layout::scrollbars::content_size_for_container_queries(
+                style,
+                crate::painting::paintable_geometry::committed_scrollbar_gutters(rows, row),
+                content_size,
+            ),
+            None => content_size,
+        };
         true
     })
 }

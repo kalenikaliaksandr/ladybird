@@ -41,7 +41,8 @@
         println(`scrollHeight-before=${scrollHeightBefore}`);
         println(`scrollHeight-after=${scroller.scrollHeight}`);
         println(`partial-layouts=${partialDelta} full-layouts=${fullDelta}`);
+        // The second partial layout is the scroller's own, for the scrollbar it now shows.
         println(scrollHeightBefore === 100 && scroller.scrollHeight === 190
-            && partialDelta === 1 && fullDelta === 0 ? "PASS" : "FAIL");
+            && partialDelta === 2 && fullDelta === 0 ? "PASS" : "FAIL");
     });
 </script>

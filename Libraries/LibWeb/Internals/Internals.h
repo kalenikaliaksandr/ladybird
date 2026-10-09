@@ -277,6 +277,7 @@ public:
     void update_style();
     void set_user_style(Utf16String const& source);
     void set_preferred_color_scheme(Utf16String const& color_scheme);
+    WebIDL::ExceptionOr<void> set_scrollbar_style(Utf16String const& style);
     void set_page_focus(bool has_focus);
     void set_system_visibility_state(Utf16String const& state);
     void set_hidden_document_timer_wake_up_interval(double milliseconds);

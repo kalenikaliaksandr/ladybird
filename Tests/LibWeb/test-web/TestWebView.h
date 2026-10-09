@@ -26,6 +26,7 @@ public:
     void reset_force_dark();
     void reset_line_box_borders();
     void reset_geolocation_emulated_position();
+    void reset_scrollbar_style();
     NonnullRefPtr<Core::Promise<Empty>> reset_session_history();
     pid_t web_content_pid() const;
 

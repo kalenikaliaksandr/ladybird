@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<style>
+    .auto {
+        width: 100px;
+        height: 100px;
+        overflow: auto;
+    }
+</style>
+<div id="short" class="auto"><div style="height: 50px"></div></div>
+<div id="tall" class="auto"><div style="height: 200px"></div></div>
+<div id="wide" class="auto"><div style="width: 200px; height: 10px"></div></div>
+<div id="wide-and-tall" class="auto"><div style="width: 200px; height: 200px"></div></div>
+<div id="tall-text" class="auto">
+    Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna
+    aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
+</div>
+<div id="overflows-only-without-scrollbar" style="width: 100px; height: 95px; overflow-y: auto">
+    <div style="width: 100%; aspect-ratio: 1"></div>
+</div>
+<div style="display: flex">
+    <div id="flex-item" style="height: 50px; overflow-y: auto"><div style="width: 80px; height: 100px"></div></div>
+</div>
+<div id="inline-block" style="display: inline-block; height: 50px; overflow-y: auto">
+    <div style="width: 80px; height: 100px"></div>
+</div>
+<script src="../include.js"></script>
+<script>
+    function dump(element) {
+        println(
+            `${element.id}: offset=${element.offsetWidth}x${element.offsetHeight} ` +
+                `client=${element.clientWidth}x${element.clientHeight} ` +
+                `scroll=${element.scrollWidth}x${element.scrollHeight}`
+        );
+    }
+
+    test(() => {
+        for (const element of document.querySelectorAll("[id]:not(#out)"))
+            dump(element);
+
+        println("Growing the short box's content:");
+        const shortBox = document.getElementById("short");
+        shortBox.firstElementChild.style.height = "200px";
+        dump(shortBox);
+
+        println("Shrinking it again:");
+        shortBox.firstElementChild.style.height = "50px";
+        dump(shortBox);
+    });
+</script>

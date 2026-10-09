@@ -1,0 +1,12 @@
+short: offset=100x100 client=100x100 scroll=100x100
+tall: offset=100x100 client=88x100 scroll=88x200
+wide: offset=100x100 client=100x88 scroll=200x88
+wide-and-tall: offset=100x100 client=88x88 scroll=200x200
+tall-text: offset=100x100 client=88x88 scroll=97x448
+overflows-only-without-scrollbar: offset=100x95 client=88x95 scroll=88x95
+flex-item: offset=92x50 client=80x50 scroll=80x100
+inline-block: offset=92x50 client=80x50 scroll=80x100
+Growing the short box's content:
+short: offset=100x100 client=88x100 scroll=88x200
+Shrinking it again:
+short: offset=100x100 client=100x100 scroll=100x100

@@ -1,0 +1,15 @@
+scroll: offset=110x110 client=96x96 clientLeft=1 clientTop=1
+scroll-border-box: offset=100x100 client=86x86 clientLeft=1 clientTop=1
+hidden: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+hidden-stable: offset=110x110 client=96x108 clientLeft=1 clientTop=1
+auto-stable-both-edges: offset=110x110 client=84x108 clientLeft=13 clientTop=1
+thin: offset=110x110 client=100x100 clientLeft=1 clientTop=1
+none: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+scroll-y: offset=110x110 client=96x108 clientLeft=1 clientTop=1
+scroll-y-rtl: offset=110x110 client=96x108 clientLeft=13 clientTop=1
+auto-width: offset=300x14 client=286x0 clientLeft=1 clientTop=1
+inline-block: offset=62x10 client=50x10 clientLeft=0 clientTop=0
+float: offset=62x10 client=50x10 clientLeft=0 clientTop=0
+flex-item: offset=62x10 client=50x10 clientLeft=0 clientTop=0
+grid-item: offset=62x10 client=50x10 clientLeft=0 clientTop=0
+abspos: offset=62x10 client=50x10 clientLeft=0 clientTop=0

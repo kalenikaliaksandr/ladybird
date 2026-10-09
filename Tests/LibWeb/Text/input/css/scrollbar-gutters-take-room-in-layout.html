@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<style>
+    .box {
+        width: 100px;
+        height: 100px;
+        border: 1px solid black;
+        padding: 4px;
+    }
+    .content {
+        width: 50px;
+        height: 10px;
+    }
+</style>
+<div id="scroll" class="box" style="overflow: scroll"></div>
+<div id="scroll-border-box" class="box" style="overflow: scroll; box-sizing: border-box"></div>
+<div id="hidden" class="box" style="overflow: hidden"></div>
+<div id="hidden-stable" class="box" style="overflow: hidden; scrollbar-gutter: stable"></div>
+<div id="auto-stable-both-edges" class="box" style="overflow: auto; scrollbar-gutter: stable both-edges"></div>
+<div id="thin" class="box" style="overflow: scroll; scrollbar-width: thin"></div>
+<div id="none" class="box" style="overflow: scroll; scrollbar-width: none"></div>
+<div id="scroll-y" class="box" style="overflow-y: scroll"></div>
+<div id="scroll-y-rtl" class="box" style="overflow-y: scroll; direction: rtl"></div>
+<div style="width: 300px"><div id="auto-width" style="overflow: scroll; border: 1px solid black"></div></div>
+<div id="inline-block" style="display: inline-block; overflow-y: scroll"><div class="content"></div></div>
+<div id="float" style="float: left; overflow-y: scroll"><div class="content"></div></div>
+<div style="clear: both"></div>
+<div style="display: flex; width: 300px">
+    <div id="flex-item" style="overflow-y: scroll"><div class="content"></div></div>
+</div>
+<div style="display: grid; grid-template-columns: max-content; width: 300px">
+    <div id="grid-item" style="overflow-y: scroll"><div class="content"></div></div>
+</div>
+<div style="position: relative; width: 300px; height: 50px">
+    <div id="abspos" style="position: absolute; overflow-y: scroll"><div class="content"></div></div>
+</div>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        for (const element of document.querySelectorAll("[id]:not(#out)")) {
+            println(
+                `${element.id}: offset=${element.offsetWidth}x${element.offsetHeight} ` +
+                    `client=${element.clientWidth}x${element.clientHeight} ` +
+                    `clientLeft=${element.clientLeft} clientTop=${element.clientTop}`
+            );
+        }
+    });
+</script>

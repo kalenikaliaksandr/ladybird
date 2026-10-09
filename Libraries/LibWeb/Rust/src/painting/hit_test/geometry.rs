@@ -28,7 +28,7 @@ pub(crate) fn block_container_margin_rect(rows: &impl PaintRead, block_container
     }
     let absolute = paintable_geometry::absolute_rect(rows, block_container);
     let margin = paintable_geometry::committed_margin(rows, block_container);
-    let border = paintable_geometry::committed_border(rows, block_container);
+    let border = paintable_geometry::committed_border_and_gutter_edges(rows, block_container);
     let padding = paintable_geometry::committed_padding(rows, block_container);
     let content_size = paintable_geometry::committed_content_size(rows, block_container);
     let top = margin.top + border.top + padding.top;

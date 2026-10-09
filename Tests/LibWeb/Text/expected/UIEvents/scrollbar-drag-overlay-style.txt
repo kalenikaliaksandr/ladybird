@@ -1,0 +1,4 @@
+clientWidth: 150
+scrolled by the drag: true
+the content under the scrollbar got the mousedown: false
+the content beside the scrollbar got the mousedown: true

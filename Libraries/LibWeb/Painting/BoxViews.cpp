@@ -127,6 +127,7 @@ BoxModelMetrics box_model(Layout::Node const& node)
         .padding = pixel_box_from_ffi(metrics.padding),
         .border = pixel_box_from_ffi(metrics.border),
         .inset = pixel_box_from_ffi(metrics.inset),
+        .scrollbar_gutter = pixel_box_from_ffi(metrics.scrollbar_gutter),
     };
 }
 

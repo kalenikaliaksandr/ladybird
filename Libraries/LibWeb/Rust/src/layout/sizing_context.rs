@@ -142,31 +142,47 @@ impl<'pass> SizingContext<'pass> {
         depends_on_block_size.then_some(block_size)
     }
 
-    fn content_block_size_from_aspect_ratio(&self, node: Node, content_inline_size: CssPixels) -> CssPixels {
+    /// The edges of `node` that lie between its content box and the box its aspect ratio sizes: the
+    /// room kept for scrollbars, which a size property includes, and for border-box sizing the
+    /// border and padding too. In left, right, top, bottom order.
+    fn aspect_ratio_box_edges(&self, node: Node) -> [CssPixels; 4] {
         let style = self.style(node);
         let used = self.used(node);
+        let gutters = used.scrollbar_gutters();
+        if style.box_sizing_for_aspect_ratio() != box_sizing::BORDER_BOX {
+            return [gutters.left, gutters.right, gutters.top, gutters.bottom];
+        }
+        [
+            style.border_left_width() + gutters.left + used.padding_left.get(),
+            style.border_right_width() + gutters.right + used.padding_right.get(),
+            style.border_top_width() + gutters.top + used.padding_top.get(),
+            style.border_bottom_width() + gutters.bottom + used.padding_bottom.get(),
+        ]
+    }
+
+    fn content_block_size_from_aspect_ratio(&self, node: Node, content_inline_size: CssPixels) -> CssPixels {
+        let [left, right, top, bottom] = self.aspect_ratio_box_edges(node);
         formatting_context::content_block_size_from_aspect_ratio_values(
             content_inline_size,
             self.facts(node).preferred_aspect_ratio().unwrap(),
-            style.box_sizing_for_aspect_ratio() == box_sizing::BORDER_BOX,
-            style.border_left_width() + used.padding_left.get(),
-            style.border_right_width() + used.padding_right.get(),
-            style.border_top_width() + used.padding_top.get(),
-            style.border_bottom_width() + used.padding_bottom.get(),
+            true,
+            left,
+            right,
+            top,
+            bottom,
         )
     }
 
     fn content_inline_size_from_aspect_ratio(&self, node: Node, content_block_size: CssPixels) -> CssPixels {
-        let style = self.style(node);
-        let used = self.used(node);
+        let [left, right, top, bottom] = self.aspect_ratio_box_edges(node);
         formatting_context::content_inline_size_from_aspect_ratio_values(
             content_block_size,
             self.facts(node).preferred_aspect_ratio().unwrap(),
-            style.box_sizing_for_aspect_ratio() == box_sizing::BORDER_BOX,
-            style.border_left_width() + used.padding_left.get(),
-            style.border_right_width() + used.padding_right.get(),
-            style.border_top_width() + used.padding_top.get(),
-            style.border_bottom_width() + used.padding_bottom.get(),
+            true,
+            left,
+            right,
+            top,
+            bottom,
         )
     }
 
@@ -1763,6 +1779,9 @@ impl<'pass> SizingContext<'pass> {
     ) -> AtomicInlineContribution {
         let style = self.style(node);
         let basis = available_space.inline_size.to_px_or_zero();
+        // NB: A line only adds up the edges of an atomic inline, so the room kept for scrollbars,
+        //     which lies between the border and the padding, counts as padding here.
+        let gutters = self.callbacks.scrollbar_gutters(node);
         AtomicInlineContribution {
             content_inline_size: self
                 .calculate_atomic_root_content_inline_size(node, available_space, constraints, None)
@@ -1774,8 +1793,8 @@ impl<'pass> SizingContext<'pass> {
             ),
             margin_start: style.margin_left().to_px(basis),
             border_start: style.border_left_width(),
-            padding_start: style.padding_left().to_px(basis),
-            padding_end: style.padding_right().to_px(basis),
+            padding_start: style.padding_left().to_px(basis) + gutters.left,
+            padding_end: style.padding_right().to_px(basis) + gutters.right,
             border_end: style.border_right_width(),
             margin_end: style.margin_right().to_px(basis),
         }
@@ -1837,10 +1856,8 @@ impl<'pass> SizingContext<'pass> {
         available.to_px_or_zero()
             - used.margin_top.get()
             - used.margin_bottom.get()
-            - used.padding_top.get()
-            - used.padding_bottom.get()
-            - used.border_top.get()
-            - used.border_bottom.get()
+            - used.border_box_top(false)
+            - used.border_box_bottom(false)
     }
 
     fn intrinsic_block_cache_get(
@@ -2871,11 +2888,11 @@ impl<'pass> SizingContext<'pass> {
         if preferred_size.is_min_content() {
             return self.calculate_min_content_inline_size(node, constraints);
         }
-        let value = preferred_size.to_px(basis);
+        let mut value = preferred_size.to_px(basis);
         let style = self.style(node);
         if style.box_sizing() == box_sizing::BORDER_BOX {
             let used = self.used(node);
-            return formatting_context::subtract_border_box_adjustment(
+            value = formatting_context::subtract_border_box_adjustment(
                 value,
                 style.border_left_width(),
                 used.padding_left.get(),
@@ -2883,7 +2900,8 @@ impl<'pass> SizingContext<'pass> {
                 used.padding_right.get(),
             );
         }
-        value
+        // A size property includes the room kept for scrollbars, so the content box is what remains of it.
+        (value - self.callbacks.scrollbar_gutters(node).horizontal_sum()).max(CssPixels::default())
     }
 
     pub(crate) fn calculate_inner_block_size(
@@ -2937,11 +2955,11 @@ impl<'pass> SizingContext<'pass> {
                 basis = constraints.block_basis();
             }
         }
-        let value = preferred_size.to_px(basis);
+        let mut value = preferred_size.to_px(basis);
         let style = self.style(node);
         if style.box_sizing() == box_sizing::BORDER_BOX {
             let used = self.used(node);
-            return formatting_context::subtract_border_box_adjustment(
+            value = formatting_context::subtract_border_box_adjustment(
                 value,
                 style.border_top_width(),
                 used.padding_top.get(),
@@ -2949,7 +2967,7 @@ impl<'pass> SizingContext<'pass> {
                 used.padding_bottom.get(),
             );
         }
-        value
+        (value - self.callbacks.scrollbar_gutters(node).vertical_sum()).max(CssPixels::default())
     }
 
     pub(crate) fn calculate_inner_size_for_property(

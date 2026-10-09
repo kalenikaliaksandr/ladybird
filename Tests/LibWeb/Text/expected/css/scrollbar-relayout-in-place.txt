@@ -1,0 +1,17 @@
+fixed before: client=200x100 offset=204x104 child-left=2 child-width=200
+fixed after: client=188x100 offset=204x104 child-left=2 child-width=188 partial=1 full=1
+fixed matches a fresh layout: true
+rtl before: client=200x100 offset=204x104 child-left=2 child-width=200
+rtl after: client=188x100 offset=204x104 child-left=14 child-width=188 partial=1 full=1
+rtl matches a fresh layout: true
+flex-item before: client=200x100 offset=204x104 child-left=2 child-width=200
+flex-item after: client=188x100 offset=204x104 child-left=2 child-width=188 partial=1 full=1
+flex-item matches a fresh layout: true
+shrink before: client=150x100 offset=154x104 child-left=2 child-width=150
+shrink after: client=150x100 offset=166x104 child-left=2 child-width=150 partial=0 full=2
+shrink matches a fresh layout: true
+baseline before: client=200x100 offset=204x104 child-left=2 child-width=150 sibling-top=46
+baseline after: client=188x100 offset=204x104 child-left=2 child-width=150 sibling-top=-1.203125 partial=1 full=2
+baseline matches a fresh layout: true
+inline: partial=1 full=1
+inline: after moved=false matches a fresh layout: true true

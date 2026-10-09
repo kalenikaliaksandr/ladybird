@@ -1,4 +1,4 @@
-nested.scrollTop after three ticks: 200
+nested.scrollTop after three ticks: 212
 window.scrollY after three ticks: 0
 window.scrollY after a tick elsewhere: 100
-nested.scrollTop after a tick elsewhere: 200
+nested.scrollTop after a tick elsewhere: 212

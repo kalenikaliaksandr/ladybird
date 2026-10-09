@@ -566,6 +566,8 @@ impl<'pass> BlockFormattingContext<'pass> {
         let padding_right = style.padding_right().to_px(available_inline_size);
         let border_left_width = style.border_left_width();
         let border_right_width = style.border_right_width();
+        // CSS 2.2 §10.3.3: The equation also counts the widths of any scrollbars.
+        let scrollbar_gutters = self.used(node).horizontal_scrollbar_gutters();
         {
             let used = self.used(node);
             used.margin_left.set(margin_left);
@@ -628,6 +630,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 + border_right_width
                 + *margin_left
                 + padding_left
+                + scrollbar_gutters
                 + inline_size.unwrap_or_default()
                 + padding_right
                 + *margin_right;
@@ -645,6 +648,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                         + border_right_width
                         + *margin_left
                         + padding_left
+                        + scrollbar_gutters
                         + inline_size.unwrap_or_default()
                         + padding_right
                         + *margin_right;
@@ -796,6 +800,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             used.border_left.set(style.border_left_width());
             used.border_right.set(style.border_right_width());
         }
+        let scrollbar_gutters = self.used(node).horizontal_scrollbar_gutters();
         let sizing = self.sizing();
         let compute = |input: Option<CssPixels>| -> CssPixels {
             if let Some(value) = input {
@@ -812,7 +817,8 @@ impl<'pass> BlockFormattingContext<'pass> {
                     - padding_left
                     - padding_right
                     - style.border_right_width()
-                    - margin_right;
+                    - margin_right
+                    - scrollbar_gutters;
                 // Then the shrink-to-fit inline size is:
                 // min(max(preferred minimum inline size, available inline size), preferred inline size).
                 let preferred = sizing.calculate_max_content_inline_size(node, constraints);

@@ -11,10 +11,10 @@ namespace Web::Painting {
 PixelBox BoxModelMetrics::border_box() const
 {
     return {
-        border.top + padding.top,
-        border.right + padding.right,
-        border.bottom + padding.bottom,
-        border.left + padding.left,
+        border.top + scrollbar_gutter.top + padding.top,
+        border.right + scrollbar_gutter.right + padding.right,
+        border.bottom + scrollbar_gutter.bottom + padding.bottom,
+        border.left + scrollbar_gutter.left + padding.left,
     };
 }
 

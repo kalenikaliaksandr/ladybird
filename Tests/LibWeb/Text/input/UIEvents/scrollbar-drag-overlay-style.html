@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<style>
+    body {
+        margin: 0;
+    }
+    #scroller {
+        width: 150px;
+        height: 100px;
+        overflow-y: scroll;
+    }
+    #content {
+        height: 1000px;
+    }
+</style>
+<div id="scroller"><div id="content"></div></div>
+<script src="../include.js"></script>
+<script>
+    promiseTest(async () => {
+        internals.setScrollbarStyle("overlay");
+        println(`clientWidth: ${scroller.clientWidth}`);
+
+        let contentGotMousedown = false;
+        content.addEventListener("mousedown", () => (contentGotMousedown = true));
+
+        await animationFrame();
+        await animationFrame();
+
+        // The overlay scrollbar sits over the content, at the right edge of the padding box.
+        internals.mouseMove(146, 10);
+        internals.mouseDown(146, 10);
+        internals.mouseMove(146, 60);
+        internals.mouseUp(146, 60);
+        await animationFrame();
+        await animationFrame();
+
+        println(`scrolled by the drag: ${scroller.scrollTop > 0}`);
+        println(`the content under the scrollbar got the mousedown: ${contentGotMousedown}`);
+
+        // Away from the scrollbar, the content is hit as usual.
+        internals.mouseMove(50, 50);
+        internals.mouseDown(50, 50);
+        internals.mouseUp(50, 50);
+        println(`the content beside the scrollbar got the mousedown: ${contentGotMousedown}`);
+    });
+</script>

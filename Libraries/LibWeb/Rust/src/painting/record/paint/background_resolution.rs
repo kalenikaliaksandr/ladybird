@@ -16,8 +16,8 @@ use crate::painting::border_radii::BorderRadii;
 use crate::painting::host::{FfiLayerImageList, RootBackgroundSource};
 use crate::painting::paint_read::PaintRead;
 use crate::painting::paintable_geometry::{
-    absolute_border_box_rect, absolute_padding_box_rect, committed_border_box_edges, committed_padding,
-    committed_uses_collapsing_borders_model,
+    absolute_border_box_rect, absolute_padding_box_rect, committed_border_and_gutter_edges, committed_padding,
+    committed_scrollbar_gutters, committed_uses_collapsing_borders_model,
 };
 use crate::painting::record::PaintRecorder;
 use crate::painting::record::paint::background::{BackgroundBox, background_box_for};
@@ -276,12 +276,15 @@ pub(crate) fn background_paint_source_from_style_and_geometry(
     // from its own style, and the border box is where its background belongs: "the border-box of the table includes
     // half of the table border", and a cell's box likewise includes its half of the collapsed borders.
     // https://www.w3.org/TR/CSS22/tables.html#collapsing-borders
-    let background_rect =
-        if style_queries::has_css_borders(style) || committed_uses_collapsing_borders_model(layout_arena, slot) {
-            absolute_border_box_rect(layout_arena, slot)
-        } else {
-            absolute_padding_box_rect(layout_arena, slot)
-        };
+    // The background also lies under the scrollbars, which are inside the border box.
+    let background_rect = if style_queries::has_css_borders(style)
+        || committed_uses_collapsing_borders_model(layout_arena, slot)
+        || committed_scrollbar_gutters(layout_arena, slot) != Default::default()
+    {
+        absolute_border_box_rect(layout_arena, slot)
+    } else {
+        absolute_padding_box_rect(layout_arena, slot)
+    };
     Some(BackgroundPaintSource {
         layers_style_if_live: Some(style),
         layer_image_facts_owner: slot,
@@ -491,8 +494,8 @@ fn resolve_layers<'a, O: Observer>(
     };
     let padding = committed_padding(recorder.source, paintable);
     // The padding box and content box are inset from the border box by the border widths that the border box
-    // includes: half of each collapsed border in the collapsing borders model.
-    let border = committed_border_box_edges(recorder.source, paintable);
+    // includes, half of each collapsed border in the collapsing borders model, and by the room kept for scrollbars.
+    let border = committed_border_and_gutter_edges(recorder.source, paintable);
     let color_box = background_box_for(background_color_clip, border_box, padding, border);
     let layer_may_be_painted =
         |layer: &ComputedLayer<'_>| matches!(layer_type, LayerType::Mask) || layer.image.is_some();

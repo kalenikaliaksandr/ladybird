@@ -1,0 +1,2 @@
+classic: layouts=2 clientWidth=88
+overlay: layouts=1 clientWidth=100

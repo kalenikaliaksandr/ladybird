@@ -200,6 +200,89 @@ impl LayoutNodeArena {
         )
     }
 
+    /// Whether the scroll container `node` keeps its border box when only its scrollbars change, so
+    /// that it can lay out its content again in place. The size and the position of such a box follow
+    /// from its style and from outside it alone, and its content box has the room for the gutters of
+    /// the scrollbars it shows now.
+    pub(crate) fn node_keeps_border_box_for_scrollbars(&self, node: NodeSlotId) -> bool {
+        let data = self.data(node);
+        let kind = data.kind.get();
+        if !matches!(kind, NodeKind::BlockContainer | NodeKind::Box) {
+            return false;
+        }
+        let disqualifying_flags = [
+            NodeFlag::Anonymous,
+            NodeFlag::IsDocumentElement,
+            NodeFlag::IsBody,
+            NodeFlag::IsReplacedElement,
+            NodeFlag::IsHtmlInputElement,
+            NodeFlag::UsesButtonLayout,
+            NodeFlag::IsGridItem,
+            NodeFlag::IsMissingTableCell,
+            NodeFlag::NeedsOwnGeometryUpdate,
+            // An abspos descendant whose containing block is outside the box is laid out outside it.
+            NodeFlag::AbsposDescendantEscapes,
+        ];
+        if disqualifying_flags.iter().any(|&flag| node_facts::has_flag(data, flag)) {
+            return false;
+        }
+        if !self.paintable_rows().paintable_row_is_populated(node)
+            && !self.commit_splice_position_is_derivable_from_layout_ancestors(node)
+        {
+            return false;
+        }
+        let Some(style) = node_facts::node_style_view(data) else {
+            return false;
+        };
+        let display = style.display();
+        if style.is_absolutely_positioned()
+            || style.writing_mode() != crate::layout::writing_mode::HORIZONTAL_TB
+            || display.is_internal_table()
+            || display.is_table_inside()
+            || !node_facts::kind_and_style_make_scroll_container(kind, Some(style))
+        {
+            return false;
+        }
+        let sizes_are_fixed = style.width().is_length()
+            && style.height().is_length()
+            && [style.min_width(), style.min_height()]
+                .iter()
+                .all(|size| size.is_auto() || size.is_length())
+            && [style.max_width(), style.max_height()]
+                .iter()
+                .all(|size| size.is_none() || size.is_length());
+        if !sizes_are_fixed {
+            return false;
+        }
+        // A flex item that is a scroll container has no content-based minimum size, so its flex basis
+        // gives its size unless that basis comes from its content.
+        if node_facts::has_flag(data, NodeFlag::IsFlexItem) {
+            let flex_basis = style.flex_basis();
+            if style.flex_basis_is_content() || !(flex_basis.is_auto() || flex_basis.is_length()) {
+                return false;
+            }
+        }
+
+        // A content box that was empty may have been too small for the gutters, which then grew the
+        // border box.
+        let Some(link) = self.committed_fragment_link(data) else {
+            return false;
+        };
+        let fragment = &link.fragment;
+        let committed = fragment.scrollbar_gutters();
+        let gutters = crate::layout::scrollbars::scrollbar_gutters(
+            kind,
+            style,
+            self.row_auto_scrollbars(node),
+            self.noted_scrollbar_thicknesses(),
+        );
+        let zero = crate::layout::CssPixels::default();
+        fragment.content_inline_size > zero
+            && fragment.content_block_size > zero
+            && fragment.content_inline_size + committed.horizontal_sum() - gutters.horizontal_sum() >= zero
+            && fragment.content_block_size + committed.vertical_sum() - gutters.vertical_sum() >= zero
+    }
+
     pub(crate) fn register_partial_relayout_boundary_root(&self, node: NodeSlotId) {
         let kind = self.data(node).kind.get();
         assert!(node_facts::kind_is_box(kind));
@@ -212,6 +295,10 @@ impl LayoutNodeArena {
         if roots.registered.insert(node) {
             roots.roots.push(node);
         }
+    }
+
+    fn is_registered_partial_relayout_root(&self, node: NodeSlotId) -> bool {
+        self.partial_relayout_boundary_roots.borrow().registered.contains(&node)
     }
 
     /// Counts stale entries for freed nodes on purpose: the C++ side treats a nonempty
@@ -385,7 +472,11 @@ impl LayoutNodeArena {
             if parent.is_invalid() {
                 continue;
             }
-            if !self.node_is_partial_relayout_boundary(slot) || !collect_boundary(slot, false) {
+            // A scroll container whose scrollbars changed lays out only its content again when it
+            // keeps its border box.
+            let qualifies =
+                self.node_is_partial_relayout_boundary(slot) || self.node_keeps_border_box_for_scrollbars(slot);
+            if !qualifies || !collect_boundary(slot, false) {
                 return None;
             }
         }
@@ -704,9 +795,12 @@ impl LayoutNodeArena {
 
         if node_was_already_dirty && propagate_through_ancestors {
             // A dirty node normally implies dirty ancestors, but the walk that marked a partial
-            // relayout boundary stopped there and left its ancestors clean, so a through-ancestors
-            // invalidation arriving on the boundary itself must still walk and mark them.
-            if !node_is_box || !self.node_is_partial_relayout_boundary(node) {
+            // relayout boundary stopped there and left its ancestors clean, and so did a box marked
+            // to be laid out alone. A through-ancestors invalidation arriving on such a box itself
+            // must still walk and mark them.
+            if !node_is_box
+                || !(self.node_is_partial_relayout_boundary(node) || self.is_registered_partial_relayout_root(node))
+            {
                 return;
             }
         }

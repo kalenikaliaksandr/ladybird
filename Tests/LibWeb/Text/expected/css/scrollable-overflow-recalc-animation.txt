@@ -1,4 +1,4 @@
-initial scrollHeight: 100
+initial scrollHeight: 88
 scrollHeight at animation end: 550
-scrollHeight at animation start: 100
+scrollHeight at animation start: 88
 relayouts performed: 0

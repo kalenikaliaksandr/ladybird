@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<style>
+    #box {
+        width: 100px;
+        height: 100px;
+        overflow: auto;
+    }
+</style>
+<div id="box"><div id="content" style="height: 50px"></div></div>
+<script src="../include.js"></script>
+<script>
+    // A classic scrollbar that appears takes room, so the box is laid out again around it. An overlay one takes none,
+    // so the layout that made the content overflow is the only one.
+    function layoutsWhenContentStartsToOverflow(style) {
+        internals.setScrollbarStyle(style);
+        content.style.height = "50px";
+        box.offsetWidth;
+
+        const layoutsBefore = internals.partialLayoutCount() + internals.fullLayoutCount();
+        content.style.height = "200px";
+        const clientWidth = box.clientWidth;
+        const layouts = internals.partialLayoutCount() + internals.fullLayoutCount() - layoutsBefore;
+        println(`${style}: layouts=${layouts} clientWidth=${clientWidth}`);
+    }
+
+    test(() => {
+        layoutsWhenContentStartsToOverflow("classic");
+        layoutsWhenContentStartsToOverflow("overlay");
+    });
+</script>

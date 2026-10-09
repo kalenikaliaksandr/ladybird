@@ -1,0 +1,13 @@
+scroll: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+scroll-border-box: offset=100x100 client=98x98 clientLeft=1 clientTop=1
+hidden-stable: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+auto-stable-both-edges: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+auto-overflowing: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+thin: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+none: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+scroll-y-rtl: offset=110x110 client=108x108 clientLeft=1 clientTop=1
+auto-width: offset=300x2 client=298x0 clientLeft=1 clientTop=1
+inline-block: offset=50x10 client=50x10 clientLeft=0 clientTop=0
+root: inner=800x600 client=800x600
+elementFromPoint at the viewport's right edge: HTML
+a layout dump mentions gutters: false

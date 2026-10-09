@@ -2259,6 +2259,17 @@ void Internals::set_preferred_color_scheme(Utf16String const& color_scheme)
     page().invalidate_style_for_preference_change();
 }
 
+WebIDL::ExceptionOr<void> Internals::set_scrollbar_style(Utf16String const& style)
+{
+    if (style == "classic"sv)
+        page().set_scrollbar_style(ScrollbarStyle::Classic);
+    else if (style == "overlay"sv)
+        page().set_scrollbar_style(ScrollbarStyle::Overlay);
+    else
+        return WebIDL::SimpleException { .type = WebIDL::SimpleExceptionType::TypeError, .message = Utf16String::formatted("Unknown scrollbar style: '{}'", style) };
+    return {};
+}
+
 void Internals::set_page_focus(bool has_focus)
 {
     page().client().set_has_focus(has_focus);

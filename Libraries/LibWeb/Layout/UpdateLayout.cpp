@@ -36,6 +36,7 @@ Layout::RustFFI::FfiLayoutUpdateHostCallbacks Document::layout_update_host_callb
             auto navigable = document.navigable();
             bool document_is_active = navigable && navigable->active_document().ptr() == &document;
             auto viewport_rect = document_is_active ? navigable->viewport_rect() : CSSPixelRect {};
+            auto chrome_metrics = document.page().chrome_metrics();
             return {
                 .document_is_active = document_is_active,
                 .document_needs_layout_tree_build = document.needs_layout_tree_update() || document.child_needs_layout_tree_update(),
@@ -44,6 +45,8 @@ Layout::RustFFI::FfiLayoutUpdateHostCallbacks Document::layout_update_host_callb
                 .document_in_quirks_mode = document.in_quirks_mode(),
                 .viewport_inline_size_raw = viewport_rect.width().raw_value(),
                 .viewport_block_size_raw = viewport_rect.height().raw_value(),
+                .scrollbar_thickness_raw = chrome_metrics.scrollbar_gutter_thickness_in_layout().raw_value(),
+                .thin_scrollbar_thickness_raw = chrome_metrics.thin_scrollbar_gutter_thickness_in_layout().raw_value(),
                 .document_style_node = document.style_node_id().value(),
                 .has_stale_list_item_counters = !document.m_list_owners_with_stale_item_counters.is_empty(),
             }; },

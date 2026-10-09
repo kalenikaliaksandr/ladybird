@@ -2370,6 +2370,7 @@ pub(crate) struct LayoutStageFacts {
     pub(crate) container_length_bases: layout_pass::ContainerLengthBasesQuery,
     pub(crate) viewport_inline_size_raw: i32,
     pub(crate) viewport_block_size_raw: i32,
+    pub(crate) scrollbar_thicknesses: super::scrollbars::ScrollbarThicknesses,
     pub(crate) document_in_quirks_mode: bool,
 }
 
@@ -2383,6 +2384,7 @@ struct LayoutStageInput<'a> {
     root: NodeSlotId,
     viewport_inline_size_raw: i32,
     viewport_block_size_raw: i32,
+    scrollbar_thicknesses: super::scrollbars::ScrollbarThicknesses,
     document_in_quirks_mode: bool,
 }
 
@@ -2417,12 +2419,13 @@ impl LayoutStageJob {
             root,
             viewport_inline_size_raw: stage.viewport_inline_size_raw,
             viewport_block_size_raw: stage.viewport_block_size_raw,
+            scrollbar_thicknesses: stage.scrollbar_thicknesses,
             document_in_quirks_mode: stage.document_in_quirks_mode,
         };
-        let output = match kind {
+        let (output, boundary_moved_baselines) = match kind {
             LayoutStageKind::Root {
                 should_collect_devtools_layout_data,
-            } => compute_root_layout(input, should_collect_devtools_layout_data),
+            } => (compute_root_layout(input, should_collect_devtools_layout_data), false),
             LayoutStageKind::Boundary { containing_block } => compute_subtree_layout_fragments(input, containing_block),
         };
         let notifications = commit::commit_replacing(root, state.arena_mut(), &output.0);
@@ -2435,10 +2438,15 @@ impl LayoutStageJob {
             LayoutStageKind::Root { .. } => arena.did_commit_full_layout(root),
             LayoutStageKind::Boundary { .. } => {
                 // Commit reset the subtree's rows, and its new size may affect ancestor scrollable
-                // overflow. Partial relayout roots are SVG viewports or abspos boxes, never SVG
-                // content boxes that would require a new layout instead of an overflow update.
+                // overflow. Partial relayout roots are SVG viewports, abspos boxes or scroll
+                // containers, never SVG content boxes that would require a new layout instead of an
+                // overflow update.
                 debug_assert!(!node_facts::kind_is_svg_box(arena.data(root).kind.get()));
                 arena.schedule_scrollable_overflow_recalculation(root);
+                // The parent can align the boundary by its baselines, so it must be laid out again.
+                if boundary_moved_baselines {
+                    arena.set_needs_layout_update(arena.data(root).parent.get(), true);
+                }
             }
         }
         notifications
@@ -2455,6 +2463,7 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
         root,
         viewport_inline_size_raw,
         viewport_block_size_raw,
+        scrollbar_thicknesses,
         document_in_quirks_mode,
     } = input;
     arena.begin_active_layout_pass();
@@ -2474,10 +2483,21 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
         container_length_bases,
         CssPixels::from_raw(viewport_inline_size_raw),
         CssPixels::from_raw(viewport_block_size_raw),
+        scrollbar_thicknesses,
         document_in_quirks_mode,
     );
-    let viewport_inline_size = CssPixels::from_raw(viewport_inline_size_raw);
-    let viewport_block_size = CssPixels::from_raw(viewport_block_size_raw);
+    // The root element is laid out in what the viewport's scrollbars leave of it.
+    let viewport_gutters = callbacks.scrollbar_gutters(root);
+    let viewport_inline_size =
+        (CssPixels::from_raw(viewport_inline_size_raw) - viewport_gutters.horizontal_sum()).max(CssPixels::default());
+    let viewport_block_size =
+        (CssPixels::from_raw(viewport_block_size_raw) - viewport_gutters.vertical_sum()).max(CssPixels::default());
+
+    // NB: A stable gutter on both edges keeps room at the left of the viewport too.
+    let viewport_content_offset = FfiCssPixelPoint {
+        x: viewport_gutters.left,
+        y: viewport_gutters.top,
+    };
 
     let root_constraints = ContainingBlockConstraints {
         percentage_basis_inline_size: Some(viewport_inline_size),
@@ -2506,7 +2526,7 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
         if !first_child.is_invalid() && NodeFacts::new(&callbacks, first_child).is_svg_svg_box() {
             viewport_used.set_content_inline_size(viewport_inline_size);
             viewport_used.set_content_block_size(viewport_block_size);
-            place_child(&entry_run, root, FfiCssPixelPoint::default(), None);
+            place_child(&entry_run, root, viewport_content_offset, None);
             root_for_layout_used = entry_records.create_used_values(&callbacks, first_child, root_constraints);
             root_for_layout = first_child;
         }
@@ -2535,7 +2555,12 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
             None,
             None,
         );
-        place_child(&entry_run, root_for_layout, FfiCssPixelPoint::default(), None);
+        let offset = if root_for_layout == root {
+            viewport_content_offset
+        } else {
+            FfiCssPixelPoint::default()
+        };
+        place_child(&entry_run, root_for_layout, offset, None);
         finish_entry_pass(
             entry_records,
             &entry_fragments,
@@ -2567,8 +2592,12 @@ fn finish_entry_pass(
 }
 
 /// The partial layout stage: computes the fragments of one partial relayout boundary in place,
-/// without the host, in the containing block the planner found the boundary still has.
-fn compute_subtree_layout_fragments(input: LayoutStageInput<'_>, containing_block: NodeSlotId) -> LayoutStageOutput {
+/// without the host, in the containing block the planner found the boundary still has. Also answers
+/// whether a boundary that kept its border box moved its baselines.
+fn compute_subtree_layout_fragments(
+    input: LayoutStageInput<'_>,
+    containing_block: NodeSlotId,
+) -> (LayoutStageOutput, bool) {
     let LayoutStageInput {
         arena,
         scratch,
@@ -2576,6 +2605,7 @@ fn compute_subtree_layout_fragments(input: LayoutStageInput<'_>, containing_bloc
         root,
         viewport_inline_size_raw,
         viewport_block_size_raw,
+        scrollbar_thicknesses,
         document_in_quirks_mode,
     } = input;
     arena.begin_active_layout_pass();
@@ -2585,6 +2615,7 @@ fn compute_subtree_layout_fragments(input: LayoutStageInput<'_>, containing_bloc
         container_length_bases,
         CssPixels::from_raw(viewport_inline_size_raw),
         CssPixels::from_raw(viewport_block_size_raw),
+        scrollbar_thicknesses,
         document_in_quirks_mode,
     );
     // The boundary can be wider than the rebuilt roots that led to it, and laying it out may
@@ -2593,13 +2624,15 @@ fn compute_subtree_layout_fragments(input: LayoutStageInput<'_>, containing_bloc
     arena.derive_facts_in_subtree(root);
 
     // Abspos boundaries recompute their size and position in their containing block's space.
-    // In-flow SVG boundaries keep their committed geometry and lay out only their contents.
+    // In-flow SVG boundaries and scroll containers keep their committed geometry and lay out only
+    // their contents.
     let root_is_absolutely_positioned = NodeFacts::new(&callbacks, root).is_absolutely_positioned();
     let (entry_root, entry_root_containing_block) = if root_is_absolutely_positioned {
         (containing_block, NodeSlotId::INVALID)
     } else {
         (root, containing_block)
     };
+    let mut moved_baselines = false;
     let pass_fragments = RunRecords::with_unrooted(
         scratch,
         arena,
@@ -2623,17 +2656,23 @@ fn compute_subtree_layout_fragments(input: LayoutStageInput<'_>, containing_bloc
             if root_is_absolutely_positioned {
                 abspos_engine::AbsposEngine::for_run(&entry_run).replay(&entry_run, root);
             } else {
-                layout_subtree_with_frozen_root_geometry(&entry_run);
+                moved_baselines = layout_subtree_with_frozen_root_geometry(&entry_run);
             }
             finish_entry_pass(entry_records, &entry_fragments, &callbacks, false)
         },
     );
-    LayoutStageOutput(pass_fragments)
+    (LayoutStageOutput(pass_fragments), moved_baselines)
 }
 
-fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
+/// Lays out the content of the partial relayout root of `run` again, in the border box it was
+/// committed with. Answers whether the baselines of the root moved, for a root that is not an SVG
+/// viewport.
+fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) -> bool {
     let root = run.box_;
     let callbacks = &run.callbacks;
+    let committed_link = callbacks
+        .committed_fragment_link(root)
+        .expect("partial relayout root must have committed geometry");
     let root_used = run.records.register(
         root,
         used_values::used_values_from_committed_fragment_link(callbacks, root)
@@ -2652,7 +2691,7 @@ fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
     );
 
     let facts = NodeFacts::new(callbacks, root);
-    debug_assert!(facts.is_svg_svg_box());
+    debug_assert!(facts.is_svg_svg_box() || facts.is_scroll_container());
     let fc_type = formatting_context_type_created_by_box(facts)
         .expect("partial relayout root must establish an independent formatting context");
     run_formatting_context(
@@ -2679,8 +2718,24 @@ fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
         None,
         root_used,
         false,
-        None,
+        committed_link.containing_line_box_index,
         root_used.content_offset.get(),
         None,
     );
+    // NB: An SVG viewport derives no baselines from its content, so its content cannot move them.
+    if facts.is_svg_svg_box() {
+        return false;
+    }
+    let baselines = root_used.content_baselines_from_cells();
+    let committed_baselines = committed_link.baselines;
+    // A block container that is a scroll container aligns by the bottom of its margin box where its last baseline is
+    // asked for, so only whether it has one counts. See box_baseline_with_content_baselines().
+    let display = facts.display();
+    let last_baseline_follows_content = display.is_flex_inside() || display.is_grid_inside();
+    baselines.first != committed_baselines.first
+        || if last_baseline_follows_content {
+            baselines.last != committed_baselines.last
+        } else {
+            baselines.last.is_some() != committed_baselines.last.is_some()
+        }
 }

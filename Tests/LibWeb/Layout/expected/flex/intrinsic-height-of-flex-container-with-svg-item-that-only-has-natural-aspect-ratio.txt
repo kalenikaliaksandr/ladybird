@@ -1,8 +1,8 @@
-Viewport <#document> at [0,0] [0+0+0 800 0+0+0] [0+0+0 600 0+0+0] [BFC] children: not-inline overflow: [0,0 800x800]
-  BlockContainer <html> at [0,0] [0+0+0 800 0+0+0] [0+0+0 800 0+0+0] [BFC] children: not-inline
-    Box <body> at [8,8] flex-container(column) [8+0+0 784 0+0+8] [8+0+0 784 0+0+8] [FFC] children: not-inline
-      SVGSVGBox <svg> at [8,8] flex-item [0+0+0 784 0+0+0] [0+0+0 784 0+0+0] viewport-transform=[32.666668 0 0 32.666668 0 0] [SVG] children: not-inline
+Viewport <#document> at [0,0] [0+0+0 788 0+0+0] [0+0+0 600 0+0+0] scrollbar-gutters: [0 12] [0 0] [BFC] children: not-inline overflow: [0,0 788x788]
+  BlockContainer <html> at [0,0] [0+0+0 788 0+0+0] [0+0+0 788 0+0+0] [BFC] children: not-inline
+    Box <body> at [8,8] flex-container(column) [8+0+0 772 0+0+8] [8+0+0 772 0+0+8] [FFC] children: not-inline
+      SVGSVGBox <svg> at [8,8] flex-item [0+0+0 772 0+0+0] [0+0+0 772 0+0+0] viewport-transform=[32.166668 0 0 32.166668 0 0] [SVG] children: not-inline
         SVGGeometryBox <rect> at [0,0] [0+0+0 12 0+0+0] [0+0+0 12 0+0+0] children: not-inline
 
-SC for Viewport<#document> [0,0 800x600] (z-index: auto)
- SC for BlockContainer<HTML> [0,0 800x800] (z-index: auto)
+SC for Viewport<#document> [0,0 788x600] (z-index: auto)
+ SC for BlockContainer<HTML> [0,0 788x788] (z-index: auto)

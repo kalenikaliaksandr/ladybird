@@ -138,7 +138,7 @@ VERIFY_SHARED_FFI_TYPE(Gfx::ScalingMode);
 VERIFY_SHARED_FFI_TYPE(Gfx::InterpolationColorSpace);
 VERIFY_SHARED_FFI_TYPE(Compositing::ClipMode);
 VERIFY_SHARED_FFI_TYPE(ChromeMetrics);
-static_assert(sizeof(ChromeMetrics) == 7 * sizeof(CSSPixels));
+static_assert(sizeof(ChromeMetrics) == 9 * sizeof(CSSPixels));
 static_assert(offsetof(ChromeMetrics, scroll_thumb_min_length) == 0);
 static_assert(offsetof(ChromeMetrics, scroll_thumb_padding_thin) == sizeof(CSSPixels));
 static_assert(offsetof(ChromeMetrics, scroll_thumb_thickness_thin) == 2 * sizeof(CSSPixels));
@@ -146,6 +146,9 @@ static_assert(offsetof(ChromeMetrics, scroll_thumb_thickness) == 3 * sizeof(CSSP
 static_assert(offsetof(ChromeMetrics, scroll_gutter_thickness) == 4 * sizeof(CSSPixels));
 static_assert(offsetof(ChromeMetrics, resize_gripper_size) == 5 * sizeof(CSSPixels));
 static_assert(offsetof(ChromeMetrics, resize_gripper_padding) == 6 * sizeof(CSSPixels));
+static_assert(offsetof(ChromeMetrics, scroll_gutter_thickness_thin) == 7 * sizeof(CSSPixels));
+static_assert(offsetof(ChromeMetrics, scrollbar_style) == 8 * sizeof(CSSPixels));
+static_assert(sizeof(ScrollbarStyle) == 1 && to_underlying(ScrollbarStyle::Classic) == 0 && to_underlying(ScrollbarStyle::Overlay) == 1);
 VERIFY_SHARED_FFI_TYPE(Optional<CSSPixels>);
 VERIFY_SHARED_FFI_TYPE(Optional<CSSPixelRect>);
 VERIFY_SHARED_FFI_TYPE(Optional<Gfx::IntRect>);

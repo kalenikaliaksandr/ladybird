@@ -132,6 +132,7 @@ enum class InvalidateLayoutTreeReason {
     X(DocumentSetDesignMode, false)                 \
     X(DumpDisplayList, false)                       \
     X(ElementCheckVisibility, false)                \
+    X(ElementClientEdges, true)                     \
     X(ElementClientHeight, true)                    \
     X(ElementClientWidth, true)                     \
     X(ElementGetClientRects, true)                  \
@@ -871,6 +872,8 @@ public:
 
     GC::Ref<CSS::VisualViewport> visual_viewport();
     [[nodiscard]] CSSPixelRect viewport_rect() const;
+    // The viewport less the room its scrollbars take, as the last layout left them.
+    [[nodiscard]] CSSPixelSize viewport_size_excluding_scrollbars(Layout::BegunRead const&) const;
 
     void register_viewport_client(ViewportClient&);
     void unregister_viewport_client(ViewportClient&);

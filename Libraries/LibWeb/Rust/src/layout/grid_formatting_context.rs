@@ -2455,18 +2455,16 @@ impl<'pass> GridFormattingContext<'pass> {
         // (potentially negative) margin to the items at those edges.
         // This extra layer of "margin" accumulates through multiple levels of
         // subgrids.
-        //
-        // NB: Scrollbar gutters are not represented in UsedValues yet.
         let used = self.container_used();
         let (start, end) = if axis.is_column() {
             (
-                used.margin_left.get() + used.border_left.get() + used.padding_left.get(),
-                used.padding_right.get() + used.border_right.get() + used.margin_right.get(),
+                used.margin_left.get() + used.border_box_left(false),
+                used.border_box_right(false) + used.margin_right.get(),
             )
         } else {
             (
-                used.margin_top.get() + used.border_top.get() + used.padding_top.get(),
-                used.padding_bottom.get() + used.border_bottom.get() + used.margin_bottom.get(),
+                used.margin_top.get() + used.border_box_top(false),
+                used.border_box_bottom(false) + used.margin_bottom.get(),
             )
         };
         if item.position(axis) == 0 {
@@ -2816,16 +2814,16 @@ impl<'pass> GridFormattingContext<'pass> {
     fn item_margin_box_start(&self, item: GridItem, axis: Axis) -> CssPixels {
         let used = self.used(item);
         axis.select(
-            used.margin_left.get() + used.border_left.get() + used.padding_left.get() + item.extra_margin_left,
-            used.margin_top.get() + used.border_top.get() + used.padding_top.get() + item.extra_margin_top,
+            used.margin_left.get() + used.border_box_left(false) + item.extra_margin_left,
+            used.margin_top.get() + used.border_box_top(false) + item.extra_margin_top,
         )
     }
 
     fn item_margin_box_end(&self, item: GridItem, axis: Axis) -> CssPixels {
         let used = self.used(item);
         axis.select(
-            used.padding_right.get() + used.border_right.get() + used.margin_right.get() + item.extra_margin_right,
-            used.padding_bottom.get() + used.border_bottom.get() + used.margin_bottom.get() + item.extra_margin_bottom,
+            used.border_box_right(false) + used.margin_right.get() + item.extra_margin_right,
+            used.border_box_bottom(false) + used.margin_bottom.get() + item.extra_margin_bottom,
         )
     }
 

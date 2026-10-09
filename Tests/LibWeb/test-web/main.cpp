@@ -1254,6 +1254,7 @@ static ErrorOr<int> run_tests(Core::AnonymousBuffer const& theme, Web::DevicePix
                 view->reset_force_dark();
                 view->reset_line_box_borders();
                 view->reset_geolocation_emulated_position();
+                view->reset_scrollbar_style();
                 view->reset_viewport_size(window_size);
             }
 

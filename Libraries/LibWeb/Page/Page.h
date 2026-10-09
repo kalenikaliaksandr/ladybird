@@ -185,7 +185,7 @@ public:
     ChromeMetrics chrome_metrics() const;
 
     ScrollbarStyle scrollbar_style() const { return m_scrollbar_style; }
-    void set_scrollbar_style(ScrollbarStyle style) { m_scrollbar_style = style; }
+    void set_scrollbar_style(ScrollbarStyle);
 
     EventResult handle_mouseup(HTML::LocalNavigable& root, DevicePixelPoint, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers, Optional<RemoteInputEventTarget>* remote_target);
     EventResult handle_mousedown(HTML::LocalNavigable& root, DevicePixelPoint, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers, int click_count, Optional<Web::ScrollbarDraggedByCompositor> const&, Optional<RemoteInputEventTarget>* remote_target);

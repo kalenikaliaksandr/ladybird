@@ -29,7 +29,7 @@ AccumulatedVisualContext Tree:
       [s1] scroll (Viewport<#document>)
         [s2] scroll (BlockContainer<DIV>#scroller)
   clips:
-    [c0 in s1] clip=[0,0 200x200] (BlockContainer<DIV>#scroller)
+    [c0 in s1] clip=[0,0 188x188] (BlockContainer<DIV>#scroller)
   effects:
     [e0 in s0] effects=[]
 
@@ -38,12 +38,12 @@ CompositorWheelHitTestTarget@s0/e0 target_scroll_node_index=s0 rect=[0,0 800x600
 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,0 800x213]
 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,0 800x200]
 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s2 rect=[0,0 200x200]
-CompositorScrollNode@s1/e0 scroll_node_index=s2 parent_scroll_node_index=s0 scrollport_rect=[0,0 200x200] min_scroll_offset=[0,0] max_scroll_offset=[800,900] is_viewport=false
+CompositorScrollNode@s1/e0 scroll_node_index=s2 parent_scroll_node_index=s0 scrollport_rect=[0,0 188x188] min_scroll_offset=[0,0] max_scroll_offset=[812,912] is_viewport=false
 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[0,0 100x100]
 CompositorBlockingWheelEventRegion@s2/c0/e0 rect=[0,0 100x100]
 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[0,100 1000x1000]
-CompositorScrollbar@s1/e0 scroll_node_index=s2 gutter_rect=[0,0 0x0] thumb_rect=[192,2 6x36] track_rect=[192,0 8x200] expanded_gutter_rect=[188,0 12x200] expanded_thumb_rect=[190,2 8x36] scroll_size=0.17819444444444443 expanded_scroll_size=0.17819444444444443 min_scroll_offset=0 max_scroll_offset=900 thumb_color=rgba(0, 0, 0, 0.5) track_color=rgba(0, 0, 0, 0.098) vertical=true is_painted_by_compositor=false display_list_paints_enlarged_scrollbar=false
+CompositorScrollbar@s1/e0 scroll_node_index=s2 gutter_rect=[0,0 0x0] thumb_rect=[191,2 6x31] track_rect=[188,0 12x188] expanded_gutter_rect=[188,0 12x188] expanded_thumb_rect=[190,2 8x31] scroll_size=0.16728344298245615 expanded_scroll_size=0.16728344298245615 min_scroll_offset=0 max_scroll_offset=912 thumb_color=rgba(0, 0, 0, 0.5) track_color=rgba(0, 0, 0, 0.098) vertical=true is_painted_by_compositor=false display_list_paints_enlarged_scrollbar=false
 PaintScrollBar@s1/e0
-CompositorScrollbar@s1/e0 scroll_node_index=s2 gutter_rect=[0,0 0x0] thumb_rect=[2,192 37x6] track_rect=[0,192 188x8] expanded_gutter_rect=[0,188 188x12] expanded_thumb_rect=[2,190 37x8] scroll_size=0.18400390625 expanded_scroll_size=0.18400390625 min_scroll_offset=0 max_scroll_offset=800 thumb_color=rgba(0, 0, 0, 0.5) track_color=rgba(0, 0, 0, 0.098) vertical=false is_painted_by_compositor=false display_list_paints_enlarged_scrollbar=false
+CompositorScrollbar@s1/e0 scroll_node_index=s2 gutter_rect=[0,0 0x0] thumb_rect=[2,191 35x6] track_rect=[0,188 188x12] expanded_gutter_rect=[0,188 188x12] expanded_thumb_rect=[2,190 35x8] scroll_size=0.18401708743842365 expanded_scroll_size=0.18401708743842365 min_scroll_offset=0 max_scroll_offset=812 thumb_color=rgba(0, 0, 0, 0.5) track_color=rgba(0, 0, 0, 0.098) vertical=false is_painted_by_compositor=false display_list_paints_enlarged_scrollbar=false
 PaintScrollBar@s1/e0
 

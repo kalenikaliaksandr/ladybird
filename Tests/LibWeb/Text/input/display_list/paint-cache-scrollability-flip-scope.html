@@ -146,7 +146,7 @@ displayListTest({
                       BlockContainer<BODY>#body/scroll-metadata COPY
                       BlockContainer<BODY>#body/background COPY
                       BlockContainer<BODY>#body/border COPY
-                      Box<DIV>#row.row/descendants(background-and-borders) REPLAN
+                      Box<DIV>#row.row/descendants(background-and-borders) ASSEMBLE
                         Box<DIV>#row.row/background/hit-test COPY
                         Box<DIV>#row.row/scroll-metadata COPY
                         Box<DIV>#row.row/background COPY
@@ -160,7 +160,7 @@ displayListTest({
                     BlockContainer<BODY>#body/descendants(foreground) ASSEMBLE
                       BlockContainer<BODY>#body/foreground/hit-test COPY
                       BlockContainer<BODY>#body/foreground COPY
-                      Box<DIV>#row.row/descendants(foreground) REPLAN
+                      Box<DIV>#row.row/descendants(foreground) ASSEMBLE
                         Box<DIV>#row.row/foreground/hit-test COPY
                         Box<DIV>#row.row/foreground COPY
                         BlockContainer<DIV>#row-0.box/descendants(foreground) COPY
@@ -179,7 +179,7 @@ displayListTest({
                       BlockContainer<DIV>#outer.box/scroll-metadata RECORD
                       BlockContainer<DIV>#outer.box/background SKIP
                       BlockContainer<DIV>#outer.box/border RECORD
-                      BlockContainer<DIV>#inner/descendants(background-and-borders) ASSEMBLE
+                      BlockContainer<DIV>#inner/descendants(background-and-borders) REPLAN
                         BlockContainer<DIV>#inner/background/hit-test RECORD
                         BlockContainer<DIV>#inner/scroll-metadata RECORD
                         BlockContainer<DIV>#inner/background SKIP
@@ -194,15 +194,15 @@ displayListTest({
                         BlockContainer<DIV>#filler.tall/scroll-metadata RECORD
                         BlockContainer<DIV>#filler.tall/background SKIP
                         BlockContainer<DIV>#filler.tall/border SKIP
-                      BlockContainer<DIV>#inner/descendants(floats) ASSEMBLE
+                      BlockContainer<DIV>#inner/descendants(floats) REPLAN
                         BlockContainer<DIV>#inner-content.tall/descendants(floats) ASSEMBLE
                       BlockContainer<DIV>#filler.tall/descendants(floats) ASSEMBLE
-                      BlockContainer<DIV>#inner/descendants(inline-background-and-borders) ASSEMBLE
+                      BlockContainer<DIV>#inner/descendants(inline-background-and-borders) REPLAN
                         BlockContainer<DIV>#inner-content.tall/descendants(inline-background-and-borders) ASSEMBLE
                       BlockContainer<DIV>#filler.tall/descendants(inline-background-and-borders) ASSEMBLE
                       BlockContainer<DIV>#outer.box/foreground/hit-test RECORD (empty)
                       BlockContainer<DIV>#outer.box/foreground RECORD (empty)
-                      BlockContainer<DIV>#inner/descendants(foreground) ASSEMBLE
+                      BlockContainer<DIV>#inner/descendants(foreground) REPLAN
                         BlockContainer<DIV>#inner/foreground/hit-test RECORD (empty)
                         BlockContainer<DIV>#inner/foreground RECORD (empty)
                         BlockContainer<DIV>#inner-content.tall/descendants(foreground) ASSEMBLE

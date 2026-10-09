@@ -3027,6 +3027,20 @@ CSSPixelRect Element::bounding_client_rect_assuming_layout_clean(Layout::BegunRe
     return Painting::bounding_client_rect(*layout_node, Painting::rect_to_viewport_transform(document(), visual_context_tree));
 }
 
+// The room the element keeps for scrollbars between its border and its padding edge. Only a scroll container keeps
+// any, so the others need no layout to answer.
+static Painting::PixelBox scrollbar_gutter_for_client_edges(Element const& element)
+{
+    if (!element.is_scroll_container())
+        return {};
+    Layout::ForcedReadScope read { element.document() };
+    const_cast<Document&>(element.document()).update_layout_if_needed_for_node(element, UpdateLayoutReason::ElementClientEdges);
+    auto const* layout_node = element.layout_node(read);
+    if (!layout_node || !Painting::has_committed_box(*layout_node))
+        return {};
+    return Painting::box_model(*layout_node).scrollbar_gutter;
+}
+
 int Element::client_top() const
 {
     // NOTE: We only need style information here, not layout metrics.
@@ -3046,9 +3060,10 @@ int Element::client_top() const
     //    plus the height of any scrollbar rendered between the top padding edge and the top border edge,
     //    ignoring any transforms that apply to the element and its ancestors.
     auto const& border_top = style_group<CSS::ComputedValues::BorderValues>()->border_top_value();
-    if (border_top.line_style == CSS::LineStyle::None || border_top.line_style == CSS::LineStyle::Hidden)
-        return 0;
-    return border_top.width.to_int();
+    CSSPixels border_top_width = 0;
+    if (border_top.line_style != CSS::LineStyle::None && border_top.line_style != CSS::LineStyle::Hidden)
+        border_top_width = border_top.width;
+    return (border_top_width + scrollbar_gutter_for_client_edges(*this).top).to_int();
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-element-clientleft
@@ -3071,9 +3086,10 @@ int Element::client_left() const
     //    plus the width of any scrollbar rendered between the left padding edge and the left border edge,
     //    ignoring any transforms that apply to the element and its ancestors.
     auto const& border_left = style_group<CSS::ComputedValues::BorderValues>()->border_left_value();
-    if (border_left.line_style == CSS::LineStyle::None || border_left.line_style == CSS::LineStyle::Hidden)
-        return 0;
-    return border_left.width.to_int();
+    CSSPixels border_left_width = 0;
+    if (border_left.line_style != CSS::LineStyle::None && border_left.line_style != CSS::LineStyle::Hidden)
+        border_left_width = border_left.width;
+    return (border_left_width + scrollbar_gutter_for_client_edges(*this).left).to_int();
 }
 
 // https://drafts.csswg.org/cssom-view/#dom-element-clientwidth
@@ -3086,7 +3102,9 @@ int Element::client_width() const
     //    return the viewport width excluding the size of a rendered scroll bar (if any).
     if ((is<HTML::HTMLHtmlElement>(*this) && !document().in_quirks_mode())
         || (is<HTML::HTMLBodyElement>(*this) && document().in_quirks_mode())) {
-        return document().viewport_rect().width().to_int();
+        Layout::ForcedReadScope read { document() };
+        const_cast<Document&>(document()).update_layout(UpdateLayoutReason::ElementClientWidth);
+        return document().viewport_size_excluding_scrollbars(read).width().to_int();
     }
 
     // NOTE: Ensure that layout is up-to-date before looking at metrics.
@@ -3113,7 +3131,9 @@ int Element::client_height() const
     //    return the viewport height excluding the size of a rendered scroll bar (if any).
     if ((is<HTML::HTMLHtmlElement>(*this) && !document().in_quirks_mode())
         || (is<HTML::HTMLBodyElement>(*this) && document().in_quirks_mode())) {
-        return document().viewport_rect().height().to_int();
+        Layout::ForcedReadScope read { document() };
+        const_cast<Document&>(document()).update_layout(UpdateLayoutReason::ElementClientHeight);
+        return document().viewport_size_excluding_scrollbars(read).height().to_int();
     }
 
     // NOTE: Ensure that layout is up-to-date before looking at metrics.
@@ -3825,7 +3845,7 @@ int Element::scroll_width()
 
     // 3. Let viewport width be the width of the viewport excluding the width of the scroll bar, if any,
     //    or zero if there is no viewport.
-    auto viewport_width = document.viewport_rect().width().to_int();
+    auto viewport_width = document.viewport_size_excluding_scrollbars(read).width().to_int();
     auto viewport_scrolling_area_width = viewport_scrollable_overflow_rect->width().to_int();
 
     // 4. If the element is the root element and document is not in quirks mode
@@ -3870,7 +3890,7 @@ int Element::scroll_height()
 
     // 3. Let viewport height be the height of the viewport excluding the height of the scroll bar, if any,
     //    or zero if there is no viewport.
-    auto viewport_height = document.viewport_rect().height().to_int();
+    auto viewport_height = document.viewport_size_excluding_scrollbars(read).height().to_int();
     auto viewport_scrolling_area_height = viewport_scrollable_overflow_rect->height().to_int();
 
     // 4. If the element is the root element and document is not in quirks mode

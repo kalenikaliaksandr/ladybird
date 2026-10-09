@@ -66,6 +66,7 @@ pub(crate) struct LayoutPass<'arena> {
     pub(crate) container_length_bases: ContainerLengthBasesQuery,
     pub(crate) initial_containing_block_inline_size: CssPixels,
     pub(crate) initial_containing_block_block_size: CssPixels,
+    pub(crate) scrollbar_thicknesses: super::scrollbars::ScrollbarThicknesses,
     pub(crate) document_in_quirks_mode: bool,
 }
 
@@ -76,6 +77,7 @@ impl<'arena> LayoutPass<'arena> {
         container_length_bases: ContainerLengthBasesQuery,
         initial_containing_block_inline_size: CssPixels,
         initial_containing_block_block_size: CssPixels,
+        scrollbar_thicknesses: super::scrollbars::ScrollbarThicknesses,
         document_in_quirks_mode: bool,
     ) -> Self {
         Self {
@@ -84,6 +86,7 @@ impl<'arena> LayoutPass<'arena> {
             container_length_bases,
             initial_containing_block_inline_size,
             initial_containing_block_block_size,
+            scrollbar_thicknesses,
             document_in_quirks_mode,
         }
     }

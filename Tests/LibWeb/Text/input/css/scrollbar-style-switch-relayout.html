@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<style>
+    body {
+        margin: 0;
+    }
+    .box {
+        width: 100px;
+        height: 100px;
+    }
+    .content {
+        width: 50px;
+        height: 10px;
+    }
+</style>
+<div id="scroll" class="box" style="overflow: scroll"></div>
+<div id="auto-overflowing" class="box" style="overflow: auto"><div style="height: 200px"></div></div>
+<div id="stable-not-overflowing" class="box" style="overflow: auto; scrollbar-gutter: stable"></div>
+<div id="inline-block" class="shrink-to-fit" style="display: inline-block; overflow-y: scroll"><div class="content"></div></div>
+<div style="display: flex">
+    <div id="flex-item" class="shrink-to-fit" style="overflow-y: scroll"><div class="content"></div></div>
+</div>
+<script src="../include.js"></script>
+<script>
+    // Each switch lays out every scroll container again, the ones that kept no room for scrollbars included, and
+    // measures again the ones whose size follows from their content. The page itself doesn't scroll, so the width
+    // the root is laid out in stays the same and lays out nothing again by itself.
+    test(() => {
+        for (const style of ["classic", "overlay", "classic", "overlay"]) {
+            internals.setScrollbarStyle(style);
+            const clientWidths = [...document.querySelectorAll(".box")].map(box => `${box.id}=${box.clientWidth}`);
+            const offsetWidths = [...document.querySelectorAll(".shrink-to-fit")].map(box => `${box.id}=${box.offsetWidth}`);
+            println(`${style}: ${clientWidths.join(" ")} ${offsetWidths.join(" ")}`);
+        }
+    });
+</script>

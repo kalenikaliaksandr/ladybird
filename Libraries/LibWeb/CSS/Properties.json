@@ -4627,16 +4627,13 @@
   },
   "scrollbar-gutter": {
     "style-group": "MiscResetValues",
-    "affects-layout": false,
     "animation-type": "discrete",
-    "__comment": "This property should affect layout per-spec, but ladybird always uses overlay scrollbars so it doesn't in practice.",
     "inherited": false,
     "initial": "auto",
     "requires-computation": "never"
   },
   "scrollbar-width": {
     "style-group": "MiscResetValues",
-    "affects-layout": false,
     "animation-type": "by-computed-value",
     "inherited": false,
     "initial": "auto",

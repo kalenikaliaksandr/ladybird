@@ -11,6 +11,7 @@ use super::geometry::AvailableSize;
 use super::geometry::AvailableSpace;
 use super::layout_changes::{LayoutChange, queue};
 use super::rendered_text::{FfiTextSourceRange, PublishedTextSlot, RenderedTextBoundary, TextContent, TextFragments};
+use super::scrollbars::AutoScrollbars;
 use super::shell_reads::read_arena;
 use super::tree_builder::FfiLayoutTreeBuildOutcome;
 use super::tree_shape::{Chunk, PUBLISHED_ROWS_PER_CHUNK, ShapeWriter, ShapeWrites, TreeShape};
@@ -1094,6 +1095,10 @@ struct StyleNodeTables {
     /// What each element's pseudo-elements have scrolled to, held against the element's identity,
     /// since a pseudo-element has none of its own, and published the way the element's offset is.
     pseudo_element_scroll_offsets: RefCell<HashMap<StyleNodeID, PseudoElementScrollOffsets>>,
+    /// The `overflow: auto` scrollbars each element's box showed after its last layout, held
+    /// against the element's identity so that a rebuilt box keeps them. No entry means none, which
+    /// is nearly every element.
+    element_auto_scrollbars: RefCell<HashMap<StyleNodeID, AutoScrollbars>>,
 }
 
 /// What an element's synthetic pseudo-elements have scrolled to, by kind.
@@ -1187,6 +1192,16 @@ pub(crate) struct LayoutNodeArena {
     bound_rows: RefCell<BoundRows>,
     /// What the navigable has scrolled the viewport to, which the viewport's row holds.
     viewport_scroll_offset: Cell<CssPixelPoint>,
+    /// The `overflow: auto` scrollbars the viewport shows.
+    viewport_auto_scrollbars: Cell<AutoScrollbars>,
+    /// The `overflow: auto` scrollbars of the boxes that no element owns alone: the boxes of
+    /// pseudo-elements and anonymous boxes. Such a box shows none again when it is rebuilt.
+    row_auto_scrollbars: RefCell<HashMap<NodeSlotId, AutoScrollbars>>,
+    /// The `overflow: auto` scrollbars that appeared since the layout update began. They stay
+    /// until it ends, so the layouts that scrollbars cause cannot go on without end.
+    auto_scrollbars_frozen_for_update: RefCell<HashMap<NodeSlotId, AutoScrollbars>>,
+    /// How thick the scrollbars of the last layout were, or nothing before the first layout.
+    pub(crate) scrollbar_thicknesses: Cell<Option<super::scrollbars::ScrollbarThicknesses>>,
     /// The style node of the document the last layout tree build was for. The style mirror names
     /// the document element as its first DOM child.
     document_style_node: Cell<Option<StyleNodeID>>,
@@ -1321,6 +1336,10 @@ impl LayoutNodeArena {
             first_rows_by_style_node: RefCell::new(RowsByStyleNode::default()),
             bound_rows: RefCell::default(),
             viewport_scroll_offset: Cell::new(CssPixelPoint::default()),
+            viewport_auto_scrollbars: Cell::default(),
+            row_auto_scrollbars: RefCell::default(),
+            auto_scrollbars_frozen_for_update: RefCell::default(),
+            scrollbar_thicknesses: Cell::default(),
             document_style_node: Cell::new(None),
             style_engine: Cell::new(crate::css::style::StyleEngineHandle::null()),
             box_presence_host: Cell::new(None),
@@ -1700,6 +1719,8 @@ impl LayoutNodeArena {
         self.fc_run_cache_store.remove_entry(index);
         self.remove_layout_update_flag_node(id);
         self.raw_table_column_spans.get_mut().remove(&id);
+        self.row_auto_scrollbars.get_mut().remove(&id);
+        self.auto_scrollbars_frozen_for_update.get_mut().remove(&id);
         if self.replaced_paint_facts.get_mut().contains_key(&id) {
             Arc::make_mut(self.replaced_paint_facts.get_mut()).remove(&id);
         }
@@ -2208,6 +2229,97 @@ impl LayoutNodeArena {
         self.viewport_scroll_offset.set(offset);
     }
 
+    /// The `overflow: auto` scrollbars the row shows. The viewport's row and an element's own box
+    /// keep them across rebuilds; every other row keeps them only for as long as it lives.
+    pub(crate) fn row_auto_scrollbars(&self, slot: NodeSlotId) -> AutoScrollbars {
+        if !self.slot_is_live(slot) {
+            return AutoScrollbars::default();
+        }
+        let data = self.data(slot);
+        if data.kind.get() == NodeKind::Viewport {
+            return self.viewport_auto_scrollbars.get();
+        }
+        if let Some(style_node) = self.element_auto_scrollbars_key(slot) {
+            return self
+                .style_node_tables
+                .element_auto_scrollbars
+                .borrow()
+                .get(&style_node)
+                .copied()
+                .unwrap_or_default();
+        }
+        self.row_auto_scrollbars
+            .borrow()
+            .get(&slot)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Records the `overflow: auto` scrollbars the row shows from now on.
+    pub(crate) fn set_row_auto_scrollbars(&self, slot: NodeSlotId, scrollbars: AutoScrollbars) {
+        if self.data(slot).kind.get() == NodeKind::Viewport {
+            self.viewport_auto_scrollbars.set(scrollbars);
+            return;
+        }
+        let none = scrollbars == AutoScrollbars::default();
+        if let Some(style_node) = self.element_auto_scrollbars_key(slot) {
+            let mut table = self.style_node_tables.element_auto_scrollbars.borrow_mut();
+            if none {
+                table.remove(&style_node);
+            } else {
+                table.insert(style_node, scrollbars);
+            }
+            return;
+        }
+        let mut table = self.row_auto_scrollbars.borrow_mut();
+        if none {
+            table.remove(&slot);
+        } else {
+            table.insert(slot, scrollbars);
+        }
+    }
+
+    /// The element identity a row keeps its `overflow: auto` scrollbars under, if the row is the
+    /// element's own box.
+    fn element_auto_scrollbars_key(&self, slot: NodeSlotId) -> Option<StyleNodeID> {
+        let data = self.data(slot);
+        if data.generated_for.get() != 0 || super::node_facts::has_flag(data, NodeFlag::Anonymous) {
+            return None;
+        }
+        self.node_style_node(slot)
+    }
+
+    /// The `overflow: auto` scrollbars of the row that appeared since the layout update began.
+    pub(crate) fn auto_scrollbars_frozen_for_update(&self, slot: NodeSlotId) -> AutoScrollbars {
+        self.auto_scrollbars_frozen_for_update
+            .borrow()
+            .get(&slot)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Keeps the `overflow: auto` scrollbars in `appeared` on the row until the layout update ends.
+    pub(crate) fn freeze_auto_scrollbars_for_update(&self, slot: NodeSlotId, appeared: AutoScrollbars) {
+        let mut table = self.auto_scrollbars_frozen_for_update.borrow_mut();
+        let frozen = table.entry(slot).or_default();
+        frozen.horizontal |= appeared.horizontal;
+        frozen.vertical |= appeared.vertical;
+    }
+
+    /// Lets every `overflow: auto` scrollbar go again, as a layout update begins or ends.
+    pub(crate) fn unfreeze_auto_scrollbars(&self) {
+        self.auto_scrollbars_frozen_for_update.borrow_mut().clear();
+    }
+
+    /// Forgets which `overflow: auto` scrollbars every box shows, so that each shows none until the
+    /// overflow it measures calls for one again.
+    pub(crate) fn forget_auto_scrollbars(&self) {
+        self.viewport_auto_scrollbars.set(AutoScrollbars::default());
+        self.style_node_tables.element_auto_scrollbars.borrow_mut().clear();
+        self.row_auto_scrollbars.borrow_mut().clear();
+        self.auto_scrollbars_frozen_for_update.borrow_mut().clear();
+    }
+
     /// Record whether the node sits in the user agent shadow tree of the focused text control.
     pub(crate) fn set_identity_in_focused_text_control(&self, node: StyleNodeID, value: bool) {
         let mut identities = self.style_node_tables.identities_in_focused_text_control.borrow_mut();
@@ -2243,6 +2355,7 @@ impl LayoutNodeArena {
             identities_in_focused_text_control,
             element_scroll_offsets,
             pseudo_element_scroll_offsets,
+            element_auto_scrollbars,
         } = &self.style_node_tables;
         counters_sets.borrow_mut().forget(style_node);
         generated_content.borrow_mut().forget(style_node);
@@ -2258,6 +2371,7 @@ impl LayoutNodeArena {
         identities_in_focused_text_control.borrow_mut().remove(&style_node);
         element_scroll_offsets.borrow_mut().remove(&style_node);
         pseudo_element_scroll_offsets.borrow_mut().remove(&style_node);
+        element_auto_scrollbars.borrow_mut().remove(&style_node);
         // A retired shadow host takes its tree scope with it. The registry withdraws no names from a
         // scope it can no longer name.
         anchor_name_elements

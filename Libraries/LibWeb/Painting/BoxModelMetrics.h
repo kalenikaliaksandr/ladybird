@@ -24,6 +24,8 @@ public:
     PixelBox padding;
     PixelBox border;
     PixelBox inset;
+    // The room kept for scrollbars between the border and the padding.
+    PixelBox scrollbar_gutter;
 
     PixelBox border_box() const;
 };

@@ -247,8 +247,9 @@ void Page::process_screenshot_requests()
             navigable->active_document()->update_layout(DOM::UpdateLayoutReason::ProcessScreenshot);
             auto const* layout_node = navigable->active_document()->layout_node(read);
             VERIFY(layout_node && Painting::has_committed_box(*layout_node));
-            auto scrollable_overflow_rect = Painting::scrollable_overflow_rect(*layout_node);
-            auto rect = enclosing_device_rect(scrollable_overflow_rect.value());
+            // The viewport's scrollbar gutters lie outside its scrollable overflow, but the screenshot shows them too.
+            auto scrollable_overflow_rect = Painting::scrollable_overflow_rect(*layout_node).value().united(Painting::absolute_border_box_rect(*layout_node));
+            auto rect = enclosing_device_rect(scrollable_overflow_rect);
             auto bitmap_or_error = Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, rect.size().to_type<int>());
             if (bitmap_or_error.is_error()) {
                 client.page_did_take_screenshot({});
@@ -406,7 +407,24 @@ DevicePixelRect Page::rounded_device_rect(CSSPixelRect rect) const
 
 ChromeMetrics Page::chrome_metrics() const
 {
-    return ChromeMetrics { m_client->zoom_level() };
+    return ChromeMetrics { m_client->zoom_level(), m_scrollbar_style };
+}
+
+void Page::set_scrollbar_style(ScrollbarStyle style)
+{
+    if (m_scrollbar_style == style)
+        return;
+    m_scrollbar_style = style;
+
+    for (auto const& navigable : hosted_navigables()) {
+        auto document = navigable->active_document();
+        if (!document)
+            continue;
+        // NB: Asking for the layout asks for a frame as well, and the frame records the scrollbars and their hit test
+        //     items again in their new places.
+        document->set_needs_to_record_display_list();
+        document->set_needs_layout_update(DOM::SetNeedsLayoutReason::ScrollbarStyleChange);
+    }
 }
 
 EventResult Page::handle_mouseup(HTML::LocalNavigable& root, DevicePixelPoint position, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers, Optional<RemoteInputEventTarget>* remote_target)

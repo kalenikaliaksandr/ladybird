@@ -72,6 +72,17 @@ pub(crate) fn committed_padding(arena: &impl GeometryRead, slot: NodeSlotId) -> 
     })
 }
 
+/// The room the box keeps for scrollbars between its border and its padding, and the scrollbars it
+/// shows there.
+pub(crate) fn committed_scrollbar_gutters(
+    arena: &impl GeometryRead,
+    slot: NodeSlotId,
+) -> crate::layout::scrollbars::ScrollbarGutters {
+    arena.with_committed_fragment_link(slot, |link| {
+        link.map_or_else(Default::default, |link| link.fragment.scrollbar_gutters())
+    })
+}
+
 pub(crate) fn committed_inset(arena: &impl GeometryRead, slot: NodeSlotId) -> FfiPixelBox {
     arena.with_committed_fragment_link(slot, |link| {
         link.map_or_else(FfiPixelBox::default, |link| FfiPixelBox {
@@ -314,13 +325,26 @@ pub(crate) fn absolute_border_box_rect(arena: &impl GeometryRead, slot: NodeSlot
         return CssPixelRect::from(data.local_border_box_union).translated_by(absolute_rect(arena, slot).location());
     }
     let padded = absolute_padding_box_rect(arena, slot);
-    let border = committed_border_box_edges(arena, slot);
+    let border = committed_border_and_gutter_edges(arena, slot);
     CssPixelRect::new(
         padded.x - border.left,
         padded.y - border.top,
         padded.width + border.left + border.right,
         padded.height + border.top + border.bottom,
     )
+}
+
+/// What lies between the border box and the padding box: the border widths the border box includes,
+/// and the room kept for scrollbars.
+pub(crate) fn committed_border_and_gutter_edges(arena: &impl GeometryRead, slot: NodeSlotId) -> FfiPixelBox {
+    let border = committed_border_box_edges(arena, slot);
+    let gutters = committed_scrollbar_gutters(arena, slot);
+    FfiPixelBox {
+        top: border.top + gutters.top,
+        right: border.right + gutters.right,
+        bottom: border.bottom + gutters.bottom,
+        left: border.left + gutters.left,
+    }
 }
 
 /// The overflow the pass measured. Reading it never measures it.

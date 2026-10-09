@@ -382,7 +382,8 @@ pub(crate) fn border_radii_data(
     )
 }
 
-pub(crate) fn padding_edge_border_radii(
+/// The radii of the inner border edge: the outer edge of the scrollbar gutters, or of the padding where there are none.
+pub(crate) fn inner_border_edge_radii(
     style: ComputedValuesView<'_>,
     layout_arena: &impl PaintRead,
     slot: NodeSlotId,
@@ -392,6 +393,21 @@ pub(crate) fn padding_edge_border_radii(
         style.border_right_width(),
         style.border_bottom_width(),
         style.border_left_width(),
+    )
+}
+
+pub(crate) fn padding_edge_border_radii(
+    style: ComputedValuesView<'_>,
+    layout_arena: &impl PaintRead,
+    slot: NodeSlotId,
+) -> BorderRadii {
+    // The room kept for scrollbars lies between the border and the padding edge.
+    let gutters = crate::painting::paintable_geometry::committed_scrollbar_gutters(layout_arena, slot);
+    border_radii_data(style, layout_arena, slot).shrunken(
+        style.border_top_width() + gutters.top,
+        style.border_right_width() + gutters.right,
+        style.border_bottom_width() + gutters.bottom,
+        style.border_left_width() + gutters.left,
     )
 }
 

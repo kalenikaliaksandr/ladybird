@@ -37,8 +37,9 @@
         println(`boundary-height=${boundaryHeight}`);
         println(`scroll-height-before=${scrollHeightBefore} after=${scrollHeightAfter}`);
         println(`partial-layouts=${partialDelta} full-layouts=${fullDelta}`);
+        // The second partial layout is the scroller's own, for the scrollbar it now shows.
         println(boundaryHeight === 400
             && scrollHeightBefore === 150 && scrollHeightAfter === 420
-            && partialDelta === 1 && fullDelta === 0 ? "PASS" : "FAIL");
+            && partialDelta === 2 && fullDelta === 0 ? "PASS" : "FAIL");
     });
 </script>

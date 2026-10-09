@@ -321,6 +321,9 @@ interface Internals {
     undefined updateStyle();
     undefined setUserStyle(DOMString source);
     undefined setPreferredColorScheme(DOMString colorScheme);
+    // Lays out and paints this page's scrollbars as "classic" or "overlay" ones until the browser sends it a style
+    // again, which test-web does after every test.
+    undefined setScrollbarStyle(DOMString style);
     // Simulates the window gaining or losing focus (e.g. browser chrome or another window taking focus).
     undefined setPageFocus(boolean hasFocus);
     // Simulates the page being shown or hidden (e.g. switching to another tab). Accepts "visible" or "hidden".
