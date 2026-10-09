@@ -1981,7 +1981,7 @@ Gfx::IntRect ContextState::damage_since_last_raster(Gfx::IntSize viewport_size)
             continue;
         if (last_frame.scroll_state_snapshot.device_offset_for_index(scrollbar.scroll_node_index) == m_scroll_state_snapshot.device_offset_for_index(scrollbar.scroll_node_index))
             continue;
-        damage_rect.unite(scrollbar.gutter_rect.united(scrollbar.expanded_gutter_rect));
+        damage_rect.unite(scrollbar.painted_track_rect.united(scrollbar.expanded_painted_track_rect));
     }
     m_display_list->for_each_drawn_canvas([&](auto context, auto bounding_rect, auto const& draw_canvas) {
         auto last_content_generation = last_frame.canvas_content_generations.get(draw_canvas.canvas_id);

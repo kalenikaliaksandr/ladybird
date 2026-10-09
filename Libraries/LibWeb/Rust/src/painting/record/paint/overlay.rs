@@ -79,7 +79,7 @@ pub(crate) fn paint_overlay<O: Observer>(recorder: &mut PaintRecorder<'_, O>, pa
                 );
                 recorder.recorder.paint_scrollbar(
                     own_scroll_node_index,
-                    converter.rounded_device_rect(scrollbar.gutter_rect),
+                    converter.rounded_device_rect(scrollbar.painted_track_rect),
                     converter.rounded_device_rect(scrollbar.thumb_rect),
                     converter.rounded_device_rect(scrollbar.track_rect),
                     scrollbar.thumb_travel_to_scroll_ratio.to_double(),

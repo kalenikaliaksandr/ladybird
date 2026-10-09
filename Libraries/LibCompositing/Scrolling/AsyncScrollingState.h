@@ -98,10 +98,10 @@ struct AsyncScrollbar {
     // The rects of a scrollbar the display list paints are in the space of this context.
     Compositing::ContextRef context;
     u32 paint_order_index { 0 };
-    Gfx::IntRect gutter_rect;
+    Gfx::IntRect painted_track_rect;
     Gfx::IntRect thumb_rect;
     Gfx::IntRect track_rect;
-    Gfx::IntRect expanded_gutter_rect;
+    Gfx::IntRect expanded_painted_track_rect;
     Gfx::IntRect expanded_thumb_rect;
     double scroll_size { 0 };
     double expanded_scroll_size { 0 };

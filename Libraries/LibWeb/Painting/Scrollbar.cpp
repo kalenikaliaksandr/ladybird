@@ -123,11 +123,11 @@ bool Scrollbar::scroll_to_mouse_position(CSSPixelPoint position)
         return false;
 
     auto orientation = m_direction == ScrollDirection::Horizontal ? Orientation::Horizontal : Orientation::Vertical;
-    auto offset_relative_to_gutter = (position - scrollbar_data->gutter_rect.location()).primary_offset_for_orientation(orientation);
-    auto gutter_size = scrollbar_data->gutter_rect.primary_size_for_orientation(orientation);
+    auto offset_relative_to_track = (position - scrollbar_data->painted_track_rect.location()).primary_offset_for_orientation(orientation);
+    auto track_size = scrollbar_data->painted_track_rect.primary_size_for_orientation(orientation);
     auto thumb_size = scrollbar_data->thumb_rect.primary_size_for_orientation(orientation);
 
-    if (gutter_size <= thumb_size)
+    if (track_size <= thumb_size)
         return true;
 
     if (!m_thumb_grab_position.has_value()) {
@@ -138,14 +138,14 @@ bool Scrollbar::scroll_to_mouse_position(CSSPixelPoint position)
 
         m_thumb_grab_position = position_is_along_thumb
             ? (position - scrollbar_data->thumb_rect.location()).primary_offset_for_orientation(orientation)
-            : max(min(offset_relative_to_gutter, thumb_size / 2), offset_relative_to_gutter - gutter_size + thumb_size);
+            : max(min(offset_relative_to_track, thumb_size / 2), offset_relative_to_track - track_size + thumb_size);
         push_enlarged_state();
         if (auto navigable = node->document().navigable())
             m_thumb_grab_gesture_hold = make<HTML::UserScrollGestureHold>(*navigable);
     }
 
-    auto constrained_offset = AK::clamp(offset_relative_to_gutter - m_thumb_grab_position.value(), 0, gutter_size - thumb_size);
-    auto scroll_position = constrained_offset.to_double() / (gutter_size - thumb_size).to_double();
+    auto constrained_offset = AK::clamp(offset_relative_to_track - m_thumb_grab_position.value(), 0, track_size - thumb_size);
+    auto scroll_position = constrained_offset.to_double() / (track_size - thumb_size).to_double();
 
     auto scrollable_overflow_size = Painting::scrollable_overflow_rect(*node)->primary_size_for_orientation(orientation);
     auto padding_size = Painting::absolute_padding_box_rect(*node).primary_size_for_orientation(orientation);

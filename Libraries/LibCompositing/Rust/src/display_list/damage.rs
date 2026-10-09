@@ -1941,7 +1941,7 @@ mod tests {
 
         let scrollbar = PaintScrollBar {
             scroll_node_index: SpatialNodeIndex(1),
-            gutter_rect: IntRect::default(),
+            painted_track_rect: IntRect::default(),
             thumb_rect: IntRect::new(10, 12, 20, 8),
             track_rect: IntRect::new(10, 10, 80, 12),
             scroll_size: 0.75,
@@ -2158,10 +2158,10 @@ mod tests {
             &CompositorScrollbar {
                 document_id: UniqueNodeId(1),
                 scroll_node_index: SpatialNodeIndex(1),
-                gutter_rect: IntRect::default(),
+                painted_track_rect: IntRect::default(),
                 thumb_rect: IntRect::new(98, 0, 2, 20),
                 track_rect: IntRect::new(96, 0, 4, 100),
-                expanded_gutter_rect: IntRect::new(92, 0, 8, 100),
+                expanded_painted_track_rect: IntRect::new(92, 0, 8, 100),
                 expanded_thumb_rect: IntRect::new(94, 0, 6, 20),
                 scroll_size: 0.8,
                 expanded_scroll_size: 0.8,

@@ -188,7 +188,7 @@ void DisplayListPlayerSkia::flush_async(Gfx::PaintingSurface& surface, Function<
 
 static void paint_scrollbar_into_surface(Gfx::PaintingSurface& surface, PaintScrollBar const& command)
 {
-    auto gutter_rect = to_skia_rect(command.gutter_rect);
+    auto painted_track_rect = to_skia_rect(command.painted_track_rect);
 
     auto thumb_rect = to_skia_rect(command.thumb_rect);
     auto radius = thumb_rect.width() / 2;
@@ -196,10 +196,10 @@ static void paint_scrollbar_into_surface(Gfx::PaintingSurface& surface, PaintScr
 
     auto& canvas = surface.canvas();
 
-    auto gutter_fill_color = command.track_color;
-    SkPaint gutter_fill_paint;
-    gutter_fill_paint.setColor(to_skia_color(gutter_fill_color));
-    canvas.drawRect(gutter_rect, gutter_fill_paint);
+    auto track_fill_color = command.track_color;
+    SkPaint track_fill_paint;
+    track_fill_paint.setColor(to_skia_color(track_fill_color));
+    canvas.drawRect(painted_track_rect, track_fill_paint);
 
     SkPaint thumb_fill_paint;
     thumb_fill_paint.setColor(to_skia_color(command.thumb_color));

@@ -1227,7 +1227,7 @@ impl DisplayListRecorder {
     pub fn paint_scrollbar(
         &mut self,
         scroll_node_index: SpatialNodeIndex,
-        gutter_rect: IntRect,
+        painted_track_rect: IntRect,
         thumb_rect: IntRect,
         track_rect: IntRect,
         scroll_size: f64,
@@ -1241,7 +1241,7 @@ impl DisplayListRecorder {
         self.append_command(
             &PaintScrollBar {
                 scroll_node_index,
-                gutter_rect,
+                painted_track_rect,
                 thumb_rect,
                 track_rect,
                 scroll_size,

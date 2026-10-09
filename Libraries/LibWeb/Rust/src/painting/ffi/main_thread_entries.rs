@@ -83,7 +83,7 @@ pub unsafe extern "C" fn layout_row_paintable_compute_scrollbar_data(
     FfiOptionalScrollbarData {
         has_value: true,
         value: FfiScrollbarData {
-            gutter_rect: data.gutter_rect.into(),
+            painted_track_rect: data.painted_track_rect.into(),
             thumb_rect: data.thumb_rect.into(),
             track_rect: data.track_rect.into(),
             thumb_travel_to_scroll_ratio: data.thumb_travel_to_scroll_ratio.to_double(),

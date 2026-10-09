@@ -594,10 +594,14 @@ fn dump_command(output: &mut String, command_type: DisplayListCommandType, paylo
         DisplayListCommandType::CompositorScrollbar => {
             let command = read_command::<CompositorScrollbar>(payload);
             write_field(output, "scroll_node_index", command.scroll_node_index);
-            write_field(output, "gutter_rect", command.gutter_rect);
+            write_field(output, "painted_track_rect", command.painted_track_rect);
             write_field(output, "thumb_rect", command.thumb_rect);
             write_field(output, "track_rect", command.track_rect);
-            write_field(output, "expanded_gutter_rect", command.expanded_gutter_rect);
+            write_field(
+                output,
+                "expanded_painted_track_rect",
+                command.expanded_painted_track_rect,
+            );
             write_field(output, "expanded_thumb_rect", command.expanded_thumb_rect);
             write!(
                 output,

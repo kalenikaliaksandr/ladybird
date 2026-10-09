@@ -121,7 +121,7 @@ Optional<ScrollbarData> compute_scrollbar_data(Layout::Node const& node, ScrollD
     if (!result.has_value)
         return {};
     return ScrollbarData {
-        .gutter_rect = result.value.gutter_rect,
+        .painted_track_rect = result.value.painted_track_rect,
         .thumb_rect = result.value.thumb_rect,
         .track_rect = result.value.track_rect,
         .thumb_travel_to_scroll_ratio = result.value.thumb_travel_to_scroll_ratio,

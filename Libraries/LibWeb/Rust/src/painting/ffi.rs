@@ -103,7 +103,7 @@ pub struct FfiPhysicalResizeAxes {
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct FfiScrollbarData {
-    pub gutter_rect: FfiCssPixelRect,
+    pub painted_track_rect: FfiCssPixelRect,
     pub thumb_rect: FfiCssPixelRect,
     pub track_rect: FfiCssPixelRect,
     pub thumb_travel_to_scroll_ratio: f64,

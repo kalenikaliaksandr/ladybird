@@ -66,9 +66,9 @@ static Optional<Gfx::FloatPoint> position_in_space_of_scrollbar(Compositing::Asy
     return visual_context_tree.transform_point_for_hit_test(scrollbar.context, position, scroll_state_snapshot, clip_behavior);
 }
 
-static Gfx::IntRect scrollbar_gutter_rect(Compositing::AsyncScrollbar const& scrollbar, bool expanded)
+static Gfx::IntRect scrollbar_painted_track_rect(Compositing::AsyncScrollbar const& scrollbar, bool expanded)
 {
-    return expanded ? scrollbar.expanded_gutter_rect : scrollbar.gutter_rect;
+    return expanded ? scrollbar.expanded_painted_track_rect : scrollbar.painted_track_rect;
 }
 
 static double scrollbar_scroll_size(Compositing::AsyncScrollbar const& scrollbar, bool expanded)
@@ -101,9 +101,9 @@ static Gfx::IntRect scrollbar_hit_rect(Compositing::AsyncScrollbar const& scroll
     static constexpr int scrollbar_hit_slop = 4;
 
     auto rect = translated_thumb_rect(scrollbar, scroll_offset, false).united(translated_thumb_rect(scrollbar, scroll_offset, true));
-    auto expanded_gutter_rect = scrollbar_gutter_rect(scrollbar, true);
-    if (!expanded_gutter_rect.is_empty())
-        rect.unite(expanded_gutter_rect);
+    auto expanded_painted_track_rect = scrollbar_painted_track_rect(scrollbar, true);
+    if (!expanded_painted_track_rect.is_empty())
+        rect.unite(expanded_painted_track_rect);
     rect.inflate(scrollbar_hit_slop, scrollbar_hit_slop);
     return rect;
 }
@@ -173,7 +173,7 @@ Optional<size_t> ScrollbarController::hit_test_scrollbar_painted_by_display_list
         auto position_in_scrollbar_space = position_in_space_of_scrollbar(scrollbar, visual_context_tree, scroll_state_snapshot, position, Compositing::AccumulatedVisualContextTree::ClipBehavior::Respect);
         if (!position_in_scrollbar_space.has_value())
             continue;
-        auto const& painted_scrollbar_rect = scrollbar.display_list_paints_enlarged_scrollbar ? scrollbar.expanded_gutter_rect : scrollbar.track_rect;
+        auto const& painted_scrollbar_rect = scrollbar.display_list_paints_enlarged_scrollbar ? scrollbar.expanded_painted_track_rect : scrollbar.track_rect;
         if (!painted_scrollbar_rect.to_type<float>().contains(*position_in_scrollbar_space))
             continue;
 
@@ -214,12 +214,12 @@ Optional<ScrollbarController::Drag> ScrollbarController::begin_drag(Compositing:
     if (position_is_along_thumb) {
         thumb_grab_position = primary_position - static_cast<float>(thumb_rect.primary_offset_for_orientation(orientation));
     } else {
-        auto gutter_rect = scrollbar_gutter_rect(scrollbar, true);
+        auto painted_track_rect = scrollbar_painted_track_rect(scrollbar, true);
         auto thumb_size = static_cast<float>(thumb_rect.primary_size_for_orientation(orientation));
-        auto gutter_start = static_cast<float>(gutter_rect.primary_offset_for_orientation(orientation));
-        auto gutter_size = static_cast<float>(gutter_rect.primary_size_for_orientation(orientation));
-        auto offset_relative_to_gutter = primary_position - gutter_start;
-        thumb_grab_position = max(min(offset_relative_to_gutter, thumb_size / 2), offset_relative_to_gutter - gutter_size + thumb_size);
+        auto track_start = static_cast<float>(painted_track_rect.primary_offset_for_orientation(orientation));
+        auto track_size = static_cast<float>(painted_track_rect.primary_size_for_orientation(orientation));
+        auto offset_relative_to_track = primary_position - track_start;
+        thumb_grab_position = max(min(offset_relative_to_track, thumb_size / 2), offset_relative_to_track - track_size + thumb_size);
     }
 
     m_captured_scrollbar_index = *scrollbar_index;
@@ -311,9 +311,9 @@ bool ScrollbarController::paint(Gfx::PaintingSurface& surface, DisplayListPlayer
         auto expanded = is_expanded(i);
         Compositing::PaintScrollBar paint_scrollbar {
             .scroll_node_index = scrollbar.scroll_node_index,
-            .gutter_rect = scrollbar_gutter_rect(scrollbar, expanded),
+            .painted_track_rect = scrollbar_painted_track_rect(scrollbar, expanded),
             .thumb_rect = translated_thumb_rect(scrollbar, scroll_state_snapshot, expanded),
-            .track_rect = scrollbar_gutter_rect(scrollbar, true),
+            .track_rect = scrollbar_painted_track_rect(scrollbar, true),
             .scroll_size = scrollbar_scroll_size(scrollbar, expanded),
             .thumb_color = scrollbar.thumb_color,
             .track_color = scrollbar.track_color,

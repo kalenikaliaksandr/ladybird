@@ -19,7 +19,7 @@ use libgfx_rust::Color;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScrollbarData {
-    pub(crate) gutter_rect: CssPixelRect,
+    pub(crate) painted_track_rect: CssPixelRect,
     pub(crate) thumb_rect: CssPixelRect,
     pub(crate) track_rect: CssPixelRect,
     pub(crate) thumb_travel_to_scroll_ratio: CssPixelFraction,
@@ -447,7 +447,7 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
             *thumb.primary_offset += scroll_offset.mul_by_fraction(ratio);
         }
         Some(ScrollbarData {
-            gutter_rect: if enlarged {
+            painted_track_rect: if enlarged {
                 scrollbar_rect
             } else {
                 CssPixelRect::default()
@@ -571,7 +571,7 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
         };
         // NB: The thumb keeps its length and travel when it enlarges, so that only its thickness changes.
         let thumb_margin_along_track = (gutter_thickness - enlarged_thumb_thickness) / 2;
-        let gutter_rect = if enlarged { track_rect } else { CssPixelRect::default() };
+        let painted_track_rect = if enlarged { track_rect } else { CssPixelRect::default() };
 
         // A scrollbar with nothing to scroll shows no thumb.
         let overflow_length = paintable_geometry::scrollable_overflow_rect(arena, slot)
@@ -579,7 +579,7 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
         let scrollport_size = primary_size(paintable_geometry::absolute_padding_box_rect(arena, slot), direction);
         if overflow_length <= scrollport_size {
             return Some(ScrollbarData {
-                gutter_rect,
+                painted_track_rect,
                 thumb_rect: CssPixelRect::default(),
                 track_rect,
                 thumb_travel_to_scroll_ratio: CssPixelFraction::zero(),
@@ -606,7 +606,7 @@ impl<'a, Arena: PaintRead> ChromeGeometry<'a, Arena> {
             *thumb.primary_offset += scroll_offset.mul_by_fraction(ratio);
         }
         Some(ScrollbarData {
-            gutter_rect,
+            painted_track_rect,
             thumb_rect,
             track_rect,
             thumb_travel_to_scroll_ratio: ratio,

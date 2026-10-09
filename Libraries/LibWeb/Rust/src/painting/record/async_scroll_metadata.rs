@@ -316,10 +316,10 @@ impl<O: Observer> PaintRecorder<'_, O> {
         Some(CompositorScrollbar {
             document_id: self.inputs.uncaptured.document_id,
             scroll_node_index: self.data(paintable).own_scroll_node_index,
-            gutter_rect: self.converter.rounded_device_rect(scrollbar.gutter_rect),
+            painted_track_rect: self.converter.rounded_device_rect(scrollbar.painted_track_rect),
             thumb_rect: self.converter.rounded_device_rect(scrollbar.thumb_rect),
             track_rect: self.converter.rounded_device_rect(scrollbar.track_rect),
-            expanded_gutter_rect: self.converter.rounded_device_rect(expanded.gutter_rect),
+            expanded_painted_track_rect: self.converter.rounded_device_rect(expanded.painted_track_rect),
             expanded_thumb_rect: self.converter.rounded_device_rect(expanded.thumb_rect),
             scroll_size: scrollbar.thumb_travel_to_scroll_ratio.to_double(),
             expanded_scroll_size: expanded.thumb_travel_to_scroll_ratio.to_double(),

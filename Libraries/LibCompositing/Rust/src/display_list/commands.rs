@@ -1510,10 +1510,10 @@ impl DisplayListCommand for CompositorMainThreadWheelEventRegion {
 pub struct CompositorScrollbar {
     pub document_id: UniqueNodeId,
     pub scroll_node_index: SpatialNodeIndex,
-    pub gutter_rect: IntRect,
+    pub painted_track_rect: IntRect,
     pub thumb_rect: IntRect,
     pub track_rect: IntRect,
-    pub expanded_gutter_rect: IntRect,
+    pub expanded_painted_track_rect: IntRect,
     pub expanded_thumb_rect: IntRect,
     pub scroll_size: f64,
     pub expanded_scroll_size: f64,
@@ -1528,10 +1528,10 @@ pub struct CompositorScrollbar {
 ffi_bytes_fields!(CompositorScrollbar {
     document_id,
     scroll_node_index,
-    gutter_rect,
+    painted_track_rect,
     thumb_rect,
     track_rect,
-    expanded_gutter_rect,
+    expanded_painted_track_rect,
     expanded_thumb_rect,
     scroll_size,
     expanded_scroll_size,
@@ -1552,7 +1552,7 @@ impl DisplayListCommand for CompositorScrollbar {
 #[repr(C)]
 pub struct PaintScrollBar {
     pub scroll_node_index: SpatialNodeIndex,
-    pub gutter_rect: IntRect,
+    pub painted_track_rect: IntRect,
     pub thumb_rect: IntRect,
     pub track_rect: IntRect,
     pub scroll_size: f64,
@@ -1562,7 +1562,7 @@ pub struct PaintScrollBar {
 }
 ffi_bytes_fields!(PaintScrollBar {
     scroll_node_index,
-    gutter_rect,
+    painted_track_rect,
     thumb_rect,
     track_rect,
     scroll_size,
