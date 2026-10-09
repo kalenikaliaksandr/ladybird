@@ -19,6 +19,9 @@ import_rust_crate(
     FFI_HEADERS
         LibJS/Embedding/ABI.h
         LibJS/Embedding/Layout.h
+        LibJS/Embedding/LibJSExports.map
+        LibJS/Embedding/LibJSExports.exp
+        LibJS/Embedding/LibJSExports.def
 )
 # The headers land in the build tree's Libraries directory, which every target already includes. CMake would otherwise
 # make the include directory of an imported target a system one for its consumers, hiding the warnings of every header

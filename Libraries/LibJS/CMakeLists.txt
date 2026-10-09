@@ -1,6 +1,6 @@
 # The LibJS target is the C++ API that LibJS's users build against, implemented over the Rust runtime's embedding ABI.
-# It links the runtime with the runtime's symbols hidden, so it exports only its own JS_API functions, and every process
-# that links LibJS has exactly one copy of the runtime.
+# It links the runtime with the runtime's symbols hidden except for the embedding ABI, so every process that links LibJS
+# has exactly one copy of the runtime.
 
 add_subdirectory(Rust)
 
@@ -91,15 +91,20 @@ target_link_libraries(LibJS PUBLIC LibUnicode)
 
 target_link_libraries(LibJS PUBLIC JSClangPlugin)
 
-if (NOT BUILD_SHARED_LIBS OR WIN32)
-    target_link_libraries(LibJS PRIVATE libjs_rust)
-elseif (APPLE)
-    set(CMAKE_LINK_LIBRARY_USING_load_hidden "LINKER:-load_hidden,<LIBRARY>")
-    set(CMAKE_LINK_LIBRARY_USING_load_hidden_SUPPORTED TRUE)
-    target_link_libraries(LibJS PRIVATE "$<LINK_LIBRARY:load_hidden,libjs_rust>")
-else()
-    target_link_libraries(LibJS PRIVATE libjs_rust)
-    get_target_property(libjs_rust_archive libjs_rust IMPORTED_LOCATION)
-    cmake_path(GET libjs_rust_archive FILENAME libjs_rust_archive_name)
-    target_link_options(LibJS PRIVATE "LINKER:--exclude-libs,${libjs_rust_archive_name}")
+# A shared LibJS exports its own JS_API functions and the functions of the embedding ABI, which embedders written in
+# Rust call. The libjs_rust build script lists them for each linker, and every other symbol of the runtime stays local.
+target_link_libraries(LibJS PRIVATE libjs_rust)
+if (BUILD_SHARED_LIBS)
+    set(libjs_exports_directory "${CMAKE_BINARY_DIR}/Libraries/LibJS/Embedding")
+    if (WIN32)
+        set(libjs_exports "${libjs_exports_directory}/LibJSExports.def")
+        target_link_options(LibJS PRIVATE "LINKER:/DEF:${libjs_exports}")
+    elseif (APPLE)
+        set(libjs_exports "${libjs_exports_directory}/LibJSExports.exp")
+        target_link_options(LibJS PRIVATE "LINKER:-exported_symbols_list,${libjs_exports}")
+    else()
+        set(libjs_exports "${libjs_exports_directory}/LibJSExports.map")
+        target_link_options(LibJS PRIVATE "LINKER:--version-script=${libjs_exports}")
+    endif()
+    set_property(TARGET LibJS APPEND PROPERTY LINK_DEPENDS "${libjs_exports}")
 endif()

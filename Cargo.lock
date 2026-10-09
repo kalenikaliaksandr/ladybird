@@ -895,6 +895,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rustc-demangle",
+ "syn 2.0.117",
 ]
 
 [[package]]

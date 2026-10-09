@@ -8,7 +8,7 @@
 //! computed from the crate's own layout module, the interpreter itself, assembled into the crate's static library,
 //! and the static assertions that keep the crate's types in line with that layout. It also generates the C headers
 //! of the embedding ABI, LibJS/Embedding/ABI.h from src/embedding and LibJS/Embedding/Layout.h from the layout module, and the frontend's
-//! instruction types from interpreter.flap.
+//! instruction types from interpreter.flap, and the lists of the symbols that the LibJS library exports.
 
 use std::env;
 use std::fs;
@@ -30,6 +30,12 @@ mod abi_header;
 
 #[path = "generate/c_type_spelling.rs"]
 mod c_type_spelling;
+
+#[path = "generate/embedding_items.rs"]
+mod embedding_items;
+
+#[path = "generate/export_lists.rs"]
+mod export_lists;
 
 #[path = "generate/fixture.rs"]
 mod fixture;
@@ -167,6 +173,19 @@ fn main() {
     );
     let layout_header = layout_header::generate();
     write_if_changed(&embedding_header_directory.join("Layout.h"), &layout_header.text);
+    let exported_functions = embedding_items::read(&manifest_directory).function_names();
+    write_if_changed(
+        &embedding_header_directory.join("LibJSExports.map"),
+        &export_lists::elf_version_script(&exported_functions),
+    );
+    write_if_changed(
+        &embedding_header_directory.join("LibJSExports.exp"),
+        &export_lists::mach_o_exported_symbols_list(&exported_functions),
+    );
+    write_if_changed(
+        &embedding_header_directory.join("LibJSExports.def"),
+        &export_lists::windows_module_definition(&exported_functions),
+    );
     write_if_changed(
         &output_directory.join("layout_header_static_assertions.rs"),
         &layout_header.static_assertions,
