@@ -2344,6 +2344,26 @@ fn declare_document_host_of_layout_header(config: &mut cbindgen::Config) {
         .push_str("\nnamespace Web::Layout::RustFFI { struct DocumentHost; struct BegunRead; }");
 }
 
+/// Finds the Rust bindings of the interfaces implemented in Rust, which Meta/Generators/generate_libweb_bindings.py
+/// writes to Bindings/RustBindings.rs in the build directory of LibWeb, the FFI_OUTPUT_DIR of a build of LibWeb.
+/// Building the crate on its own, as cargo test and cargo clippy do, leaves the bindings and their implementations out.
+/// rustc tracks the file itself, as the crate includes it.
+fn locate_generated_bindings() {
+    println!("cargo:rustc-check-cfg=cfg(web_idl_bindings)");
+    println!("cargo:rerun-if-env-changed=FFI_OUTPUT_DIR");
+    let Some(ffi_output_dir) = env::var_os("FFI_OUTPUT_DIR") else {
+        return;
+    };
+    let bindings = PathBuf::from(ffi_output_dir).join("Bindings/RustBindings.rs");
+    assert!(
+        bindings.exists(),
+        "{} does not exist; a build of LibWeb generates the bindings before it builds the crate",
+        bindings.display()
+    );
+    println!("cargo:rustc-cfg=web_idl_bindings");
+    println!("cargo:rustc-env=LIBWEB_RUST_BINDINGS={}", bindings.display());
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
@@ -2351,6 +2371,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=cbindgen.toml");
     println!("cargo:rerun-if-changed=src");
+
+    locate_generated_bindings();
 
     generate_selector_pseudo_types(&manifest_dir, &out_dir)?;
     generate_property_metadata(&manifest_dir, &out_dir)?;

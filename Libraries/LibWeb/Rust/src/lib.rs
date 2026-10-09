@@ -14,6 +14,11 @@ mod rust_demangle;
 #[path = "../../../RustPanic.rs"]
 mod rust_panic;
 
+#[allow(
+    dead_code,
+    reason = "the generated bindings use only the conversions their interfaces need"
+)]
+pub(crate) mod bindings;
 pub(crate) mod cow_column;
 mod encoding_detection;
 pub(crate) mod fork;

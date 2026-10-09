@@ -8,7 +8,7 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 allocator = ["dep:ladybird_allocator"]
-thread-sanitizer = []
+thread-sanitizer = ["libjs_embedding/thread-sanitizer"]
 
 # After changing dependencies, regenerate the Flatpak sources:
 #   python3 Meta/CMake/flatpak/generate-cargo-sources.py
@@ -20,11 +20,15 @@ hashbrown = "0.16.1"
 ladybird_allocator = { path = "../../RustAllocator", optional = true }
 libcompositing_rust = { path = "../../LibCompositing/Rust" }
 libgfx_rust = { path = "../../LibGfx/Rust", default-features = false }
+libjs_embedding = { path = "../../LibJS/Embedding" }
 liburl_rust = { path = "../../LibURL/Rust", default-features = false }
 libweb_html_tokenizer = { path = "../HTML/Parser/Rust" }
 rustc-demangle = "0.1"
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 smallvec = "1.15.1"
+
+[dev-dependencies]
+libjs_embedding = { path = "../../LibJS/Embedding", features = ["test-stubs"] }
 
 [build-dependencies]
 cbindgen = "0.29"

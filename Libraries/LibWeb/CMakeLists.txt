@@ -1257,3 +1257,5 @@ if (HAS_FONTCONFIG)
 endif()
 
 generate_js_bindings(LibWeb)
+# libweb_rust includes the Rust bindings that generating the bindings writes.
+add_dependencies(libweb_rust-build generate_bindings)
