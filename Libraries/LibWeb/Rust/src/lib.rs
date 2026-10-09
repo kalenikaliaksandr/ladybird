@@ -20,6 +20,11 @@ mod rust_panic;
 )]
 pub(crate) mod bindings;
 pub(crate) mod cow_column;
+#[cfg_attr(
+    not(web_idl_bindings),
+    allow(dead_code, reason = "only the generated bindings use the interfaces")
+)]
+pub(crate) mod encoding;
 mod encoding_detection;
 pub(crate) mod fork;
 #[cfg(test)]
