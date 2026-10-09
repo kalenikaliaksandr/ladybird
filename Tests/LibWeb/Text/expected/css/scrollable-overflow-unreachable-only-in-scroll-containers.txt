@@ -1,0 +1,4 @@
+clip-x: 100x180
+clip-y: 180x100
+nested: 100x300
+direct: 100x100

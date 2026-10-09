@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<style>
+    .scroller {
+        width: 100px;
+        height: 100px;
+        overflow: auto;
+        margin: 20px;
+    }
+    .clip {
+        width: 100px;
+        height: 100px;
+    }
+    .shifted {
+        position: relative;
+        top: -20px;
+        left: -20px;
+    }
+</style>
+<!-- The tall child is wholly left of the box that clips it horizontally, but still reaches below the scroller. -->
+<div id="clip-x" class="scroller">
+    <div class="clip" style="overflow-x: clip"><div class="shifted" style="width: 1px; height: 200px"></div></div>
+</div>
+<!-- The wide child is wholly above the box that clips it vertically, but still reaches past the scroller's right. -->
+<div id="clip-y" class="scroller">
+    <div class="clip" style="overflow-y: clip"><div class="shifted" style="width: 200px; height: 1px"></div></div>
+</div>
+<!-- A box that is not a scroll container keeps a child that is wholly on its start side. -->
+<div id="nested" class="scroller">
+    <div style="position: relative"><div style="position: relative; left: -200px; width: 50px; height: 300px"></div></div>
+</div>
+<!-- A scroll container leaves out a child that is wholly in its unreachable scrollable overflow region. -->
+<div id="direct" class="scroller">
+    <div style="position: relative; left: -200px; width: 50px; height: 300px"></div>
+</div>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        for (const id of ["clip-x", "clip-y", "nested", "direct"]) {
+            const scroller = document.getElementById(id);
+            println(`${id}: ${scroller.scrollWidth}x${scroller.scrollHeight}`);
+        }
+    });
+</script>
