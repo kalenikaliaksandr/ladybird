@@ -8,6 +8,7 @@
 #include <AK/Math.h>
 #include <AK/Random.h>
 #include <AK/StdLibExtras.h>
+#include <AK/TemporaryChange.h>
 #include <Compositor/CanvasHost.h>
 #include <Compositor/CompositorState.h>
 #include <LibCore/EventLoop.h>
@@ -145,6 +146,7 @@ void CompositorState::create_context(Web::CompositorContextId context_id, Option
 
 void CompositorState::destroy_context(Web::CompositorContextId context_id)
 {
+    VERIFY(!m_ticking_display);
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
@@ -427,21 +429,6 @@ CompositorState::VideoSinkUpdateResult CompositorState::update_all_video_sinks()
         }
     }
     return result;
-}
-
-void CompositorState::update_video_sinks_for_display(Optional<u64> display_id)
-{
-    update_all_video_sinks();
-
-    // Keep this display's vsync ticking while any sink painted on it may require updates.
-    for (auto& context_entry : m_contexts) {
-        auto& context = *context_entry.value;
-        auto presentation = presentation_of(context);
-        if (!presentation.has_value() || presentation->display_id != display_id)
-            continue;
-        if (draws_video_sink_requiring_updates(context))
-            vsync_scheduler_for_display(display_id).schedule(presentation->refresh_rate);
-    }
 }
 
 bool CompositorState::draws_video_sink_requiring_updates(ContextState const& context)
@@ -1046,77 +1033,76 @@ VSyncScheduler& CompositorState::vsync_scheduler_for_display(Optional<u64> displ
 
 void CompositorState::present_pending_frames_on_vsync(Optional<u64> display_id, MonotonicTime frame_time)
 {
-    update_video_sinks_for_display(display_id);
+    update_all_video_sinks();
 
+    // A tick visits the trees that present on its display, so a context never waits for a tick that skips it.
+    Vector<ContextState*, 16> root_contexts;
     for (auto& context_entry : m_contexts) {
-        auto context_id = context_entry.key;
         auto& context = *context_entry.value;
-        auto presentation = presentation_of(context);
-        if (!presentation.has_value()) {
-            context.presenter().unschedule_pending_present_frame();
+        if (context.parent())
             continue;
-        }
-        auto tree_is_on_this_display = presentation->display_id == display_id;
-
-        if (context.rendering_opportunity_requested() && tree_is_on_this_display) {
-            auto display_refresh_rate = presentation->refresh_rate;
-            if (context.rendering_opportunity_is_due(frame_time, display_refresh_rate)) {
-                auto frame_interval = context.rendering_opportunity_frame_interval(display_refresh_rate);
-                context.did_deliver_rendering_opportunity(frame_time);
-                context.web_content_client().rendering_opportunity(context_id, frame_time.nanoseconds(), frame_interval);
-            } else {
-                vsync_scheduler_for_display(display_id).schedule(display_refresh_rate);
-            }
-        }
-
-        auto has_active_animation_on_display = context.needs_animation_frames() && tree_is_on_this_display;
-        auto presents_on_display = context.has_pending_present_frame_scheduled_on(display_id) || has_active_animation_on_display;
-        if (presents_on_display) {
-            if (tree_is_on_this_display)
-                dispatch_scroll_fling_step(context_id, context, context.take_scroll_fling_step(frame_time), frame_time);
-            if (auto animation_frame = context.advance_smooth_scroll_animations(frame_time); animation_frame.has_value())
-                context.presenter().queue_present_frame(PendingFrame::repainting_changes(*animation_frame));
-            if (auto rebound_frame = context.advance_elastic_overscroll_rebounds(frame_time); rebound_frame.has_value())
-                context.presenter().queue_present_frame(PendingFrame::repainting_changes(*rebound_frame));
-            if (auto fade_frame = context.presenter().advance_ui_overlay_fades(frame_time); fade_frame.has_value())
-                context.presenter().queue_present_frame(*fade_frame);
-        }
-
-        // A render clock tick goes to the process's render clock thread, beside what its main thread is doing, with
-        // where the compositor has scrolled to for this vsync, which that main thread may not have taken in yet.
-        if (context.clock_tick_requested() && tree_is_on_this_display) {
-            auto display_refresh_rate = presentation->refresh_rate;
-            if (context.clock_tick_is_due(frame_time, display_refresh_rate)) {
-                auto frame_interval = context.clock_tick_interval(display_refresh_rate);
-                context.did_deliver_clock_tick(frame_time);
-                context.web_content_client().clock_tick(context_id, frame_time.nanoseconds(), frame_interval, context.scroll_offsets());
-            } else {
-                vsync_scheduler_for_display(display_id).schedule(display_refresh_rate);
-            }
-        }
-
-        if (!presents_on_display)
-            continue;
-
-        publish_pending_async_scroll_updates(context_id, context);
-        if (context.visual_animations_need_frame()) {
-            context.advance_visual_animations(frame_time);
-            if (auto viewport_rect = context.presenter().viewport_rect_for_ui_overlay(); viewport_rect.has_value())
-                context.presenter().queue_present_frame(PendingFrame::repainting_changes(*viewport_rect));
-        }
-
-        add_backing_store_for_pending_frame_if_needed(context_id, context);
-        auto pending_present_frame = context.presenter().take_pending_present_frame_if_unblocked();
-        if (!pending_present_frame.has_value()) {
-            has_active_animation_on_display = context.needs_animation_frames() && tree_is_on_this_display;
-            if (context.has_pending_present_frame_scheduled_on(display_id) || has_active_animation_on_display)
-                vsync_scheduler_for_display(display_id).schedule(presentation->refresh_rate);
-            continue;
-        }
-        if (context.needs_animation_frames())
-            schedule_present_frame(context_id, context, PendingFrame::repainting_changes(pending_present_frame->viewport_rect));
-        present_frame(context_id, context, *pending_present_frame);
+        if (auto presentation = presentation_of(context); presentation.has_value() && presentation->display_id == display_id)
+            root_contexts.append(&context);
     }
+
+    TemporaryChange ticking_display { m_ticking_display, true };
+    for (auto* root_context : root_contexts) {
+        auto refresh_rate = presentation_of(*root_context)->refresh_rate;
+        root_context->for_each_context_in_tree([&](ContextState& context) {
+            present_pending_frame_on_vsync(context, refresh_rate, frame_time);
+        });
+        // What the tick left waiting, such as a request that is not due yet or a painted video, waits for the next one.
+        schedule_display_ticks_for_tree_of(*root_context);
+    }
+}
+
+void CompositorState::present_pending_frame_on_vsync(ContextState& context, double refresh_rate, MonotonicTime frame_time)
+{
+    auto context_id = context.id();
+    if (context.rendering_opportunity_requested() && context.rendering_opportunity_is_due(frame_time, refresh_rate)) {
+        auto frame_interval = context.rendering_opportunity_frame_interval(refresh_rate);
+        context.did_deliver_rendering_opportunity(frame_time);
+        context.web_content_client().rendering_opportunity(context_id, frame_time.nanoseconds(), frame_interval);
+    }
+
+    // Only a context that presents to the client schedules a present of its own, and such a context has no parent.
+    VERIFY(!context.presenter().pending_present_frame_scheduled() || context.presents_to_client());
+    auto presents_on_display = context.presenter().pending_present_frame_scheduled() || context.needs_animation_frames();
+    if (presents_on_display) {
+        dispatch_scroll_fling_step(context_id, context, context.take_scroll_fling_step(frame_time), frame_time);
+        if (auto animation_frame = context.advance_smooth_scroll_animations(frame_time); animation_frame.has_value())
+            context.presenter().queue_present_frame(PendingFrame::repainting_changes(*animation_frame));
+        if (auto rebound_frame = context.advance_elastic_overscroll_rebounds(frame_time); rebound_frame.has_value())
+            context.presenter().queue_present_frame(PendingFrame::repainting_changes(*rebound_frame));
+        if (auto fade_frame = context.presenter().advance_ui_overlay_fades(frame_time); fade_frame.has_value())
+            context.presenter().queue_present_frame(*fade_frame);
+    }
+
+    // A render clock tick goes to the process's render clock thread, beside what its main thread is doing, with
+    // where the compositor has scrolled to for this vsync, which that main thread may not have taken in yet.
+    if (context.clock_tick_requested() && context.clock_tick_is_due(frame_time, refresh_rate)) {
+        auto frame_interval = context.clock_tick_interval(refresh_rate);
+        context.did_deliver_clock_tick(frame_time);
+        context.web_content_client().clock_tick(context_id, frame_time.nanoseconds(), frame_interval, context.scroll_offsets());
+    }
+
+    if (!presents_on_display)
+        return;
+
+    publish_pending_async_scroll_updates(context_id, context);
+    if (context.visual_animations_need_frame()) {
+        context.advance_visual_animations(frame_time);
+        if (auto viewport_rect = context.presenter().viewport_rect_for_ui_overlay(); viewport_rect.has_value())
+            context.presenter().queue_present_frame(PendingFrame::repainting_changes(*viewport_rect));
+    }
+
+    add_backing_store_for_pending_frame_if_needed(context_id, context);
+    auto pending_present_frame = context.presenter().take_pending_present_frame_if_unblocked();
+    if (!pending_present_frame.has_value())
+        return;
+    if (context.needs_animation_frames())
+        schedule_present_frame(context_id, context, PendingFrame::repainting_changes(pending_present_frame->viewport_rect));
+    present_frame(context_id, context, *pending_present_frame);
 }
 
 bool CompositorState::request_screenshot(Web::CompositorContextId context_id, Gfx::ShareableBitmap& target_bitmap)
@@ -1238,6 +1224,7 @@ ContextState const* CompositorState::context_if_present(Web::CompositorContextId
 
 void CompositorState::set_parent_of(ContextState& context, ContextState* parent_context)
 {
+    VERIFY(!m_ticking_display);
     context.set_parent({}, parent_context);
     schedule_display_ticks_for_tree_of(context);
 }

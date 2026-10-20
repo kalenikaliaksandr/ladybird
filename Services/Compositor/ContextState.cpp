@@ -1525,6 +1525,8 @@ bool ContextState::set_visibility(Compositing::ContextVisibility visibility)
     if (visibility == Compositing::ContextVisibility::Hidden) {
         end_keyboard_scroll_gesture();
         m_elastic_overscroll_controller.forget();
+        // The display ticks do not visit a hidden tree, so nothing would present the frame.
+        m_presenter.unschedule_pending_present_frame();
     }
     return true;
 }
@@ -1539,12 +1541,6 @@ Vector<Web::CompositorScrollOffset> ContextState::scroll_offsets() const
             scroll_offsets.unchecked_append({ node.stable_node_id, *offset });
     }
     return scroll_offsets;
-}
-
-bool ContextState::has_pending_present_frame_scheduled_on(Optional<u64> display_id) const
-{
-    auto own_display_id = m_display_metadata.has_value() ? m_display_metadata->display_id : Optional<u64> {};
-    return m_presenter.pending_present_frame_scheduled() && own_display_id == display_id;
 }
 
 ContextPresenter::FrameContent ContextState::frame_content(Compositing::ScrollStateSnapshot const& presented_scroll_state_snapshot, CompositedContextResolver const* composited_context_resolver) const

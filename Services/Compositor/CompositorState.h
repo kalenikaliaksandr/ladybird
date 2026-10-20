@@ -174,7 +174,6 @@ private:
     void publish_pending_async_scroll_updates(Web::CompositorContextId, ContextState&);
 
 public:
-    void present_pending_frames_for_testing() { present_pending_frames_on_vsync({}, MonotonicTime::now()); }
     size_t pending_async_present_count_for_testing() const { return m_pending_async_presents.size(); }
 
     // What was not published yet, for a caller that needs the compositor's state as of now.
@@ -212,7 +211,6 @@ private:
         UnpaintedSinkRequiresUpdates,
     };
     VideoSinkUpdateResult update_all_video_sinks();
-    void update_video_sinks_for_display(Optional<u64> display_id);
     void update_unpainted_video_sinks();
     void schedule_unpainted_video_updates();
     int unpainted_video_update_interval_ms() const;
@@ -257,6 +255,7 @@ private:
     void schedule_caret_repaint(Web::CompositorContextId, Gfx::IntRect damage_rect);
     VSyncScheduler& vsync_scheduler_for_display(Optional<u64> display_id);
     void present_pending_frames_on_vsync(Optional<u64> display_id, MonotonicTime frame_time);
+    void present_pending_frame_on_vsync(ContextState&, double refresh_rate, MonotonicTime frame_time);
     void publish_backing_stores(Web::CompositorContextId, ContextState&, BackingStoreManager::Publication&&);
     BackingStoreManager::GpuSharing gpu_sharing_for_client() const;
     void did_finish_async_present(PendingAsyncPresent&);
@@ -279,6 +278,8 @@ private:
     Optional<u64> m_client_gpu_presentation_adapter_luid;
     bool m_synthesizes_scroll_momentum { false };
     bool m_scrolls_elastically { false };
+    // The trees of contexts must not change while a display tick walks them.
+    bool m_ticking_display { false };
 
     struct VideoSinkState {
         RefPtr<Media::DisplayingVideoSink> sink;

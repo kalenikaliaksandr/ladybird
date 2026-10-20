@@ -262,7 +262,6 @@ public:
     Vector<Web::CompositorScrollOffset> scroll_offsets() const;
     bool display_tick_requested() const { return rendering_opportunity_requested() || clock_tick_requested(); }
 
-    bool has_pending_present_frame_scheduled_on(Optional<u64> display_id) const;
     Optional<PreparedFrame> prepare_frame(DisplayListPlayerSkia&, PendingFrame, CompositedContextResolver const*);
     bool present_synchronously(DisplayListPlayerSkia&, CompositedContextResolver const*);
     bool can_paint_screenshot(Gfx::ShareableBitmap&) const;
