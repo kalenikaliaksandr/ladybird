@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Badge.h>
 #include <AK/Function.h>
 #include <AK/HashMap.h>
 #include <AK/Noncopyable.h>
@@ -127,10 +128,11 @@ public:
     ContextState(Web::CompositorContextId, Optional<u64> page_id, CompositorStateWebContentClient&, Compositing::OwnedCanvasSurfaces, Function<void(Gfx::IntRect)> schedule_caret_repaint = {});
     ~ContextState();
 
+    Web::CompositorContextId id() const { return m_context_id; }
     bool is_owned_by(CompositorStateWebContentClient const&) const;
     CompositorStateWebContentClient& web_content_client() const { return m_web_content_client; }
     void request_rendering_update();
-    void dispatch_mouse_event_to_web_content(Web::MouseEvent const&, bool nested_context_scrolled_since_last_frame = false);
+    void dispatch_mouse_event_to_web_content(Web::MouseEvent const&);
     void dispatch_key_event_to_web_content(Web::KeyEvent const&);
     // Whether the scroll offsets here moved past those of the last frame WebContent presented.
     bool scrolled_since_last_frame() const;
@@ -139,8 +141,19 @@ public:
     bool presents_to_client() const { return m_presenter.presents_to_client(); }
     void stop_presenting_to_client();
 
-    void set_parent_context(Optional<Web::CompositorContextId>);
-    Optional<Web::CompositorContextId> parent_context_id() const { return m_parent_context_id; }
+    ContextState* parent() { return m_parent; }
+    ContextState const* parent() const { return m_parent; }
+    ReadonlySpan<ContextState*> children() const { return m_children; }
+    ContextState& root();
+    ContextState const& root() const;
+    bool is_nested_in(ContextState const&) const;
+    bool is_child_of(Web::CompositorContextId parent_context_id) const { return m_parent && m_parent->id() == parent_context_id; }
+    // Calls the callback for each context in the tree of this context, with each context after the contexts nested in it.
+    template<typename Callback>
+    void for_each_context_in_tree(Callback);
+    template<typename Predicate>
+    bool any_context_in_tree(Predicate);
+    void set_parent(Badge<CompositorState>, ContextState*);
     ContextPresenter& presenter() { return m_presenter; }
     ContextPresenter const& presenter() const { return m_presenter; }
 
@@ -334,7 +347,8 @@ private:
     Web::CompositorContextId m_context_id;
     Optional<u64> m_page_id;
 
-    Optional<Web::CompositorContextId> m_parent_context_id;
+    ContextState* m_parent { nullptr };
+    Vector<ContextState*> m_children;
 
     ContextScene m_scene;
     ContextPresenter m_presenter;
@@ -363,5 +377,27 @@ private:
     PacedTickRequest m_rendering_opportunity_request;
     PacedTickRequest m_clock_tick_request;
 };
+
+template<typename Callback>
+void ContextState::for_each_context_in_tree(Callback callback)
+{
+    // Collects the contexts level by level, so that in reverse order each context comes after the contexts nested in it.
+    // A misbehaving WebContent can nest contexts deeply, so the walk does not recurse.
+    Vector<ContextState*, 8> contexts_in_tree { this };
+    for (size_t i = 0; i < contexts_in_tree.size(); ++i) {
+        for (auto* child : contexts_in_tree[i]->m_children)
+            contexts_in_tree.append(child);
+    }
+    for (auto* context : contexts_in_tree.in_reverse())
+        callback(*context);
+}
+
+template<typename Predicate>
+bool ContextState::any_context_in_tree(Predicate predicate)
+{
+    bool found = false;
+    for_each_context_in_tree([&](ContextState& context) { found = found || predicate(context); });
+    return found;
+}
 
 }

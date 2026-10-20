@@ -149,14 +149,8 @@ void CompositorState::destroy_context(Web::CompositorContextId context_id)
 
     cancel_pending_async_presents_for_context(context_id);
     clear_parent_context(*context);
-    for (auto& context_entry : m_contexts) {
-        if (context_entry.key == context_id)
-            continue;
-        auto& possible_child_context = *context_entry.value;
-        auto parent_context_id = possible_child_context.parent_context_id();
-        if (parent_context_id.has_value() && *parent_context_id == context_id)
-            possible_child_context.set_parent_context({});
-    }
+    while (!context->children().is_empty())
+        context->children().last()->set_parent({}, nullptr);
     m_contexts.remove(context_id);
     update_unpainted_video_update_scheduling();
 }
@@ -166,6 +160,7 @@ void CompositorState::set_parent_context(Web::CompositorContextId context_id, Op
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
+    ContextState* parent_context = nullptr;
     if (parent_context_id.has_value()) {
         VERIFY(!context->presents_to_client());
         // The parent's context belongs to the process hosting the parent, which can destroy it before this context's
@@ -175,28 +170,23 @@ void CompositorState::set_parent_context(Web::CompositorContextId context_id, Op
         //     has been destroyed.
         // A misbehaving WebContent can name this context or a context nested in it as the parent. The context is left
         // without a parent then too, as a loop of parents has no root.
-        auto const* parent_context = context_if_present(*parent_context_id);
-        if (!parent_context || parent_context == context || is_nested_in(context_id, *parent_context))
-            parent_context_id = {};
+        parent_context = context_if_present(*parent_context_id);
+        if (parent_context && (parent_context == context || parent_context->is_nested_in(*context)))
+            parent_context = nullptr;
     }
 
-    auto current_parent_context_id = context->parent_context_id();
-    if (current_parent_context_id.has_value() == parent_context_id.has_value()
-        && (!current_parent_context_id.has_value() || *current_parent_context_id == *parent_context_id))
+    if (context->parent() == parent_context)
         return;
 
     clear_parent_context(*context);
-    context->set_parent_context(parent_context_id);
-
-    if (!parent_context_id.has_value())
+    if (!parent_context)
         return;
+    context->set_parent({}, parent_context);
 
     if (!context->presenter().latest_rendered_surface() && !context->presenter().needs_rasterization())
         return;
 
-    auto* parent_context = context_if_present(*parent_context_id);
-    VERIFY(parent_context);
-    present_current_frame(*parent_context_id, *parent_context);
+    present_current_frame(parent_context->id(), *parent_context);
 }
 
 void CompositorState::stop_presenting_to_client(Web::CompositorContextId context_id)
@@ -459,47 +449,23 @@ void CompositorState::update_video_sinks_for_display(Optional<u64> display_id)
 
 Optional<u64> CompositorState::display_id_for_context(ContextState const& context) const
 {
-    auto current_context = &context;
-    while (current_context) {
+    for (auto const* current_context = &context; current_context; current_context = current_context->parent()) {
         if (current_context->display_id().has_value())
             return current_context->display_id();
-        auto parent_context_id = current_context->parent_context_id();
-        if (!parent_context_id.has_value())
-            break;
-        current_context = context_if_present(*parent_context_id);
     }
     return {};
 }
 
-ContextState const* CompositorState::root_context_of(ContextState const& context) const
-{
-    auto const* current_context = &context;
-    while (true) {
-        auto parent_context_id = current_context->parent_context_id();
-        if (!parent_context_id.has_value())
-            return current_context;
-        auto const* parent_context = context_if_present(*parent_context_id);
-        if (!parent_context)
-            return current_context;
-        current_context = parent_context;
-    }
-}
-
 bool CompositorState::context_is_effectively_visible(ContextState const& context) const
 {
-    return root_context_of(context)->visibility() == Compositing::ContextVisibility::Visible;
+    return context.root().visibility() == Compositing::ContextVisibility::Visible;
 }
 
 double CompositorState::display_refresh_rate_for_context(ContextState const& context) const
 {
-    auto current_context = &context;
-    while (current_context) {
+    for (auto const* current_context = &context; current_context; current_context = current_context->parent()) {
         if (current_context->display_id().has_value())
             return current_context->display_refresh_rate();
-        auto parent_context_id = current_context->parent_context_id();
-        if (!parent_context_id.has_value())
-            break;
-        current_context = context_if_present(*parent_context_id);
     }
     return context.display_refresh_rate();
 }
@@ -607,31 +573,7 @@ void CompositorState::handle_and_dispatch_mouse_event(Web::CompositorContextId c
         event.scrollbar_dragged_by_compositor = result.scrollbar_dragged_by_compositor;
     }
     record_routing(Web::InputRoutingDecision::ForwardedToPage);
-    context->dispatch_mouse_event_to_web_content(event, nested_context_scrolled_since_last_frame(context_id));
-}
-
-// Whether a context nested in the context `context_id` scrolled since the last frame its WebContent presented: the lane
-// of the context's document hands a pointer move to the lane of a same-process iframe, which hit tests it in the iframe.
-bool CompositorState::nested_context_scrolled_since_last_frame(Web::CompositorContextId context_id) const
-{
-    for (auto const& entry : m_contexts) {
-        if (entry.value->scrolled_since_last_frame() && is_nested_in(context_id, *entry.value))
-            return true;
-    }
-    return false;
-}
-
-bool CompositorState::is_nested_in(Web::CompositorContextId containing_context_id, ContextState const& context) const
-{
-    for (auto const* ancestor = &context; ancestor;) {
-        auto parent_context_id = ancestor->parent_context_id();
-        if (!parent_context_id.has_value())
-            return false;
-        if (*parent_context_id == containing_context_id)
-            return true;
-        ancestor = context_if_present(*parent_context_id);
-    }
-    return false;
+    context->dispatch_mouse_event_to_web_content(event);
 }
 
 ContextState::ContextUpdateResult CompositorState::scroll_for_wheel_step(Web::CompositorContextId context_id, ContextState& context, Web::MouseEvent const& event, WheelStepOrigin origin, Optional<MonotonicTime> fling_step_time)
@@ -673,7 +615,7 @@ CompositorState::WheelStepHandedToNestedContext CompositorState::hand_wheel_step
 
     if (!nested_step.hit.has_value()) {
         auto* nested_context = context_if_present(nested_step.context_id);
-        if (!nested_context || !is_nested_in(context_id, *nested_context)) {
+        if (!nested_context || !nested_context->is_nested_in(context)) {
             context.forget_wheel_gesture_latch();
             return { ContextState::ContextUpdateResult::declined(Web::InputRoutingDecision::NestedContextUnavailable) };
         }
@@ -726,7 +668,7 @@ Optional<CompositorState::NestedContextTakingWheelStep> CompositorState::nested_
     while (true) {
         // WebContent names the contexts its display lists draw, so a context only reaches those nested in it.
         auto* nested_context = context_if_present(hit.child_context_id);
-        if (!nested_context || nested_context->parent_context_id() != containing_context_id)
+        if (!nested_context || !nested_context->is_child_of(containing_context_id))
             return NestedContextTakingWheelStep { .context_id = hit.child_context_id, .route = { Kind::Declined, Web::InputRoutingDecision::NestedContextUnavailable } };
         auto position = position_in_nested_context(hit, *nested_context);
         if (!position.has_value())
@@ -899,13 +841,12 @@ void CompositorState::set_context_visibility(Web::CompositorContextId context_id
 
 void CompositorState::resume_presentation_after_becoming_visible(Web::CompositorContextId root_context_id, ContextState& root_context)
 {
-    for (auto& context_entry : m_contexts) {
-        auto& context = *context_entry.value;
-        if (root_context_of(context) != &root_context)
-            continue;
-        schedule_animation_frames_if_needed(context);
-        if (context.display_tick_requested())
-            vsync_scheduler_for_display(display_id_for_context(context)).schedule(display_refresh_rate_for_context(context));
+    if (!root_context.parent()) {
+        root_context.for_each_context_in_tree([&](ContextState& context) {
+            schedule_animation_frames_if_needed(context);
+            if (context.display_tick_requested())
+                vsync_scheduler_for_display(display_id_for_context(context)).schedule(display_refresh_rate_for_context(context));
+        });
     }
 
     if (auto frame_rect_to_present = root_context.presenter().frame_rect_to_repaint(); frame_rect_to_present.has_value())
@@ -1049,13 +990,8 @@ void CompositorState::schedule_pending_present_frame_on_vsync(Web::CompositorCon
 
 void CompositorState::schedule_containing_context_present(ContextState& context)
 {
-    auto parent_context_id = context.parent_context_id();
-    if (!parent_context_id.has_value())
-        return;
-
-    auto* parent_context = context_if_present(*parent_context_id);
-    VERIFY(parent_context);
-    present_current_frame(*parent_context_id, *parent_context);
+    if (auto* parent_context = context.parent())
+        present_current_frame(parent_context->id(), *parent_context);
 }
 
 void CompositorState::schedule_pending_present_frame_if_unblocked(Web::CompositorContextId context_id, ContextState& context)
@@ -1234,11 +1170,8 @@ void CompositorState::deliver_rendered_frame(PendingAsyncPresent& pending_presen
         m_client->did_present_frame(context_id, pending_present.viewport_rect, pending_present.damage_rect, pending_present.bitmap_id, pending_present.device_pixel_ratio);
     }
     resize_backing_stores_if_needed(context_id, *context);
-    if (auto parent_context_id = context->parent_context_id(); parent_context_id.has_value()) {
-        auto* parent_context = context_if_present(*parent_context_id);
-        VERIFY(parent_context);
-        present_current_frame(*parent_context_id, *parent_context);
-    }
+    if (auto* parent_context = context->parent())
+        present_current_frame(parent_context->id(), *parent_context);
 
     schedule_pending_present_frame_if_unblocked(context_id, *context);
 }
@@ -1299,15 +1232,12 @@ ContextState const* CompositorState::context_if_present(Web::CompositorContextId
 
 void CompositorState::clear_parent_context(ContextState& context)
 {
-    auto parent_context_id = context.parent_context_id();
-    if (!parent_context_id.has_value())
-        return;
-
-    context.set_parent_context({});
-    auto* parent_context = context_if_present(*parent_context_id);
+    auto* parent_context = context.parent();
     if (!parent_context)
         return;
-    present_current_frame(*parent_context_id, *parent_context);
+
+    context.set_parent({}, nullptr);
+    present_current_frame(parent_context->id(), *parent_context);
 }
 
 CompositedContextResolver CompositorState::resolver_for(Web::CompositorContextId parent_context_id)
@@ -1322,8 +1252,7 @@ Compositing::CompositedContextSurface CompositorState::resolve_composited_contex
     auto* child_context = context_if_present(child_context_id);
     if (!child_context)
         return {};
-    auto child_parent_context_id = child_context->parent_context_id();
-    if (!child_parent_context_id.has_value() || *child_parent_context_id != parent_context_id)
+    if (!child_context->is_child_of(parent_context_id))
         return {};
 
     if (child_context->presenter().update_composited_raster_transform(destination_rect, canvas_transform)) {

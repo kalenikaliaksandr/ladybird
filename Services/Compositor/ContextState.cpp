@@ -72,18 +72,21 @@ void ContextState::request_rendering_update()
     m_web_content_client.request_rendering_update();
 }
 
-void ContextState::dispatch_mouse_event_to_web_content(Web::MouseEvent const& event, bool nested_context_scrolled_since_last_frame)
+void ContextState::dispatch_mouse_event_to_web_content(Web::MouseEvent const& event)
 {
     VERIFY(m_page_id.has_value());
     m_web_content_client.dispatch_mouse_event_to_web_content(*m_page_id, event);
 
     // The render clock hears where the pointer went too, without waiting for WebContent's main thread, so that hover
     // can follow the pointer while that thread runs a task. The lanes hit test it in the frames on screen, which a
-    // scroll since, here or in a nested context, has moved.
-    if (event.type == Web::MouseEvent::Type::MouseMove)
-        m_web_content_client.pointer_moved(m_context_id, event.position, to_underlying(event.buttons), scrolled_since_last_frame() || nested_context_scrolled_since_last_frame, event.id);
-    else if (event.type == Web::MouseEvent::Type::MouseLeave)
+    // scroll since, here or in a nested context, has moved. The lane of this context's document hands a pointer move
+    // to the lane of a same-process iframe, which hit tests it in the iframe.
+    if (event.type == Web::MouseEvent::Type::MouseMove) {
+        auto tree_scrolled_since_last_frame = any_context_in_tree([](ContextState const& context) { return context.scrolled_since_last_frame(); });
+        m_web_content_client.pointer_moved(m_context_id, event.position, to_underlying(event.buttons), tree_scrolled_since_last_frame, event.id);
+    } else if (event.type == Web::MouseEvent::Type::MouseLeave) {
         m_web_content_client.pointer_left(m_context_id, event.id);
+    }
 }
 
 bool ContextState::scrolled_since_last_frame() const
@@ -104,9 +107,35 @@ void ContextState::stop_presenting_to_client()
     m_presenter.stop_presenting_to_client();
 }
 
-void ContextState::set_parent_context(Optional<Web::CompositorContextId> parent_context_id)
+ContextState& ContextState::root()
 {
-    m_parent_context_id = parent_context_id;
+    auto* root = this;
+    while (root->m_parent)
+        root = root->m_parent;
+    return *root;
+}
+
+ContextState const& ContextState::root() const
+{
+    return const_cast<ContextState&>(*this).root();
+}
+
+bool ContextState::is_nested_in(ContextState const& containing_context) const
+{
+    for (auto const* ancestor = m_parent; ancestor; ancestor = ancestor->m_parent) {
+        if (ancestor == &containing_context)
+            return true;
+    }
+    return false;
+}
+
+void ContextState::set_parent(Badge<CompositorState>, ContextState* parent)
+{
+    if (m_parent)
+        m_parent->m_children.remove_first_matching([this](auto* child) { return child == this; });
+    m_parent = parent;
+    if (m_parent)
+        m_parent->m_children.append(this);
 }
 
 void ContextState::apply_display_list_resource_transaction(Compositing::DisplayListResourceTransaction&& resource_transaction)
@@ -1465,7 +1494,7 @@ void ContextState::viewport_size_updated(Gfx::IntSize viewport_size, double devi
     m_scene.forget_whether_animated_content_may_affect_viewport();
     if (m_presenter.viewport_size() != viewport_size)
         m_keyboard_scroll_controller.forget_target();
-    auto is_page_presentation_context = m_page_id.has_value() && !m_parent_context_id.has_value();
+    auto is_page_presentation_context = m_page_id.has_value() && !m_parent;
     m_presenter.set_viewport_size(viewport_size, device_pixel_ratio, is_page_presentation_context ? window_resize_in_progress : Compositing::WindowResizingInProgress::No);
 }
 

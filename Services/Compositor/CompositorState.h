@@ -183,8 +183,6 @@ public:
 private:
     ContextState const* context_if_present(Web::CompositorContextId) const;
     Optional<u64> display_id_for_context(ContextState const&) const;
-    ContextState const* root_context_of(ContextState const&) const;
-    bool nested_context_scrolled_since_last_frame(Web::CompositorContextId) const;
     bool context_is_effectively_visible(ContextState const&) const;
     void resume_presentation_after_becoming_visible(Web::CompositorContextId root_context_id, ContextState& root_context);
     double display_refresh_rate_for_context(ContextState const&) const;
@@ -237,7 +235,6 @@ private:
     // The context that takes the first step of a gesture over the content of a context nested in the context
     // `context_id`, among that context and the contexts nested in it. Empty when each of them passes the step on.
     Optional<NestedContextTakingWheelStep> nested_context_taking_first_wheel_step(Web::CompositorContextId, Compositing::NestedContextWheelHit, Gfx::FloatPoint delta_in_css_pixels, Web::WheelDeltaPrecision);
-    bool is_nested_in(Web::CompositorContextId containing_context_id, ContextState const&) const;
     void dispatch_scroll_fling_step(Web::CompositorContextId, ContextState&, Optional<Web::MouseEvent>, MonotonicTime now);
     void present_frame(Web::CompositorContextId, ContextState&, PendingFrame);
     void schedule_present_frame(Web::CompositorContextId, ContextState&, PendingFrame);
