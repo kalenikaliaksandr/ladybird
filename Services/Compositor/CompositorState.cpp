@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/AnyOf.h>
 #include <AK/Math.h>
 #include <AK/Random.h>
 #include <AK/StdLibExtras.h>
@@ -148,9 +149,12 @@ void CompositorState::destroy_context(Web::CompositorContextId context_id)
     VERIFY(context);
 
     cancel_pending_async_presents_for_context(context_id);
-    clear_parent_context(*context);
     while (!context->children().is_empty())
-        context->children().last()->set_parent({}, nullptr);
+        set_parent_of(*context->children().last(), nullptr);
+    if (auto* parent_context = context->parent()) {
+        set_parent_of(*context, nullptr);
+        present_current_frame(parent_context->id(), *parent_context);
+    }
     m_contexts.remove(context_id);
     update_unpainted_video_update_scheduling();
 }
@@ -175,18 +179,15 @@ void CompositorState::set_parent_context(Web::CompositorContextId context_id, Op
             parent_context = nullptr;
     }
 
-    if (context->parent() == parent_context)
+    auto* old_parent_context = context->parent();
+    if (old_parent_context == parent_context)
         return;
 
-    clear_parent_context(*context);
-    if (!parent_context)
-        return;
-    context->set_parent({}, parent_context);
-
-    if (!context->presenter().latest_rendered_surface() && !context->presenter().needs_rasterization())
-        return;
-
-    present_current_frame(parent_context->id(), *parent_context);
+    set_parent_of(*context, parent_context);
+    if (old_parent_context)
+        present_current_frame(old_parent_context->id(), *old_parent_context);
+    if (parent_context && (context->presenter().latest_rendered_surface() || context->presenter().needs_rasterization()))
+        present_current_frame(parent_context->id(), *parent_context);
 }
 
 void CompositorState::stop_presenting_to_client(Web::CompositorContextId context_id)
@@ -438,14 +439,17 @@ void CompositorState::update_video_sinks_for_display(Optional<u64> display_id)
         auto presentation = presentation_of(context);
         if (!presentation.has_value() || presentation->display_id != display_id)
             continue;
-        for (auto const& resource_entry : context.video_sink_handles()) {
-            auto* sink_state = video_sink_state(context.web_content_client(), resource_entry.value);
-            if (sink_state != nullptr && sink_state->requires_updates) {
-                vsync_scheduler_for_display(display_id).schedule(presentation->refresh_rate);
-                break;
-            }
-        }
+        if (draws_video_sink_requiring_updates(context))
+            vsync_scheduler_for_display(display_id).schedule(presentation->refresh_rate);
     }
+}
+
+bool CompositorState::draws_video_sink_requiring_updates(ContextState const& context)
+{
+    return any_of(context.video_sink_handles(), [&](auto const& resource_entry) {
+        auto* sink_state = video_sink_state(context.web_content_client(), resource_entry.value);
+        return sink_state != nullptr && sink_state->requires_updates;
+    });
 }
 
 Optional<CompositorState::DisplayPresentation> CompositorState::presentation_of(ContextState const& context) const
@@ -810,14 +814,9 @@ void CompositorState::set_display_metadata(Web::CompositorContextId context_id, 
     VERIFY(refresh_rate > 0);
     VERIFY(refresh_rate < AK::Infinity<double>);
 
-    auto display_metadata_changed = context->set_display_metadata({ display_id, refresh_rate });
-    if (context->presenter().pending_present_frame_scheduled())
-        schedule_pending_present_frame(context_id, *context);
-    if (display_metadata_changed && m_unpainted_video_update_timer)
+    if (context->set_display_metadata({ display_id, refresh_rate }) && m_unpainted_video_update_timer)
         m_unpainted_video_update_timer->set_interval(AK::Duration::from_milliseconds(unpainted_video_update_interval_ms()));
-
-    if (context->display_tick_requested())
-        schedule_display_tick_for(*context);
+    schedule_display_ticks_for_tree_of(*context);
 }
 
 void CompositorState::set_context_visibility(Web::CompositorContextId context_id, Compositing::ContextVisibility visibility)
@@ -832,22 +831,26 @@ void CompositorState::set_context_visibility(Web::CompositorContextId context_id
 
     dbgln_if(COMPOSITOR_DEBUG, "[Compositor] Context {} became {}", context_id, visibility == Compositing::ContextVisibility::Visible ? "visible" : "hidden");
 
-    if (visibility == Compositing::ContextVisibility::Visible)
-        resume_presentation_after_becoming_visible(context_id, *context);
+    if (visibility != Compositing::ContextVisibility::Visible)
+        return;
+    schedule_display_ticks_for_tree_of(*context);
+    if (auto frame_rect_to_present = context->presenter().frame_rect_to_repaint(); frame_rect_to_present.has_value())
+        schedule_present_frame(context_id, *context, *frame_rect_to_present);
 }
 
-void CompositorState::resume_presentation_after_becoming_visible(Web::CompositorContextId root_context_id, ContextState& root_context)
+void CompositorState::schedule_display_ticks_for_tree_of(ContextState& context)
 {
-    if (!root_context.parent()) {
-        root_context.for_each_context_in_tree([&](ContextState& context) {
-            schedule_animation_frames_if_needed(context);
-            if (context.display_tick_requested())
-                schedule_display_tick_for(context);
-        });
-    }
+    auto& root_context = context.root();
+    if (root_context.any_context_in_tree([&](ContextState& tree_context) { return waits_for_display_tick(tree_context); }))
+        schedule_display_tick_for(root_context);
+}
 
-    if (auto frame_rect_to_present = root_context.presenter().frame_rect_to_repaint(); frame_rect_to_present.has_value())
-        schedule_present_frame(root_context_id, root_context, *frame_rect_to_present);
+bool CompositorState::waits_for_display_tick(ContextState& context)
+{
+    return context.display_tick_requested()
+        || context.needs_animation_frames()
+        || context.presenter().pending_present_frame_scheduled()
+        || draws_video_sink_requiring_updates(context);
 }
 
 void CompositorState::request_rendering_opportunity(Web::CompositorContextId context_id, double maximum_frames_per_second)
@@ -1233,14 +1236,10 @@ ContextState const* CompositorState::context_if_present(Web::CompositorContextId
     return it->value.ptr();
 }
 
-void CompositorState::clear_parent_context(ContextState& context)
+void CompositorState::set_parent_of(ContextState& context, ContextState* parent_context)
 {
-    auto* parent_context = context.parent();
-    if (!parent_context)
-        return;
-
-    context.set_parent({}, nullptr);
-    present_current_frame(parent_context->id(), *parent_context);
+    context.set_parent({}, parent_context);
+    schedule_display_ticks_for_tree_of(context);
 }
 
 CompositedContextResolver CompositorState::resolver_for(Web::CompositorContextId parent_context_id)

@@ -75,7 +75,12 @@ public:
     ~ContextPresenter();
 
     bool presents_to_client() const { return m_presents_to_client; }
-    void stop_presenting_to_client() { m_presents_to_client = false; }
+    void stop_presenting_to_client()
+    {
+        m_presents_to_client = false;
+        // Only a context that presents to the client presents on display ticks of its own.
+        m_pending_present_frame_scheduled = false;
+    }
 
     Gfx::IntSize viewport_size() const { return m_viewport_size; }
     double device_pixel_ratio() const { return m_device_pixel_ratio; }

@@ -189,8 +189,14 @@ private:
     bool is_presented(ContextState const&) const;
     // Schedules a tick on the display that the tree of the context presents on, unless the root of the tree is hidden.
     void schedule_display_tick_for(ContextState const&);
-    void resume_presentation_after_becoming_visible(Web::CompositorContextId root_context_id, ContextState& root_context);
-    void clear_parent_context(ContextState&);
+    // Schedules a tick on the display that the tree of the context presents on, if any context in the tree waits for one.
+    // Call it when the display, the visibility or the contexts of the tree change: a tick that a context waits for can
+    // be on the display that the tree presented on before.
+    void schedule_display_ticks_for_tree_of(ContextState&);
+    bool waits_for_display_tick(ContextState&);
+    bool draws_video_sink_requiring_updates(ContextState const&);
+    // The only place that links contexts, so that the contexts of a tree that moves never wait for the display it left.
+    void set_parent_of(ContextState&, ContextState* parent_context);
     CompositedContextResolver resolver_for(Web::CompositorContextId parent_context_id);
     Compositing::CompositedContextSurface resolve_composited_context(Web::CompositorContextId parent_context_id, Web::CompositorContextId child_context_id, Gfx::FloatRect destination_rect, Gfx::FloatMatrix4x4 const& canvas_transform);
     void schedule_backing_store_shrink(Web::CompositorContextId, ContextState&);
