@@ -168,13 +168,15 @@ void CompositorState::set_parent_context(Web::CompositorContextId context_id, Op
 
     if (parent_context_id.has_value()) {
         VERIFY(!context->presents_to_client());
-        VERIFY(*parent_context_id != context_id);
         // The parent's context belongs to the process hosting the parent, which can destroy it before this context's
         // process hears that the parent is gone. The context is left without a parent then, as destroying the parent
         // would have left it.
         // NB: The UI process creates a context here before it hands the context's ID out, so a parent this doesn't know
         //     has been destroyed.
-        if (!context_if_present(*parent_context_id))
+        // A misbehaving WebContent can name this context or a context nested in it as the parent. The context is left
+        // without a parent then too, as a loop of parents has no root.
+        auto const* parent_context = context_if_present(*parent_context_id);
+        if (!parent_context || parent_context == context || is_nested_in(context_id, *parent_context))
             parent_context_id = {};
     }
 
@@ -621,9 +623,7 @@ bool CompositorState::nested_context_scrolled_since_last_frame(Web::CompositorCo
 
 bool CompositorState::is_nested_in(Web::CompositorContextId containing_context_id, ContextState const& context) const
 {
-    // A walk up the parents that outlasts the number of contexts went around a loop.
-    auto const* ancestor = &context;
-    for (size_t remaining_ancestors = m_contexts.size(); ancestor && remaining_ancestors > 0; --remaining_ancestors) {
+    for (auto const* ancestor = &context; ancestor;) {
         auto parent_context_id = ancestor->parent_context_id();
         if (!parent_context_id.has_value())
             return false;
