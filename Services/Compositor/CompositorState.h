@@ -182,10 +182,14 @@ public:
 
 private:
     ContextState const* context_if_present(Web::CompositorContextId) const;
-    Optional<u64> display_id_for_context(ContextState const&) const;
-    bool context_is_effectively_visible(ContextState const&) const;
+    using DisplayPresentation = ContextState::DisplayMetadata;
+    // Where the tree of the context presents, which the UI sets on the root of the tree. Empty while the root is hidden.
+    Optional<DisplayPresentation> presentation_of(ContextState const&) const;
+    // Whether the root of the tree of the context is visible.
+    bool is_presented(ContextState const&) const;
+    // Schedules a tick on the display that the tree of the context presents on, unless the root of the tree is hidden.
+    void schedule_display_tick_for(ContextState const&);
     void resume_presentation_after_becoming_visible(Web::CompositorContextId root_context_id, ContextState& root_context);
-    double display_refresh_rate_for_context(ContextState const&) const;
     void clear_parent_context(ContextState&);
     CompositedContextResolver resolver_for(Web::CompositorContextId parent_context_id);
     Compositing::CompositedContextSurface resolve_composited_context(Web::CompositorContextId parent_context_id, Web::CompositorContextId child_context_id, Gfx::FloatRect destination_rect, Gfx::FloatMatrix4x4 const& canvas_transform);

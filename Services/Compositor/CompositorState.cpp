@@ -336,7 +336,7 @@ void CompositorState::present_contexts_drawing_video_sink(CompositorStateWebCont
         auto& context = *context_entry.value;
         if (&context.web_content_client() != &client)
             continue;
-        if (!context_is_effectively_visible(context))
+        if (!is_presented(context))
             continue;
         for (auto const& resource_entry : context.video_sink_handles()) {
             if (resource_entry.value == handle) {
@@ -354,7 +354,7 @@ void CompositorState::present_contexts_drawing_canvas(CompositorStateWebContentC
         auto& context = *context_entry.value;
         if (&context.web_content_client() != &client)
             continue;
-        if (!context_is_effectively_visible(context) || !context.presenter().draws_canvas(canvas_id))
+        if (!is_presented(context) || !context.presenter().draws_canvas(canvas_id))
             continue;
         if (auto rect = context.presenter().self_present_rect(); rect.has_value())
             schedule_present_frame(context_entry.key, context, *rect);
@@ -387,8 +387,10 @@ bool CompositorState::video_sink_is_painted_by_any_context(CompositorStateWebCon
 int CompositorState::unpainted_video_update_interval_ms() const
 {
     auto max_refresh_rate = 60.0;
-    for (auto const& context_entry : m_contexts)
-        max_refresh_rate = max(max_refresh_rate, context_entry.value->display_refresh_rate());
+    for (auto const& context_entry : m_contexts) {
+        if (auto const& display_metadata = context_entry.value->display_metadata(); display_metadata.has_value())
+            max_refresh_rate = max(max_refresh_rate, display_metadata->refresh_rate);
+    }
     return max(1, static_cast<int>(1000.0 / max_refresh_rate));
 }
 
@@ -433,41 +435,36 @@ void CompositorState::update_video_sinks_for_display(Optional<u64> display_id)
     // Keep this display's vsync ticking while any sink painted on it may require updates.
     for (auto& context_entry : m_contexts) {
         auto& context = *context_entry.value;
-        if (display_id_for_context(context) != display_id)
-            continue;
-        if (!context_is_effectively_visible(context))
+        auto presentation = presentation_of(context);
+        if (!presentation.has_value() || presentation->display_id != display_id)
             continue;
         for (auto const& resource_entry : context.video_sink_handles()) {
             auto* sink_state = video_sink_state(context.web_content_client(), resource_entry.value);
             if (sink_state != nullptr && sink_state->requires_updates) {
-                vsync_scheduler_for_display(display_id).schedule(display_refresh_rate_for_context(context));
+                vsync_scheduler_for_display(display_id).schedule(presentation->refresh_rate);
                 break;
             }
         }
     }
 }
 
-Optional<u64> CompositorState::display_id_for_context(ContextState const& context) const
+Optional<CompositorState::DisplayPresentation> CompositorState::presentation_of(ContextState const& context) const
 {
-    for (auto const* current_context = &context; current_context; current_context = current_context->parent()) {
-        if (current_context->display_id().has_value())
-            return current_context->display_id();
-    }
-    return {};
+    auto const& root_context = context.root();
+    if (!is_presented(root_context))
+        return {};
+    return root_context.display_metadata().value_or({});
 }
 
-bool CompositorState::context_is_effectively_visible(ContextState const& context) const
+bool CompositorState::is_presented(ContextState const& context) const
 {
     return context.root().visibility() == Compositing::ContextVisibility::Visible;
 }
 
-double CompositorState::display_refresh_rate_for_context(ContextState const& context) const
+void CompositorState::schedule_display_tick_for(ContextState const& context)
 {
-    for (auto const* current_context = &context; current_context; current_context = current_context->parent()) {
-        if (current_context->display_id().has_value())
-            return current_context->display_refresh_rate();
-    }
-    return context.display_refresh_rate();
+    if (auto presentation = presentation_of(context); presentation.has_value())
+        vsync_scheduler_for_display(presentation->display_id).schedule(presentation->refresh_rate);
 }
 
 void CompositorState::invalidate_wheel_event_listener_state(Web::CompositorContextId context_id, u64 generation)
@@ -813,14 +810,14 @@ void CompositorState::set_display_metadata(Web::CompositorContextId context_id, 
     VERIFY(refresh_rate > 0);
     VERIFY(refresh_rate < AK::Infinity<double>);
 
-    if (context->set_display_metadata(display_id, refresh_rate)) {
+    auto display_metadata_changed = context->set_display_metadata({ display_id, refresh_rate });
+    if (context->presenter().pending_present_frame_scheduled())
         schedule_pending_present_frame(context_id, *context);
-        if (m_unpainted_video_update_timer)
-            m_unpainted_video_update_timer->set_interval(AK::Duration::from_milliseconds(unpainted_video_update_interval_ms()));
-    }
+    if (display_metadata_changed && m_unpainted_video_update_timer)
+        m_unpainted_video_update_timer->set_interval(AK::Duration::from_milliseconds(unpainted_video_update_interval_ms()));
 
-    if (context->display_tick_requested() && context_is_effectively_visible(*context))
-        vsync_scheduler_for_display(display_id_for_context(*context)).schedule(display_refresh_rate_for_context(*context));
+    if (context->display_tick_requested())
+        schedule_display_tick_for(*context);
 }
 
 void CompositorState::set_context_visibility(Web::CompositorContextId context_id, Compositing::ContextVisibility visibility)
@@ -845,7 +842,7 @@ void CompositorState::resume_presentation_after_becoming_visible(Web::Compositor
         root_context.for_each_context_in_tree([&](ContextState& context) {
             schedule_animation_frames_if_needed(context);
             if (context.display_tick_requested())
-                vsync_scheduler_for_display(display_id_for_context(context)).schedule(display_refresh_rate_for_context(context));
+                schedule_display_tick_for(context);
         });
     }
 
@@ -860,11 +857,12 @@ void CompositorState::request_rendering_opportunity(Web::CompositorContextId con
 
     if (!context->request_rendering_opportunity(maximum_frames_per_second))
         return;
-    if (!context_is_effectively_visible(*context))
+    auto presentation = presentation_of(*context);
+    if (!presentation.has_value())
         return;
 
-    auto display_id = display_id_for_context(*context);
-    auto display_refresh_rate = display_refresh_rate_for_context(*context);
+    auto display_id = presentation->display_id;
+    auto display_refresh_rate = presentation->refresh_rate;
     auto& scheduler = vsync_scheduler_for_display(display_id);
     // INTEROP: Like Chromium's missed BeginFrame delivery, reuse a recent display tick when a context requests its
     //          next opportunity after the tick has already happened. This keeps heavy frames from waiting an extra tick.
@@ -882,17 +880,20 @@ void CompositorState::request_rendering_opportunity(Web::CompositorContextId con
 void CompositorState::request_clock_tick(Web::CompositorContextId context_id, double maximum_frames_per_second)
 {
     auto* context = context_if_present(context_id);
-    if (!context || !context->request_clock_tick(maximum_frames_per_second) || !context_is_effectively_visible(*context))
+    if (!context || !context->request_clock_tick(maximum_frames_per_second))
         return;
-    vsync_scheduler_for_display(display_id_for_context(*context)).schedule(display_refresh_rate_for_context(*context));
+    schedule_display_tick_for(*context);
 }
 
 void CompositorState::hurry_rendering_opportunity(Web::CompositorContextId context_id)
 {
     auto* context = context_if_present(context_id);
-    if (!context || !context->rendering_opportunity_requested() || !context_is_effectively_visible(*context))
+    if (!context || !context->rendering_opportunity_requested())
         return;
-    auto display_refresh_rate = display_refresh_rate_for_context(*context);
+    auto presentation = presentation_of(*context);
+    if (!presentation.has_value())
+        return;
+    auto display_refresh_rate = presentation->refresh_rate;
     auto frame_interval = context->rendering_opportunity_frame_interval(display_refresh_rate);
     auto frame_time = MonotonicTime::now();
     context->did_deliver_rendering_opportunity(frame_time);
@@ -976,16 +977,16 @@ void CompositorState::schedule_pending_present_frame(Web::CompositorContextId co
 
 void CompositorState::schedule_animation_frames_if_needed(ContextState& context)
 {
-    if (context.needs_animation_frames() && context_is_effectively_visible(context))
-        vsync_scheduler_for_display(display_id_for_context(context)).schedule(display_refresh_rate_for_context(context));
+    if (context.needs_animation_frames())
+        schedule_display_tick_for(context);
 }
 
 void CompositorState::schedule_pending_present_frame_on_vsync(Web::CompositorContextId, ContextState& context)
 {
-    if (!context_is_effectively_visible(context))
+    if (!is_presented(context))
         return;
     context.presenter().mark_pending_present_frame_scheduled();
-    vsync_scheduler_for_display(context.display_id()).schedule(context.display_refresh_rate());
+    schedule_display_tick_for(context);
 }
 
 void CompositorState::schedule_containing_context_present(ContextState& context)
@@ -1006,7 +1007,7 @@ void CompositorState::schedule_pending_present_frame_if_unblocked(Web::Composito
 
 bool CompositorState::try_present_frame_during_resize(Web::CompositorContextId context_id, ContextState& context)
 {
-    if (!context.presenter().window_resize_in_progress() || !context.presents_to_client() || !context_is_effectively_visible(context))
+    if (!context.presenter().window_resize_in_progress() || !context.presents_to_client() || !is_presented(context))
         return false;
     auto pending_frame = context.presenter().take_pending_present_frame_if_unblocked();
     if (!pending_frame.has_value())
@@ -1016,7 +1017,7 @@ bool CompositorState::try_present_frame_during_resize(Web::CompositorContextId c
     // remain visible for another display tick. prepare_frame() owns requeuing any blocked frame.
     present_frame(context_id, context, *pending_frame);
     // The display tick does more than present frames, such as updating the video sinks that are painted.
-    vsync_scheduler_for_display(display_id_for_context(context)).schedule(display_refresh_rate_for_context(context));
+    schedule_display_tick_for(context);
     return true;
 }
 
@@ -1047,13 +1048,15 @@ void CompositorState::present_pending_frames_on_vsync(Optional<u64> display_id, 
     for (auto& context_entry : m_contexts) {
         auto context_id = context_entry.key;
         auto& context = *context_entry.value;
-        if (!context_is_effectively_visible(context)) {
+        auto presentation = presentation_of(context);
+        if (!presentation.has_value()) {
             context.presenter().unschedule_pending_present_frame();
             continue;
         }
+        auto tree_is_on_this_display = presentation->display_id == display_id;
 
-        if (context.rendering_opportunity_requested() && display_id_for_context(context) == display_id) {
-            auto display_refresh_rate = display_refresh_rate_for_context(context);
+        if (context.rendering_opportunity_requested() && tree_is_on_this_display) {
+            auto display_refresh_rate = presentation->refresh_rate;
             if (context.rendering_opportunity_is_due(frame_time, display_refresh_rate)) {
                 auto frame_interval = context.rendering_opportunity_frame_interval(display_refresh_rate);
                 context.did_deliver_rendering_opportunity(frame_time);
@@ -1063,10 +1066,10 @@ void CompositorState::present_pending_frames_on_vsync(Optional<u64> display_id, 
             }
         }
 
-        auto has_active_animation_on_display = context.needs_animation_frames() && display_id_for_context(context) == display_id;
+        auto has_active_animation_on_display = context.needs_animation_frames() && tree_is_on_this_display;
         auto presents_on_display = context.has_pending_present_frame_scheduled_on(display_id) || has_active_animation_on_display;
         if (presents_on_display) {
-            if (display_id_for_context(context) == display_id)
+            if (tree_is_on_this_display)
                 dispatch_scroll_fling_step(context_id, context, context.take_scroll_fling_step(frame_time), frame_time);
             if (auto animation_frame = context.advance_smooth_scroll_animations(frame_time); animation_frame.has_value())
                 context.presenter().queue_present_frame(PendingFrame::repainting_changes(*animation_frame));
@@ -1078,8 +1081,8 @@ void CompositorState::present_pending_frames_on_vsync(Optional<u64> display_id, 
 
         // A render clock tick goes to the process's render clock thread, beside what its main thread is doing, with
         // where the compositor has scrolled to for this vsync, which that main thread may not have taken in yet.
-        if (context.clock_tick_requested() && display_id_for_context(context) == display_id) {
-            auto display_refresh_rate = display_refresh_rate_for_context(context);
+        if (context.clock_tick_requested() && tree_is_on_this_display) {
+            auto display_refresh_rate = presentation->refresh_rate;
             if (context.clock_tick_is_due(frame_time, display_refresh_rate)) {
                 auto frame_interval = context.clock_tick_interval(display_refresh_rate);
                 context.did_deliver_clock_tick(frame_time);
@@ -1102,9 +1105,9 @@ void CompositorState::present_pending_frames_on_vsync(Optional<u64> display_id, 
         add_backing_store_for_pending_frame_if_needed(context_id, context);
         auto pending_present_frame = context.presenter().take_pending_present_frame_if_unblocked();
         if (!pending_present_frame.has_value()) {
-            has_active_animation_on_display = context.needs_animation_frames() && display_id_for_context(context) == display_id;
+            has_active_animation_on_display = context.needs_animation_frames() && tree_is_on_this_display;
             if (context.has_pending_present_frame_scheduled_on(display_id) || has_active_animation_on_display)
-                vsync_scheduler_for_display(display_id).schedule(display_refresh_rate_for_context(context));
+                vsync_scheduler_for_display(display_id).schedule(presentation->refresh_rate);
             continue;
         }
         if (context.needs_animation_frames())

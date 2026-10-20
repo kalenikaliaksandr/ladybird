@@ -233,9 +233,17 @@ public:
     void viewport_size_updated(Gfx::IntSize, double device_pixel_ratio, Compositing::WindowResizingInProgress);
     bool set_ui_overlays(Compositing::UIOverlays);
 
-    bool set_display_metadata(Optional<u64> display_id, double refresh_rate);
-    Optional<u64> display_id() const { return m_display_id; }
-    double display_refresh_rate() const { return m_display_refresh_rate; }
+    // The display that the UI shows this context on. The UI sets it only on contexts without a parent. What any context
+    // presents on is CompositorState::presentation_of().
+    struct DisplayMetadata {
+        Optional<u64> display_id;
+        double refresh_rate { 60.0 };
+
+        bool operator==(DisplayMetadata const&) const = default;
+    };
+    // Returns whether the metadata changed.
+    bool set_display_metadata(DisplayMetadata);
+    Optional<DisplayMetadata> const& display_metadata() const { return m_display_metadata; }
     bool set_visibility(Compositing::ContextVisibility);
     Compositing::ContextVisibility visibility() const { return m_visibility; }
 
@@ -370,8 +378,7 @@ private:
 
     CaretBlinkTimer m_caret_blink_timer;
     Web::InputTraceRecorder m_input_trace;
-    Optional<u64> m_display_id;
-    double m_display_refresh_rate { 60.0 };
+    Optional<DisplayMetadata> m_display_metadata;
     Compositing::ContextVisibility m_visibility { Compositing::ContextVisibility::Visible };
 
     PacedTickRequest m_rendering_opportunity_request;

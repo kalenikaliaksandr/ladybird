@@ -1509,11 +1509,12 @@ bool ContextState::set_ui_overlays(Compositing::UIOverlays overlays)
     return true;
 }
 
-bool ContextState::set_display_metadata(Optional<u64> display_id, double refresh_rate)
+bool ContextState::set_display_metadata(DisplayMetadata display_metadata)
 {
-    m_display_id = display_id;
-    m_display_refresh_rate = refresh_rate;
-    return m_presenter.pending_present_frame_scheduled();
+    if (m_display_metadata == display_metadata)
+        return false;
+    m_display_metadata = display_metadata;
+    return true;
 }
 
 bool ContextState::set_visibility(Compositing::ContextVisibility visibility)
@@ -1542,7 +1543,8 @@ Vector<Web::CompositorScrollOffset> ContextState::scroll_offsets() const
 
 bool ContextState::has_pending_present_frame_scheduled_on(Optional<u64> display_id) const
 {
-    return m_presenter.pending_present_frame_scheduled() && m_display_id == display_id;
+    auto own_display_id = m_display_metadata.has_value() ? m_display_metadata->display_id : Optional<u64> {};
+    return m_presenter.pending_present_frame_scheduled() && own_display_id == display_id;
 }
 
 ContextPresenter::FrameContent ContextState::frame_content(Compositing::ScrollStateSnapshot const& presented_scroll_state_snapshot, CompositedContextResolver const* composited_context_resolver) const
