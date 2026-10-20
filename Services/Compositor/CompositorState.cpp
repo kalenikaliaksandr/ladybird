@@ -439,17 +439,43 @@ bool CompositorState::draws_video_sink_requiring_updates(ContextState const& con
     });
 }
 
+static Optional<u64> display_id_given_to(ContextState const& root_context)
+{
+    auto const& display_metadata = root_context.display_metadata();
+    return display_metadata.has_value() ? display_metadata->display_id : Optional<u64> {};
+}
+
 Optional<CompositorState::DisplayPresentation> CompositorState::presentation_of(ContextState const& context) const
 {
     auto const& root_context = context.root();
     if (!is_presented(root_context))
         return {};
-    return root_context.display_metadata().value_or({});
+    auto display_id = display_id_given_to(root_context);
+    return DisplayPresentation { display_id, refresh_rate_of_display(display_id) };
 }
 
 bool CompositorState::is_presented(ContextState const& context) const
 {
     return context.root().visibility() == Compositing::ContextVisibility::Visible;
+}
+
+bool CompositorState::is_root_presented_on(ContextState const& context, Optional<u64> display_id) const
+{
+    return !context.parent() && is_presented(context) && display_id_given_to(context) == display_id;
+}
+
+double CompositorState::refresh_rate_of_display(Optional<u64> display_id) const
+{
+    // The contexts on a display share its vsync scheduler, which ticks at one rate. The UI can give the contexts without
+    // a parent on one display different rates, so the display ticks at the highest of them. A context that asks for
+    // fewer frames still gets them, as FramePacer delivers its frames on every Nth tick.
+    Optional<double> refresh_rate;
+    for (auto const& context_entry : m_contexts) {
+        auto const& context = *context_entry.value;
+        if (is_root_presented_on(context, display_id) && context.display_metadata().has_value())
+            refresh_rate = max(refresh_rate.value_or(0), context.display_metadata()->refresh_rate);
+    }
+    return refresh_rate.value_or(ContextState::DisplayMetadata {}.refresh_rate);
 }
 
 void CompositorState::schedule_display_tick_for(ContextState const& context)
@@ -1038,16 +1064,13 @@ void CompositorState::present_pending_frames_on_vsync(Optional<u64> display_id, 
     // A tick visits the trees that present on its display, so a context never waits for a tick that skips it.
     Vector<ContextState*, 16> root_contexts;
     for (auto& context_entry : m_contexts) {
-        auto& context = *context_entry.value;
-        if (context.parent())
-            continue;
-        if (auto presentation = presentation_of(context); presentation.has_value() && presentation->display_id == display_id)
-            root_contexts.append(&context);
+        if (is_root_presented_on(*context_entry.value, display_id))
+            root_contexts.append(context_entry.value.ptr());
     }
 
+    auto refresh_rate = refresh_rate_of_display(display_id);
     TemporaryChange ticking_display { m_ticking_display, true };
     for (auto* root_context : root_contexts) {
-        auto refresh_rate = presentation_of(*root_context)->refresh_rate;
         root_context->for_each_context_in_tree([&](ContextState& context) {
             present_pending_frame_on_vsync(context, refresh_rate, frame_time);
         });

@@ -186,6 +186,9 @@ private:
     Optional<DisplayPresentation> presentation_of(ContextState const&) const;
     // Whether the root of the tree of the context is visible.
     bool is_presented(ContextState const&) const;
+    // Whether the context has no parent and the UI shows it on the display.
+    bool is_root_presented_on(ContextState const&, Optional<u64> display_id) const;
+    double refresh_rate_of_display(Optional<u64> display_id) const;
     // Schedules a tick on the display that the tree of the context presents on, unless the root of the tree is hidden.
     void schedule_display_tick_for(ContextState const&);
     // Schedules a tick on the display that the tree of the context presents on, if any context in the tree waits for one.
