@@ -42,7 +42,6 @@ WEB_API void const* retain_rust_main_visual_context_tree(Layout::BegunRead const
 WEB_API Layout::RustFFI::FfiPhysicalOverflowDirections rust_physical_overflow_directions(Layout::Node const&);
 WEB_API void register_geometry_host(Layout::NodeArena&);
 WEB_API Layout::RustFFI::FfiRenderStageOutcome bring_render_stages_up_to(Layout::BegunRead const&, DOM::Document&, Layout::RustFFI::RenderStage target);
-WEB_API void rust_update_visual_viewport_transform(Layout::BegunRead const&, DOM::Document&);
 struct InspectorOverlayInputs {
     Layout::Node const* highlighted_layout_node { nullptr };
     Color tooltip_color;

@@ -292,11 +292,6 @@ Layout::RustFFI::FfiRenderStageOutcome bring_render_stages_up_to(Layout::BegunRe
     return Layout::RustFFI::render_state_bring_up_to(document.layout_node_arena().host(), &read, target, viewport, visual_context_tree_inputs(document), &stage_host);
 }
 
-void rust_update_visual_viewport_transform(Layout::BegunRead const& read, DOM::Document& document)
-{
-    Layout::RustFFI::render_state_update_visual_viewport_transform(document.layout_node_arena().host(), &read, visual_context_tree_inputs(document));
-}
-
 // Describes the row in the slot as its layout node describes itself, for a dump or a trace.
 static void push_debug_description(DOM::Document const& document, Compositing::RustFFI::NodeSlotId slot, void* description_sink)
 {

@@ -91,13 +91,6 @@ void DocumentPaintState::note_visual_context_tree_update(bool performed_full_bui
         ++m_accumulated_visual_context_tree_incremental_update_count;
 }
 
-void DocumentPaintState::update_visual_viewport_accumulated_visual_context(Layout::BegunRead const& read, DOM::Document& document)
-{
-    if (!has_visual_context_tree(read))
-        return;
-    rust_update_visual_viewport_transform(read, document);
-}
-
 void DocumentPaintState::begin_compositor_animation_update(DOM::Document& document)
 {
     ensure_visual_context_tree(document);

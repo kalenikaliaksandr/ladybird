@@ -7,8 +7,8 @@
 </style>
 <div id="box"></div>
 <script>
-    // A task beside a frame in flight that resets the visual viewport: the reset is a write to the paint state the
-    // next rendering update reads.
+    // A task beside a frame in flight that resets the visual viewport: the reset moves an input of the visual context
+    // tree the next rendering update reads, and waits for no frame.
     asyncTest(async done => {
         const states = await whileRecordingInFlight(() => {
             box.style.height = "12px";

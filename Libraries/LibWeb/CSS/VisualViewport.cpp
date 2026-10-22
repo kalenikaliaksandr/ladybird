@@ -156,7 +156,6 @@ void VisualViewport::scroll_by(CSSPixelPoint delta)
         return;
     m_offset += delta;
     did_scroll();
-    update_accumulated_visual_context();
     m_document->set_needs_repaint(Badge<CSS::VisualViewport> {}, InvalidateDisplayList::No);
 }
 
@@ -204,7 +203,6 @@ void VisualViewport::zoom(CSSPixelPoint position, double scale_delta)
     m_offset = (new_offset / m_scale).to_type<CSSPixels>();
     if (m_offset != old_offset)
         did_scroll();
-    update_accumulated_visual_context();
     m_document->set_needs_repaint(Badge<CSS::VisualViewport> {}, InvalidateDisplayList::No);
 }
 
@@ -234,19 +232,7 @@ void VisualViewport::reset()
         // Resetting performs an instant scroll, so its scrollend event is queued immediately.
         m_document->append_pending_scroll_event({ *this, HTML::EventNames::scrollend });
     }
-    update_accumulated_visual_context();
     m_document->set_needs_repaint(Badge<CSS::VisualViewport> {}, InvalidateDisplayList::No);
-}
-
-void VisualViewport::update_accumulated_visual_context()
-{
-    Layout::ForcedReadScope read { *m_document };
-    if (m_document->has_committed_viewport_box() && m_document->paint_state().has_visual_context_tree(read)) {
-        m_document->paint_state().update_visual_viewport_accumulated_visual_context(read, *m_document);
-        return;
-    }
-
-    m_document->schedule_full_accumulated_visual_context_rebuild(Layout::RustFFI::VisualContextUpdateScope::FreshTree);
 }
 
 }

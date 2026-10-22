@@ -9,6 +9,7 @@
 //! stale, and every stage after it, and a host brings the stages up to the one it reads through a single driver.
 
 use super::ArenaChange;
+use crate::painting::host::FfiVisualContextTreeInputs;
 use std::cell::Cell;
 
 /// A stage of the work that follows a document's layout, in the order the stages run.
@@ -45,6 +46,8 @@ pub(crate) struct RenderPipeline {
     first_stale: Cell<RenderStage>,
     /// How many writes that change the visual context tree the host queued, and no other stage's inputs.
     visual_context_tree_writes: Cell<u64>,
+    /// The inputs of the visual context tree as the host last had them.
+    visual_context_tree_inputs: Cell<Option<FfiVisualContextTreeInputs>>,
 }
 
 impl Default for RenderPipeline {
@@ -52,6 +55,7 @@ impl Default for RenderPipeline {
         Self {
             first_stale: Cell::new(RenderStage::ScrollPositions),
             visual_context_tree_writes: Cell::new(0),
+            visual_context_tree_inputs: Cell::new(None),
         }
     }
 }
@@ -80,6 +84,21 @@ impl RenderPipeline {
 
     pub(crate) fn visual_context_tree_writes(&self) -> u64 {
         self.visual_context_tree_writes.get()
+    }
+
+    /// Notes the inputs of the visual context tree as the host has them now, which leave the tree stale where they moved:
+    /// the device pixel ratio and the visual viewport are the page's, and reach the render state only so.
+    pub(crate) fn note_visual_context_tree_inputs(&self, inputs: FfiVisualContextTreeInputs) {
+        let moved = self.visual_context_tree_inputs.get().is_none_or(|noted| {
+            noted.device_pixels_per_css_pixel != inputs.device_pixels_per_css_pixel
+                || noted.visual_viewport_offset_x != inputs.visual_viewport_offset_x
+                || noted.visual_viewport_offset_y != inputs.visual_viewport_offset_y
+                || noted.visual_viewport_scale != inputs.visual_viewport_scale
+        });
+        if moved {
+            self.visual_context_tree_inputs.set(Some(inputs));
+            self.note_stale(RenderStage::VisualContexts);
+        }
     }
 
     /// Takes the stale stages up to `target` to run, as the first of them, and leaves them current: a write made while

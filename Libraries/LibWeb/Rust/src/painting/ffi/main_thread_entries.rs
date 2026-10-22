@@ -331,6 +331,7 @@ pub unsafe extern "C" fn render_state_bring_up_to(
 ) -> FfiRenderStageOutcome {
     let mut outcome = FfiRenderStageOutcome::default();
     let pipeline = host.pipeline();
+    pipeline.note_visual_context_tree_inputs(inputs);
     let Some(mut stage) = pipeline.take_stale_stages_up_to(target) else {
         return outcome;
     };
@@ -351,8 +352,9 @@ pub unsafe extern "C" fn render_state_bring_up_to(
                 }
             }
             RenderStage::VisualContexts if !viewport.is_invalid() => {
-                let updated = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
-                    if !crate::painting::paint_passes::visual_contexts_update_pending(arena) {
+                let updated = run_paint_pass(read, host, PassEffect::RewritesRows, move |arena| {
+                    crate::painting::paint_passes::update_visual_viewport_transform(arena, &inputs);
+                    if !crate::painting::paint_passes::visual_contexts_update_pending(arena, &inputs) {
                         return None;
                     }
                     let updated =
@@ -404,7 +406,8 @@ unsafe fn settle_scroll_positions(
     };
     let inputs = *inputs;
     let prepared = run_paint_pass(read, host, PassEffect::RewritesRows, move |arena| {
-        let sticky_inputs = (!crate::painting::paint_passes::visual_contexts_update_pending(arena)).then_some(&inputs);
+        let sticky_inputs =
+            (!crate::painting::paint_passes::visual_contexts_update_pending(arena, &inputs)).then_some(&inputs);
         pending.prepare(arena, sticky_inputs)
     });
     if !prepared.clamped_scroll_offsets.is_empty() {
@@ -417,17 +420,6 @@ unsafe fn settle_scroll_positions(
         }
     }
     prepared.outcome
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn render_state_update_visual_viewport_transform(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    inputs: FfiVisualContextTreeInputs,
-) {
-    run_paint_pass(read, host, PassEffect::Stales(RenderStage::ScrollPositions), |arena| {
-        crate::painting::paint_passes::update_visual_viewport_transform(arena, &inputs);
-    });
 }
 
 /// Starts an update pass of the compositor animations of `host`'s document, with none published.

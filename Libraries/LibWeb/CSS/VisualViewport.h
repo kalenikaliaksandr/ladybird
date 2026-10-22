@@ -62,7 +62,6 @@ private:
     virtual GC::Ptr<Bindings::Wrappable> relevant_global_impl() const override;
 
     void did_scroll();
-    void update_accumulated_visual_context();
 
     GC::Ref<DOM::Document> m_document;
     CSSPixelPoint m_offset;

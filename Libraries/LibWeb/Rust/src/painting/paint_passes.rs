@@ -372,23 +372,40 @@ fn scroll_state_snapshot(
     snapshot
 }
 
+/// Moves the visual viewport transform of `arena`'s visual context tree to where `inputs` put the visual viewport, where
+/// it moved since the tree was last updated: a pinch or a pan of the visual viewport moves no box.
 pub(crate) fn update_visual_viewport_transform(arena: &LayoutNodeArena, inputs: &FfiVisualContextTreeInputs) {
     let mut paint_state = arena.paint_state().borrow_mut();
     let state = &mut paint_state.visual_context;
-    if let Some(tree) = &mut state.tree {
-        std::sync::Arc::make_mut(tree).set_visual_viewport_transform(
-            crate::painting::visual_context::node_values::visual_viewport_transform_data(inputs),
-        );
+    let (Some(tree), Some(applied)) = (&mut state.tree, &mut state.last_tree_inputs) else {
+        return;
+    };
+    if applied.visual_viewport_offset_x == inputs.visual_viewport_offset_x
+        && applied.visual_viewport_offset_y == inputs.visual_viewport_offset_y
+        && applied.visual_viewport_scale == inputs.visual_viewport_scale
+    {
+        return;
     }
+    std::sync::Arc::make_mut(tree).set_visual_viewport_transform(
+        crate::painting::visual_context::node_values::visual_viewport_transform_data(inputs),
+    );
+    applied.visual_viewport_offset_x = inputs.visual_viewport_offset_x;
+    applied.visual_viewport_offset_y = inputs.visual_viewport_offset_y;
+    applied.visual_viewport_scale = inputs.visual_viewport_scale;
     state.note_content_changed();
 }
 
-/// Whether the visual context tree of `arena` is to be updated: none was built yet, or a box or a layout that committed
-/// moved what it is built from since it was.
-pub(crate) fn visual_contexts_update_pending(arena: &LayoutNodeArena) -> bool {
+/// Whether the visual context tree of `arena` is to be updated for `inputs`: none was built yet, or a box, a layout
+/// that committed or the device pixel ratio moved what it is built from since it was.
+pub(crate) fn visual_contexts_update_pending(arena: &LayoutNodeArena, inputs: &FfiVisualContextTreeInputs) -> bool {
     let paint_state = arena.paint_state().borrow();
     let state = &paint_state.visual_context;
-    state.tree.is_none() || state.layout_committed_since_update || !state.dirty_boxes.is_empty()
+    state.tree.is_none()
+        || state.layout_committed_since_update
+        || !state.dirty_boxes.is_empty()
+        || state
+            .last_tree_inputs
+            .is_none_or(|applied| applied.device_pixels_per_css_pixel != inputs.device_pixels_per_css_pixel)
 }
 
 pub(crate) fn update_accumulated_visual_contexts(
