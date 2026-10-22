@@ -152,6 +152,43 @@ pub(crate) enum LayoutChange {
 }
 
 impl LayoutChange {
+    /// The first stage of the work after layout that the change leaves stale (see
+    /// [`crate::render_state::RenderStage`]): a frame the compositor animates is a visual context node of its box, and
+    /// pinning a style record or tracing the layout changes nothing a stage reads.
+    pub(crate) fn first_stale_stage(&self) -> crate::render_state::RenderStage {
+        use crate::render_state::RenderStage;
+        match self {
+            Self::SetNodeNeedsCompositorAnimationFrame { .. } => RenderStage::VisualContexts,
+            Self::PinBoundBoxStyleRecordForDetachment { .. }
+            | Self::PinNodeStyleRecordForHost { .. }
+            | Self::ReleaseNodeStyleRecordPinForHost { .. }
+            | Self::SetBoxPresenceHost(_)
+            | Self::BeginLayoutTrace
+            | Self::NameLayoutTraceOwners(_)
+            | Self::InvalidateSearchableText => RenderStage::Current,
+            Self::SetNeedsLayoutUpdate { .. }
+            | Self::SetNeedsFullLayoutTreeUpdate
+            | Self::ResetCachedIntrinsicSizesOfSelfAndAncestors { .. }
+            | Self::MarkBox { .. }
+            | Self::ApplyLayoutTreeUpdateMark { .. }
+            | Self::RecordPartialRelayoutEscape
+            | Self::StyleNodeChanged { .. }
+            | Self::SetAnchorNameElements { .. }
+            | Self::SetElementScrollOffset { .. }
+            | Self::SetPseudoElementScrollOffset { .. }
+            | Self::SetIdentityInFocusedTextControl { .. }
+            | Self::SvgAttributeFacts { .. }
+            | Self::SvgStyleReferences { .. }
+            | Self::SetDocumentIsDecodedSvg(_)
+            | Self::SetNodeFlag { .. }
+            | Self::HandOverOwnedProvider { .. }
+            | Self::SetOwnedImageNaturalSize { .. }
+            | Self::RestampTableSpans { .. }
+            | Self::SetNodeStyle { .. }
+            | Self::CounterStyles { .. } => RenderStage::ScrollPositions,
+        }
+    }
+
     /// How far the change may write the rows. Most write what a row holds alone, but for its style record: installing a
     /// style changes none of the flags that say what a row stands for. Mapping the text find in page searches again
     /// writes no row.
@@ -439,7 +476,9 @@ impl LayoutWrite<'_> {
 /// Has the render state of `host`'s document make `write`, spending `wait`, and answers what the write owes the host,
 /// which the host pays before it goes on.
 pub(crate) fn write(wait: impl RenderWait, host: &DocumentHost, write: LayoutWrite<'_>) -> LayoutWritten {
-    host.run(wait, true, |state| write.apply(state.arena_mut()))
+    host.run(wait, Some(crate::render_state::RenderStage::ScrollPositions), |state| {
+        write.apply(state.arena_mut())
+    })
 }
 
 /// Queues `change` for the render state of `host`'s document.

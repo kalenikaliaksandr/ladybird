@@ -58,6 +58,7 @@
 #include <LibWeb/Painting/ScrollSnap.h>
 #include <LibWeb/Painting/Scrollbar.h>
 #include <LibWeb/Painting/Scrolling.h>
+#include <LibWeb/Painting/SvgPaintResources.h>
 #include <LibWeb/Platform/FontPlugin.h>
 #include <LibWeb/SVG/SVGClipPathElement.h>
 #include <LibWeb/SVG/SVGDecodedImageData.h>
@@ -221,15 +222,6 @@ static Layout::RustFFI::DocumentHost* document_host(DOM::Document const& documen
     return const_cast<DOM::Document&>(document).layout_node_arena().host();
 }
 
-Layout::RustFFI::FfiVisualContextUpdateOutcome rust_update_accumulated_visual_contexts(Layout::BegunRead const& read, DOM::Document& document)
-{
-    auto update_timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-    auto outcome = Layout::RustFFI::render_state_update_accumulated_visual_contexts(document.layout_node_arena().host(), &read, viewport_row_slot(read, document), visual_context_tree_inputs(document));
-    if (rust_painting_timing_enabled())
-        dbgln("AVC_UPDATE rust={} µs {}", update_timer.elapsed_time().to_microseconds(), outcome.performed_full_build ? "full"sv : "incremental"sv);
-    return outcome;
-}
-
 Vector<u32> rust_owned_visual_context_node_indices(Layout::Node const& layout_node, Layout::RustFFI::FfiVisualContextBoxNodeList list)
 {
     Vector<u32> indices;
@@ -275,10 +267,29 @@ void register_geometry_host(Layout::NodeArena& arena)
     Layout::RustFFI::document_host_set_geometry_host(arena.host(), callbacks);
 }
 
-Layout::RustFFI::FfiRenderingPreparationOutcome rust_prepare_for_rendering(Layout::BegunRead const& read, DOM::Document& document, bool visual_context_update_pending)
+Layout::RustFFI::FfiRenderStageOutcome bring_render_stages_up_to(Layout::BegunRead const& read, DOM::Document& document, Layout::RustFFI::RenderStage target)
 {
-    return Layout::RustFFI::render_state_prepare_for_rendering(document.layout_node_arena().host(), &read, visual_context_update_pending, &document,
-        [](void* document) { return visual_context_tree_inputs(*static_cast<DOM::Document*>(document)); });
+    struct Context {
+        DOM::Document& document;
+        Layout::BegunRead const& read;
+    } context { document, read };
+    Layout::RustFFI::FfiRenderStageHost stage_host {
+        .context = &context,
+        .publish_image_map_areas = [](void* context_pointer) {
+            auto& context = *static_cast<Context*>(context_pointer);
+            publish_image_map_area_facts_if_needed(context.read, context.document); },
+        .resolve_svg_filter = [](void* context_pointer, Compositing::RustFFI::NodeSlotId slot, void const* url_value, void* sink) -> bool {
+            auto& context = *static_cast<Context*>(context_pointer);
+            return push_svg_filter_reference_of_row(context.read, context.document, slot, url_value, sink);
+        },
+        .resolve_svg_paint_server = [](void* context_pointer, Compositing::RustFFI::NodeSlotId slot, bool is_stroke, void* sink) {
+            auto& context = *static_cast<Context*>(context_pointer);
+            push_svg_paint_server_description_of_row(context.read, context.document, slot, is_stroke, sink); },
+        .publish_scroll_state = [](void* context_pointer, Gfx::FloatPoint const* offsets, size_t count) { static_cast<Context*>(context_pointer)->document.paint_state().set_scroll_state_device_offsets({ offsets, count }); },
+    };
+    // A document with no committed viewport has no visual context tree or scroll state yet.
+    auto viewport = document.has_committed_viewport_box() ? viewport_row_slot(read, document) : Compositing::RustFFI::NodeSlotId_INVALID;
+    return Layout::RustFFI::render_state_bring_up_to(document.layout_node_arena().host(), &read, target, viewport, visual_context_tree_inputs(document), &stage_host);
 }
 
 void rust_update_visual_viewport_transform(Layout::BegunRead const& read, DOM::Document& document)

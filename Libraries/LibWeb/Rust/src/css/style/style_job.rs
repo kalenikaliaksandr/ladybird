@@ -363,7 +363,11 @@ pub unsafe extern "C" fn style_engine_take_style_transaction(
         closes_beside: host.engine_memo().closes_taken_transaction_beside(),
     };
     host.keep_style_inputs(root, Arc::clone(&job.computation_inputs));
-    let answer = host.run(read, true, move |state| job.run(state.engine_mut()));
+    let answer = host.run(
+        read,
+        Some(crate::render_state::RenderStage::ScrollPositions),
+        move |state| job.run(state.engine_mut()),
+    );
     host.keep_style_transaction(answer).output.view()
 }
 

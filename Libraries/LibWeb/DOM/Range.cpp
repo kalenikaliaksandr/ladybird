@@ -1305,7 +1305,6 @@ Vector<Gfx::DoubleRect> Range::client_rects()
 
     auto& document = start_container()->document();
     document.update_layout(DOM::UpdateLayoutReason::RangeGetClientRects);
-    document.update_paint_and_hit_testing_properties_if_needed();
     Layout::ForcedReadScope read { document };
     Vector<Gfx::DoubleRect> rects;
     Optional<Compositing::AccumulatedVisualContextTree> visual_context_tree;
@@ -1384,7 +1383,7 @@ Vector<Gfx::DoubleRect> Range::client_rects()
                 continue;
             }
 
-            if (!visual_context_tree.has_value() && !document.can_compute_client_rects_without_accumulated_visual_contexts_update(*layout_node)) {
+            if (!visual_context_tree.has_value() && !document.client_rects_need_no_visual_context_tree(*layout_node)) {
                 document.update_paint_and_hit_testing_properties_if_needed();
                 visual_context_tree = document.visual_context_tree();
                 rect_to_viewport_transform = Painting::rect_to_viewport_transform(document, *visual_context_tree);

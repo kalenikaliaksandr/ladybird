@@ -129,12 +129,17 @@ pub unsafe extern "C" fn layout_script_intersection_observer_intersection_rect(
     });
 }
 
+/// Whether the client rects of the box are its absolute rects, which spares bringing the visual context tree up to date
+/// where it is stale: no box of its containing chain transforms or scrolls what it contains.
 #[unsafe(no_mangle)]
-pub extern "C" fn layout_script_can_compute_client_rects_without_visual_context_update(
+pub extern "C" fn layout_script_client_rects_take_identity_shortcut(
     host: &DocumentHost,
     layout_node: NodeSlotId,
     viewport_scroll_offset_is_zero: bool,
 ) -> bool {
+    if host.pipeline().first_stale() > crate::render_state::RenderStage::VisualContexts {
+        return false;
+    }
     read_rows(host, |arena| {
         crate::painting::client_rects::can_compute_client_rects_without_visual_context_update(
             arena,

@@ -36,13 +36,17 @@ pub(crate) use main_thread_entries::MainThreadFfiEntry;
 fn run_layout_round_job(host: &DocumentHost, read: &BegunRead, job: LayoutRoundJob) -> LayoutRoundAnswer {
     host.let_go_of_rows();
     // The host keeps what the job's inputs name until it has the answer.
-    let (answer, rows) = host.run(read, true, move |state| {
-        let mut answer = job.run(state.arena_handle_mut());
-        answer.prepare_committed_layout_for_rendering(state.arena_mut());
-        // The host reads what each box owed an image is from rows published with the answer.
-        let rows = (!answer.owed_images.is_empty()).then(|| state.arena_mut().publish_row_snapshot(false));
-        (answer, rows)
-    });
+    let (answer, rows) = host.run(
+        read,
+        Some(crate::render_state::RenderStage::ScrollPositions),
+        move |state| {
+            let mut answer = job.run(state.arena_handle_mut());
+            answer.prepare_committed_layout_for_rendering(state.arena_mut());
+            // The host reads what each box owed an image is from rows published with the answer.
+            let rows = (!answer.owed_images.is_empty()).then(|| state.arena_mut().publish_row_snapshot(false));
+            (answer, rows)
+        },
+    );
     if let Some(rows) = rows {
         host.keep_rows(rows);
     }

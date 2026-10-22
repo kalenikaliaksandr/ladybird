@@ -84,10 +84,9 @@ pub struct DocumentHost {
     changes: ChangeQueue,
     /// The style transaction that flew with the frame, from its landing until the host has drained its reactions.
     flown_style: RefCell<Option<FlownStyle>>,
-    /// Whether the paint and hit testing properties the document prepared last were prepared from the render state as it
-    /// is: nothing was written to it since, queued, in place or by a job. Preparing them again would find nothing
-    /// to do.
-    paint_preparation_is_current: Cell<bool>,
+    /// Which stages of the work after the document's layout the writes to the render state left stale since they last
+    /// ran, queued, in place or by a job.
+    pipeline: super::render_stage::RenderPipeline,
     /// The first layout round of a rendering update, sealed until the frame flies with it.
     sealed_round: RefCell<Option<SealedRound>>,
     /// The layout round that flew with the frame, from its landing until the host's next layout update pays it.
@@ -191,7 +190,7 @@ impl DocumentHost {
             begun_read: BegunRead::of_host(),
             changes: ChangeQueue::default(),
             flown_style: RefCell::default(),
-            paint_preparation_is_current: Cell::new(false),
+            pipeline: Default::default(),
             sealed_round: RefCell::default(),
             flown_round: RefCell::default(),
             in_job: Cell::new(false),
@@ -250,13 +249,11 @@ impl DocumentHost {
     /// Writes `change` to the document's render state, before anything that reads what it changes: the render owner
     /// applies it ahead of the host's next job. A write never reaches the render state as the host makes it.
     pub(crate) fn queue_change(&self, change: ArenaChange) {
+        self.pipeline.note_write(&change);
         match &change {
             ArenaChange::Style(change) if change.only_keeps_records_alive() => {}
-            ArenaChange::Style(change) => {
-                self.note_render_state_write();
-                self.engine_memo.follow(change);
-            }
-            _ => self.note_render_state_write(),
+            ArenaChange::Style(change) => self.engine_memo.follow(change),
+            _ => {}
         }
         self.changes
             .push(change, |queued| self.engine_memo.follow_queued(queued));
@@ -302,7 +299,7 @@ impl DocumentHost {
         let changes = match self.may_stream_writes() {
             true => self.changes.take_for_stream(),
             false => {
-                self.run(read, false, |_| ());
+                self.run(read, None, |_| ());
                 Vec::new()
             }
         };
@@ -341,10 +338,9 @@ impl DocumentHost {
         made && (cfg!(test) || !owner::is_held_here())
     }
 
-    /// Notes that the document's render state is written, which leaves the paint and hit testing properties prepared
-    /// from it stale.
-    pub(super) fn note_render_state_write(&self) {
-        self.paint_preparation_is_current.set(false);
+    /// Which stages of the work after the document's layout are stale.
+    pub(crate) fn pipeline(&self) -> &super::render_stage::RenderPipeline {
+        &self.pipeline
     }
 
     /// Writes `write` to the document's style sheets in its style engine, behind the writes queued before it.
@@ -543,8 +539,8 @@ impl DocumentHost {
             );
         }
         if let Some((round, rows)) = round {
-            // The layout round that flew with the frame wrote the render state the paint properties are prepared from.
-            self.note_render_state_write();
+            // The layout round that flew with the frame wrote the render state every stage after layout reads.
+            self.pipeline.note_stale(super::RenderStage::ScrollPositions);
             let untaken = self.flown_round.borrow_mut().replace(round);
             assert!(
                 untaken.is_none(),
@@ -899,7 +895,8 @@ impl DocumentHost {
 
     /// Queues the writes the host set aside behind those it queued meanwhile.
     pub(crate) fn queue_writes_set_aside(&self) {
-        self.changes.queue_set_aside();
+        // The stages that ran while the writes were set aside read the render state as it was before them.
+        self.pipeline.note_stale(self.changes.queue_set_aside());
     }
 
     /// Ends the drain of the style transaction that flew: the writes the host queued beside it are queued again, behind
@@ -977,16 +974,22 @@ impl DocumentHost {
     }
 
     /// Runs `job` on the document's render state on the render owner, after the writes the host queued, and waits for
-    /// it, taking the frame in flight in first with `wait`. A job that `writes` leaves the paint and hit testing
-    /// properties prepared from the state stale. A host callback the job makes may reach the state again, as a layout
+    /// it, taking the frame in flight in first with `wait`. A job that writes the state names the first stage of the work
+    /// after layout it `stales`, which it leaves stale with every stage after it. A host callback the job makes may reach the state again, as a layout
     /// round's read of an element's style does, which runs right there on the owner.
-    pub(crate) fn run<R>(&self, wait: impl RenderWait, writes: bool, job: impl FnOnce(&mut RenderState) -> R) -> R {
+    pub(crate) fn run<R>(
+        &self,
+        wait: impl RenderWait,
+        stales: Option<super::RenderStage>,
+        job: impl FnOnce(&mut RenderState) -> R,
+    ) -> R {
         assert!(
             wait.reaches(self),
             "a begun read reaches only the render state of its own document"
         );
-        if writes {
-            self.note_render_state_write();
+        let writes = stales.is_some();
+        if let Some(stage) = stales {
+            self.pipeline.note_stale(stage);
         }
         self.take_frame_in(wait);
         let job = Waited(job);
@@ -1047,18 +1050,18 @@ impl DocumentHost {
     }
 
     /// Answers `read` of the document's render state, spending `wait`, as of every write the host queued. A read leaves
-    /// the paint and hit testing properties prepared from the state current: what it brings up to date first, a
-    /// preparation leaves up to date, or only a layout round reads, but for overflow it measures first, which can
-    /// change what the preparation answers, and so writes the render state.
+    /// the stages of the work after layout current: what it brings up to date first, they leave up to date, or only a
+    /// layout round reads, but for overflow it measures first, which can change what settling scroll positions answers,
+    /// and so writes the render state.
     pub(crate) fn ask<R>(&self, wait: impl RenderWait, read: impl FnOnce(&mut RenderState) -> R) -> R {
-        let (answer, measured_for_preparation) = self.run(wait, false, |state| {
+        let (answer, measured_for_preparation) = self.run(wait, None, |state| {
             let awaited = state.arena_mut().scrollable_overflow.measurement_awaits_preparation();
             let answer = read(state);
             let awaits = state.arena_mut().scrollable_overflow.measurement_awaits_preparation();
             (answer, !awaited && awaits)
         });
         if measured_for_preparation {
-            self.note_render_state_write();
+            self.pipeline.note_stale(super::RenderStage::ScrollPositions);
         }
         answer
     }
@@ -1387,19 +1390,17 @@ impl Drop for TestHost {
     }
 }
 
-/// Whether the paint and hit testing properties of `host`'s document were prepared from its render state as it is, so
-/// that preparing them again would find nothing to do: the host noted them current as it began to prepare them, and
-/// wrote nothing to the render state since, queued, in place or by a job.
+/// Leaves `stage` of the work after the layout of `host`'s document stale, and every stage after it, for what the host
+/// keeps of the document that a stage reads.
 #[unsafe(no_mangle)]
-pub extern "C" fn document_host_paint_preparation_is_current(host: &DocumentHost) -> bool {
-    host.paint_preparation_is_current.get()
+pub extern "C" fn document_host_note_stale(host: &DocumentHost, stage: super::RenderStage) {
+    host.pipeline.note_stale(stage);
 }
 
-/// Notes that the paint and hit testing properties of `host`'s document are current, as the host begins to prepare them:
-/// they stay current until the host writes to the render state.
+/// How many writes the host of a document queued that change its visual context tree and no other stage's inputs.
 #[unsafe(no_mangle)]
-pub extern "C" fn document_host_note_paint_preparation_is_current(host: &DocumentHost) {
-    host.paint_preparation_is_current.set(true);
+pub extern "C" fn document_host_visual_context_tree_writes(host: &DocumentHost) -> u64 {
+    host.pipeline.visual_context_tree_writes()
 }
 
 /// What a scope of a read of a document's render state reads of the document's host: whether the host waits for the

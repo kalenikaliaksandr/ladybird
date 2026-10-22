@@ -110,6 +110,35 @@ pub(crate) enum PaintChange {
 }
 
 impl PaintChange {
+    /// The first stage of the work after layout that the change leaves stale (see
+    /// [`crate::render_state::RenderStage`]). Highlights, scrollbar hovers, image map areas and recordings are read
+    /// only as the document is painted or hit tested. The images a box paints may name the root background, so they
+    /// leave everything stale.
+    pub(crate) fn first_stale_stage(&self) -> crate::render_state::RenderStage {
+        use crate::render_state::RenderStage;
+        match self {
+            Self::SetViewportScrollOffset(_) => RenderStage::ScrollSnapshot,
+            Self::NoteVisualContextBoxDirty { .. } | Self::RequestFullVisualContextRebuild(_) => {
+                RenderStage::VisualContexts
+            }
+            Self::SvgPaintResourcesChanged => RenderStage::PaintProperties,
+            Self::SetLayerImagePaintFacts { .. } | Self::SetReplacedPaintFacts { .. } => RenderStage::ScrollPositions,
+            Self::ApplySelection { .. }
+            | Self::ClearSelection { .. }
+            | Self::ApplySearchText { .. }
+            | Self::ClearSearchText
+            | Self::ApplySpellingErrors { .. }
+            | Self::ClearSpellingErrors
+            | Self::SyncHighlightPseudoStyles { .. }
+            | Self::SetScrollbarEnlarged { .. }
+            | Self::SupersededReplacedPaintFacts
+            | Self::PublishImageMapAreas { .. }
+            | Self::InvalidateAllPaintCaches
+            | Self::SetRecordingTraceEnabled(_)
+            | Self::TakeInRecording { .. } => RenderStage::Current,
+        }
+    }
+
     /// How far the change may write the rows. Noting what the visual context tree is to be updated for writes nothing
     /// the rows answer before the tree is updated.
     pub(crate) fn row_write(&self) -> crate::render_state::RowWrite {

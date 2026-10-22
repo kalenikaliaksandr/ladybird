@@ -34,11 +34,10 @@ public:
 
     BlockingWheelEventRegionState collect_root_blocking_wheel_event_regions(DOM::Document&);
 
-    // Called from Document::update_paint_and_hit_testing_properties_if_needed() once the visual
-    // context tree is settled; every other consumer reaches the scroll state through that update.
-    void refresh_scroll_state(Layout::BegunRead const& read, DOM::Document&);
+    // The scroll state snapshot the render state read last, which bringing its stages up to date hands over.
+    void set_scroll_state_device_offsets(ReadonlySpan<Gfx::FloatPoint> offsets) { m_scroll_state_snapshot.assign_device_offsets(offsets); }
+    void note_visual_context_tree_update(bool performed_full_build);
 
-    void update_accumulated_visual_contexts(Layout::BegunRead const& read, DOM::Document&);
     void update_visual_viewport_accumulated_visual_context(Layout::BegunRead const& read, DOM::Document&);
     // An update pass publishes each effect's compositor animations into a list the tree takes at the end.
     void begin_compositor_animation_update(DOM::Document&);

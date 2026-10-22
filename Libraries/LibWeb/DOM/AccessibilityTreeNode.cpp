@@ -184,7 +184,7 @@ static Optional<CSSPixelRect> text_bounding_client_rect(Document const& document
 {
     auto rect_to_viewport_transform = Painting::identity_rect_to_viewport_transform();
     Optional<Compositing::AccumulatedVisualContextTree> visual_context_tree;
-    if (!document.can_compute_client_rects_without_accumulated_visual_contexts_update(layout_node)) {
+    if (!document.client_rects_need_no_visual_context_tree(layout_node)) {
         const_cast<Document&>(document).update_paint_and_hit_testing_properties_if_needed();
         visual_context_tree = document.visual_context_tree();
         rect_to_viewport_transform = Painting::rect_to_viewport_transform(document, *visual_context_tree);

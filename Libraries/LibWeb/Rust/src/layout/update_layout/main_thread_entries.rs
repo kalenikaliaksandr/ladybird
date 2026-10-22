@@ -108,7 +108,7 @@ pub unsafe extern "C" fn render_state_seal_clock_plan(
             && round.is_some()
             && let Some(hover) = &mut hover
         {
-            host.run(read, false, |state| hover.seal_read_only_frame(state));
+            host.run(read, None, |state| hover.seal_read_only_frame(state));
         }
         host.seal_clock_plan(
             round.map(|round| {

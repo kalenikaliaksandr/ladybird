@@ -24,6 +24,9 @@ pub struct VisualContextState {
     pub quarantined_slots_are_releasable: bool,
     // The list the tree was last given, which the next pass compares its own against.
     pub published_compositor_animations: Vec<VisualAnimation>,
+    // Whether a layout committed since the tree was last updated, which moves geometry the tree is built from that no
+    // box notes, such as the viewport's overflow and the sticky constraints.
+    pub layout_committed_since_update: bool,
     // Moves, and never back, whenever the tree changes in a way the compositor is sent: a frame sends the tree where this
     // differs from what the frame sealed before it saw.
     pub content_generation: u64,

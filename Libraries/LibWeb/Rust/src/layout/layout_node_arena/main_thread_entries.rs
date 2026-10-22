@@ -29,22 +29,26 @@ mod tests {
     fn queued_box_removal_is_applied_before_resolving_its_layout_node() {
         let test_host = TestHost::new();
         let host = test_host.host();
-        let (parent_node, child_node, parent, child) = host.run(ScriptForcedRead::for_test(), true, |state| {
-            let mut identities = [0; 2];
-            state.engine_mut().allocate_style_nodes(&mut identities);
-            let [parent_node, child_node] = identities.map(|raw| StyleNodeID::from_raw(raw).unwrap());
-            let arena = state.arena_mut();
-            let parent = arena.allocate_for_test().slot;
-            let child = arena.allocate_for_test().slot;
-            arena.write_shape(parent).set_kind(NodeKind::BlockContainer);
-            arena.write_shape(child).set_kind(NodeKind::ImageBox);
-            arena.set_style_node_for_test(parent, Some(parent_node));
-            arena.set_style_node_for_test(child, Some(child_node));
-            arena.bind_row(parent);
-            arena.bind_row(child);
-            arena.insert_child(parent, child, NodeSlotId::INVALID);
-            (parent_node, child_node, parent, child)
-        });
+        let (parent_node, child_node, parent, child) = host.run(
+            ScriptForcedRead::for_test(),
+            Some(crate::render_state::RenderStage::ScrollPositions),
+            |state| {
+                let mut identities = [0; 2];
+                state.engine_mut().allocate_style_nodes(&mut identities);
+                let [parent_node, child_node] = identities.map(|raw| StyleNodeID::from_raw(raw).unwrap());
+                let arena = state.arena_mut();
+                let parent = arena.allocate_for_test().slot;
+                let child = arena.allocate_for_test().slot;
+                arena.write_shape(parent).set_kind(NodeKind::BlockContainer);
+                arena.write_shape(child).set_kind(NodeKind::ImageBox);
+                arena.set_style_node_for_test(parent, Some(parent_node));
+                arena.set_style_node_for_test(child, Some(child_node));
+                arena.bind_row(parent);
+                arena.bind_row(child);
+                arena.insert_child(parent, child, NodeSlotId::INVALID);
+                (parent_node, child_node, parent, child)
+            },
+        );
         // The test's shell destruction stub never dereferences this stand-in for a C++ layout node.
         let shell = std::ptr::without_provenance_mut(8);
         host.host_tables().attach_shell(child, shell);
@@ -70,9 +74,11 @@ mod tests {
         // A recording can still name the removed image. Resolving it must apply the removal before answering.
         let resolved = render_state_node_shell_if_live(host, read, child);
         let shell_was_destroyed = !host.host_tables().shells.borrow().contains_key(&child);
-        host.run(ScriptForcedRead::for_test(), true, |state| {
-            state.arena_mut().free_subtree(parent)
-        })
+        host.run(
+            ScriptForcedRead::for_test(),
+            Some(crate::render_state::RenderStage::ScrollPositions),
+            |state| state.arena_mut().free_subtree(parent),
+        )
         .destroy_shells_and_invoke_callbacks(&crate::stage::MainThread::for_test_with_host(host));
         assert!(resolved.is_null());
         assert!(shell_was_destroyed);

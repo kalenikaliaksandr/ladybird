@@ -20,6 +20,7 @@ mod clock;
 mod devtools;
 mod document_host;
 mod owner;
+mod render_stage;
 mod wait;
 
 pub use clock::FfiPlannedScrollTimeline;
@@ -30,6 +31,7 @@ pub use document_host::DocumentHost;
 pub(crate) use document_host::OwedWorkPayment;
 #[cfg(test)]
 pub(crate) use document_host::TestHost;
+pub use render_stage::RenderStage;
 pub use wait::BegunRead;
 pub(crate) use wait::held_node_entries;
 pub(crate) use wait::{ForcedRead, LockstepProof, NodeRead, RenderWait, ScriptForcedRead, TaskBoundary};
@@ -717,12 +719,19 @@ impl ChangeQueue {
         *self.set_aside.borrow_mut() = self.queued.take();
     }
 
-    /// Queues the writes set aside behind the writes queued meanwhile.
-    fn queue_set_aside(&self) {
+    /// Queues the writes set aside behind the writes queued meanwhile, and answers the first stage of the work after
+    /// layout they leave stale.
+    fn queue_set_aside(&self) -> RenderStage {
         self.sets_writes_aside.set(false);
         let mut set_aside = self.set_aside.take();
         set_aside.iter().for_each(|change| self.note(change));
+        let first_stale = set_aside
+            .iter()
+            .map(ArenaChange::first_stale_stage)
+            .min()
+            .unwrap_or(RenderStage::Current);
         self.queued.borrow_mut().append(&mut set_aside);
+        first_stale
     }
 
     /// Keeps `buffer`, emptied by the render side, as the spare.
@@ -1071,12 +1080,18 @@ mod tests {
         assert_eq!(host.with_arena_for_test(|arena| arena.live_slot_count()), 0);
     }
 
+    /// Leaves every stage of the work after layout of `host`'s document current, as bringing them up to date does.
+    fn bring_stages_up_to_date(host: &DocumentHost) {
+        host.pipeline().take_stale_stages_up_to(RenderStage::ScrollSnapshot);
+    }
+
+    fn stages_are_current(host: &DocumentHost) -> bool {
+        host.pipeline().first_stale() == RenderStage::Current
+    }
+
     #[test]
-    fn a_read_that_first_measures_a_scrollability_flip_leaves_the_paint_preparation_stale() {
+    fn a_read_that_first_measures_a_scrollability_flip_leaves_the_scroll_positions_stale() {
         use crate::layout::node_data::NodeKind;
-        use document_host::{
-            document_host_note_paint_preparation_is_current, document_host_paint_preparation_is_current,
-        };
         let test_host = TestHost::new();
         let host = test_host.host();
         let viewport = host.with_arena_for_test(|arena| {
@@ -1098,15 +1113,15 @@ mod tests {
             });
         };
 
-        document_host_note_paint_preparation_is_current(host);
+        bring_stages_up_to_date(host);
         measure();
-        assert!(!document_host_paint_preparation_is_current(host));
+        assert_eq!(host.pipeline().first_stale(), RenderStage::ScrollPositions);
         assert!(host.with_arena_for_test(|arena| arena.scrollable_overflow.scrollability_changed.get()));
 
-        // A read that measures nothing leaves the preparation as it is.
-        document_host_note_paint_preparation_is_current(host);
+        // A read that measures nothing leaves the stages as they are.
+        bring_stages_up_to_date(host);
         measure();
-        assert!(document_host_paint_preparation_is_current(host));
+        assert!(stages_are_current(host));
 
         host.with_arena_for_test(|arena| {
             arena
@@ -1116,16 +1131,52 @@ mod tests {
     }
 
     #[test]
-    fn a_mark_that_asks_nothing_of_the_box_leaves_the_paint_preparation_current() {
+    fn a_mark_that_asks_nothing_of_the_box_leaves_the_stages_current() {
         use crate::layout::tree_update_marks::{FfiBoxMarks, render_state_mark_node_box};
-        use document_host::{
-            document_host_note_paint_preparation_is_current, document_host_paint_preparation_is_current,
-        };
         let test_host = TestHost::new();
         let host = test_host.host();
-        document_host_note_paint_preparation_is_current(host);
+        bring_stages_up_to_date(host);
         render_state_mark_node_box(host, 1, FfiBoxMarks::default());
-        assert!(document_host_paint_preparation_is_current(host));
+        assert!(stages_are_current(host));
+    }
+
+    #[test]
+    fn a_write_set_aside_leaves_its_stage_stale_once_queued_again() {
+        let test_host = TestHost::new();
+        let host = test_host.host();
+        bring_stages_up_to_date(host);
+        crate::painting::paint_changes::render_state_set_viewport_scroll_offset(
+            host,
+            crate::layout::used_values::FfiCssPixelPoint {
+                x: crate::css::css_pixels::CssPixels::from_raw(0),
+                y: crate::css::css_pixels::CssPixels::from_raw(640),
+            },
+        );
+        host.set_writes_aside();
+        // The stages run meanwhile read the render state as it was before the write.
+        bring_stages_up_to_date(host);
+        host.queue_writes_set_aside();
+        assert_eq!(host.pipeline().first_stale(), RenderStage::ScrollSnapshot);
+    }
+
+    #[test]
+    fn a_stage_takes_in_what_an_earlier_stage_left_it() {
+        let test_host = TestHost::new();
+        let host = test_host.host();
+        let pipeline = host.pipeline();
+        bring_stages_up_to_date(host);
+        pipeline.note_stale(RenderStage::PaintProperties);
+        let first = pipeline.take_stale_stages_up_to(RenderStage::ScrollSnapshot);
+        assert_eq!(first, Some(RenderStage::PaintProperties));
+        pipeline.begin_stage(RenderStage::PaintProperties, RenderStage::ScrollSnapshot);
+        // The stage writes what the scroll state snapshot reads, which runs after it, and what it reads itself.
+        pipeline.note_stale(RenderStage::ScrollSnapshot);
+        pipeline.begin_stage(RenderStage::VisualContexts, RenderStage::ScrollSnapshot);
+        pipeline.begin_stage(RenderStage::ScrollSnapshot, RenderStage::ScrollSnapshot);
+        assert!(stages_are_current(host));
+        pipeline.note_stale(RenderStage::PaintProperties);
+        pipeline.begin_stage(RenderStage::ScrollSnapshot, RenderStage::ScrollSnapshot);
+        assert_eq!(pipeline.first_stale(), RenderStage::PaintProperties);
     }
 
     #[test]

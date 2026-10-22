@@ -3067,7 +3067,7 @@ static QueryResult query_client_rects_after_layout_update(Element const& element
     if (!layout_node)
         return QueryResult {};
 
-    if (document.can_compute_client_rects_without_accumulated_visual_contexts_update(*layout_node))
+    if (document.client_rects_need_no_visual_context_tree(*layout_node))
         return query(*layout_node, Painting::identity_rect_to_viewport_transform());
 
     // NOTE: Make sure CSS transforms are resolved before they are used to calculate the rect position.

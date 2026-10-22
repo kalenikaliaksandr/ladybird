@@ -34,7 +34,7 @@ const DEVTOOLS_ENTRY: DevtoolsEntry = DevtoolsEntry { _private: () };
 /// Makes the render state of `host`'s document panic answering this call, which waits for it.
 #[unsafe(no_mangle)]
 pub extern "C" fn render_state_panic_for_testing(host: &DocumentHost) {
-    host.run(ScriptForcedRead::at_script_entry(&DEVTOOLS_ENTRY), false, |_| {
+    host.run(ScriptForcedRead::at_script_entry(&DEVTOOLS_ENTRY), None, |_| {
         panic!("the render state panicked for a test")
     });
 }

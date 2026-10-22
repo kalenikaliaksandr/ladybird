@@ -2835,6 +2835,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             manifest_dir.join("src/render_state.rs"),
             manifest_dir.join("src/render_state/devtools.rs"),
             manifest_dir.join("src/render_state/document_host.rs"),
+            manifest_dir.join("src/render_state/render_stage.rs"),
             manifest_dir.join("src/render_state/wait.rs"),
             manifest_dir.join("src/stage_thread.rs"),
         ],

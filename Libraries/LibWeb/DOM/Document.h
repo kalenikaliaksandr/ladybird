@@ -605,6 +605,7 @@ public:
     void clear_devtools_layout_inspection_data();
     void prepare_for_rendering(Layout::BegunRead const& read);
     void update_paint_and_hit_testing_properties_if_needed();
+    void bring_rendering_up_to(Layout::BegunRead const& read, Layout::RustFFI::RenderStage);
     void sample_animation_effects_needing_style_update();
     void update_style_computer_viewport_rect();
     bool needs_animated_style_update() const { return m_needs_animated_style_update; }
@@ -1354,15 +1355,14 @@ public:
         Values,
         Structure,
     };
-    void set_needs_accumulated_visual_contexts_update(bool);
-    void set_image_map_areas_need_publication() { m_image_map_areas_need_publication = true; }
+    void set_image_map_areas_need_publication();
     [[nodiscard]] bool take_image_map_areas_need_publication() { return exchange(m_image_map_areas_need_publication, false); }
     void note_svg_paint_resources_changed();
     void register_svg_pattern_element(Badge<SVG::SVGPatternElement>, SVG::SVGPatternElement&);
     void unregister_svg_pattern_element(Badge<SVG::SVGPatternElement>, SVG::SVGPatternElement&);
     void republish_svg_patterns_inheriting_from(Utf16FlyString const& id);
     void schedule_full_accumulated_visual_context_rebuild(Layout::RustFFI::VisualContextUpdateScope);
-    bool can_compute_client_rects_without_accumulated_visual_contexts_update(Layout::Node const&) const;
+    bool client_rects_need_no_visual_context_tree(Layout::Node const&) const;
     void schedule_accumulated_visual_context_update(Layout::BegunRead const& read, Element&, AccumulatedVisualContextUpdateScope);
     void schedule_accumulated_visual_context_update(Layout::Node const&, AccumulatedVisualContextUpdateScope);
 
@@ -2243,7 +2243,6 @@ private:
 
     bool m_design_mode_enabled { false };
 
-    bool m_needs_accumulated_visual_contexts_update { false };
     bool m_image_map_areas_need_publication { false };
 
     HashMap<Web::AsyncScrollNodeStableID, Compositing::SnappedAreas> m_scroll_container_snapped_areas;

@@ -2575,6 +2575,12 @@ impl LayoutStageJob {
         };
         let notifications = commit::commit_replacing(root, state.arena_mut(), &output.0);
         let arena = state.arena();
+        // The commit moves geometry the visual context tree reads beside the boxes it notes as moved.
+        arena
+            .paint_state()
+            .borrow_mut()
+            .visual_context
+            .layout_committed_since_update = true;
         arena.end_layout_pass();
         state.layout_scratch().end_layout_pass();
         arena.reset_layout_update_flags_in_subtree(root);

@@ -18,27 +18,21 @@ use crate::painting::visual_context::incremental::{
     IncrementalUpdateResult, debug_assert_every_live_node_is_owned, update_visual_context_tree,
 };
 use crate::painting::visual_context::{VisualContextState, VisualContextTree};
-use crate::render_state::{BegunRead, DocumentHost};
+use crate::render_state::{BegunRead, DocumentHost, RenderStage};
 use libgfx_rust::FloatPoint;
 use std::sync::Arc;
 
-/// What a paint pass writes, which decides what the host lets go of before it sends the pass, and whether the paint and
-/// hit testing properties the host prepared stay current.
+/// What a paint pass writes, which decides what the host lets go of before it sends the pass, and which stages of the
+/// work after layout it leaves stale (see [`RenderStage`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PassEffect {
     /// Writes the rows throughout: measures every unmeasured overflow, or brings the visual context of every dirty box
-    /// up to date. Such a pass is one of those that prepare the paint and hit testing properties.
+    /// up to date. Such a pass is one of the stages.
     RewritesRows,
-    /// Changes nothing the paint and hit testing properties are prepared from.
+    /// Changes nothing a stage reads.
     KeepsPaintPreparation,
-    /// Changes what the paint and hit testing properties are prepared from.
-    StalesPaintPreparation,
-}
-
-impl PassEffect {
-    pub(crate) fn leaves_paint_preparation_current(self) -> bool {
-        self != Self::StalesPaintPreparation
-    }
+    /// Changes what the stage reads, and so every stage after it.
+    Stales(RenderStage),
 }
 
 #[derive(Default)]
@@ -252,9 +246,11 @@ pub(crate) fn run<R>(
     if effect == PassEffect::RewritesRows {
         host.let_go_of_rows();
     }
-    host.run(read, !effect.leaves_paint_preparation_current(), move |state| {
-        pass(state.arena_mut())
-    })
+    let stales = match effect {
+        PassEffect::Stales(stage) => Some(stage),
+        PassEffect::RewritesRows | PassEffect::KeepsPaintPreparation => None,
+    };
+    host.run(read, stales, move |state| pass(state.arena_mut()))
 }
 
 /// Proof that preparing a document for rendering has something to do, which only [`rendering_preparation_pending`]
@@ -387,6 +383,14 @@ pub(crate) fn update_visual_viewport_transform(arena: &LayoutNodeArena, inputs: 
     state.note_content_changed();
 }
 
+/// Whether the visual context tree of `arena` is to be updated: none was built yet, or a box or a layout that committed
+/// moved what it is built from since it was.
+pub(crate) fn visual_contexts_update_pending(arena: &LayoutNodeArena) -> bool {
+    let paint_state = arena.paint_state().borrow();
+    let state = &paint_state.visual_context;
+    state.tree.is_none() || state.layout_committed_since_update || !state.dirty_boxes.is_empty()
+}
+
 pub(crate) fn update_accumulated_visual_contexts(
     arena: &mut LayoutNodeArena,
     viewport: NodeSlotId,
@@ -443,6 +447,7 @@ pub(crate) fn update_accumulated_visual_contexts(
                 }
                 state.dirty_boxes.clear();
                 state.last_tree_inputs = Some(inputs);
+                state.layout_committed_since_update = false;
                 let outcome = FfiVisualContextUpdateOutcome {
                     performed_full_build,
                     structural_epoch_changed: outcome.delta.structural_epoch_changed,
@@ -461,6 +466,7 @@ pub(crate) fn update_accumulated_visual_contexts(
 
     let outcome = fresh_visual_context_tree_build(arena, viewport, inputs, &mut state);
     state.last_tree_inputs = Some(inputs);
+    state.layout_committed_since_update = false;
     arena.paint_state().borrow_mut().visual_context = state;
     outcome
 }

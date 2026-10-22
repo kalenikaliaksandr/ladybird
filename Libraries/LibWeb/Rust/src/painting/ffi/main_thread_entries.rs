@@ -12,6 +12,7 @@ use super::*;
 use crate::painting::host::FfiCaretAt;
 use crate::painting::host::FfiVisualContextTreeInputs;
 use crate::painting::paint_passes::{PassEffect, pending_preparation, run as run_paint_pass};
+use crate::render_state::RenderStage;
 
 crate::stage::main_thread_ffi_entries!();
 
@@ -286,28 +287,125 @@ pub extern "C" fn render_state_first_wheel_scrollable_box_in_containing_block_ch
     })
 }
 
-/// Prepares the document of `host` for rendering, and stores the scroll offsets the new overflow moved out of range.
-/// The viewport the preparation reads is asked of `inputs_of` only when there is something to prepare.
+/// What the host of a document hands the stages of the work after its layout that read the document: the image map
+/// areas its images name, and the SVG paint resources its rows name, which only the DOM resolves, and where the scroll
+/// state snapshot goes.
+#[repr(C)]
+pub struct FfiRenderStageHost {
+    pub context: *mut c_void,
+    pub publish_image_map_areas: unsafe extern "C" fn(*mut c_void),
+    pub resolve_svg_filter: unsafe extern "C" fn(*mut c_void, NodeSlotId, *const c_void, *mut c_void) -> bool,
+    pub resolve_svg_paint_server: unsafe extern "C" fn(*mut c_void, NodeSlotId, bool, *mut c_void),
+    pub publish_scroll_state: unsafe extern "C" fn(*mut c_void, *const libgfx_rust::FloatPoint, usize),
+}
+
+/// What bringing the stages of the work after a document's layout up to date did that the host follows up on.
+#[derive(Default)]
+#[repr(C)]
+pub struct FfiRenderStageOutcome {
+    /// What settling the scroll positions moved is recorded and painted again.
+    pub requires_repaint: bool,
+    /// What a later stage moved is recorded again.
+    pub requires_display_list_recording: bool,
+    pub performed_full_visual_context_build: bool,
+    pub performed_incremental_visual_context_update: bool,
+}
+
+/// Brings the stages of the work after the layout of `host`'s document up to `target`, running each one left stale in
+/// order (see [`RenderStage`]). `viewport` is the document's viewport row, or invalid where it has no committed one, in
+/// which case the visual context tree and the scroll state wait for one. `inputs` are the inputs of the tree as the
+/// document's page has them now.
 ///
 /// # Safety
 ///
-/// `host` must be a live document host, on its document's thread. Host callbacks must remain valid for this call, and
-/// `inputs_of` must answer synchronously from `document`.
+/// `host` must be a live document host, on its document's thread, and `stage_host`'s callbacks must answer
+/// synchronously from its context.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn render_state_prepare_for_rendering(
+pub unsafe extern "C" fn render_state_bring_up_to(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
-    visual_context_update_pending: bool,
-    document: *mut c_void,
-    inputs_of: unsafe extern "C" fn(*mut c_void) -> FfiVisualContextTreeInputs,
+    target: RenderStage,
+    viewport: NodeSlotId,
+    inputs: FfiVisualContextTreeInputs,
+    stage_host: &FfiRenderStageHost,
+) -> FfiRenderStageOutcome {
+    let mut outcome = FfiRenderStageOutcome::default();
+    let pipeline = host.pipeline();
+    let Some(mut stage) = pipeline.take_stale_stages_up_to(target) else {
+        return outcome;
+    };
+    while stage <= target {
+        pipeline.begin_stage(stage, target);
+        match stage {
+            RenderStage::ScrollPositions => {
+                // SAFETY: Guaranteed by the caller.
+                let prepared = unsafe { settle_scroll_positions(host, read, &inputs) };
+                outcome.requires_repaint |= prepared.requires_display_list_recording;
+            }
+            RenderStage::PaintProperties => {
+                // SAFETY: Guaranteed by the caller.
+                unsafe { (stage_host.publish_image_map_areas)(stage_host.context) };
+                // SAFETY: Guaranteed by the caller.
+                if unsafe { sync_svg_paint_resources(host, read, stage_host) } {
+                    outcome.requires_display_list_recording = true;
+                }
+            }
+            RenderStage::VisualContexts if !viewport.is_invalid() => {
+                let updated = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
+                    if !crate::painting::paint_passes::visual_contexts_update_pending(arena) {
+                        return None;
+                    }
+                    let updated =
+                        crate::painting::paint_passes::update_accumulated_visual_contexts(arena, viewport, inputs);
+                    arena.paint_state().borrow_mut().visual_context.note_content_changed();
+                    Some(updated)
+                });
+                if let Some(updated) = updated {
+                    outcome.requires_display_list_recording |= updated.requires_display_list_recording;
+                    if updated.performed_full_build {
+                        outcome.performed_full_visual_context_build = true;
+                    } else {
+                        outcome.performed_incremental_visual_context_update = true;
+                    }
+                }
+            }
+            RenderStage::ScrollSnapshot if !viewport.is_invalid() => {
+                let snapshot = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
+                    crate::painting::paint_passes::refresh_scroll_state(arena, inputs.device_pixels_per_css_pixel)
+                });
+                if let Some(snapshot) = snapshot {
+                    // SAFETY: The host copies the offsets synchronously.
+                    unsafe { (stage_host.publish_scroll_state)(stage_host.context, snapshot.as_ptr(), snapshot.len()) };
+                }
+            }
+            RenderStage::VisualContexts | RenderStage::ScrollSnapshot => {}
+            RenderStage::Current => unreachable!("no stage runs after the last"),
+        }
+        stage = stage.next();
+    }
+    outcome
+}
+
+/// Settles the scroll positions of `host`'s document, where something is left to settle, and stores the scroll offsets
+/// the new overflow moved out of range. The sticky constraints the new overflow moved are refreshed here unless the
+/// visual context tree is to be updated, which refreshes them.
+///
+/// # Safety
+///
+/// `host` must be a live document host, on its document's thread, and its host callbacks must remain valid for this
+/// call.
+unsafe fn settle_scroll_positions(
+    host: &crate::render_state::DocumentHost,
+    read: &crate::render_state::BegunRead,
+    inputs: &FfiVisualContextTreeInputs,
 ) -> crate::painting::paint_passes::FfiRenderingPreparationOutcome {
     let Some(pending) = pending_preparation(read, host) else {
         return Default::default();
     };
-    // SAFETY: Guaranteed by the caller.
-    let inputs = unsafe { inputs_of(document) };
+    let inputs = *inputs;
     let prepared = run_paint_pass(read, host, PassEffect::RewritesRows, move |arena| {
-        pending.prepare(arena, (!visual_context_update_pending).then_some(&inputs))
+        let sticky_inputs = (!crate::painting::paint_passes::visual_contexts_update_pending(arena)).then_some(&inputs);
+        pending.prepare(arena, sticky_inputs)
     });
     if !prepared.clamped_scroll_offsets.is_empty() {
         // SAFETY: Guaranteed by the caller.
@@ -322,26 +420,12 @@ pub unsafe extern "C" fn render_state_prepare_for_rendering(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn render_state_update_accumulated_visual_contexts(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    viewport: NodeSlotId,
-    inputs: FfiVisualContextTreeInputs,
-) -> crate::painting::host::FfiVisualContextUpdateOutcome {
-    run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
-        let outcome = crate::painting::paint_passes::update_accumulated_visual_contexts(arena, viewport, inputs);
-        arena.paint_state().borrow_mut().visual_context.note_content_changed();
-        outcome
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn render_state_update_visual_viewport_transform(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
     inputs: FfiVisualContextTreeInputs,
 ) {
-    run_paint_pass(read, host, PassEffect::StalesPaintPreparation, |arena| {
+    run_paint_pass(read, host, PassEffect::Stales(RenderStage::ScrollPositions), |arena| {
         crate::painting::paint_passes::update_visual_viewport_transform(arena, &inputs);
     });
 }
@@ -409,16 +493,18 @@ pub extern "C" fn render_state_republish_visual_animations(
 ///
 /// # Safety
 ///
-/// `host` must be a live document host, on its document's thread, and both resolvers must answer synchronously for the
-/// row they are handed and only push into the sink whose pointer they receive.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn render_state_sync_svg_paint_resources(
+/// `host` must be a live document host, on its document's thread, and both resolvers of `stage_host` must answer
+/// synchronously for the row they are handed and only push into the sink whose pointer they receive.
+unsafe fn sync_svg_paint_resources(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
-    context: *mut c_void,
-    resolve_filter: unsafe extern "C" fn(*mut c_void, NodeSlotId, *const c_void, *mut c_void) -> bool,
-    resolve_paint_server: unsafe extern "C" fn(*mut c_void, NodeSlotId, bool, *mut c_void),
+    stage_host: &FfiRenderStageHost,
 ) -> bool {
+    let (context, resolve_filter, resolve_paint_server) = (
+        stage_host.context,
+        stage_host.resolve_svg_filter,
+        stage_host.resolve_svg_paint_server,
+    );
     use crate::painting::paint_passes::{ResolvedSvgPaintResource, SvgPaintResourceRequest};
     use crate::painting::svg_paint_resources::{PublishedSvgFilter, PublishedSvgPaintServer, SvgPaintResourceKind};
     let requests = run_paint_pass(read, host, PassEffect::KeepsPaintPreparation, |arena| {
@@ -463,34 +549,10 @@ pub unsafe extern "C" fn render_state_sync_svg_paint_resources(
             }
         })
         .collect();
-    run_paint_pass(read, host, PassEffect::StalesPaintPreparation, |arena| {
+    // A published resource that changed notes the boxes that name it for the visual context tree.
+    run_paint_pass(read, host, PassEffect::Stales(RenderStage::VisualContexts), |arena| {
         crate::painting::paint_passes::publish_resolved_svg_paint_resources(arena, resolved)
     })
-}
-
-/// Re-reads the scroll containers' offsets when something invalidated them since the last refresh, resolves the
-/// sticky nodes' offsets on top of them, and hands the dense device-pixel snapshot to `publish`; otherwise the caller
-/// keeps its copy.
-///
-/// # Safety
-///
-/// `host` must be a live document host, on its document's thread; `publish` is called synchronously with `sink` and a
-/// view of the snapshot that is valid only for the duration of that call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn render_state_refresh_scroll_state(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    device_pixels_per_css_pixel: f64,
-    sink: *mut c_void,
-    publish: unsafe extern "C" fn(*mut c_void, *const libgfx_rust::FloatPoint, usize),
-) {
-    let snapshot = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
-        crate::painting::paint_passes::refresh_scroll_state(arena, device_pixels_per_css_pixel)
-    });
-    if let Some(snapshot) = snapshot {
-        // SAFETY: The C++ sink copies the offsets synchronously.
-        unsafe { publish(sink, snapshot.as_ptr(), snapshot.len()) };
-    }
 }
 
 /// # Safety
