@@ -2858,11 +2858,6 @@ void Document::finish_animated_style_update()
         effect->request_observation_sample();
 }
 
-void Document::prepare_for_rendering(Layout::BegunRead const& read)
-{
-    bring_rendering_up_to(read, Layout::RustFFI::RenderStage::ScrollPositions);
-}
-
 void Document::update_paint_and_hit_testing_properties_if_needed()
 {
     Layout::ForcedReadScope read { *this };
