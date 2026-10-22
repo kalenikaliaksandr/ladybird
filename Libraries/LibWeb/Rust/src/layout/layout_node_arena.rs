@@ -2551,6 +2551,42 @@ impl LayoutNodeArena {
         self.push_paint_damage_for_repaint(slot, crate::painting::record::damage::PaintDamage::ALL_PRODUCERS);
     }
 
+    /// Notes the visual contexts a style change of `slot`'s box moves, from the visual context level it invalidates and
+    /// whether it rebuilds the box's stacking context, which moves the nodes the box contributes. A table box's wrapper
+    /// carries the table properties that make the stacking context, so its nodes move with the table's.
+    pub(crate) fn note_box_style_invalidation(
+        &self,
+        slot: NodeSlotId,
+        visual_context_level: u8,
+        rebuilds_stacking_context: bool,
+    ) {
+        use crate::painting::visual_context::dirty::VisualContextBoxDirtyKind;
+        if !self.slot_is_live(slot)
+            || !crate::painting::paint_read::GeometryRead::paintable_row_is_populated(self, slot)
+        {
+            return;
+        }
+        let kind = match (visual_context_level, rebuilds_stacking_context) {
+            (0, false) => return,
+            (1, false) => VisualContextBoxDirtyKind::StyleValueChange,
+            _ => VisualContextBoxDirtyKind::StyleStructuralChange,
+        };
+        self.note_visual_context_box_dirty(slot, kind);
+        if !rebuilds_stacking_context {
+            return;
+        }
+        let parent = self.data(slot).parent.get();
+        if !parent.is_invalid()
+            && self.data(parent).kind.get() == NodeKind::TableWrapper
+            && self
+                .node_style_if_live(slot)
+                .is_some_and(|style| style.display().is_table_inside())
+            && crate::painting::paint_read::GeometryRead::paintable_row_is_populated(self, parent)
+        {
+            self.note_visual_context_box_dirty(parent, VisualContextBoxDirtyKind::StyleStructuralChange);
+        }
+    }
+
     /// Notes the visual contexts a style move with `damage`, an `FfiStyleInvalidationField` word, moves for `slot`'s
     /// box, which the next recording builds again.
     pub(crate) fn note_style_visual_context_moves(&self, slot: NodeSlotId, damage: u32) {

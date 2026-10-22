@@ -1351,10 +1351,6 @@ public:
     // partial rebuild stayed inside its rebuilt subtrees.
     [[nodiscard]] Layout::RustFFI::FfiLayoutCounts layout_counts() const;
 
-    enum class AccumulatedVisualContextUpdateScope : u8 {
-        Values,
-        Structure,
-    };
     void set_image_map_areas_need_publication();
     [[nodiscard]] bool take_image_map_areas_need_publication() { return exchange(m_image_map_areas_need_publication, false); }
     void note_svg_paint_resources_changed();
@@ -1363,8 +1359,10 @@ public:
     void republish_svg_patterns_inheriting_from(Utf16FlyString const& id);
     void schedule_full_accumulated_visual_context_rebuild(Layout::RustFFI::VisualContextUpdateScope);
     bool client_rects_need_no_visual_context_tree(Layout::Node const&) const;
-    void schedule_accumulated_visual_context_update(Layout::BegunRead const& read, Element&, AccumulatedVisualContextUpdateScope);
-    void schedule_accumulated_visual_context_update(Layout::Node const&, AccumulatedVisualContextUpdateScope);
+    // Hands the render state what a style change of a box invalidates, for it to work out what it moves of the box's
+    // visual contexts. The element's overload hands it to the boxes of its synthetic pseudo-elements too.
+    void note_style_invalidation_in_render_state(Layout::BegunRead const& read, Element&, CSS::AccumulatedVisualContextInvalidation);
+    void note_style_invalidation_in_render_state(Layout::Node const&, CSS::AccumulatedVisualContextInvalidation, bool rebuilds_stacking_context);
 
     Compositing::SnappedAreas const& snapped_areas_of_scroll_container(Web::AsyncScrollNodeStableID const&) const;
     void set_snapped_areas_of_scroll_container(Web::AsyncScrollNodeStableID const&, Compositing::SnappedAreas);

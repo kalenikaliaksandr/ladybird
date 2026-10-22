@@ -1012,18 +1012,13 @@ void AnimationUpdateContext::publish()
                     : invalidation.layout_tree_rebuild_root();
                 target->set_needs_layout_tree_rebuild(read, DOM::SetNeedsLayoutTreeUpdateReason::KeyframeEffect, rebuild_root);
             }
-            if (invalidation.accumulated_visual_contexts() != CSS::AccumulatedVisualContextInvalidation::None) {
-                auto scope = invalidation.accumulated_visual_contexts() == CSS::AccumulatedVisualContextInvalidation::Rebuild
-                    ? DOM::Document::AccumulatedVisualContextUpdateScope::Structure
-                    : DOM::Document::AccumulatedVisualContextUpdateScope::Values;
-                // NB: Element-reference pseudo elements (e.g. ::placeholder) are not synthetic, so schedule their
-                //     layout node directly instead of going through the owning element.
-                if (element.pseudo_element().has_value()) {
-                    if (auto pseudo_element_node = target->pseudo_element_unsafe_layout_node(read, element.pseudo_element().value()))
-                        element.document().schedule_accumulated_visual_context_update(*pseudo_element_node, scope);
-                } else {
-                    element.document().schedule_accumulated_visual_context_update(read, target, scope);
-                }
+            // NB: Element-reference pseudo elements (e.g. ::placeholder) are not synthetic, so their layout node is handed
+            //     the invalidation directly instead of going through the owning element.
+            if (element.pseudo_element().has_value()) {
+                if (auto pseudo_element_node = target->pseudo_element_unsafe_layout_node(read, element.pseudo_element().value()))
+                    element.document().note_style_invalidation_in_render_state(*pseudo_element_node, invalidation.accumulated_visual_contexts(), false);
+            } else {
+                element.document().note_style_invalidation_in_render_state(read, target, invalidation.accumulated_visual_contexts());
             }
 
             auto* repaint_layout_node = element.pseudo_element().has_value()

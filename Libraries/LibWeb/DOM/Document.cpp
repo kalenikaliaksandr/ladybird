@@ -10987,25 +10987,29 @@ void Document::schedule_full_accumulated_visual_context_rebuild(Layout::RustFFI:
     set_needs_repaint(InvalidateDisplayList::No);
 }
 
-void Document::schedule_accumulated_visual_context_update(Layout::Node const& layout_node, AccumulatedVisualContextUpdateScope scope)
+void Document::note_style_invalidation_in_render_state(Layout::Node const& layout_node, CSS::AccumulatedVisualContextInvalidation visual_contexts, bool rebuilds_stacking_context)
 {
+    if (visual_contexts == CSS::AccumulatedVisualContextInvalidation::None && !rebuilds_stacking_context)
+        return;
     if (!Painting::has_committed_box(layout_node))
         return;
-    auto slot = Painting::committed_row_slot(layout_node);
-    Layout::RustFFI::render_state_note_visual_context_style_change(
+    Layout::RustFFI::render_state_note_box_style_invalidation(
         layout_node_arena().host(),
-        slot,
-        scope == AccumulatedVisualContextUpdateScope::Structure);
+        Painting::committed_row_slot(layout_node),
+        to_underlying(visual_contexts),
+        rebuilds_stacking_context);
     set_needs_repaint(InvalidateDisplayList::No);
 }
 
-void Document::schedule_accumulated_visual_context_update(Layout::BegunRead const& read, Element& element, AccumulatedVisualContextUpdateScope scope)
+void Document::note_style_invalidation_in_render_state(Layout::BegunRead const& read, Element& element, CSS::AccumulatedVisualContextInvalidation visual_contexts)
 {
+    if (visual_contexts == CSS::AccumulatedVisualContextInvalidation::None)
+        return;
     if (auto* layout_node = element.unsafe_layout_node(read))
-        schedule_accumulated_visual_context_update(*layout_node, scope);
+        note_style_invalidation_in_render_state(*layout_node, visual_contexts, false);
     element.for_each_synthetic_pseudo_element([&](CSS::PseudoElement, SyntheticPseudoElement const& pseudo_element) {
         if (auto* pseudo_element_layout_node = pseudo_element.unsafe_layout_node(read))
-            schedule_accumulated_visual_context_update(*pseudo_element_layout_node, scope);
+            note_style_invalidation_in_render_state(*pseudo_element_layout_node, visual_contexts, false);
     });
 }
 

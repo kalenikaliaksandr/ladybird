@@ -19,7 +19,6 @@ use super::paintable_data::{FfiSearchTextRange, FfiSelectionEntry, FfiSpellingEr
 use super::record::damage::PaintDamage;
 use super::replaced_paint_facts::{ImagePaintFacts, ReplacedPaintFacts, VideoPaintFacts};
 use super::selection::HighlightStyleRecords;
-use super::visual_context::dirty::VisualContextBoxDirtyKind;
 use crate::css::css_pixels::{CssPixelPoint, FfiCssPixelPoint};
 use crate::css::style::tree::StyleNodeID;
 use crate::layout::LayoutNodeArena;
@@ -88,10 +87,12 @@ pub(crate) enum PaintChange {
         node: NodeSlotId,
         areas: Box<[PublishedImageMapArea]>,
     },
-    /// What the row's visual context is derived from changed.
-    NoteVisualContextBoxDirty {
+    /// A style change of the row's box invalidates its visual contexts up to `visual_context_level`, and its stacking
+    /// context where `rebuilds_stacking_context`.
+    NoteBoxStyleInvalidation {
         node: NodeSlotId,
-        kind: VisualContextBoxDirtyKind,
+        visual_context_level: u8,
+        rebuilds_stacking_context: bool,
     },
     /// Every row paints again.
     InvalidateAllPaintCaches,
@@ -118,7 +119,7 @@ impl PaintChange {
         use crate::render_state::RenderStage;
         match self {
             Self::SetViewportScrollOffset(_) => RenderStage::ScrollSnapshot,
-            Self::NoteVisualContextBoxDirty { .. } | Self::RequestFullVisualContextRebuild(_) => {
+            Self::NoteBoxStyleInvalidation { .. } | Self::RequestFullVisualContextRebuild(_) => {
                 RenderStage::VisualContexts
             }
             Self::SvgPaintResourcesChanged => RenderStage::PaintProperties,
@@ -143,7 +144,7 @@ impl PaintChange {
     /// the rows answer before the tree is updated.
     pub(crate) fn row_write(&self) -> crate::render_state::RowWrite {
         match self {
-            Self::NoteVisualContextBoxDirty { .. } | Self::RequestFullVisualContextRebuild(_) => {
+            Self::NoteBoxStyleInvalidation { .. } | Self::RequestFullVisualContextRebuild(_) => {
                 crate::render_state::RowWrite::None
             }
             _ => crate::render_state::RowWrite::Rows,
@@ -216,11 +217,11 @@ impl PaintChange {
             Self::SetReplacedPaintFacts { target, facts } => arena.set_replaced_paint_facts(target, facts),
             Self::SupersededReplacedPaintFacts => {}
             Self::PublishImageMapAreas { node, areas } => arena.image_map_areas().publish(node, areas),
-            Self::NoteVisualContextBoxDirty { node, kind } => {
-                if arena.paintable_row_is_populated(node) {
-                    arena.note_visual_context_box_dirty(node, kind);
-                }
-            }
+            Self::NoteBoxStyleInvalidation {
+                node,
+                visual_context_level,
+                rebuilds_stacking_context,
+            } => arena.note_box_style_invalidation(node, visual_context_level, rebuilds_stacking_context),
             Self::InvalidateAllPaintCaches => arena.push_all_paint_damage(),
             Self::RequestFullVisualContextRebuild(scope) => arena.request_full_visual_context_rebuild(scope),
             Self::SvgPaintResourcesChanged => {
@@ -560,19 +561,26 @@ pub unsafe extern "C" fn render_state_publish_image_map_areas(
     queue(host, PaintChange::PublishImageMapAreas { node, areas });
 }
 
-/// Notes a style change of `node` for its visual contexts: one that changes their structure, or only their values.
+/// Notes a style change of `node`'s box, which invalidates its visual contexts up to `visual_context_level` and its
+/// stacking context where `rebuilds_stacking_context`, for the render state to work out what it moves of them.
 #[unsafe(no_mangle)]
-pub extern "C" fn render_state_note_visual_context_style_change(
+pub extern "C" fn render_state_note_box_style_invalidation(
     host: &DocumentHost,
     node: NodeSlotId,
-    changes_structure: bool,
+    visual_context_level: u8,
+    rebuilds_stacking_context: bool,
 ) {
-    let kind = if changes_structure {
-        VisualContextBoxDirtyKind::StyleStructuralChange
-    } else {
-        VisualContextBoxDirtyKind::StyleValueChange
-    };
-    queue(host, PaintChange::NoteVisualContextBoxDirty { node, kind });
+    if visual_context_level == 0 && !rebuilds_stacking_context {
+        return;
+    }
+    queue(
+        host,
+        PaintChange::NoteBoxStyleInvalidation {
+            node,
+            visual_context_level,
+            rebuilds_stacking_context,
+        },
+    );
 }
 
 #[unsafe(no_mangle)]

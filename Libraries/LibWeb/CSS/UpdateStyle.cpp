@@ -100,10 +100,7 @@ static bool embedding_document_chain_has_no_pending_style_or_layout_work(DOM::Do
 
 static void apply_element_style_invalidation_after_style_change(Layout::BegunRead const& read, DOM::Element& element, RequiredInvalidationAfterStyleChange const& invalidation)
 {
-    if (invalidation.accumulated_visual_contexts() == AccumulatedVisualContextInvalidation::UpdateValues)
-        element.document().schedule_accumulated_visual_context_update(read, element, DOM::Document::AccumulatedVisualContextUpdateScope::Values);
-    else if (invalidation.accumulated_visual_contexts() == AccumulatedVisualContextInvalidation::Rebuild)
-        element.document().schedule_accumulated_visual_context_update(read, element, DOM::Document::AccumulatedVisualContextUpdateScope::Structure);
+    element.document().note_style_invalidation_in_render_state(read, element, invalidation.accumulated_visual_contexts());
 
     if (invalidation.needs_scroll_container_resnap)
         element.document().schedule_scroll_container_resnap();

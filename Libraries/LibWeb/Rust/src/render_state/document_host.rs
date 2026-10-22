@@ -1656,9 +1656,10 @@ mod tests {
         use crate::painting::paint_changes::PaintChange;
         let (host, viewport) = host_with_fresh_layout();
         host.queue_change(ArenaChange::Layout(LayoutChange::InvalidateSearchableText));
-        host.queue_change(ArenaChange::Paint(PaintChange::NoteVisualContextBoxDirty {
+        host.queue_change(ArenaChange::Paint(PaintChange::NoteBoxStyleInvalidation {
             node: viewport,
-            kind: crate::painting::visual_context::dirty::VisualContextBoxDirtyKind::StyleValueChange,
+            visual_context_level: 1,
+            rebuilds_stacking_context: false,
         }));
         assert_eq!(host.known_layout_up_to_date_unless_built(), Some(true));
         assert_eq!(host.changes.moves().rows, RowWrite::None);

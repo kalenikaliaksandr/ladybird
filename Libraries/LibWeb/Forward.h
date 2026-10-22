@@ -384,6 +384,7 @@ class VisualViewport;
 
 enum class FontFeatureValueType : u8;
 enum class Keyword : u16;
+enum class AccumulatedVisualContextInvalidation : u8;
 enum class LayoutTreeRebuildRoot : u8;
 enum class MediaFeatureID : u8;
 enum class PropertyID : u16;
