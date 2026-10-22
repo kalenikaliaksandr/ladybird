@@ -260,10 +260,16 @@ void Document::update_layout(UpdateLayoutReason reason, ThrottledAnimationSampli
     // the read goes on. Likewise, a web face a layout reached is requested once the update is over, and the update
     // runs again in case the face is already there. Only an update that builds another such box or reaches a face no
     // update reached before can leave one behind again, so this settles.
+    // Once the update is over, the scroll positions it moved settle, and the snap containers re-snap from them.
     auto update_style_and_layout = [&] {
         update_style_and_layout_once(read, reason, animation_sampling_scope);
         while (exchange(m_owed_image_provider_arrived_with_image, false) || exchange(m_requested_wanted_font_faces, false))
             update_style_and_layout_once(read, reason, animation_sampling_scope);
+        bring_rendering_up_to(read, Layout::RustFFI::RenderStage::ScrollPositions);
+        if (m_needs_scroll_container_resnap) {
+            if (auto navigable = this->navigable(); navigable && navigable->active_document().ptr() == this)
+                navigable->re_snap_scroll_containers_after_layout_change(read);
+        }
     };
 
     update_style_and_layout();
@@ -378,12 +384,6 @@ void Document::update_style_and_layout_once(Layout::BegunRead const& read, Updat
     Layout::RustFFI::document_host_begin_update_layout(arena.host());
     ScopeGuard guard = [&] {
         Layout::RustFFI::document_host_end_update_layout(arena.host());
-
-        if (m_needs_scroll_container_resnap) {
-            if (auto navigable = this->navigable(); navigable && navigable->active_document().ptr() == this)
-                navigable->re_snap_scroll_containers_after_layout_change(read);
-        }
-
         page().client().flush_pending_dom_mutations();
     };
 
