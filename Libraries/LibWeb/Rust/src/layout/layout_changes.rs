@@ -292,7 +292,15 @@ impl LayoutChange {
                 }
             }
             Self::SetNodeNeedsCompositorAnimationFrame { node, kind, value } => {
-                arena.set_node_needs_compositor_animation_frame(node, kind, value);
+                // The frame the compositor animates is a visual context node of the box of its own.
+                if arena.set_node_needs_compositor_animation_frame(node, kind, value)
+                    && arena.paintable_row_is_populated(node)
+                {
+                    arena.note_visual_context_box_dirty(
+                        node,
+                        crate::painting::visual_context::dirty::VisualContextBoxDirtyKind::StyleStructuralChange,
+                    );
+                }
             }
             Self::SetNodeStyle { node, record, payloads } => {
                 if arena.set_node_style(node, record, payloads) {

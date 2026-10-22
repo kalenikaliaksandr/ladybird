@@ -4419,20 +4419,22 @@ impl LayoutNodeArena {
         }
     }
 
+    /// Answers whether the box's frame kinds changed.
     pub(crate) fn set_node_needs_compositor_animation_frame(
         &self,
         id: NodeSlotId,
         kind: super::node_data::CompositorAnimationFrameKind,
         value: bool,
-    ) {
+    ) -> bool {
         let data = self.write_shape(id);
-        let mut updated = data.compositor_animation_frame_kinds.get();
-        if value {
-            updated |= kind as u8;
+        let previous = data.compositor_animation_frame_kinds.get();
+        let updated = if value {
+            previous | kind as u8
         } else {
-            updated &= !(kind as u8);
-        }
+            previous & !(kind as u8)
+        };
         data.set_compositor_animation_frame_kinds(updated);
+        updated != previous
     }
 
     pub(crate) fn for_each_node_in_layout_subtree_in_pre_order(

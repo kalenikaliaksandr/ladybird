@@ -1759,6 +1759,12 @@ private:
 
     void update_active_element();
     void collect_boxes_with_auto_content_visibility(Layout::BegunRead const& read);
+
+    enum class CompositorAnimationPassOutcome : u8 {
+        Published,
+        ChangedVisualContextTree,
+    };
+    CompositorAnimationPassOutcome update_compositor_animations_once(Layout::BegunRead const& read);
     bool needs_style_update_after_layout(Layout::BegunRead const& read);
     Layout::RustFFI::FfiLayoutUpdateHostCallbacks layout_update_host_callbacks();
 

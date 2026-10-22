@@ -8331,7 +8331,20 @@ void Document::force_visual_context_tree_rebuild_on_next_compositor_animation_up
     m_force_visual_context_tree_rebuild_on_next_compositor_animation_update_for_testing = true;
 }
 
+// A pass can force or release the visual context nodes of the boxes it animates, and a descriptor must target the tree it
+// is published with, so a pass that changed the tree runs again over the tree updated. A node forced is there for the
+// next pass, and a node released is gone for it, so the passes settle after one that changed the tree.
 void Document::update_compositor_animations(Layout::BegunRead const& read)
+{
+    static constexpr size_t maximum_passes = 3;
+    for (size_t pass = 0; pass < maximum_passes; ++pass) {
+        if (update_compositor_animations_once(read) == CompositorAnimationPassOutcome::Published)
+            return;
+    }
+    dbgln("Compositor animations did not settle within {} passes; none were published", maximum_passes);
+}
+
+Document::CompositorAnimationPassOutcome Document::update_compositor_animations_once(Layout::BegunRead const& read)
 {
     struct CompetingPropertyEffects {
         GC::Ptr<Animations::KeyframeEffect> winner;
@@ -9022,12 +9035,11 @@ void Document::update_compositor_animations(Layout::BegunRead const& read)
     // Publishing gives the animations to the tree in place unless something else still holds it.
     visual_context_tree.clear();
 
-    // A descriptor must target the tree it is published with. The selection pass above can force
-    // or release animation-only visual context nodes, so redo it after applying those updates.
+    // A descriptor must target the tree it is published with. The selection above can force or release
+    // animation-only visual context nodes, so it runs again over the tree updated.
     if (m_needs_accumulated_visual_contexts_update) {
         paint_state().publish_compositor_animations(read, *this, Painting::DocumentPaintState::PublishPendingCompositorAnimations::No);
-        update_compositor_animations(read);
-        return;
+        return CompositorAnimationPassOutcome::ChangedVisualContextTree;
     }
 
     paint_state().publish_compositor_animations(read, *this, Painting::DocumentPaintState::PublishPendingCompositorAnimations::Yes);
@@ -9055,6 +9067,7 @@ void Document::update_compositor_animations(Layout::BegunRead const& read)
     if (requested_withdrawn_effect_sample) {
         ++m_style_invalidation_counters.animation_frame_pump_requests;
     }
+    return CompositorAnimationPassOutcome::Published;
 }
 
 void Document::append_pending_animation_event(Web::DOM::Document::PendingAnimationEvent const& event)
