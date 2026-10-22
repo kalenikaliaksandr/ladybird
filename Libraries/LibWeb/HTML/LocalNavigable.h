@@ -441,7 +441,7 @@ private:
     Compositor::FlightPresentation take_presentation(Compositor::SealedPresentation);
     void commit_unrecorded_frame(Layout::BegunRead const&, DOM::Document&, Compositor::SealedPresentation);
     Compositor::SealedPresentation seal_presentation(DOM::Document&, PaintConfig const&, bool records_display_list);
-    void unseal_presentation(DOM::Document&, Compositor::SealedPresentation const&);
+    void unseal_presentation(Compositor::SealedPresentation const&);
     void finish_recording_in_flight(RecordingInFlight&, Layout::RustFFI::FfiRecordingLanding, Layout::RustFFI::FfiPresentation);
     Gfx::IntRect present_viewport_rect() const;
 
@@ -608,6 +608,9 @@ private:
     // rendering update committed with it.
     NonnullRefPtr<Compositor::NavigablePresenter> m_presenter { Compositor::NavigablePresenter::create() };
     u64 m_committed_generation { 0 };
+    // The content generation of the visual context tree as the last frame sealed saw it, which a frame sends the tree
+    // where it moved from. Generations start at 1, so 0 sends the next frame's tree whatever it is.
+    u64 m_sealed_visual_context_tree_content_generation { 0 };
     OwnPtr<Compositor::CompositorContextHandle> m_compositor_context;
     RefPtr<Core::Timer> m_async_scroll_hover_update_timer;
     Vector<PendingUserScrollendTarget> m_pending_user_scrollend_targets;

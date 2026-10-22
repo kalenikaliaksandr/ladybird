@@ -6722,13 +6722,16 @@ void LocalNavigable::arm_clock_lane(TickNow tick_now)
 Compositor::SealedPresentation LocalNavigable::seal_presentation(DOM::Document& document, PaintConfig const& paint_config, bool records_display_list)
 {
     VERIFY(document.has_committed_viewport_box());
+    // The tree is brought up to date before the frame asks whether it moved since the frame sealed before this one.
+    document.update_paint_and_hit_testing_properties_if_needed();
     auto& paint_state = document.paint_state();
-    bool const sends_visual_context_tree = paint_state.visual_context_tree_needs_compositor_update();
     // A frame that records nothing takes the render state's tree as it is sampled.
     Optional<Compositing::AccumulatedVisualContextTree> visual_context_tree;
     if (records_display_list)
         visual_context_tree = paint_state.visual_context_tree(document);
-    paint_state.did_update_visual_context_tree_in_compositor();
+    auto const visual_context_tree_content_generation = paint_state.visual_context_tree_content_generation(document);
+    bool const sends_visual_context_tree = visual_context_tree_content_generation != m_sealed_visual_context_tree_content_generation;
+    m_sealed_visual_context_tree_content_generation = visual_context_tree_content_generation;
     Compositing::ScrollStateSnapshot scroll_state_snapshot { paint_state.scroll_state_snapshot() };
     scroll_state_snapshot.set_adopted_async_scroll_sequence(m_adopted_async_scroll_sequence);
     // A keyboard scroll reads the layout, which one the host knows is stale leaves to the next frame that lays it out.
@@ -6750,13 +6753,11 @@ Compositor::SealedPresentation LocalNavigable::seal_presentation(DOM::Document& 
     };
 }
 
-// Hands `document` back what a sealed frame took of it, where no frame is built from the seal. A document whose layout
-// tree was torn down since (one destroyed beside the seal) has no paint state to take it back: the next tree comes with
-// a paint state of its own.
-void LocalNavigable::unseal_presentation(DOM::Document& document, Compositor::SealedPresentation const& sealed)
+// Takes back what a sealed frame took, where no frame is built from the seal: a tree it was to send is sent by the next.
+void LocalNavigable::unseal_presentation(Compositor::SealedPresentation const& sealed)
 {
-    if (sealed.sends_visual_context_tree && document.has_paint_state())
-        document.paint_state().did_update_visual_context_values();
+    if (sealed.sends_visual_context_tree)
+        m_sealed_visual_context_tree_content_generation = 0;
 }
 
 bool LocalNavigable::take_recording_in_flight_in(TakeIn take_in)
@@ -6798,7 +6799,7 @@ void LocalNavigable::finish_recording_in_flight(RecordingInFlight& in_flight, La
     auto sealed = adopt_own(*static_cast<Compositor::SealedPresentation*>(given_back.sealed));
     // A frame the render owner found no box to record of presents nothing.
     if (landing == Layout::RustFFI::FfiRecordingLanding::NothingRecorded) {
-        unseal_presentation(document, *sealed);
+        unseal_presentation(*sealed);
         return;
     }
     if (landing == Layout::RustFFI::FfiRecordingLanding::PresentedUnrecorded)

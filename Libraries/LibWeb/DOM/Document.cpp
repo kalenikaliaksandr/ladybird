@@ -2869,8 +2869,6 @@ void Document::prepare_for_rendering(Layout::BegunRead const& read)
     auto outcome = Painting::rust_prepare_for_rendering(read, *this, m_needs_accumulated_visual_contexts_update);
     if (outcome.requires_visual_context_update)
         set_needs_accumulated_visual_contexts_update(true);
-    if (outcome.visual_context_values_changed)
-        paint_state().did_update_visual_context_values();
     if (outcome.requires_display_list_recording) {
         set_needs_to_record_display_list();
         m_document->set_needs_repaint();

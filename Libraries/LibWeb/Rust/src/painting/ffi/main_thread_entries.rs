@@ -329,7 +329,9 @@ pub extern "C" fn render_state_update_accumulated_visual_contexts(
     inputs: FfiVisualContextTreeInputs,
 ) -> crate::painting::host::FfiVisualContextUpdateOutcome {
     run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
-        crate::painting::paint_passes::update_accumulated_visual_contexts(arena, viewport, inputs)
+        let outcome = crate::painting::paint_passes::update_accumulated_visual_contexts(arena, viewport, inputs);
+        arena.paint_state().borrow_mut().visual_context.note_content_changed();
+        outcome
     })
 }
 
@@ -380,6 +382,24 @@ pub extern "C" fn render_state_publish_compositor_animations(
             &mut arena.paint_state().borrow_mut().visual_context,
             animations,
         )
+    })
+}
+
+/// Has the visual context tree of `host`'s document sent to the compositor again where it runs visual animations, for
+/// them to take up what moved under them since. Answers whether it runs any.
+#[unsafe(no_mangle)]
+pub extern "C" fn render_state_republish_visual_animations(
+    host: &crate::render_state::DocumentHost,
+    read: &crate::render_state::BegunRead,
+) -> bool {
+    run_paint_pass(read, host, PassEffect::KeepsPaintPreparation, |arena| {
+        let mut paint_state = arena.paint_state().borrow_mut();
+        let state = &mut paint_state.visual_context;
+        let has_visual_animations = state.tree.as_deref().is_some_and(|tree| tree.has_visual_animations());
+        if has_visual_animations {
+            state.note_content_changed();
+        }
+        has_visual_animations
     })
 }
 

@@ -37,7 +37,6 @@ public:
     // Called from Document::update_paint_and_hit_testing_properties_if_needed() once the visual
     // context tree is settled; every other consumer reaches the scroll state through that update.
     void refresh_scroll_state(Layout::BegunRead const& read, DOM::Document&);
-    void did_update_visual_context_values() { m_visual_context_tree_needs_compositor_update = true; }
 
     void update_accumulated_visual_contexts(Layout::BegunRead const& read, DOM::Document&);
     void update_visual_viewport_accumulated_visual_context(Layout::BegunRead const& read, DOM::Document&);
@@ -49,9 +48,8 @@ public:
     };
     void publish_compositor_animations(Layout::BegunRead const& read, DOM::Document&, PublishPendingCompositorAnimations);
     void republish_visual_animations(Layout::BegunRead const& read, DOM::Document&);
-    bool visual_context_tree_needs_compositor_update() const { return m_visual_context_tree_needs_compositor_update; }
-    void did_update_visual_context_tree_in_compositor() { m_visual_context_tree_needs_compositor_update = false; }
     bool has_visual_context_tree(Layout::BegunRead const& read) const;
+    u64 visual_context_tree_content_generation(DOM::Document const&) const;
     u64 accumulated_visual_context_tree_build_count() const { return m_accumulated_visual_context_tree_build_count; }
     u64 accumulated_visual_context_tree_incremental_update_count() const { return m_accumulated_visual_context_tree_incremental_update_count; }
     void append_recording_trace(String trace) { m_recording_traces.append(move(trace)); }
@@ -101,7 +99,6 @@ private:
 
     u64 m_accumulated_visual_context_tree_build_count { 0 };
     u64 m_accumulated_visual_context_tree_incremental_update_count { 0 };
-    bool m_visual_context_tree_needs_compositor_update { false };
 };
 
 }

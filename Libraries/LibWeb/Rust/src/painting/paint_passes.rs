@@ -46,7 +46,6 @@ impl PassEffect {
 pub struct FfiRenderingPreparationOutcome {
     pub requires_display_list_recording: bool,
     pub requires_visual_context_update: bool,
-    pub visual_context_values_changed: bool,
 }
 
 /// What preparing for rendering answers: its outcome, and the scroll offsets the new overflow moved out of range,
@@ -319,18 +318,19 @@ pub(crate) fn prepare_for_rendering(
     let clamped_scroll_offsets = crate::painting::scrollable_overflow::update_scrollable_overflow(arena);
     let changed = arena.scrollable_overflow.geometry_changed.replace(false);
     let flipped = arena.scrollable_overflow.scrollability_changed.replace(false);
-    let mut visual_context_values_changed = false;
     if let Some(inputs) = sticky_inputs.filter(|_| changed && !flipped) {
         let rows = arena.paintable_rows();
         let mut state = arena.paint_state().borrow_mut();
         let state = &mut state.visual_context;
-        if let Some(tree) = state.tree.as_mut() {
-            visual_context_values_changed = crate::painting::visual_context::refresh::refresh_sticky_constraints(
+        if let Some(tree) = state.tree.as_mut()
+            && crate::painting::visual_context::refresh::refresh_sticky_constraints(
                 &rows,
                 &state.scroll_state,
                 tree,
                 inputs,
-            );
+            )
+        {
+            state.note_content_changed();
         }
         state.needs_to_refresh_scroll_state = true;
     }
@@ -338,7 +338,6 @@ pub(crate) fn prepare_for_rendering(
         outcome: FfiRenderingPreparationOutcome {
             requires_display_list_recording: changed || background_source_changed,
             requires_visual_context_update: flipped,
-            visual_context_values_changed,
         },
         clamped_scroll_offsets,
     }
@@ -379,11 +378,13 @@ fn scroll_state_snapshot(
 
 pub(crate) fn update_visual_viewport_transform(arena: &LayoutNodeArena, inputs: &FfiVisualContextTreeInputs) {
     let mut paint_state = arena.paint_state().borrow_mut();
-    if let Some(tree) = &mut paint_state.visual_context.tree {
+    let state = &mut paint_state.visual_context;
+    if let Some(tree) = &mut state.tree {
         std::sync::Arc::make_mut(tree).set_visual_viewport_transform(
             crate::painting::visual_context::node_values::visual_viewport_transform_data(inputs),
         );
     }
+    state.note_content_changed();
 }
 
 pub(crate) fn update_accumulated_visual_contexts(

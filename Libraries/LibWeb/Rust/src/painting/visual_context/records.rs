@@ -24,11 +24,19 @@ pub struct VisualContextState {
     pub quarantined_slots_are_releasable: bool,
     // The list the tree was last given, which the next pass compares its own against.
     pub published_compositor_animations: Vec<VisualAnimation>,
+    // Moves, and never back, whenever the tree changes in a way the compositor is sent: a frame sends the tree where this
+    // differs from what the frame sealed before it saw.
+    pub content_generation: u64,
 }
 
 impl VisualContextState {
     pub fn structural_epoch(&self) -> u64 {
         self.tree.as_ref().map_or(0, |tree| tree.structural_epoch)
+    }
+
+    pub fn note_content_changed(&mut self) {
+        // The process-wide counter structural epochs come from, so that no two trees of any document share a generation.
+        self.content_generation = super::allocate_structural_epoch();
     }
 
     pub fn clear_scroll_state(&mut self) {
@@ -80,6 +88,7 @@ pub fn publish_compositor_animations(
     }
     *published = animations.clone();
     std::sync::Arc::make_mut(tree).set_visual_animations(animations);
+    visual_context.note_content_changed();
     FfiCompositorAnimationPublishOutcome {
         published: true,
         parameters_changed,

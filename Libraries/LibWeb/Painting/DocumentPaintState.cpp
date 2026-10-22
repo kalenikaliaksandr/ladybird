@@ -36,6 +36,12 @@ bool DocumentPaintState::has_visual_context_tree(Layout::BegunRead const& read) 
     return Layout::RustFFI::render_state_has_visual_context_tree(m_layout_node_arena->host(), &read);
 }
 
+u64 DocumentPaintState::visual_context_tree_content_generation(DOM::Document const& document) const
+{
+    Layout::ForcedReadScope read { document };
+    return Layout::RustFFI::render_state_visual_context_tree_content_generation(m_layout_node_arena->host(), read);
+}
+
 Compositing::AccumulatedVisualContextTree DocumentPaintState::visual_context_tree_without_update(Layout::BegunRead const& read, DOM::Document const& document) const
 {
     return Compositing::AccumulatedVisualContextTree::adopt_rust_handle(retain_rust_main_visual_context_tree(read, document));
@@ -76,7 +82,6 @@ void DocumentPaintState::viewport_row_was_reset()
 {
     m_scroll_state_snapshot = {};
     m_boxes_with_auto_content_visibility.clear();
-    m_visual_context_tree_needs_compositor_update = false;
 }
 
 void DocumentPaintState::update_accumulated_visual_contexts(Layout::BegunRead const& read, DOM::Document& document)
@@ -89,7 +94,6 @@ void DocumentPaintState::update_accumulated_visual_contexts(Layout::BegunRead co
         ++m_accumulated_visual_context_tree_incremental_update_count;
     if (result.requires_display_list_recording || svg_paint_resources_changed)
         document.set_needs_to_record_display_list();
-    m_visual_context_tree_needs_compositor_update = true;
 }
 
 void DocumentPaintState::update_visual_viewport_accumulated_visual_context(Layout::BegunRead const& read, DOM::Document& document)
@@ -99,7 +103,6 @@ void DocumentPaintState::update_visual_viewport_accumulated_visual_context(Layou
         return;
     }
     rust_update_visual_viewport_transform(read, document);
-    m_visual_context_tree_needs_compositor_update = true;
 }
 
 void DocumentPaintState::begin_compositor_animation_update(DOM::Document& document)
@@ -114,7 +117,6 @@ void DocumentPaintState::publish_compositor_animations(Layout::BegunRead const& 
     auto outcome = Layout::RustFFI::render_state_publish_compositor_animations(m_layout_node_arena->host(), &read, publish_pending == PublishPendingCompositorAnimations::Yes);
     if (!outcome.published)
         return;
-    m_visual_context_tree_needs_compositor_update = true;
     if (outcome.parameters_changed)
         ++document.style_invalidation_counters().compositor_visual_animation_updates;
     if (outcome.timing_anchors_changed)
@@ -123,9 +125,8 @@ void DocumentPaintState::publish_compositor_animations(Layout::BegunRead const& 
 
 void DocumentPaintState::republish_visual_animations(Layout::BegunRead const& read, DOM::Document& document)
 {
-    if (!Layout::RustFFI::render_state_visual_context_tree_has_visual_animations(m_layout_node_arena->host(), &read))
+    if (!Layout::RustFFI::render_state_republish_visual_animations(m_layout_node_arena->host(), &read))
         return;
-    m_visual_context_tree_needs_compositor_update = true;
     ++document.style_invalidation_counters().compositor_visual_animation_updates;
 }
 

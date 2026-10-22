@@ -1189,18 +1189,14 @@ pub extern "C" fn render_state_visual_context_tree_structural_epoch(
     })
 }
 
+/// What the visual context tree's content generation is, which moves whenever the compositor is to be sent the tree.
 #[unsafe(no_mangle)]
-pub extern "C" fn render_state_visual_context_tree_has_visual_animations(
+pub extern "C" fn render_state_visual_context_tree_content_generation(
     host: &DocumentHost,
     read: &crate::render_state::BegunRead,
-) -> bool {
+) -> u64 {
     read_arena(host, read, (), |arena, ()| {
-        let paint_state = arena.paint_state().borrow();
-        paint_state
-            .visual_context
-            .tree
-            .as_deref()
-            .is_some_and(|tree| tree.has_visual_animations())
+        arena.paint_state().borrow().visual_context.content_generation
     })
 }
 
