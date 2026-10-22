@@ -16,10 +16,10 @@ use std::cell::Cell;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RenderStage {
-    /// The scrollable overflow is measured, the scroll offsets it moved out of range are clamped into it, and the root
-    /// background and the sticky constraints it moved are settled.
+    /// The scrollable overflow is measured, and the scroll offsets it moved out of range are clamped into it.
     ScrollPositions,
-    /// The image map areas and the SVG paint resources the rows name are published.
+    /// The root background and the sticky constraints the settled overflow moved are prepared, and the image map areas
+    /// and the SVG paint resources the rows name are published.
     PaintProperties,
     /// The visual context tree is built or updated.
     VisualContexts,

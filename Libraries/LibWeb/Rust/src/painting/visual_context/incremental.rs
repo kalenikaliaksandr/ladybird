@@ -626,7 +626,15 @@ pub(crate) fn update_visual_context_tree<Arena: PaintableRowsRead>(
         return IncrementalUpdateResult::NeedsFullBuild(VisualContextUpdateScope::FreshTree);
     }
     debug_assert!(tree.node_references_are_consistent());
-    let scroll_state = rebuild_scroll_state_from_tree(layout_arena, tree, &tree_inputs);
+    // Values that changed alone, with no layout committed since, no node of the tree's structure moved and no scroll or
+    // sticky node written, leave the scroll registry and the sticky constraints as they were.
+    let keeps_scroll_state = !scope.rebuilds_every_box()
+        && state.dirty_boxes.is_value_only()
+        && !state.layout_committed_since_update
+        && !delta.scroll_like_nodes_changed
+        && !delta.tombstoned_any_node
+        && !delta.structural_epoch_changed;
+    let scroll_state = (!keeps_scroll_state).then(|| rebuild_scroll_state_from_tree(layout_arena, tree, &tree_inputs));
     tree.debug_assert_slot_accounting();
     if delta.structural_epoch_changed {
         tree.structural_epoch = allocate_structural_epoch();
@@ -634,15 +642,17 @@ pub(crate) fn update_visual_context_tree<Arena: PaintableRowsRead>(
         // publishes them again for this one.
         tree.clear_visual_animations();
     }
-    // Whether any box but the viewport could take a wheel event decides if scroll metadata
-    // everywhere carries per-box wheel targets.
-    if state.scroll_state.has_non_viewport_wheel_scroll_target_candidate
-        != scroll_state.has_non_viewport_wheel_scroll_target_candidate
-    {
-        layout_arena.push_scroll_metadata_damage_everywhere();
+    if let Some(scroll_state) = scroll_state {
+        // Whether any box but the viewport could take a wheel event decides if scroll metadata
+        // everywhere carries per-box wheel targets.
+        if state.scroll_state.has_non_viewport_wheel_scroll_target_candidate
+            != scroll_state.has_non_viewport_wheel_scroll_target_candidate
+        {
+            layout_arena.push_scroll_metadata_damage_everywhere();
+        }
+        state.scroll_state = scroll_state;
+        state.needs_to_refresh_scroll_state = true;
     }
-    state.scroll_state = scroll_state;
-    state.needs_to_refresh_scroll_state = true;
     IncrementalUpdateResult::Applied(Box::new(IncrementalUpdateOutcome { delta, assignments }))
 }
 

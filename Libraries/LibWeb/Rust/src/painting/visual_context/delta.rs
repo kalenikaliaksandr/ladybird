@@ -9,6 +9,8 @@ pub struct VisualContextTreeDelta {
     pub structural_epoch_changed: bool,
     pub requires_display_list_recording: bool,
     pub tombstoned_any_node: bool,
+    /// A scroll or sticky node was written, which the scroll state registers.
+    pub scroll_like_nodes_changed: bool,
 }
 
 impl VisualContextTreeDelta {

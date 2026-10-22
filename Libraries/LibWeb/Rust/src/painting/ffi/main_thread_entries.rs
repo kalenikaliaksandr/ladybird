@@ -11,7 +11,9 @@
 use super::*;
 use crate::painting::host::FfiCaretAt;
 use crate::painting::host::FfiVisualContextTreeInputs;
-use crate::painting::paint_passes::{PassEffect, pending_preparation, run as run_paint_pass};
+use crate::painting::paint_passes::{
+    PassEffect, paint_properties_pending, run as run_paint_pass, scroll_positions_pending, stage_pending,
+};
 use crate::render_state::RenderStage;
 
 crate::stage::main_thread_ffi_entries!();
@@ -338,12 +340,23 @@ pub unsafe extern "C" fn render_state_bring_up_to(
     while stage <= target {
         pipeline.begin_stage(stage, target);
         match stage {
-            RenderStage::ScrollPositions => {
-                // SAFETY: Guaranteed by the caller.
-                let prepared = unsafe { settle_scroll_positions(host, read, &inputs) };
-                outcome.requires_repaint |= prepared.requires_display_list_recording;
-            }
+            // SAFETY: Guaranteed by the caller.
+            RenderStage::ScrollPositions => unsafe { settle_scroll_positions(host, read) },
             RenderStage::PaintProperties => {
+                if stage_pending(
+                    read,
+                    host,
+                    |facts| facts.paint_properties_pending,
+                    paint_properties_pending,
+                ) {
+                    let prepared = run_paint_pass(read, host, PassEffect::RewritesRows, move |arena| {
+                        let sticky_inputs =
+                            (!crate::painting::paint_passes::visual_contexts_update_pending(arena, &inputs))
+                                .then_some(&inputs);
+                        crate::painting::paint_passes::prepare_paint_properties(arena, sticky_inputs)
+                    });
+                    outcome.requires_repaint |= prepared.requires_display_list_recording;
+                }
                 // SAFETY: Guaranteed by the caller.
                 unsafe { (stage_host.publish_image_map_areas)(stage_host.context) };
                 // SAFETY: Guaranteed by the caller.
@@ -389,37 +402,34 @@ pub unsafe extern "C" fn render_state_bring_up_to(
 }
 
 /// Settles the scroll positions of `host`'s document, where something is left to settle, and stores the scroll offsets
-/// the new overflow moved out of range. The sticky constraints the new overflow moved are refreshed here unless the
-/// visual context tree is to be updated, which refreshes them.
+/// the new overflow moved out of range.
 ///
 /// # Safety
 ///
 /// `host` must be a live document host, on its document's thread, and its host callbacks must remain valid for this
 /// call.
-unsafe fn settle_scroll_positions(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    inputs: &FfiVisualContextTreeInputs,
-) -> crate::painting::paint_passes::FfiRenderingPreparationOutcome {
-    let Some(pending) = pending_preparation(read, host) else {
-        return Default::default();
-    };
-    let inputs = *inputs;
-    let prepared = run_paint_pass(read, host, PassEffect::RewritesRows, move |arena| {
-        let sticky_inputs =
-            (!crate::painting::paint_passes::visual_contexts_update_pending(arena, &inputs)).then_some(&inputs);
-        pending.prepare(arena, sticky_inputs)
+unsafe fn settle_scroll_positions(host: &crate::render_state::DocumentHost, read: &crate::render_state::BegunRead) {
+    if !stage_pending(
+        read,
+        host,
+        |facts| facts.scroll_positions_pending,
+        scroll_positions_pending,
+    ) {
+        return;
+    }
+    let clamped_scroll_offsets = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
+        crate::painting::paint_passes::settle_scroll_positions(arena)
     });
-    if !prepared.clamped_scroll_offsets.is_empty() {
-        // SAFETY: Guaranteed by the caller.
-        let main_thread = unsafe { main_thread(host) };
-        if let Some(geometry_host) = host.host_tables().geometry_host.get() {
-            for (slot, offset) in prepared.clamped_scroll_offsets {
-                geometry_host.set_scroll_offset(&main_thread, read, slot, offset.into());
-            }
+    if clamped_scroll_offsets.is_empty() {
+        return;
+    }
+    // SAFETY: Guaranteed by the caller.
+    let main_thread = unsafe { main_thread(host) };
+    if let Some(geometry_host) = host.host_tables().geometry_host.get() {
+        for (slot, offset) in clamped_scroll_offsets {
+            geometry_host.set_scroll_offset(&main_thread, read, slot, offset.into());
         }
     }
-    prepared.outcome
 }
 
 /// Starts an update pass of the compositor animations of `host`'s document, with none published.

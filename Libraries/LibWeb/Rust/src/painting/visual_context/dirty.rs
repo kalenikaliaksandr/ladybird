@@ -107,7 +107,6 @@ impl VisualContextDirtySet {
         self.boxes.is_empty() && self.removed.is_empty() && self.scope == VisualContextUpdateScope::DirtyPath
     }
 
-    #[cfg(test)]
     pub fn is_value_only(&self) -> bool {
         self.scope == VisualContextUpdateScope::DirtyPath
             && self.removed.is_empty()

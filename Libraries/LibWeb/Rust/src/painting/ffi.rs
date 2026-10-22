@@ -1550,20 +1550,16 @@ mod tests {
         arena.paintable_side_data(root).overflow_measured_this_commit.set(true);
         arena.paint_state().borrow_mut().visual_context.dirty_boxes.clear();
 
-        let outcome = crate::painting::paint_passes::prepare_for_rendering(
+        crate::painting::paint_passes::settle_scroll_positions(&arena);
+        let outcome = crate::painting::paint_passes::prepare_paint_properties(
             &arena,
-            RootBackgroundSource {
-                root_layout_node: root,
-                ..Default::default()
-            },
             Some(&crate::painting::host::FfiVisualContextTreeInputs {
                 device_pixels_per_css_pixel: 1.0,
                 visual_viewport_offset_x: 0.0,
                 visual_viewport_offset_y: 0.0,
                 visual_viewport_scale: 1.0,
             }),
-        )
-        .outcome;
+        );
         assert!(outcome.requires_visual_context_update);
         assert!(
             arena.paint_state().borrow().visual_context.dirty_boxes.boxes[&root]

@@ -169,8 +169,8 @@ impl RenderState {
             },
             arena: ArenaFacts {
                 layout_is_up_to_date_unless_built: arena.layout_is_up_to_date(false),
-                rendering_preparation_pending: crate::painting::paint_passes::rendering_preparation_pending(arena)
-                    .is_some(),
+                scroll_positions_pending: crate::painting::paint_passes::scroll_positions_pending(arena),
+                paint_properties_pending: crate::painting::paint_passes::paint_properties_pending(arena),
                 may_have_auto_content_visibility: arena.may_have_auto_content_visibility(),
             },
             selector_attribute_value_text_requirements_version: engine
@@ -315,8 +315,10 @@ pub(crate) struct EngineFacts {
 pub(crate) struct ArenaFacts {
     /// Whether the layout is up to date, unless the document's layout tree update marks ask for a build of it.
     pub(crate) layout_is_up_to_date_unless_built: bool,
-    /// Whether preparing the document for rendering has something to do.
-    pub(crate) rendering_preparation_pending: bool,
+    /// Whether settling the scroll positions has something to do.
+    pub(crate) scroll_positions_pending: bool,
+    /// Whether preparing the paint properties the scroll positions move has something to do.
+    pub(crate) paint_properties_pending: bool,
     /// Whether a row has ever been given a style with `content-visibility: auto`.
     pub(crate) may_have_auto_content_visibility: bool,
 }

@@ -960,9 +960,10 @@ impl LayoutRoundAnswer {
         ) {
             return;
         }
-        // The commit has the host update the visual contexts, which refreshes the sticky constraints.
-        if let Some(pending) = crate::painting::paint_passes::rendering_preparation_pending(arena) {
-            self.clamped_scroll_offsets = pending.prepare(arena, None).clamped_scroll_offsets;
+        // What the settled overflow moves of the paint properties is prepared with the visual contexts the commit has the
+        // host update.
+        if crate::painting::paint_passes::scroll_positions_pending(arena) {
+            self.clamped_scroll_offsets = crate::painting::paint_passes::settle_scroll_positions(arena);
         }
     }
 
@@ -1405,8 +1406,8 @@ mod tests {
     }
 
     #[test]
-    fn a_round_that_commits_a_layout_prepares_it_for_rendering_and_a_built_round_does_not() {
-        use crate::painting::paint_passes::rendering_preparation_pending;
+    fn a_round_that_commits_a_layout_settles_its_scroll_positions_and_a_built_round_does_not() {
+        use crate::painting::paint_passes::scroll_positions_pending;
         let answer_ending = |end| LayoutRoundAnswer {
             build: None,
             work: HostWorkDue::default(),
@@ -1419,17 +1420,18 @@ mod tests {
         let mut arena = LayoutNodeArena::new();
         let viewport = arena.allocate_unbound();
         arena.set_layout_root(viewport);
-        assert!(rendering_preparation_pending(&arena).is_some());
+        arena.did_commit_full_layout(viewport);
+        assert!(scroll_positions_pending(&arena));
 
         answer_ending(LayoutRoundEnd::Built {
             needs_another_build_pass: false,
             layout: RoundLayout::Full,
         })
         .prepare_committed_layout_for_rendering(&arena);
-        assert!(rendering_preparation_pending(&arena).is_some());
+        assert!(scroll_positions_pending(&arena));
 
         answer_ending(LayoutRoundEnd::FullLayout).prepare_committed_layout_for_rendering(&arena);
-        assert!(rendering_preparation_pending(&arena).is_none());
+        assert!(!scroll_positions_pending(&arena));
         arena
             .free_subtree(viewport)
             .destroy_shells_and_invoke_callbacks(&crate::stage::MainThread::for_test());

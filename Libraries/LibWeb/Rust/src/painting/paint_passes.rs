@@ -10,7 +10,7 @@
 use crate::css::css_pixels::CssPixelPoint;
 use crate::layout::LayoutNodeArena;
 use crate::layout::node_data::NodeSlotId;
-use crate::painting::host::{FfiVisualContextTreeInputs, FfiVisualContextUpdateOutcome, RootBackgroundSource};
+use crate::painting::host::{FfiVisualContextTreeInputs, FfiVisualContextUpdateOutcome};
 use crate::painting::paint_read::PaintRead;
 use crate::painting::svg_paint_resources::{PublishedSvgFilter, PublishedSvgPaintServer, SvgPaintResourceKind};
 use crate::painting::visual_context::dirty::VisualContextUpdateScope;
@@ -40,13 +40,6 @@ pub(crate) enum PassEffect {
 pub struct FfiRenderingPreparationOutcome {
     pub requires_display_list_recording: bool,
     pub requires_visual_context_update: bool,
-}
-
-/// What preparing for rendering answers: its outcome, and the scroll offsets the new overflow moved out of range,
-/// each clamped into it, for the host to store.
-pub(crate) struct RenderingPreparation {
-    pub(crate) outcome: FfiRenderingPreparationOutcome,
-    pub(crate) clamped_scroll_offsets: Vec<(NodeSlotId, CssPixelPoint)>,
 }
 
 /// What a clock tick's round changed that only the host settles: a root background, scrollability or SVG paint
@@ -253,65 +246,54 @@ pub(crate) fn run<R>(
     host.run(read, stales, move |state| pass(state.arena_mut()))
 }
 
-/// Proof that preparing a document for rendering has something to do, which only [`rendering_preparation_pending`]
-/// mints: a host never sends a preparation that would answer that nothing changed. It carries the root background
-/// source it was found with, for the preparation to take over.
-pub(crate) struct PendingPreparation {
-    root_background_source: RootBackgroundSource,
-}
-
-impl PendingPreparation {
-    /// Settles the scrollable overflow left unmeasured, and with it the root background and, with `sticky_inputs`, the
-    /// sticky constraints.
-    pub(crate) fn prepare(
-        self,
-        arena: &LayoutNodeArena,
-        sticky_inputs: Option<&FfiVisualContextTreeInputs>,
-    ) -> RenderingPreparation {
-        prepare_for_rendering(arena, self.root_background_source, sticky_inputs)
-    }
-}
-
-/// Whether preparing `arena` for rendering would change anything: its root background source moved, or scrollable
-/// overflow is left to settle or to measure, or a measurement changed what the preparation answers.
-pub(crate) fn rendering_preparation_pending(arena: &LayoutNodeArena) -> Option<PendingPreparation> {
-    let root_background_source = crate::layout::viewport_propagation::root_background_source(arena);
-    let overflow = &arena.scrollable_overflow;
-    let pending = arena.paint_state().borrow().root_background_source != Some(root_background_source)
-        || overflow.full_layout_commit.get()
-        || overflow.measurement_awaits_preparation()
+/// Whether settling the scroll positions of `arena` has something to do: scrollable overflow is left to settle or to
+/// measure.
+pub(crate) fn scroll_positions_pending(arena: &LayoutNodeArena) -> bool {
+    arena.scrollable_overflow.full_layout_commit.get()
         || arena.scrollable_overflow_recalculation_is_scheduled()
-        || !arena.scrollable_overflow_is_measured();
-    pending.then_some(PendingPreparation { root_background_source })
+        || !arena.scrollable_overflow_is_measured()
 }
 
-/// Asks the render state of `host`'s document in `read` whether preparing it for rendering has something to do, unless
-/// the host knows it has nothing.
-pub(crate) fn pending_preparation(read: &BegunRead, host: &DocumentHost) -> Option<PendingPreparation> {
-    if host
-        .known_arena_facts()
-        .is_some_and(|facts| !facts.rendering_preparation_pending)
-    {
-        return None;
+/// Settles the scroll positions of `arena`: measures all overflow left unmeasured, including the root's, and answers the
+/// scroll offsets the new overflow moved out of range, each clamped into it, for the host to store.
+pub(crate) fn settle_scroll_positions(arena: &LayoutNodeArena) -> Vec<(NodeSlotId, CssPixelPoint)> {
+    crate::painting::scrollable_overflow::update_scrollable_overflow(arena)
+}
+
+/// Whether preparing the paint properties of `arena` has something to do: its root background source moved, or a
+/// measurement of the scrollable overflow changed what the preparation answers.
+pub(crate) fn paint_properties_pending(arena: &LayoutNodeArena) -> bool {
+    arena.scrollable_overflow.measurement_awaits_preparation()
+        || arena.paint_state().borrow().root_background_source
+            != Some(crate::layout::viewport_propagation::root_background_source(arena))
+}
+
+/// Asks the render state of `host`'s document in `read` whether `pending` has something to do, unless the host knows
+/// it has nothing from the facts its last job left.
+pub(crate) fn stage_pending(
+    read: &BegunRead,
+    host: &DocumentHost,
+    known_pending: impl FnOnce(&crate::render_state::ArenaFacts) -> bool,
+    pending: impl FnOnce(&LayoutNodeArena) -> bool + Send,
+) -> bool {
+    if host.known_arena_facts().is_some_and(|facts| !known_pending(&facts)) {
+        return false;
     }
-    host.ask(read, |state| rendering_preparation_pending(state.arena_mut()))
+    host.ask(read, |state| pending(state.arena_mut()))
 }
 
-/// Prepares `arena` for rendering. The sticky constraints the new overflow moved are refreshed with `sticky_inputs`, the
-/// inputs of the visual context tree, unless there are none: a visual context update is pending, which refreshes them.
-pub(crate) fn prepare_for_rendering(
+/// Prepares the paint properties of `arena` that the settled scroll positions moved: the root background, and the
+/// sticky constraints the new overflow moved, refreshed with `sticky_inputs`, the inputs of the visual context tree,
+/// unless there are none: a visual context update is pending, which refreshes them.
+pub(crate) fn prepare_paint_properties(
     arena: &LayoutNodeArena,
-    root_background_source: RootBackgroundSource,
     sticky_inputs: Option<&FfiVisualContextTreeInputs>,
-) -> RenderingPreparation {
+) -> FfiRenderingPreparationOutcome {
+    let root_background_source = crate::layout::viewport_propagation::root_background_source(arena);
     let background_source_changed = arena
         .paint_state()
         .borrow_mut()
         .update_root_background_source(arena, root_background_source);
-    // This measures all overflow left unmeasured, including the root's: the root background covers
-    // the viewport united with it, so a flip in its scrollability is seen here rather than while
-    // recording holds the paint state.
-    let clamped_scroll_offsets = crate::painting::scrollable_overflow::update_scrollable_overflow(arena);
     let changed = arena.scrollable_overflow.geometry_changed.replace(false);
     let flipped = arena.scrollable_overflow.scrollability_changed.replace(false);
     if let Some(inputs) = sticky_inputs.filter(|_| changed && !flipped) {
@@ -330,12 +312,9 @@ pub(crate) fn prepare_for_rendering(
         }
         state.needs_to_refresh_scroll_state = true;
     }
-    RenderingPreparation {
-        outcome: FfiRenderingPreparationOutcome {
-            requires_display_list_recording: changed || background_source_changed,
-            requires_visual_context_update: flipped,
-        },
-        clamped_scroll_offsets,
+    FfiRenderingPreparationOutcome {
+        requires_display_list_recording: changed || background_source_changed,
+        requires_visual_context_update: flipped,
     }
 }
 

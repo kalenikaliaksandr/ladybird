@@ -99,6 +99,9 @@ impl<'a> BoxNodeWriter<'a> {
 impl VisualContextNodeSink for BoxNodeWriter<'_> {
     fn append_spatial_node(&mut self, data: SpatialData, parent: SpatialNodeIndex) -> SpatialNodeIndex {
         debug_assert!(self.tree.spatial_is_live(parent));
+        if matches!(data, SpatialData::Scroll(_) | SpatialData::Sticky(_)) {
+            self.delta.scroll_like_nodes_changed = true;
+        }
         write_node(
             self.tree,
             &self.existing.spatial,
