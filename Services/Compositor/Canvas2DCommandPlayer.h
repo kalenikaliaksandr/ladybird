@@ -53,7 +53,7 @@ public:
 
     void clear(Gfx::Color);
 
-    // Plays a tape that passed Compositing::validate_canvas_2d_tape().
+    // Plays a tape whose segments passed Compositing::Canvas2DCommandSegments::validate().
     void play(ReadonlyBytes tape);
 
 private:

@@ -21,7 +21,7 @@ struct UIOverlays;
 
 class AccumulatedVisualContextTree;
 class Canvas2DCommandStream;
-struct Canvas2DCommandStreamSegment;
+class Canvas2DCommandSegments;
 class CanvasSurfaceRegistry;
 class OwnedCanvasSurfaces;
 class DisplayList;

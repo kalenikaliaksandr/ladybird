@@ -167,7 +167,7 @@ void CanvasHost::present_canvas_2d_context(Compositing::CanvasId canvas_id, Canv
     context.has_uncommitted_commands = false;
 }
 
-void CanvasHost::execute_canvas_2d_stream(Vector<Compositing::Canvas2DCommandStreamSegment> const& segments, Vector<Compositing::FontResourceId> const& kept_font_ids, Vector<Compositing::DisplayListFontResource> const& added_fonts, Vector<Compositing::DisplayListImageFrameResource> const& image_frames)
+void CanvasHost::execute_canvas_2d_stream(Compositing::Canvas2DCommandSegments const& segments, Vector<Compositing::FontResourceId> const& kept_font_ids, Vector<Compositing::DisplayListFontResource> const& added_fonts, Vector<Compositing::DisplayListImageFrameResource> const& image_frames)
 {
     Compositing::DisplayListResourceSet resources;
     for (auto font_id : kept_font_ids)
@@ -183,25 +183,25 @@ void CanvasHost::execute_canvas_2d_stream(Vector<Compositing::Canvas2DCommandStr
         m_image_frames_of_batch.set(image_frame.id.value(), image_frame.frame);
     ScopeGuard forget_image_frames_of_batch = [&] { m_image_frames_of_batch.clear(); };
     Vector<NonnullRefPtr<Gfx::PaintingSurface>> surfaces_that_sample_video_frames;
-    for (auto const& segment : segments) {
+    segments.for_each([&](Compositing::CanvasId canvas_id, ReadonlyBytes tape, bool present) {
         // The canvas may have been destroyed while this segment was pending in
         // WebContent, so a missing context is not a protocol violation.
-        auto* context = this->context(segment.canvas_id);
+        auto* context = this->context(canvas_id);
         auto* canvas_context = context ? context->get_pointer<Canvas2DContext>() : nullptr;
         if (!canvas_context)
-            continue;
+            return;
 
-        if (!segment.tape.is_empty()) {
+        if (!tape.is_empty()) {
             m_drew_video_frame_in_segment = false;
-            canvas_context->command_player->play(segment.tape);
+            canvas_context->command_player->play(tape);
             canvas_context->has_uncommitted_commands = true;
             if (m_drew_video_frame_in_segment && !surfaces_that_sample_video_frames.contains_slow(canvas_context->command_player->surface()))
                 surfaces_that_sample_video_frames.append(canvas_context->command_player->surface());
         }
 
-        if (segment.present && canvas_context->has_uncommitted_commands)
-            present_canvas_2d_context(segment.canvas_id, *canvas_context);
-    }
+        if (present && canvas_context->has_uncommitted_commands)
+            present_canvas_2d_context(canvas_id, *canvas_context);
+    });
 
     // The frames stay held only until WebContent releases them, which follows this stream, so the GPU has to have
     // finished sampling them by then.
