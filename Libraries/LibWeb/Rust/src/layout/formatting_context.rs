@@ -1605,7 +1605,9 @@ fn apply_root_sizing_directives(
     };
     // NB: The prelude dimensions atomic inline, absolutely positioned and forced roots, so the body is handed the block
     //     size the record holds now.
-    body_input.own_block_size = OwnBlockSize::held_by(run.records.used_values(run.box_));
+    if body_input.own_block_size != OwnBlockSize::ToBeMeasured {
+        body_input.own_block_size = OwnBlockSize::held_by(run.records.used_values(run.box_));
+    }
     RootSizingOutcome {
         body_input,
         atomic_root_sizing_repeats_for_available_inline_sizes_at_or_above,

@@ -221,7 +221,6 @@ fn sizing_directives_match_ignoring_unobserved(
         treat_block_axis_percentage_insets_as_auto_beyond_root,
         math_stretch_size_constraint,
         maximum_inline_size_resolved_by_caller,
-        root_is_measured_for_its_content_block_size,
     } = *a;
     forced_content_inline_size == b.forced_content_inline_size
         && forced_content_block_size == b.forced_content_block_size
@@ -238,7 +237,6 @@ fn sizing_directives_match_ignoring_unobserved(
             == b.treat_block_axis_percentage_insets_as_auto_beyond_root
         && math_stretch_size_constraint == b.math_stretch_size_constraint
         && maximum_inline_size_resolved_by_caller == b.maximum_inline_size_resolved_by_caller
-        && root_is_measured_for_its_content_block_size == b.root_is_measured_for_its_content_block_size
         && match (
             flex_self_block_size_resolution_space,
             b.flex_self_block_size_resolution_space,
@@ -334,6 +332,7 @@ impl FcRunCacheEntry {
             formatting_context::RootCellsOutcome::OutputCellsOnly(_) => {
                 let assigned_block_size = match self.key.input.own_block_size {
                     OwnBlockSize::Assigned { size, .. } => size,
+                    OwnBlockSize::ToBeMeasured => self.outputs.result.automatic_content_block_size,
                     OwnBlockSize::TakenFromRecordAtRunStart => {
                         unreachable!("a cache key names the own block size of its run")
                     }

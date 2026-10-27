@@ -343,7 +343,6 @@ pub(crate) struct RootSizingDirectives {
     pub(crate) outer_float_intrusion_before_list_item_children: inline_formatting_context::SpaceUsedByFloats,
     pub(crate) treat_block_axis_percentage_insets_as_auto_beyond_root: bool,
     pub(crate) maximum_inline_size_resolved_by_caller: Option<CssPixels>,
-    pub(crate) root_is_measured_for_its_content_block_size: bool,
     // Input-only: MathML layout lays out an embellished operator with the size its core operator should stretch to
     // cover.
     pub(crate) math_stretch_size_constraint: Option<MathStretchSizeConstraint>,
@@ -379,6 +378,8 @@ pub(crate) enum ParticipationInParentFormattingContext {
 pub(crate) enum OwnBlockSize {
     /// The parent holds `size` for the root; `definite` is what the percentages and the available space inside see.
     Assigned { size: CssPixels, definite: bool },
+    /// Nothing is assigned: the run measures the root's automatic content block size, which becomes its block size.
+    ToBeMeasured,
     /// The root is dimensioned around the run start rather than by a parent algorithm (block-level, floating, atomic
     /// inline and absolutely positioned roots): the run seam reads what the record holds into `Assigned` before it
     /// builds the cache key, so no key names this.

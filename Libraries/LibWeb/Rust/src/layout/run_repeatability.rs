@@ -90,6 +90,7 @@ fn root_inputs_at_other_own_block_sizes(
     }
     let (assigned_block_size, assigned_block_size_is_definite) = match input.own_block_size {
         OwnBlockSize::Assigned { size, definite } => (size, definite),
+        OwnBlockSize::ToBeMeasured => (CssPixels::default(), false),
         OwnBlockSize::TakenFromRecordAtRunStart => {
             unreachable!("a verified run names the own block size it was laid out with")
         }

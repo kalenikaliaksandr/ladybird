@@ -2889,7 +2889,7 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn own_block_size_is_being_measured(&self) -> bool {
         self.layout_input
-            .is_some_and(|input| input.sizing.root_is_measured_for_its_content_block_size)
+            .is_some_and(|input| input.own_block_size == OwnBlockSize::ToBeMeasured)
     }
 
     fn grid_container_maximum_size(&self, axis: Axis) -> Option<CssPixels> {

@@ -3134,7 +3134,6 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
         constraints: ContainingBlockConstraints,
     ) -> formatting_context::ChildLayoutResult {
         let root = used_values::create_used_values(&self.callbacks, node, constraints);
-        root.has_definite_block_size.set(false);
         root.set_content_inline_size(inline_size);
         let mut input = LayoutInput::new(
             AvailableSpace {
@@ -3144,10 +3143,7 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
             constraints,
             ParticipationInParentFormattingContext::Root,
         );
-        input.sizing.root_is_measured_for_its_content_block_size = matches!(
-            formatting_context::independent_formatting_context_type(node, &self.callbacks),
-            formatting_context::FormattingContextType::Flex | formatting_context::FormattingContextType::Grid
-        );
+        input.own_block_size = OwnBlockSize::ToBeMeasured;
         formatting_context::lay_out_measurement_root_for_its_result(self.callbacks, node, &root, input)
     }
 

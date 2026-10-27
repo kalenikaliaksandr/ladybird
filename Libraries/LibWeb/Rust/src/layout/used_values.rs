@@ -827,6 +827,7 @@ impl OwnBlockSize {
     pub(crate) fn apply_to_record(self, used: &UsedValues) {
         let (size, definite) = match self {
             Self::Assigned { size, definite } => (size, definite),
+            Self::ToBeMeasured => (CssPixels::default(), false),
             Self::TakenFromRecordAtRunStart => {
                 unreachable!("a run root's own block size is read off its record before the run starts")
             }
