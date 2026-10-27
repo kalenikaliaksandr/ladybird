@@ -1762,7 +1762,7 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
         let result = formatting_context::lay_out_measurement_root_for_its_result(
             self.callbacks,
             node,
-            used_values::RootInputCells::capture(&root),
+            &root,
             LayoutInput::new(
                 AvailableSpace {
                     inline_size: AvailableSize::definite(other_axis_size),
@@ -3148,12 +3148,7 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
             formatting_context::independent_formatting_context_type(node, &self.callbacks),
             formatting_context::FormattingContextType::Flex | formatting_context::FormattingContextType::Grid
         );
-        formatting_context::lay_out_measurement_root_for_its_result(
-            self.callbacks,
-            node,
-            used_values::RootInputCells::capture(&root),
-            input,
-        )
+        formatting_context::lay_out_measurement_root_for_its_result(self.callbacks, node, &root, input)
     }
 
     /// The min-content or max-content block size of a box that establishes an orthogonal flow: its block axis here is
@@ -3293,7 +3288,7 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
         formatting_context::lay_out_measurement_root_for_its_result(
             self.callbacks,
             node,
-            used_values::RootInputCells::capture(&used_values::create_used_values(&self.callbacks, node, constraints)),
+            &used_values::create_used_values(&self.callbacks, node, constraints),
             LayoutInput::new(
                 inner_available_space,
                 constraints,
@@ -3602,7 +3597,7 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
         let wrapper_outputs = formatting_context::lay_out_measurement_root_for_its_result(
             self.callbacks,
             wrapper,
-            used_values::RootInputCells::capture(&wrapper_used),
+            &wrapper_used,
             LayoutInput::new(
                 wrapper_inner_space,
                 table_wrapper_constraints,

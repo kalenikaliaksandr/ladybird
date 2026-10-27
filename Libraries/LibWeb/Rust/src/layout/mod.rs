@@ -92,8 +92,8 @@ pub(crate) use formatting_context::{
 };
 pub(crate) use fragment_tree::FragmentLink;
 pub(crate) use geometry::{
-    AvailableSize, AvailableSpace, ContainingBlockConstraints, LayoutInput, ParticipationInParentFormattingContext,
-    RootSizingDirectives,
+    AvailableSize, AvailableSpace, ContainingBlockConstraints, LayoutInput, OwnBlockSize,
+    ParticipationInParentFormattingContext, RootSizingDirectives,
 };
 pub(crate) use host_tables::{ArenaHandle, HostTables};
 pub(crate) use layout_node_arena::HeldNode as ArenaHeldNode;

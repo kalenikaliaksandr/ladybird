@@ -2838,6 +2838,7 @@ impl<'pass> FlexFormattingContext<'pass> {
             content_box_position_in_bfc_root: None,
             sizing: RootSizingDirectives::default(),
             participation: ParticipationInParentFormattingContext::Item,
+            own_block_size: OwnBlockSize::held_by(used),
         };
         // https://drafts.csswg.org/css-flexbox-1/#flex-items
         // In the case of flex items with display: table, the table wrapper box becomes the flex item,
@@ -2930,7 +2931,8 @@ impl<'pass> FlexFormattingContext<'pass> {
         } else {
             (None, Some(measured_inline_size))
         };
-        let record = used_values::RootInputCells::capture(self.item_used(index)).materialize_record();
+        let record = used_values::RootInputCells::capture(self.item_used(index))
+            .materialize_record(OwnBlockSize::held_by(self.item_used(index)));
         self.prepare_item_record(index, &record, main_size, cross_size);
         let input = self.item_layout_input(index, &record, space_for_items);
         let plan = formatting_context::child_run_plan(&self.run, node, input, false)?;

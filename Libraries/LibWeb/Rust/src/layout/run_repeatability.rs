@@ -88,12 +88,18 @@ fn root_inputs_at_other_own_block_sizes(
     if !run_is_verified_at_other_unobserved_root_inputs(root_cells, result) {
         return Vec::new();
     }
+    let (assigned_block_size, assigned_block_size_is_definite) = match input.own_block_size {
+        OwnBlockSize::Assigned { size, definite } => (size, definite),
+        OwnBlockSize::TakenFromRecordAtRunStart => {
+            unreachable!("a verified run names the own block size it was laid out with")
+        }
+    };
     let mut other_definite_own_block_sizes = Vec::new();
-    if root_cells.has_definite_block_size {
+    if assigned_block_size_is_definite {
         other_definite_own_block_sizes.push(None);
     }
     let definite_block_size_with_extra_space_beyond_assigned_and_automatic_sizes =
-        root_cells.content_block_size.max(result.automatic_content_block_size) + CssPixels::from_integer(50);
+        assigned_block_size.max(result.automatic_content_block_size) + CssPixels::from_integer(50);
     if definite_block_size_with_extra_space_beyond_assigned_and_automatic_sizes.raw_value() != i32::MAX {
         other_definite_own_block_sizes.push(Some(
             definite_block_size_with_extra_space_beyond_assigned_and_automatic_sizes,
@@ -102,15 +108,14 @@ fn root_inputs_at_other_own_block_sizes(
     other_definite_own_block_sizes
         .into_iter()
         .map(|definite_own_block_size| {
-            let cells = used_values::RootInputCells {
-                content_block_size: definite_own_block_size.unwrap_or_default(),
-                has_definite_block_size: definite_own_block_size.is_some(),
-                ..root_cells
-            };
             let mut input = input;
+            input.own_block_size = OwnBlockSize::Assigned {
+                size: definite_own_block_size.unwrap_or_default(),
+                definite: definite_own_block_size.is_some(),
+            };
             input.available_space.block_size =
                 definite_own_block_size.map_or(AvailableSize::Indefinite, AvailableSize::definite);
-            (cells, input)
+            (root_cells, input)
         })
         .collect()
 }
@@ -141,10 +146,11 @@ pub(super) fn verify_run_ignores_its_unobserved_own_block_size_and_block_margins
     let mut reference_inputs = root_inputs_at_other_own_block_sizes(root_cells, input, &outputs.result)
         .into_iter()
         .map(|(cells, input)| {
-            let reference = if cells.has_definite_block_size {
-                format!("its layout at the definite block size {:?}", cells.content_block_size)
-            } else {
-                "its layout at an indefinite block size".to_owned()
+            let reference = match input.own_block_size {
+                OwnBlockSize::Assigned { size, definite: true } => {
+                    format!("its layout at the definite block size {size:?}")
+                }
+                _ => "its layout at an indefinite block size".to_owned(),
             };
             (cells, input, reference)
         })
@@ -523,10 +529,7 @@ mod tests {
         content_block_size: i64,
         has_definite_block_size: bool,
     ) -> (used_values::RootInputCells, LayoutInput) {
-        let record = UsedValues::default();
-        record.content_block_size.set(px(content_block_size));
-        record.has_definite_block_size.set(has_definite_block_size);
-        let input = LayoutInput::new(
+        let mut input = LayoutInput::new(
             AvailableSpace {
                 inline_size: AvailableSize::definite(px(300)),
                 block_size: if has_definite_block_size {
@@ -538,7 +541,11 @@ mod tests {
             ContainingBlockConstraints::default(),
             ParticipationInParentFormattingContext::Item,
         );
-        (used_values::RootInputCells::capture(&record), input)
+        input.own_block_size = OwnBlockSize::Assigned {
+            size: px(content_block_size),
+            definite: has_definite_block_size,
+        };
+        (used_values::RootInputCells::capture(&UsedValues::default()), input)
     }
 
     fn result_observing(
@@ -565,12 +572,15 @@ mod tests {
             ),
         )
         .into_iter()
-        .map(|(cells, input)| {
+        .map(|(_, input)| {
+            let OwnBlockSize::Assigned { size, definite } = input.own_block_size else {
+                panic!("a run is verified at assigned block sizes");
+            };
             assert_eq!(
-                cells.has_definite_block_size,
+                definite,
                 matches!(input.available_space.block_size, AvailableSize::Definite(_))
             );
-            cells.has_definite_block_size.then_some(cells.content_block_size)
+            definite.then_some(size)
         })
         .collect()
     }
@@ -599,8 +609,11 @@ mod tests {
             [None, Some(px(90))],
             "a stretched run whose content fills it exactly is also verified where extra space is left"
         );
-        let (mut saturated_cells, saturated_input) = item_root_inputs(40, true);
-        saturated_cells.content_block_size = CssPixels::from_raw(i32::MAX);
+        let (saturated_cells, mut saturated_input) = item_root_inputs(40, true);
+        saturated_input.own_block_size = OwnBlockSize::Assigned {
+            size: CssPixels::from_raw(i32::MAX),
+            definite: true,
+        };
         assert_eq!(
             own_block_sizes_verified_from((saturated_cells, saturated_input), 40),
             [None]

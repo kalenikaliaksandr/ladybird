@@ -24,7 +24,7 @@ pub(super) struct RunInputsTheStoredRunNeverObserved {
     pub(super) percentage_block_basis_and_block_size_definiteness: bool,
     pub(super) definite_available_inline_sizes_at_or_above: Option<CssPixels>,
     pub(super) percentage_inline_basis: bool,
-    pub(super) own_block_size: formatting_context::OwnBlockSizeObservation,
+    pub(super) own_block_size_observation: formatting_context::OwnBlockSizeObservation,
 }
 
 impl RunInputsTheStoredRunNeverObserved {
@@ -38,7 +38,7 @@ impl RunInputsTheStoredRunNeverObserved {
                 .is_some()
                 || outputs.result.percentage_inline_basis_observation
                     == formatting_context::PercentageInlineBasisObservation::Unobserved,
-            own_block_size: outputs.result.own_block_size_observation,
+            own_block_size_observation: outputs.result.own_block_size_observation,
         }
     }
 
@@ -48,7 +48,7 @@ impl RunInputsTheStoredRunNeverObserved {
         Self {
             definite_available_inline_sizes_at_or_above: None,
             percentage_inline_basis: false,
-            own_block_size: formatting_context::OwnBlockSizeObservation::Observed,
+            own_block_size_observation: formatting_context::OwnBlockSizeObservation::Observed,
             ..Self::proven_by_stored_run(outputs)
         }
     }
@@ -58,38 +58,37 @@ impl RunInputsTheStoredRunNeverObserved {
             percentage_block_basis_and_block_size_definiteness,
             definite_available_inline_sizes_at_or_above,
             percentage_inline_basis,
-            own_block_size,
+            own_block_size_observation,
         } = self;
         percentage_block_basis_and_block_size_definiteness
             || definite_available_inline_sizes_at_or_above.is_some()
             || percentage_inline_basis
-            || own_block_size != formatting_context::OwnBlockSizeObservation::Observed
+            || own_block_size_observation != formatting_context::OwnBlockSizeObservation::Observed
+    }
+
+    fn own_block_size_unobserved(self) -> bool {
+        self.own_block_size_observation == formatting_context::OwnBlockSizeObservation::Unobserved
     }
 
     fn available_block_size_definiteness(self) -> bool {
-        self.percentage_block_basis_and_block_size_definiteness
-            || self.own_block_size != formatting_context::OwnBlockSizeObservation::Observed
+        self.percentage_block_basis_and_block_size_definiteness || self.own_block_size_unobserved()
     }
 }
 
-fn root_input_cells_match_ignoring_unobserved_own_block_size_and_block_margins(
+fn root_input_cells_match_ignoring_unobserved_block_margins(
     stored: used_values::RootInputCells,
     probe: used_values::RootInputCells,
-    own_block_size: formatting_context::OwnBlockSizeObservation,
+    unobserved: RunInputsTheStoredRunNeverObserved,
 ) -> bool {
-    match own_block_size {
-        formatting_context::OwnBlockSizeObservation::Observed => stored == probe,
-        formatting_context::OwnBlockSizeObservation::Unobserved => {
-            let without_own_block_size_and_block_margins = |cells| used_values::RootInputCells {
-                content_block_size: CssPixels::default(),
-                has_definite_block_size: false,
-                margin_top: CssPixels::default(),
-                margin_bottom: CssPixels::default(),
-                ..cells
-            };
-            without_own_block_size_and_block_margins(stored) == without_own_block_size_and_block_margins(probe)
-        }
+    if !unobserved.own_block_size_unobserved() {
+        return stored == probe;
     }
+    let without_block_margins = |cells| used_values::RootInputCells {
+        margin_top: CssPixels::default(),
+        margin_bottom: CssPixels::default(),
+        ..cells
+    };
+    without_block_margins(stored) == without_block_margins(probe)
 }
 
 impl FcRunCacheKey {
@@ -136,11 +135,7 @@ impl FcRunCacheKey {
             return false;
         }
         self.fc_type == probe.fc_type
-            && root_input_cells_match_ignoring_unobserved_own_block_size_and_block_margins(
-                self.root_cells,
-                probe.root_cells,
-                unobserved.own_block_size,
-            )
+            && root_input_cells_match_ignoring_unobserved_block_margins(self.root_cells, probe.root_cells, unobserved)
             && layout_inputs_match_ignoring_unobserved(&self.input, &probe.input, unobserved)
     }
 }
@@ -162,6 +157,7 @@ fn layout_inputs_match_ignoring_unobserved(
         content_box_position_in_bfc_root,
         sizing,
         participation,
+        own_block_size,
     } = *a;
     let ContainingBlockConstraints {
         percentage_basis_inline_size,
@@ -171,6 +167,7 @@ fn layout_inputs_match_ignoring_unobserved(
     if participation != b.participation || content_box_position_in_bfc_root != b.content_box_position_in_bfc_root {
         return false;
     }
+    let own_block_sizes_match = own_block_size == b.own_block_size || unobserved.own_block_size_unobserved();
     let available_inline_sizes_match = available_space.inline_size == b.available_space.inline_size
         || match (
             unobserved.definite_available_inline_sizes_at_or_above,
@@ -187,7 +184,8 @@ fn layout_inputs_match_ignoring_unobserved(
         && quirks_mode_percentage_basis_block_size
             == b.containing_block_constraints.quirks_mode_percentage_basis_block_size)
         || unobserved.percentage_block_basis_and_block_size_definiteness;
-    available_inline_sizes_match
+    own_block_sizes_match
+        && available_inline_sizes_match
         && available_block_sizes_match(
             available_space.block_size,
             b.available_space.block_size,
@@ -331,13 +329,21 @@ impl FcRunCacheEntry {
     fn root_content_size_as_its_parent_holds_it(&self) -> (CssPixels, CssPixels) {
         match &self.outputs.root_outcome.cells {
             formatting_context::RootCellsOutcome::AllCells(cells) => {
-                (cells.inputs.content_inline_size, cells.inputs.content_block_size)
+                (cells.inputs.content_inline_size, cells.block_size.content_block_size)
             }
-            formatting_context::RootCellsOutcome::OutputCellsOnly(_) => (
-                self.key.root_cells.content_inline_size,
-                self.root_content_block_size_adopted_after_run
-                    .unwrap_or(self.key.root_cells.content_block_size),
-            ),
+            formatting_context::RootCellsOutcome::OutputCellsOnly(_) => {
+                let assigned_block_size = match self.key.input.own_block_size {
+                    OwnBlockSize::Assigned { size, .. } => size,
+                    OwnBlockSize::TakenFromRecordAtRunStart => {
+                        unreachable!("a cache key names the own block size of its run")
+                    }
+                };
+                (
+                    self.key.root_cells.content_inline_size,
+                    self.root_content_block_size_adopted_after_run
+                        .unwrap_or(assigned_block_size),
+                )
+            }
         }
     }
 
@@ -1457,24 +1463,27 @@ mod tests {
 
     fn item_key(content_block_size: i64, has_definite_block_size: bool) -> FcRunCacheKey {
         let record = UsedValues::default();
-        record.content_block_size.set(px(content_block_size));
-        record.has_definite_block_size.set(has_definite_block_size);
         record.has_definite_inline_size.set(true);
         record.content_inline_size.set(px(300));
+        let mut input = LayoutInput::new(
+            AvailableSpace {
+                inline_size: AvailableSize::definite(px(300)),
+                block_size: if has_definite_block_size {
+                    AvailableSize::definite(px(content_block_size))
+                } else {
+                    AvailableSize::Indefinite
+                },
+            },
+            ContainingBlockConstraints::default(),
+            ParticipationInParentFormattingContext::Item,
+        );
+        input.own_block_size = OwnBlockSize::Assigned {
+            size: px(content_block_size),
+            definite: has_definite_block_size,
+        };
         FcRunCacheKey::new(
             formatting_context::FormattingContextType::Block,
-            LayoutInput::new(
-                AvailableSpace {
-                    inline_size: AvailableSize::definite(px(300)),
-                    block_size: if has_definite_block_size {
-                        AvailableSize::definite(px(content_block_size))
-                    } else {
-                        AvailableSize::Indefinite
-                    },
-                },
-                ContainingBlockConstraints::default(),
-                ParticipationInParentFormattingContext::Item,
-            ),
+            input,
             used_values::RootInputCells::capture(&record),
         )
     }
@@ -1482,7 +1491,7 @@ mod tests {
     fn own_block_size(observation: formatting_context::OwnBlockSizeObservation) -> RunInputsTheStoredRunNeverObserved {
         RunInputsTheStoredRunNeverObserved {
             percentage_block_basis_and_block_size_definiteness: true,
-            own_block_size: observation,
+            own_block_size_observation: observation,
             ..RunInputsTheStoredRunNeverObserved::default()
         }
     }

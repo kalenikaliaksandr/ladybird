@@ -2112,6 +2112,7 @@ impl<'pass> SvgFormattingContext<'pass> {
                 content_box_position_in_bfc_root: None,
                 sizing: RootSizingDirectives::default(),
                 participation: ParticipationInParentFormattingContext::Item,
+                own_block_size: OwnBlockSize::held_by(child_used),
             };
             match formatting_context::layout_inside_child(run, None, None, child, child_input, true) {
                 ChildLayoutOutcome::Created(_) => {}

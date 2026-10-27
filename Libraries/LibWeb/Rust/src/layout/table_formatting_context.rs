@@ -2584,6 +2584,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 ..RootSizingDirectives::default()
             },
             participation: ParticipationInParentFormattingContext::Item,
+            own_block_size: OwnBlockSize::held_by(self.used_values(cell.box_)),
         };
         match formatting_context::layout_inside_child(run, None, None, cell.box_, layout_input, false) {
             ChildLayoutOutcome::Created(result) => result.baselines,
@@ -2670,6 +2671,7 @@ impl<'pass> TableFormattingContext<'pass> {
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Item,
+                own_block_size: OwnBlockSize::held_by(self.used_values(cell.box_)),
             },
         )?;
         let result = formatting_context::lay_out_shape_for_its_result(run.callbacks, shape);

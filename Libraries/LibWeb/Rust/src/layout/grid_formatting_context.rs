@@ -4253,6 +4253,7 @@ impl<'pass> GridFormattingContext<'pass> {
             content_box_position_in_bfc_root: None,
             sizing: RootSizingDirectives::default(),
             participation: ParticipationInParentFormattingContext::Item,
+            own_block_size: OwnBlockSize::held_by(used),
         }
     }
 
@@ -4291,7 +4292,8 @@ impl<'pass> GridFormattingContext<'pass> {
     }
 
     fn item_run_shape(&self, item: GridItem) -> Option<formatting_context::ChildRunShape> {
-        let record = used_values::RootInputCells::capture(self.used(item)).materialize_record();
+        let record = used_values::RootInputCells::capture(self.used(item))
+            .materialize_record(OwnBlockSize::held_by(self.used(item)));
         self.prepare_item_record(item, &record, ItemRowArea::NotYetSized);
         let input = self.item_layout_input(item, &record, ItemRowArea::NotYetSized);
         let plan = formatting_context::child_run_plan(&self.run, item.box_, input, false)?;

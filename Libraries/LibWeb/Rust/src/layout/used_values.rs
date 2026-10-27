@@ -574,7 +574,6 @@ impl UsedValues {
         }
         move_sealable!(
             content_inline_size,
-            content_block_size,
             margin_left,
             margin_right,
             margin_top,
@@ -592,8 +591,11 @@ impl UsedValues {
             inset_top,
             inset_bottom
         );
+        self.content_block_size
+            .set_ignoring_seal(state.block_size.content_block_size);
         self.has_definite_inline_size.set(state.inputs.has_definite_inline_size);
-        self.has_definite_block_size.set(state.inputs.has_definite_block_size);
+        self.has_definite_block_size
+            .set(state.block_size.has_definite_block_size);
         self.has_first_baseline.set(state.outputs.has_first_baseline);
         self.has_last_baseline.set(state.outputs.has_last_baseline);
         self.inline_alignment_baseline
@@ -650,7 +652,6 @@ macro_rules! used_values_cells {
 used_values_cells! {
     RootInputCells {
         content_inline_size: CssPixels,
-        content_block_size: CssPixels,
         margin_left: CssPixels,
         margin_right: CssPixels,
         margin_top: CssPixels,
@@ -668,7 +669,6 @@ used_values_cells! {
         inset_top: CssPixels,
         inset_bottom: CssPixels,
         has_definite_inline_size: bool,
-        has_definite_block_size: bool,
         has_definite_block_size_only_for_button_content_alignment: bool,
         uses_collapsing_borders_model: bool,
         is_collapsed_borders_table_box: bool,
@@ -695,10 +695,20 @@ used_values_cells! {
     }
 }
 
+// The block size cells of a record: the own block size a run of the box is handed (see geometry::OwnBlockSize), which
+// the outcome of a run that dimensions its own root restores.
+used_values_cells! {
+    RootBlockSizeCells {
+        content_block_size: CssPixels,
+        has_definite_block_size: bool,
+    }
+}
+
 impl RootInputCells {
-    pub(crate) fn materialize_record(&self) -> UsedValues {
+    pub(crate) fn materialize_record(&self, own_block_size: OwnBlockSize) -> UsedValues {
         let record = UsedValues::default();
         self.apply_to_record(&record);
+        own_block_size.apply_to_record(&record);
         if self.has_content_offset {
             record.seal_committed_box_metrics();
         }
@@ -709,6 +719,7 @@ impl RootInputCells {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UsedValuesCellState {
     pub(crate) inputs: RootInputCells,
+    pub(crate) block_size: RootBlockSizeCells,
     pub(crate) outputs: RootOutputCells,
 }
 
@@ -716,12 +727,14 @@ impl UsedValuesCellState {
     pub(crate) fn capture(used: &UsedValues) -> Self {
         Self {
             inputs: RootInputCells::capture(used),
+            block_size: RootBlockSizeCells::capture(used),
             outputs: RootOutputCells::capture(used),
         }
     }
 
     pub(crate) fn apply_to_record(&self, used: &UsedValues) {
         self.inputs.apply_to_record(used);
+        self.block_size.apply_to_record(used);
         self.outputs.apply_to_record(used);
     }
 
@@ -788,16 +801,40 @@ impl UsedValuesCellState {
             to,
         );
         if from.is_orthogonal_to(to) {
-            std::mem::swap(&mut inputs.content_inline_size, &mut inputs.content_block_size);
+            std::mem::swap(&mut inputs.content_inline_size, &mut self.block_size.content_block_size);
             std::mem::swap(
                 &mut inputs.has_definite_inline_size,
-                &mut inputs.has_definite_block_size,
+                &mut self.block_size.has_definite_block_size,
             );
             self.outputs.has_first_baseline = false;
             self.outputs.has_last_baseline = false;
             self.outputs.inline_alignment_baseline = None;
         }
         self
+    }
+}
+
+impl OwnBlockSize {
+    /// The block size `used` holds for its box, as the input of a run of that box.
+    pub(crate) fn held_by(used: &UsedValues) -> Self {
+        Self::Assigned {
+            size: used.content_block_size.get(),
+            definite: used.has_definite_block_size.get(),
+        }
+    }
+
+    /// Writes the block size into the record of the run root it is the input of.
+    pub(crate) fn apply_to_record(self, used: &UsedValues) {
+        let (size, definite) = match self {
+            Self::Assigned { size, definite } => (size, definite),
+            Self::TakenFromRecordAtRunStart => {
+                unreachable!("a run root's own block size is read off its record before the run starts")
+            }
+        };
+        if used.content_block_size.get() != size {
+            used.content_block_size.set(size);
+        }
+        used.has_definite_block_size.set(definite);
     }
 }
 

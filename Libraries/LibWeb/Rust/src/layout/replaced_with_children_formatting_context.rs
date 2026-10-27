@@ -64,6 +64,7 @@ pub(super) fn layout_replaced_with_children(
                 ..geometry::RootSizingDirectives::default()
             },
             participation: geometry::ParticipationInParentFormattingContext::Item,
+            own_block_size: geometry::OwnBlockSize::held_by(wrapper_state),
         },
         None,
         None,

@@ -1784,6 +1784,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Item,
+                own_block_size: OwnBlockSize::held_by(self.used(marker)),
             },
             true,
         ) {
@@ -1864,6 +1865,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             content_box_position_in_bfc_root: containing_input.content_box_position_in_bfc_root,
             sizing: RootSizingDirectives::default(),
             participation: ParticipationInParentFormattingContext::BlockLevel,
+            own_block_size: OwnBlockSize::TakenFromRecordAtRunStart,
         }
     }
 
@@ -2229,6 +2231,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::BlockLevel,
+                own_block_size: OwnBlockSize::TakenFromRecordAtRunStart,
             };
             let pre_run_table_border_box = is_table_formatting_context.then(|| {
                 let used = self.used(node);
@@ -3292,6 +3295,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 ..RootSizingDirectives::default()
             },
             participation: ParticipationInParentFormattingContext::Root,
+            own_block_size: OwnBlockSize::TakenFromRecordAtRunStart,
         };
         let spanner_input = self.child_layout_input(
             root,
@@ -3867,7 +3871,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                 let measurement_result = formatting_context::lay_out_measurement_root_for_its_result(
                     self.run.callbacks,
                     self.run.box_,
-                    used_values::RootInputCells::capture(self.used(self.run.box_)),
+                    self.used(self.run.box_),
                     LayoutInput {
                         sizing: RootSizingDirectives {
                             finds_automatic_line_clamp_lines: true,
@@ -4131,6 +4135,7 @@ impl<'pass> BlockFormattingContext<'pass> {
                     ..RootSizingDirectives::default()
                 },
                 participation: ParticipationInParentFormattingContext::Float,
+                own_block_size: OwnBlockSize::TakenFromRecordAtRunStart,
             },
             false,
         );

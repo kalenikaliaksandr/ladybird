@@ -374,6 +374,17 @@ pub(crate) enum ParticipationInParentFormattingContext {
     Root,
 }
 
+/// The content block size of a run's root along the block axis of the frame the run is launched in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnBlockSize {
+    /// The parent holds `size` for the root; `definite` is what the percentages and the available space inside see.
+    Assigned { size: CssPixels, definite: bool },
+    /// The root is dimensioned around the run start rather than by a parent algorithm (block-level, floating, atomic
+    /// inline and absolutely positioned roots): the run seam reads what the record holds into `Assigned` before it
+    /// builds the cache key, so no key names this.
+    TakenFromRecordAtRunStart,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LayoutInput {
     pub(crate) available_space: AvailableSpace,
@@ -381,6 +392,7 @@ pub(crate) struct LayoutInput {
     pub(crate) content_box_position_in_bfc_root: Option<FfiCssPixelPoint>,
     pub(crate) sizing: RootSizingDirectives,
     pub(crate) participation: ParticipationInParentFormattingContext,
+    pub(crate) own_block_size: OwnBlockSize,
 }
 
 impl LayoutInput {
@@ -395,6 +407,7 @@ impl LayoutInput {
             content_box_position_in_bfc_root: None,
             sizing: RootSizingDirectives::default(),
             participation,
+            own_block_size: OwnBlockSize::TakenFromRecordAtRunStart,
         }
     }
 

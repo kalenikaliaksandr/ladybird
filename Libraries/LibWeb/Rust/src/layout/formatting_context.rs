@@ -142,9 +142,12 @@ pub(crate) fn run_fragmentainer(
     let root_containing_block = outer
         .callbacks
         .containing_block_for_child_run(box_, &input.participation);
+    let outer_used = outer.records.used_values(box_);
+    let mut input = input;
+    resolve_own_block_size_at_run_start(&mut input, outer_used);
     execute_formatting_context_run(
         builds_fragments,
-        used_values::RootInputCells::capture(outer.records.used_values(box_)),
+        used_values::RootInputCells::capture(outer_used),
         box_,
         root_containing_block,
         None,
@@ -1543,7 +1546,7 @@ fn apply_root_sizing_directives(
     fc_type: FormattingContextType,
 ) -> RootSizingOutcome {
     let mut atomic_root_sizing_repeats_for_available_inline_sizes_at_or_above = None;
-    let body_input = match input.participation {
+    let mut body_input = match input.participation {
         ParticipationInParentFormattingContext::BlockLevel => dimension_block_level_root(run, input, fc_type),
         ParticipationInParentFormattingContext::Float => body_input_with_inner_available_space(run, input),
         ParticipationInParentFormattingContext::AtomicInline => {
@@ -1600,6 +1603,9 @@ fn apply_root_sizing_directives(
             *input
         }
     };
+    // NB: The prelude dimensions atomic inline, absolutely positioned and forced roots, so the body is handed the block
+    //     size the record holds now.
+    body_input.own_block_size = OwnBlockSize::held_by(run.records.used_values(run.box_));
     RootSizingOutcome {
         body_input,
         atomic_root_sizing_repeats_for_available_inline_sizes_at_or_above,
@@ -1837,6 +1843,8 @@ pub(super) fn run_formatting_context(
         // A later run for this root supersedes a hit recorded earlier in the same pass.
         parent_fragments.clear_reused_subtree_root(box_, parent_used);
     }
+    let mut input = input;
+    resolve_own_block_size_at_run_start(&mut input, parent_used);
     let root_cells = used_values::RootInputCells::capture(parent_used);
     let builds_fragments = run_builds_fragments(&input, parent_fragments.is_some());
     assert!(
@@ -2072,7 +2080,12 @@ fn execute_formatting_context_run(
     assert!(!box_.is_invalid());
     let parent_owns_root_input_cells = parent_owns_root_input_cells(&callbacks, box_, &input);
     let run_is_handed_table_inline_layout_outside_its_key = table_inline_layout.is_some();
-    let root_used = root_cells.materialize_record();
+    debug_assert_ne!(
+        input.own_block_size,
+        OwnBlockSize::TakenFromRecordAtRunStart,
+        "the run of {box_:?} starts without its own block size"
+    );
+    let root_used = root_cells.materialize_record(input.own_block_size);
     let outputs = RunRecords::with_root(
         callbacks,
         box_,
@@ -2376,12 +2389,6 @@ fn execute_formatting_context_run(
         let mut root_input_cells_the_run_must_leave = root_cells;
         if fc_type.lays_out_inside_its_root_as_definite_in_both_axes() {
             root_input_cells_the_run_must_leave.has_definite_inline_size = true;
-            root_input_cells_the_run_must_leave.has_definite_block_size = true;
-        }
-        if run_reads_content_block_size_adopted_after_it(fc_type, &input)
-            && content_block_size_adopted_after_run(&input, outputs.result.automatic_content_block_size).is_some()
-        {
-            root_input_cells_the_run_must_leave.content_block_size = root_used.content_block_size.get();
         }
         assert_eq!(
             used_values::RootInputCells::capture(&root_used),
@@ -2487,6 +2494,7 @@ fn enter_own_frame(
         ParticipationInParentFormattingContext::Root,
     );
     body_input.sizing = sizing;
+    body_input.own_block_size = OwnBlockSize::held_by(used);
     body_input
 }
 
@@ -2857,12 +2865,13 @@ pub(crate) fn child_run_plan(
 pub(crate) fn lay_out_measurement_root_for_its_result(
     callbacks: LayoutPass<'_>,
     node: Node,
-    root_cells: used_values::RootInputCells,
-    input: LayoutInput,
+    root: &UsedValues,
+    mut input: LayoutInput,
 ) -> ChildLayoutResult {
+    resolve_own_block_size_at_run_start(&mut input, root);
     lay_out_shape_for_its_result(
         callbacks,
-        ChildRunShape::of_measurement_root(&callbacks, node, root_cells, input),
+        ChildRunShape::of_measurement_root(&callbacks, node, used_values::RootInputCells::capture(root), input),
     )
 }
 
@@ -2946,6 +2955,14 @@ pub(crate) fn lay_out_shape_for_its_result(callbacks: LayoutPass<'_>, shape: Chi
     }
     cache_attempt.conclude(&callbacks, node, cache_key, &input, &outputs);
     result_with_host_findings(&outputs)
+}
+
+/// Hands a run whose root is dimensioned around its start, rather than by a parent algorithm, the block size the root's
+/// record holds as its own block size, so that the cache key and the run agree on it.
+fn resolve_own_block_size_at_run_start(input: &mut LayoutInput, record: &UsedValues) {
+    if input.own_block_size == OwnBlockSize::TakenFromRecordAtRunStart {
+        input.own_block_size = OwnBlockSize::held_by(record);
+    }
 }
 
 // NB: An item that establishes an orthogonal flow sizes itself along its container's block axis, so its run owns its
