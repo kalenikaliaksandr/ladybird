@@ -2570,7 +2570,7 @@ fn length_resolution_context(
             .dom_node_style_node(node)
             .expect("an SVG element's attribute length is resolved for the element's own box");
         let bases = callbacks.container_length_bases.bases(element);
-        callbacks.scratch().note_host_findings(|findings| match &bases {
+        callbacks.note_host_findings(|findings| match &bases {
             Some(bases) => findings.note_container_length_dependencies(element, bases),
             None => findings.note_unresolved_container_lengths(node),
         });
