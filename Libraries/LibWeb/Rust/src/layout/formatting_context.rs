@@ -1324,10 +1324,18 @@ pub(crate) struct FormattingContextRun<'pass> {
 impl<'pass> FormattingContextRun<'pass> {
     /// This run, laying out in `frame`.
     pub(crate) fn in_frame_of(&self, frame: geometry::Frame) -> Self {
-        Self {
+        self.with_callbacks(self.callbacks.in_frame_of(frame.writing_mode()))
+    }
+
+    /// This run, laying out with the pass view `callbacks`.
+    pub(crate) fn with_callbacks<'view>(&self, callbacks: LayoutPass<'view>) -> FormattingContextRun<'view>
+    where
+        'pass: 'view,
+    {
+        FormattingContextRun {
             state: self.state,
             box_: self.box_,
-            callbacks: self.callbacks.in_frame_of(frame.writing_mode()),
+            callbacks,
             should_collect_devtools_layout_data: self.should_collect_devtools_layout_data,
             treat_block_axis_percentage_insets_as_auto_beyond_root: self
                 .treat_block_axis_percentage_insets_as_auto_beyond_root,
@@ -3647,6 +3655,7 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
             entry_run_state,
             &entry_fragments,
             &callbacks,
+            scratch,
             should_collect_devtools_layout_data,
         )
     })
@@ -3668,6 +3677,7 @@ fn finish_entry_pass(
     entry_run_state: &RunState,
     entry_fragments: &std::rc::Rc<fragment_tree::RunFragmentBuilder>,
     callbacks: &LayoutPass<'_>,
+    scratch: &super::run_state::LayoutScratch,
     should_collect_devtools_layout_data: bool,
 ) -> LayoutStageOutput {
     abspos_engine::drain_abspos_with_placed_containing_blocks(
@@ -3681,7 +3691,7 @@ fn finish_entry_pass(
         !pass_fragments.roots.is_empty(),
         "an entry pass always produces the entry root's fragment"
     );
-    let mut host_findings = callbacks.scratch().take_host_findings_outside_runs();
+    let mut host_findings = scratch.take_host_findings_outside_runs();
     if let Some(found_by_entry_run) = entry_run_state.take_host_findings() {
         host_findings.receive(*found_by_entry_run);
     }
@@ -3746,7 +3756,7 @@ fn compute_subtree_layout_fragments(input: LayoutStageInput<'_>, containing_bloc
             } else {
                 layout_subtree_with_frozen_root_geometry(&entry_run);
             }
-            finish_entry_pass(entry_run_state, &entry_fragments, &callbacks, false)
+            finish_entry_pass(entry_run_state, &entry_fragments, &callbacks, scratch, false)
         },
     )
 }
