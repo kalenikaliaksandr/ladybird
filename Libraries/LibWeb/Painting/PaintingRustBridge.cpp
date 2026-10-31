@@ -495,7 +495,20 @@ void commit_unrecorded_frame(Layout::BegunRead const& read, DOM::Document& docum
     Layout::RustFFI::render_state_commit_unrecorded_frame(document_host(document), &read, sends_visual_context_tree, rendering_update_timestamp(document), give_up(move(presentation)));
 }
 
-Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRead const& read, DOM::Document& document, Compositing::AccumulatedVisualContextTree visual_context_tree, Optional<Gfx::Color> surface_clear_color, PaintCommandCacheMode cache_mode, HTML::PaintConfig const& config, InspectorOverlayInputs const& overlay_inputs, Optional<Compositor::FlightPresentation> committed)
+static Layout::RustFFI::FfiRecordingCoverage ffi_recording_coverage(RecordingCoverage coverage)
+{
+    switch (coverage) {
+    case RecordingCoverage::WholeDocument:
+        return Layout::RustFFI::FfiRecordingCoverage::WholeDocument;
+    case RecordingCoverage::AroundScrollPositions:
+        return Layout::RustFFI::FfiRecordingCoverage::AroundScrollPositions;
+    case RecordingCoverage::AsSourceRecording:
+        return Layout::RustFFI::FfiRecordingCoverage::AsSourceRecording;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRead const& read, DOM::Document& document, Compositing::AccumulatedVisualContextTree visual_context_tree, Optional<Gfx::Color> surface_clear_color, PaintCommandCacheMode cache_mode, RecordingCoverage coverage, HTML::PaintConfig const& config, InspectorOverlayInputs const& overlay_inputs, Optional<Compositor::FlightPresentation> committed)
 {
     auto* host = document_host(document);
     auto device_pixels_per_css_pixel = document.page().client().device_pixels_per_css_pixel();
@@ -586,6 +599,7 @@ Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRe
     inputs.device_viewport_rect = device_viewport_rect.to_type<int>();
     if (auto navigable = document.navigable())
         inputs.css_viewport_rect = navigable->viewport_rect();
+    inputs.coverage = ffi_recording_coverage(coverage);
     inputs.should_show_line_box_borders = config.should_show_line_box_borders;
     inputs.force_dark_enabled = config.force_dark_enabled;
     inputs.force_dark_foreground_threshold = config.force_dark_foreground_threshold;

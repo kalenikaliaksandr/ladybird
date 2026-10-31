@@ -15,6 +15,15 @@ enum class PaintCommandCacheMode : u8 {
     ReadWrite,
 };
 
+// Which part of its document a recording records.
+enum class RecordingCoverage : u8 {
+    WholeDocument,
+    // What lies around the part of each scroll node that its scroll position shows.
+    AroundScrollPositions,
+    // What the recording published last records: a recording that only rebuilds the hit-test list records no more.
+    AsSourceRecording,
+};
+
 enum class SelectionState : u8 {
     None,
     Start,

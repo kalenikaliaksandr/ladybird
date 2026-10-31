@@ -16,6 +16,7 @@ use std::ffi::c_void;
 pub struct FfiRecordingInputs {
     pub device_viewport_rect: IntRect,
     pub css_viewport_rect: used_values::FfiCssPixelRect,
+    pub coverage: FfiRecordingCoverage,
     pub should_show_line_box_borders: bool,
     pub force_dark_enabled: bool,
     pub force_dark_foreground_threshold: i32,
@@ -91,7 +92,7 @@ impl FfiRecordingInputs {
         use crate::painting::force_dark::ForceDarkSettings;
         use crate::painting::record::inputs::{
             CaretPaint, CaretTarget, FocusedAreaOutline, FocusedTextControlSelection, GridOverlays, InspectorHighlight,
-            RecordingInputs, UnframedRecordingInputs,
+            InterestInput, RecordingInputs, UnframedRecordingInputs,
         };
 
         // SAFETY: The caller lends these arrays and buffers for this call.
@@ -134,6 +135,11 @@ impl FfiRecordingInputs {
             },
             wheel_event_listener_state_generation: self.wheel_event_listener_state_generation,
             css_viewport_rect: self.css_viewport_rect.into(),
+            interest: match self.coverage {
+                FfiRecordingCoverage::WholeDocument => InterestInput::WholeDocument,
+                FfiRecordingCoverage::AroundScrollPositions => InterestInput::AroundScrollPositions,
+                FfiRecordingCoverage::AsSourceRecording => InterestInput::AsSourceRecording,
+            },
             should_show_line_box_borders: self.should_show_line_box_borders,
             force_dark_enabled: self.force_dark_enabled,
             force_dark_settings: ForceDarkSettings {
@@ -210,6 +216,16 @@ impl FfiRecordingInputs {
             mark_text_color: self.mark_text_color,
         })
     }
+}
+
+/// Which part of its document a recording records (see `InterestInput`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[expect(dead_code, reason = "C++ constructs the variants")]
+pub enum FfiRecordingCoverage {
+    WholeDocument,
+    AroundScrollPositions,
+    AsSourceRecording,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

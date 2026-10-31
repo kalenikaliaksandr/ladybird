@@ -10,8 +10,10 @@ use crate::painting::display_list::commands::UniqueNodeId;
 use crate::painting::ffi::FfiChromeMetrics;
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::host::{FfiFlexOverlayInput, FfiGridOverlayInput, RootBackgroundSource};
+use crate::painting::record::{RecordedInterest, RecordingOutput};
 use libgfx_rust::font::FontHandle;
 use libgfx_rust::{Color, IntRect, IntSize};
+use std::sync::Arc;
 
 /// The inputs read by content that is recorded outside per-box captures: scroll metadata,
 /// viewport scrollbars, the wheel-target facts of hit-test items. Reusing a subtree capture from
@@ -63,6 +65,9 @@ pub(crate) struct RecordingInputs {
     // recorded content reads it.
     pub wheel_event_listener_state_generation: u64,
     pub css_viewport_rect: CssPixelRect,
+    // No producer's output depends on it, so a recording of another part of the document still copies the clean output
+    // of the published one.
+    pub interest: InterestInput,
     pub should_show_line_box_borders: bool,
     pub force_dark_enabled: bool,
     pub force_dark_settings: ForceDarkSettings,
@@ -101,6 +106,28 @@ pub(crate) struct RecordingInputs {
     pub text_fragment_indications: Box<[crate::painting::host::FfiTextFragmentIndicationRange]>,
     pub mark_color: Color,
     pub mark_text_color: Color,
+}
+
+/// Which part of its document a recording records.
+#[derive(Clone)]
+pub(crate) enum InterestInput {
+    WholeDocument,
+    /// What lies around the part of each scroll node that its scroll position shows.
+    AroundScrollPositions,
+    /// What the recording published last records: a recording that only rebuilds the hit-test list records no more.
+    AsSourceRecording,
+}
+
+impl InterestInput {
+    /// What a recording with this interest records of its document, where `published` is the recording published last.
+    pub(crate) fn recorded_interest(&self, published: Option<&RecordingOutput>) -> Arc<RecordedInterest> {
+        match self {
+            Self::WholeDocument | Self::AroundScrollPositions => Arc::default(),
+            Self::AsSourceRecording => {
+                published.map_or_else(Arc::default, |published| Arc::clone(&published.recorded_interest))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

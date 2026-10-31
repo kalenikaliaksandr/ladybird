@@ -64,7 +64,12 @@ pub struct RecordingOutput {
     pub(crate) capture_log: Option<trace::CaptureLog>,
     /// The SVG images whose display lists, which the host rendered, the recording draws, and the ids of those lists.
     pub(crate) vector_image_display_lists: Vec<(vector_images::VectorImageRenderRequest, u64)>,
+    pub(crate) recorded_interest: Arc<RecordedInterest>,
 }
+
+/// What a recording records of its document: all of it.
+#[derive(Default)]
+pub(crate) struct RecordedInterest {}
 
 pub(crate) struct RecordingResult {
     pub(crate) output: RecordingOutput,

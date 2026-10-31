@@ -1567,14 +1567,14 @@ public:
     }
 
     // Records the document's display list in step with the host, once a recording in flight has been taken in.
-    RefPtr<Compositing::DisplayList> record_display_list(Layout::BegunRead const& read, HTML::PaintConfig, Compositing::DisplayListResourceStorage&, Painting::PaintCommandCacheMode);
+    RefPtr<Compositing::DisplayList> record_display_list(Layout::BegunRead const& read, HTML::PaintConfig, Compositing::DisplayListResourceStorage&, Painting::PaintCommandCacheMode, Painting::RecordingCoverage);
     // Starts recording the document's display list as the document is now, beside the event loop where `blocker` is
     // none, taking `flight`, if any, to present its frame with, and makes the display list of a recording that has
     // landed.
-    Optional<Painting::DisplayListRecording> start_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig, Painting::PaintCommandCacheMode);
+    Optional<Painting::DisplayListRecording> start_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig, Painting::PaintCommandCacheMode, Painting::RecordingCoverage);
     // Commits the navigable's next frame, a recording of the document, to the render owner, which presents it with
     // `presentation` beside the event loop.
-    Painting::DisplayListRecording commit_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig, Compositor::FlightPresentation&& presentation);
+    Painting::DisplayListRecording commit_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig, Painting::RecordingCoverage, Compositor::FlightPresentation&& presentation);
     RefPtr<Compositing::DisplayList> finish_display_list_recording(Layout::BegunRead const& read, Painting::DisplayListRecording const&, Compositing::DisplayListResourceStorage&, Painting::HitTestListStands = Painting::HitTestListStands::Yes);
     // Takes in `display_list`, which `recording` published: the paint command cache source, and the hit-test list it made,
     // read in `hit_test_list_read`, where that still stands for the document's boxes. Where none does, nothing is read.
@@ -1792,7 +1792,7 @@ private:
     bool compute_is_fully_active() const;
 
     // Records the document's viewport for the host to publish, or, given `committed`, commits the recording.
-    Optional<Painting::DisplayListRecording> start_recording(Layout::BegunRead const&, HTML::PaintConfig, Painting::PaintCommandCacheMode, Optional<Compositor::FlightPresentation>&& committed);
+    Optional<Painting::DisplayListRecording> start_recording(Layout::BegunRead const&, HTML::PaintConfig, Painting::PaintCommandCacheMode, Painting::RecordingCoverage, Optional<Compositor::FlightPresentation>&& committed);
 
     // Whether the first round of a rendering update's layout may be sealed: list items that wait to be renumbered and top
     // layer work are the layout update's to do first.

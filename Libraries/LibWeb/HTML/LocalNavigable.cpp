@@ -6861,7 +6861,7 @@ bool LocalNavigable::commit_frame(PaintConfig paint_config)
         commit_unrecorded_frame(read, *document, move(sealed));
         return true;
     }
-    auto recording = document->commit_display_list_recording(read, paint_config, take_presentation(move(sealed)));
+    auto recording = document->commit_display_list_recording(read, paint_config, Painting::RecordingCoverage::WholeDocument, take_presentation(move(sealed)));
     // What asks for another recording once this one has started asks for the next one.
     m_needs_to_record_display_list = false;
     m_recording_in_flight = make<RecordingInFlight>(*document, move(recording));

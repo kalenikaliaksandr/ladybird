@@ -75,6 +75,7 @@ fn record_display_list_impl<O: Observer>(
     let paint_state = source.frame().paint_state();
     let structural_epoch = paint_state.structural_epoch();
     let frame_inputs = FrameInputs::from_recording_inputs(inputs, paint_state);
+    let recorded_interest = inputs.interest.recorded_interest(source_recording.as_deref());
     let root_background_canvas_rect = root_background_canvas_rect(
         source,
         inputs.uncaptured.root_background_source.root_layout_node,
@@ -185,6 +186,7 @@ fn record_display_list_impl<O: Observer>(
         window_is_focused: inputs.window_is_focused,
         capture_log: recorder.observer.finish(),
         vector_image_display_lists: Vec::new(),
+        recorded_interest,
     };
     RecordingResult {
         output,

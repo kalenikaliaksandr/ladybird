@@ -230,7 +230,7 @@ RefPtr<Compositing::DisplayList> record_display_list(LoadedPage& loaded_page)
     auto& document = loaded_page.document();
     document.update_layout(Web::DOM::UpdateLayoutReason::Debugging);
     Web::Layout::ForcedReadScope read { document };
-    return document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite);
+    return document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, Web::Painting::RecordingCoverage::WholeDocument);
 }
 
 OwnPtr<LoadedPage> load_page(DocumentShape shape)
@@ -359,7 +359,7 @@ void time_document_recordings(DocumentShape shape, StringView label, Optional<Mu
         }
         Web::Layout::ForcedReadScope read { document };
         auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        auto display_list = document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite);
+        auto display_list = document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, Web::Painting::RecordingCoverage::WholeDocument);
         samples.microseconds.append(timer.elapsed_time().to_microseconds());
         VERIFY(display_list);
         recorded_byte_count = display_list->tape_size();
@@ -384,7 +384,7 @@ void time_rust_recordings(DocumentShape shape, StringView label)
         Web::Painting::InspectorOverlayInputs overlay_inputs;
         Web::Layout::ForcedReadScope read { document };
         auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        auto recording = Web::Painting::start_rust_display_list_recording(read, document, visual_context_tree, {}, Web::Painting::PaintCommandCacheMode::ReadWrite, benchmark_paint_config(), overlay_inputs);
+        auto recording = Web::Painting::start_rust_display_list_recording(read, document, visual_context_tree, {}, Web::Painting::PaintCommandCacheMode::ReadWrite, Web::Painting::RecordingCoverage::WholeDocument, benchmark_paint_config(), overlay_inputs);
         VERIFY(recording.has_value());
         auto display_list = Web::Painting::finish_rust_display_list_recording(read, document, *recording, loaded_page.display_list_resource_storage);
         samples.microseconds.append(timer.elapsed_time().to_microseconds());
@@ -411,7 +411,7 @@ void time_removal_recordings(DocumentShape shape, StringView label)
         layout_samples.microseconds.append(timer.elapsed_time().to_microseconds());
         Web::Layout::ForcedReadScope read { document };
         timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        VERIFY(document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite));
+        VERIFY(document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, Web::Painting::RecordingCoverage::WholeDocument));
         recording_samples.microseconds.append(timer.elapsed_time().to_microseconds());
     }
     layout_samples.report("  removal/attachment and layout"sv);
@@ -516,7 +516,7 @@ BENCHMARK_CASE(document_record_after_viewport_scroll_and_one_card_change)
         layout_samples.microseconds.append(timer.elapsed_time().to_microseconds());
         Web::Layout::ForcedReadScope read { document };
         timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        VERIFY(document.record_display_list(read, benchmark_paint_config(), loaded_page->display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite));
+        VERIFY(document.record_display_list(read, benchmark_paint_config(), loaded_page->display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, Web::Painting::RecordingCoverage::WholeDocument));
         recording_samples.microseconds.append(timer.elapsed_time().to_microseconds());
     }
     layout_samples.report("  scrolling, mutation and layout"sv);

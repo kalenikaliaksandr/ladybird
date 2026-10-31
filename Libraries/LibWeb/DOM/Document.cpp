@@ -11312,7 +11312,7 @@ void Document::set_needs_to_record_display_list_keeping_hit_test_display_list()
         navigable->set_needs_to_record_display_list();
 }
 
-RefPtr<Compositing::DisplayList> Document::record_display_list(Layout::BegunRead const& read, HTML::PaintConfig config, Compositing::DisplayListResourceStorage& resource_storage, Painting::PaintCommandCacheMode cache_mode)
+RefPtr<Compositing::DisplayList> Document::record_display_list(Layout::BegunRead const& read, HTML::PaintConfig config, Compositing::DisplayListResourceStorage& resource_storage, Painting::PaintCommandCacheMode cache_mode, Painting::RecordingCoverage coverage)
 {
     // The host reads this recording right after it, so a recording in flight is taken in first: it has the recorder
     // state.
@@ -11330,23 +11330,23 @@ RefPtr<Compositing::DisplayList> Document::record_display_list(Layout::BegunRead
         if (holds_clock_lane)
             Layout::RustFFI::document_host_release_clock_lane(host);
     };
-    auto recording = start_display_list_recording(read, config, cache_mode);
+    auto recording = start_display_list_recording(read, config, cache_mode, coverage);
     if (!recording.has_value())
         return nullptr;
     return finish_display_list_recording(read, *recording, resource_storage);
 }
 
-Optional<Painting::DisplayListRecording> Document::start_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig config, Painting::PaintCommandCacheMode cache_mode)
+Optional<Painting::DisplayListRecording> Document::start_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig config, Painting::PaintCommandCacheMode cache_mode, Painting::RecordingCoverage coverage)
 {
-    return start_recording(read, config, cache_mode, {});
+    return start_recording(read, config, cache_mode, coverage, {});
 }
 
-Painting::DisplayListRecording Document::commit_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig config, Compositor::FlightPresentation&& presentation)
+Painting::DisplayListRecording Document::commit_display_list_recording(Layout::BegunRead const& read, HTML::PaintConfig config, Painting::RecordingCoverage coverage, Compositor::FlightPresentation&& presentation)
 {
-    return start_recording(read, config, Painting::PaintCommandCacheMode::ReadWrite, move(presentation)).release_value();
+    return start_recording(read, config, Painting::PaintCommandCacheMode::ReadWrite, coverage, move(presentation)).release_value();
 }
 
-Optional<Painting::DisplayListRecording> Document::start_recording(Layout::BegunRead const& read, HTML::PaintConfig config, Painting::PaintCommandCacheMode cache_mode, Optional<Compositor::FlightPresentation>&& committed)
+Optional<Painting::DisplayListRecording> Document::start_recording(Layout::BegunRead const& read, HTML::PaintConfig config, Painting::PaintCommandCacheMode cache_mode, Painting::RecordingCoverage coverage, Optional<Compositor::FlightPresentation>&& committed)
 {
     update_paint_and_hit_testing_properties_if_needed();
     VERIFY(has_committed_viewport_box());
@@ -11386,7 +11386,7 @@ Optional<Painting::DisplayListRecording> Document::start_recording(Layout::Begun
     if (config.should_show_caret_hit_test_debug_overlay)
         overlay_inputs.caret_debug_rect = m_caret_hit_test_debug_rect;
 
-    return Painting::start_rust_display_list_recording(read, *this, move(visual_context_tree), surface_clear_color, cache_mode, config, overlay_inputs, move(committed));
+    return Painting::start_rust_display_list_recording(read, *this, move(visual_context_tree), surface_clear_color, cache_mode, coverage, config, overlay_inputs, move(committed));
 }
 
 RefPtr<Compositing::DisplayList> Document::finish_display_list_recording(Layout::BegunRead const& read, Painting::DisplayListRecording const& recording, Compositing::DisplayListResourceStorage& resource_storage, Painting::HitTestListStands hit_test_list_stands)
@@ -11438,7 +11438,7 @@ Optional<Painting::HitTestQuery> Document::prepare_hit_test_query(Layout::BegunR
         if (auto navigable = this->navigable())
             paint_config = navigable->stamp_paint_config(paint_config);
         Compositing::DisplayListResourceStorage throwaway_resource_storage_for_hit_test_only_recording;
-        (void)record_display_list(read, paint_config, throwaway_resource_storage_for_hit_test_only_recording, Painting::PaintCommandCacheMode::ReadOnly);
+        (void)record_display_list(read, paint_config, throwaway_resource_storage_for_hit_test_only_recording, Painting::PaintCommandCacheMode::ReadOnly, Painting::RecordingCoverage::AsSourceRecording);
     };
 
     // The paint properties were prepared above, and a query reads them as they were left there: preparing them again
@@ -11943,7 +11943,7 @@ Utf16String Document::dump_display_list()
     Layout::RustFFI::document_host_hold_clock_lane(host);
     ScopeGuard release_clock_lane = [&] { Layout::RustFFI::document_host_release_clock_lane(host); };
     auto& resource_storage = navigable()->display_list_resource_storage();
-    auto display_list = record_display_list(read, HTML::PaintConfig {}, resource_storage, Painting::PaintCommandCacheMode::ReadOnly);
+    auto display_list = record_display_list(read, HTML::PaintConfig {}, resource_storage, Painting::PaintCommandCacheMode::ReadOnly, Painting::RecordingCoverage::WholeDocument);
     if (!display_list)
         return "No display list"_utf16;
 
