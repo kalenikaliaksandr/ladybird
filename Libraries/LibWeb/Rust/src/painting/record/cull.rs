@@ -12,7 +12,7 @@
 //! With debug assertions, or with LIBWEB_VERIFY_PAINT_PRODUCER_BOUNDS set, every producer that records is checked
 //! against its placement, and a command recorded where the placement does not reach panics.
 
-use super::order_tree::ProducerKind;
+use super::order_tree::{CullReach, ProducerKind};
 use super::producers::draw_phase;
 use super::trace::Observer;
 use super::{PaintPhase, PaintRecorder};
@@ -33,7 +33,9 @@ use crate::painting::record::inputs::CaretTarget;
 use crate::painting::record::paint::{
     border_image, column_rule, table_backgrounds, table_borders, text, text_decoration,
 };
-use crate::painting::visual_context::interest::{CullSpace, cull_space_of, effects_under_spreading_filters};
+use crate::painting::visual_context::interest::{
+    CullSpace, UNBOUNDED_INTEREST_EDGE, cull_space_of, effects_under_spreading_filters,
+};
 use crate::painting::visual_context::{SpatialData, VisualContextTree};
 use crate::painting::{border_shape, node_painting, paintable_geometry, style_queries, text_fragment};
 use libgfx_rust::{IntRect, enclosing_int_rect};
@@ -58,6 +60,25 @@ pub(crate) enum ProducerPlacement {
         scroll_node: SpatialNodeIndex,
         bounds: IntRect,
     },
+}
+
+// Every interest rect that reaches anything reaches into these bounds.
+const ANYWHERE_IN_SCROLL_NODE: IntRect = IntRect::new(
+    -UNBOUNDED_INTEREST_EDGE,
+    -UNBOUNDED_INTEREST_EDGE,
+    2 * UNBOUNDED_INTEREST_EDGE,
+    2 * UNBOUNDED_INTEREST_EDGE,
+);
+
+impl ProducerPlacement {
+    /// Where the output placed here lands if a recording around the scroll positions may leave it out.
+    pub(crate) fn cull_reach(self) -> CullReach {
+        match self {
+            Self::HitTest | Self::DocumentWide | Self::NeverCulled => CullReach::NOTHING,
+            Self::AnywhereInScrollNode(scroll_node) => CullReach::in_scroll_node(scroll_node, ANYWHERE_IN_SCROLL_NODE),
+            Self::WithinScrollNode { scroll_node, bounds } => CullReach::in_scroll_node(scroll_node, bounds),
+        }
+    }
 }
 
 // The estimates snap to device pixels a little differently from the paint code they follow.
@@ -149,6 +170,12 @@ impl<O: Observer> PaintRecorder<'_, O> {
             under_spreading_filter: effects_under_spreading_filters(tree),
             scrolled_by_compositor,
         })
+    }
+
+    /// Where a producer about to record can draw, when the recording knows its cull spaces.
+    pub(crate) fn placement_of_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> Option<ProducerPlacement> {
+        self.cull_spaces.as_ref()?;
+        Some(self.producer_placement(owner, kind, CullingScrollNodes::ScrolledByCompositor))
     }
 
     fn producer_placement(
@@ -556,19 +583,24 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
-    /// Panics when a producer recorded `recorded_bytes` where its placement does not reach. Producers that the
-    /// compositor scrolls nothing of are checked against where they would be placed in the nearest scroll node.
+    /// Panics when a producer recorded `recorded_bytes` where `placement`, its placement in the scroll nodes the
+    /// compositor scrolls, does not reach. Producers that the compositor scrolls nothing of are checked against where
+    /// they would be placed in the nearest scroll node.
     pub(crate) fn verify_recorded_producer_placement(
         &mut self,
         owner: NodeSlotId,
         kind: ProducerKind,
+        placement: ProducerPlacement,
         recorded_bytes: Range<usize>,
     ) {
         if recorded_bytes.is_empty() {
             return;
         }
         for culling_scroll_nodes in [CullingScrollNodes::ScrolledByCompositor, CullingScrollNodes::Every] {
-            let placement = self.producer_placement(owner, kind, culling_scroll_nodes);
+            let placement = match culling_scroll_nodes {
+                CullingScrollNodes::ScrolledByCompositor => placement,
+                CullingScrollNodes::Every => self.producer_placement(owner, kind, culling_scroll_nodes),
+            };
             match placement {
                 ProducerPlacement::HitTest | ProducerPlacement::DocumentWide => return,
                 ProducerPlacement::NeverCulled => continue,
@@ -948,6 +980,34 @@ mod tests {
             ProducerPlacement::AnywhereInScrollNode(root)
         );
         assert_eq!(place(exactly, false, || bounds), within(root, bounds));
+    }
+
+    #[test]
+    fn only_output_in_a_scroll_node_may_be_left_out_and_output_anywhere_in_one_reaches_every_interest_rect() {
+        let root = SpatialNodeIndex(1);
+        let bounds = IntRect::new(0, 0, 10, 10);
+        for kept in [
+            ProducerPlacement::HitTest,
+            ProducerPlacement::DocumentWide,
+            ProducerPlacement::NeverCulled,
+        ] {
+            assert!(kept.cull_reach().is_nothing());
+        }
+        assert_eq!(
+            within(root, bounds).cull_reach(),
+            CullReach::in_scroll_node(root, bounds)
+        );
+        let anywhere = ProducerPlacement::AnywhereInScrollNode(root).cull_reach();
+        let unbounded_interest_rect = IntRect::new(
+            -UNBOUNDED_INTEREST_EDGE,
+            -UNBOUNDED_INTEREST_EDGE,
+            2 * UNBOUNDED_INTEREST_EDGE,
+            2 * UNBOUNDED_INTEREST_EDGE,
+        );
+        for interest_rect in [bounds, unbounded_interest_rect] {
+            assert!(anywhere.covers(CullReach::in_scroll_node(root, interest_rect)));
+        }
+        assert!(!anywhere.covers(CullReach::in_scroll_node(SpatialNodeIndex(2), bounds)));
     }
 
     #[test]

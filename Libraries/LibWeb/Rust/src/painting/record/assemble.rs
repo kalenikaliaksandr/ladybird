@@ -8,9 +8,12 @@
 //! damaged path are walked, clean children are copied from the published recording by range, and
 //! damaged producers are recorded again under explicit contexts. Nothing is validated on the
 //! way: when assembly starts, the damage set is complete by construction.
+//!
+//! A frame that rewrites the tree installs the cull summary of every scope it walks or records
+//! with its child list, and a scope it copies keeps the one it has.
 
 use super::PaintPhase;
-use super::order_tree::{ChildEntry, ChildKey, OutputSize, PaintOrderTree, ProducerKind, ScopeId};
+use super::order_tree::{ChildEntry, ChildKey, CullReach, OutputSize, PaintOrderTree, ProducerKind, ScopeId};
 use crate::css::style::fast_hash::FastMap;
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::paint_order_plan::{PaintOrderItem, PaintProducer, PaintScope, PaintScopeKind};
@@ -56,6 +59,37 @@ pub(crate) struct ProducerOutcome {
     pub live: bool,
     // Recorded again when the window gains or loses focus.
     pub reads_window_focus: bool,
+    // Where its commands land if a recording around the scroll positions may leave them out.
+    pub cull_reach: CullReach,
+}
+
+/// The reach of a scope's own producers while assembly goes through them. Only a producer that
+/// records says where it draws, so a copied producer whose output may be left out keeps the reach
+/// that the scope's own producers had.
+#[derive(Default)]
+struct OwnProducersReach {
+    recorded: CullReach,
+    copies_cullable_output: bool,
+}
+
+impl OwnProducersReach {
+    fn note_recorded(&mut self, (entry, reach): (ChildEntry, CullReach)) -> ChildEntry {
+        self.recorded = self.recorded.united(reach);
+        entry
+    }
+
+    fn note_copied(&mut self, entry: ChildEntry) -> ChildEntry {
+        self.copies_cullable_output |= entry.has_cullable_output();
+        entry
+    }
+
+    fn finish(self, published: CullReach) -> CullReach {
+        if self.copies_cullable_output {
+            self.recorded.united(published)
+        } else {
+            self.recorded
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +269,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).iter().copied().collect();
         let mut entries: SmallVec<[ChildEntry; 16]> = SmallVec::with_capacity(published.len());
         let mut total = OutputSize::default();
+        let mut own_producers = OwnProducersReach::default();
         let mut child_cursor = cursor;
         for entry in published {
             let published_output = entry.output();
@@ -251,11 +286,11 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 }
                 ChildKey::Producer(kind) => {
                     if self.producer_is_damaged(scope.owner, kind, damage, &entry) {
-                        self.record_producer(scope.owner, kind)
+                        own_producers.note_recorded(self.record_producer(scope.owner, kind))
                     } else {
                         self.copy(child_cursor, published_output);
                         self.host.observe(AssemblyEvent::ProducerCopied(scope.owner, kind));
-                        entry
+                        own_producers.note_copied(entry)
                     }
                 }
             };
@@ -264,7 +299,8 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             entries.push(assembled);
         }
         if self.rewrites_tree {
-            self.tree.set_children(id, &entries);
+            let own_producers = own_producers.finish(self.tree.cull_summary(id).own_producers);
+            self.tree.set_children(id, &entries, own_producers);
         }
         self.host.observe(AssemblyEvent::ScopeEnd(scope));
         ChildEntry::scope(id, total)
@@ -311,7 +347,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         if !plan.active {
             self.host
                 .observe(AssemblyEvent::ScopeBegin(scope, ScopeAction::Inactive));
-            self.install_replanned_children(id, &published, &matched, &[]);
+            self.install_replanned_children(id, &published, &matched, &[], CullReach::NOTHING);
             self.host.observe(AssemblyEvent::ScopeEnd(scope));
             return ChildEntry::scope(id, OutputSize::default());
         }
@@ -319,6 +355,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             .observe(AssemblyEvent::ScopeBegin(scope, ScopeAction::Replanned));
         let mut entries: SmallVec<[ChildEntry; 16]> = SmallVec::with_capacity(plan.items.len());
         let mut total = OutputSize::default();
+        let mut own_producers = OwnProducersReach::default();
         for item in plan.items {
             match item {
                 PaintOrderItem::Producer(producer) => {
@@ -328,13 +365,13 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                                 matched[index] = true;
                                 self.copy(published_cursors[index], published[index].output());
                                 self.host.observe(AssemblyEvent::ProducerCopied(scope.owner, kind));
-                                published[index]
+                                own_producers.note_copied(published[index])
                             }
                             Some(index) => {
                                 matched[index] = true;
-                                self.record_producer(scope.owner, kind)
+                                own_producers.note_recorded(self.record_producer(scope.owner, kind))
                             }
-                            None => self.record_producer(scope.owner, kind),
+                            None => own_producers.note_recorded(self.record_producer(scope.owner, kind)),
                         };
                         total.add(assembled.output());
                         entries.push(assembled);
@@ -370,7 +407,8 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 }
             }
         }
-        self.install_replanned_children(id, &published, &matched, &entries);
+        let own_producers = own_producers.finish(self.tree.cull_summary(id).own_producers);
+        self.install_replanned_children(id, &published, &matched, &entries, own_producers);
         self.host.observe(AssemblyEvent::ScopeEnd(scope));
         ChildEntry::scope(id, total)
     }
@@ -381,6 +419,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         published: &[ChildEntry],
         matched: &[bool],
         entries: &[ChildEntry],
+        own_producers: CullReach,
     ) {
         if !self.rewrites_tree {
             return;
@@ -390,7 +429,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 self.tree.detach_scope(child);
             }
         }
-        self.tree.set_children(id, entries);
+        self.tree.set_children(id, entries, own_producers);
     }
 
     fn record_scope_fresh(&mut self, id: ScopeId) -> ChildEntry {
@@ -400,7 +439,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         if !plan.active {
             self.host
                 .observe(AssemblyEvent::ScopeBegin(scope, ScopeAction::Inactive));
-            self.tree.set_children(id, &[]);
+            self.tree.set_children(id, &[], CullReach::NOTHING);
             self.host.observe(AssemblyEvent::ScopeEnd(scope));
             return ChildEntry::scope(id, OutputSize::default());
         }
@@ -408,11 +447,12 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             .observe(AssemblyEvent::ScopeBegin(scope, ScopeAction::Recorded));
         let mut entries: SmallVec<[ChildEntry; 16]> = SmallVec::with_capacity(plan.items.len());
         let mut total = OutputSize::default();
+        let mut own_producers = OwnProducersReach::default();
         for item in plan.items {
             match item {
                 PaintOrderItem::Producer(producer) => {
                     for kind in producer_kinds(producer) {
-                        let recorded = self.record_producer(scope.owner, kind);
+                        let recorded = own_producers.note_recorded(self.record_producer(scope.owner, kind));
                         total.add(recorded.output());
                         entries.push(recorded);
                     }
@@ -425,7 +465,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 }
             }
         }
-        self.tree.set_children(id, &entries);
+        self.tree.set_children(id, &entries, own_producers.recorded);
         self.host.observe(AssemblyEvent::ScopeEnd(scope));
         ChildEntry::scope(id, total)
     }
@@ -445,7 +485,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             match item {
                 PaintOrderItem::Producer(producer) => {
                     for kind in producer_kinds(producer) {
-                        total.add(self.record_producer(scope.owner, kind).output());
+                        total.add(self.record_producer(scope.owner, kind).0.output());
                     }
                 }
                 PaintOrderItem::Scope(child_scope) => total.add(self.record_scope_outside_tree(child_scope)),
@@ -455,19 +495,31 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         total
     }
 
-    fn record_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> ChildEntry {
+    // Returns the producer's entry with the reach of its output that a recording around the scroll
+    // positions may leave out.
+    fn record_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> (ChildEntry, CullReach) {
         self.flush_pending_copy();
         let before = self.host.output_position();
         let outcome = self.host.record_producer(owner, kind);
         let after = self.host.output_position();
+        let bytes = after.bytes - before.bytes;
+        // Without commands there is nothing to leave out, wherever the producer would draw.
+        let cull_reach = if bytes == 0 {
+            CullReach::NOTHING
+        } else {
+            outcome.cull_reach
+        };
         let output = OutputSize {
-            bytes: after.bytes - before.bytes,
+            bytes,
             hits: after.hits - before.hits,
             blocking_wheel_event_regions: after.blocking_wheel_event_regions - before.blocking_wheel_event_regions,
             live: outcome.live,
             reads_window_focus: outcome.reads_window_focus,
+            culled: false,
+            has_cullable_output: !cull_reach.is_nothing(),
+            culled_wheel_routing: false,
         };
-        ChildEntry::producer(kind, output)
+        (ChildEntry::producer(kind, output), cull_reach)
     }
 
     fn copy(&mut self, cursor: SourceCursor, output: OutputSize) {
@@ -511,12 +563,13 @@ mod tests {
     use crate::css::css_pixels::CssPixelRect;
     use crate::painting::border_radii::BorderRadii;
     use crate::painting::display_list::builder::RecordedDisplayList;
-    use crate::painting::display_list::commands::ContextRef;
+    use crate::painting::display_list::commands::{ContextRef, SpatialNodeIndex};
     use crate::painting::display_list::recorder::DisplayListRecorder;
     use crate::painting::force_dark::ForceDarkRole;
     use crate::painting::hit_test::{HitTestItem, HitTestItemKind};
     use crate::painting::paint_order_plan::StackingContextPaintPhase;
     use crate::painting::record::AssembledHitTestItems;
+    use crate::painting::record::order_tree::ScopeCullSummary;
     use libgfx_rust::{Color, IntRect};
     use std::collections::{HashMap, HashSet};
 
@@ -554,6 +607,7 @@ mod tests {
         version: u8,
         live: bool,
         blocking: u32,
+        cull_reach: CullReach,
     }
 
     fn content(rects: u32, hits: u32) -> Content {
@@ -563,8 +617,12 @@ mod tests {
             version: 1,
             live: false,
             blocking: 0,
+            cull_reach: CullReach::NOTHING,
         }
     }
+
+    const ROOT_SCROLL_NODE: SpatialNodeIndex = SpatialNodeIndex(1);
+    const NESTED_SCROLL_NODE: SpatialNodeIndex = SpatialNodeIndex(2);
 
     struct Frame {
         display_list: RecordedDisplayList,
@@ -702,6 +760,7 @@ mod tests {
             output.blocking_wheel_event_region_count += content.blocking;
             ProducerOutcome {
                 live: content.live,
+                cull_reach: content.cull_reach,
                 ..Default::default()
             }
         }
@@ -792,7 +851,8 @@ mod tests {
         frame
     }
 
-    fn assert_matches_from_scratch(host: &mut TestHost, assembled: &Frame) {
+    // Returns the tree of the recording from scratch.
+    fn assert_matches_from_scratch(host: &mut TestHost, assembled: &Frame) -> PaintOrderTree {
         let recorded = std::mem::take(&mut host.recorded);
         let events = std::mem::take(&mut host.events);
         let source = host.source.take();
@@ -818,6 +878,45 @@ mod tests {
             item_identities(&fresh.hit_test_items)
         );
         assert_eq!(assembled.root_output, fresh.root_output);
+        fresh_tree
+    }
+
+    // Every scope of an assembled tree reaches at least as far as the same scope recorded from scratch.
+    fn assert_cull_summaries_cover(assembled_tree: &PaintOrderTree, fresh_tree: &PaintOrderTree) {
+        let assembled = assembled_tree.structure();
+        let fresh = fresh_tree.structure();
+        assert_eq!(assembled.len(), fresh.len());
+        for ((_, scope, _, summary), (_, fresh_scope, _, fresh_summary)) in assembled.iter().zip(&fresh) {
+            assert_eq!(scope, fresh_scope);
+            assert!(
+                summary.own_producers.covers(fresh_summary.own_producers)
+                    && summary.subtree.covers(fresh_summary.subtree),
+                "{scope:?} keeps {summary:?}, which does not cover {fresh_summary:?}"
+            );
+        }
+    }
+
+    // Card `card` draws in a band of its own in the root scroll node.
+    fn card_reach(card: u32, kind: ProducerKind, offset: i32) -> CullReach {
+        let band = IntRect::new(0, card as i32 * 1000 + offset, 800, 100);
+        let bounds = match kind {
+            ProducerKind::DrawForeground => band.shrunken(10, 10, 10, 10),
+            _ => band,
+        };
+        CullReach::in_scroll_node(ROOT_SCROLL_NODE, bounds)
+    }
+
+    fn producer_entry(tree: &PaintOrderTree, scope: ScopeId, kind: ProducerKind) -> ChildEntry {
+        *tree
+            .children(scope)
+            .iter()
+            .find(|entry| entry.key() == ChildKey::Producer(kind))
+            .unwrap()
+    }
+
+    fn card_scope_id(tree: &PaintOrderTree, card: u32) -> ScopeId {
+        let parent = tree.published_scope(foreground(row(0)), tree.root()).unwrap();
+        tree.published_scope(foreground(row(card)), parent).unwrap()
     }
 
     // A viewport context (row 0) with a background and a foreground scope listing three
@@ -845,9 +944,23 @@ mod tests {
                 true,
                 &[phase(PaintPhase::Background), phase(PaintPhase::Foreground)],
             );
-            host.produce(row(card), ProducerKind::DrawBackground, content(1, 0));
+            host.produce(
+                row(card),
+                ProducerKind::DrawBackground,
+                Content {
+                    cull_reach: card_reach(card, ProducerKind::DrawBackground, 0),
+                    ..content(1, 0)
+                },
+            );
             host.produce(row(card), ProducerKind::HitForeground, content(0, 2));
-            host.produce(row(card), ProducerKind::DrawForeground, content(card, 0));
+            host.produce(
+                row(card),
+                ProducerKind::DrawForeground,
+                Content {
+                    cull_reach: card_reach(card, ProducerKind::DrawForeground, 0),
+                    ..content(card, 0)
+                },
+            );
         }
         host
     }
@@ -1303,6 +1416,175 @@ mod tests {
         assert_eq!(tree.root_entry().output().blocking_wheel_event_regions, 1);
     }
 
+    fn cards_reach(cards: &[(u32, i32)]) -> CullReach {
+        cards.iter().fold(CullReach::NOTHING, |reach, (card, offset)| {
+            reach
+                .united(card_reach(*card, ProducerKind::DrawBackground, *offset))
+                .united(card_reach(*card, ProducerKind::DrawForeground, *offset))
+        })
+    }
+
+    fn moves_card(host: &mut TestHost, card: u32, kind: ProducerKind, offset: i32) {
+        let content = host.contents.get_mut(&(row(card), kind)).unwrap();
+        content.version += 1;
+        content.cull_reach = card_reach(card, kind, offset);
+    }
+
+    #[test]
+    fn scopes_summarize_the_reach_of_their_recorded_producers_and_keep_it_while_copied() {
+        let mut host = cards_host();
+        let mut tree = PaintOrderTree::default();
+        let first = record_frame(&mut host, &mut tree);
+
+        let parent = tree.published_scope(foreground(row(0)), tree.root()).unwrap();
+        for card in 1..=3 {
+            let own = cards_reach(&[(card, 0)]);
+            assert_eq!(
+                tree.cull_summary(card_scope_id(&tree, card)),
+                ScopeCullSummary {
+                    own_producers: own,
+                    subtree: own,
+                }
+            );
+        }
+        let every_card = cards_reach(&[(1, 0), (2, 0), (3, 0)]);
+        assert_eq!(
+            tree.cull_summary(parent),
+            ScopeCullSummary {
+                own_producers: CullReach::NOTHING,
+                subtree: every_card,
+            }
+        );
+        assert_eq!(tree.cull_summary(tree.root()).subtree, every_card);
+        // Only the commands of the cards may be left out, not the viewport background or the hit-test items.
+        let cullable_kinds: Vec<ProducerKind> = tree
+            .children(card_scope_id(&tree, 1))
+            .iter()
+            .filter(|entry| entry.has_cullable_output())
+            .filter_map(|entry| match entry.key() {
+                ChildKey::Producer(kind) => Some(kind),
+                ChildKey::Scope(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            cullable_kinds,
+            vec![ProducerKind::DrawBackground, ProducerKind::DrawForeground]
+        );
+        assert!(!producer_entry(&tree, tree.root(), ProducerKind::DrawBackground).has_cullable_output());
+        assert!(tree.root_entry().has_cullable_output());
+        host.source = Some(first);
+        host.clear_damage();
+
+        // Card 2's foreground moves down; its background is copied, so card 2 keeps reaching where
+        // its foreground was as well, and the copied cards keep their summaries.
+        let summary_of_card_1 = tree.cull_summary(card_scope_id(&tree, 1));
+        moves_card(&mut host, 2, ProducerKind::DrawForeground, 300);
+        host.push(row(2), PaintDamage::DRAW_FOREGROUND);
+        host.push(row(0), PaintDamage::DESCENDANT_READERS);
+        let second = record_next_frame(&mut host, &mut tree);
+        assert_eq!(host.recorded, vec![(row(2), ProducerKind::DrawForeground)]);
+        assert_cull_summaries_cover(&tree, &assert_matches_from_scratch(&mut host, &second));
+        let moved_foreground = card_reach(2, ProducerKind::DrawForeground, 300);
+        assert_eq!(
+            tree.cull_summary(card_scope_id(&tree, 2)).own_producers,
+            cards_reach(&[(2, 0)]).united(moved_foreground)
+        );
+        assert_eq!(tree.cull_summary(card_scope_id(&tree, 1)), summary_of_card_1);
+        assert_eq!(tree.cull_summary(parent).subtree, every_card.united(moved_foreground));
+        host.clear_damage();
+
+        // Once every producer of card 2 records again, its summary is exact again.
+        moves_card(&mut host, 2, ProducerKind::DrawBackground, 300);
+        host.push(row(2), PaintDamage::DRAW_BACKGROUND | PaintDamage::DRAW_FOREGROUND);
+        host.push(row(0), PaintDamage::DESCENDANT_READERS);
+        let third = record_next_frame(&mut host, &mut tree);
+        assert_cull_summaries_cover(&tree, &assert_matches_from_scratch(&mut host, &third));
+        assert_eq!(
+            tree.cull_summary(card_scope_id(&tree, 2)).own_producers,
+            cards_reach(&[(2, 300)])
+        );
+        host.clear_damage();
+
+        // A retired card no longer counts toward its parent.
+        host.plan(
+            foreground(row(0)),
+            true,
+            &[child(foreground(row(1))), child(foreground(row(2)))],
+        );
+        host.push(row(0), PaintDamage::ORDER);
+        let fourth = record_next_frame(&mut host, &mut tree);
+        assert_cull_summaries_cover(&tree, &assert_matches_from_scratch(&mut host, &fourth));
+        assert_eq!(tree.cull_summary(parent).subtree, cards_reach(&[(1, 0), (2, 300)]));
+    }
+
+    #[test]
+    fn a_producer_without_commands_has_nothing_to_leave_out_and_an_unplaced_one_may_land_anywhere() {
+        let mut host = cards_host();
+        host.contents
+            .get_mut(&(row(1), ProducerKind::DrawForeground))
+            .unwrap()
+            .rects = 0;
+        host.contents
+            .get_mut(&(row(2), ProducerKind::DrawForeground))
+            .unwrap()
+            .cull_reach = CullReach::UNPLACED;
+        let mut tree = PaintOrderTree::default();
+        record_frame(&mut host, &mut tree);
+
+        let card_1 = card_scope_id(&tree, 1);
+        assert!(!producer_entry(&tree, card_1, ProducerKind::DrawForeground).has_cullable_output());
+        assert_eq!(
+            tree.cull_summary(card_1).own_producers,
+            card_reach(1, ProducerKind::DrawBackground, 0)
+        );
+        assert_eq!(
+            tree.cull_summary(card_scope_id(&tree, 2)).own_producers,
+            CullReach::UNPLACED
+        );
+        assert_eq!(tree.cull_summary(tree.root()).subtree, CullReach::UNPLACED);
+    }
+
+    #[test]
+    fn content_in_two_scroll_nodes_keeps_bounds_only_in_the_scopes_inside_one() {
+        let mut host = cards_host();
+        host.plan(
+            foreground(row(3)),
+            true,
+            &[phase(PaintPhase::Background), child(foreground(row(5)))],
+        );
+        host.plan(foreground(row(5)), true, &[phase(PaintPhase::Foreground)]);
+        let nested_reach = CullReach::in_scroll_node(NESTED_SCROLL_NODE, IntRect::new(0, 3000, 400, 50));
+        host.produce(
+            row(5),
+            ProducerKind::DrawForeground,
+            Content {
+                cull_reach: nested_reach,
+                ..content(1, 0)
+            },
+        );
+        let mut tree = PaintOrderTree::default();
+        record_frame(&mut host, &mut tree);
+
+        let card_3 = card_scope_id(&tree, 3);
+        let nested = tree.published_scope(foreground(row(5)), card_3).unwrap();
+        assert_eq!(tree.cull_summary(nested).subtree, nested_reach);
+        let card_3_summary = tree.cull_summary(card_3);
+        assert_eq!(
+            card_3_summary.own_producers,
+            card_reach(3, ProducerKind::DrawBackground, 0)
+        );
+        assert_eq!(
+            card_3_summary.subtree,
+            card_3_summary.own_producers.united(nested_reach)
+        );
+        assert!(card_3_summary.subtree.covers(nested_reach));
+        assert!(
+            !card_3_summary
+                .subtree
+                .covers(CullReach::in_scroll_node(SpatialNodeIndex(3), IntRect::new(0, 0, 1, 1)))
+        );
+    }
+
     struct Lcg(u32);
 
     impl Lcg {
@@ -1351,6 +1633,38 @@ mod tests {
         content.version = content.version.wrapping_add(1).max(1);
     }
 
+    // The cards draw in the root scroll node and the contexts nested in them in a nested one, where
+    // their content says; card 3's svg may draw anywhere in the root scroll node, and card 4's
+    // foreground records without being placed.
+    fn synthetic_cull_reach(row_index: u32, kind: ProducerKind, content: &Content) -> CullReach {
+        match (row_index, kind) {
+            (3, ProducerKind::Svg) => {
+                CullReach::in_scroll_node(ROOT_SCROLL_NODE, IntRect::new(-(1 << 24), -(1 << 24), 1 << 25, 1 << 25))
+            }
+            (4, ProducerKind::DrawForeground) => CullReach::UNPLACED,
+            (index, _) => CullReach::in_scroll_node(
+                if index >= 10 {
+                    NESTED_SCROLL_NODE
+                } else {
+                    ROOT_SCROLL_NODE
+                },
+                IntRect::new(
+                    index as i32 * 100,
+                    i32::from(content.version) * 10,
+                    50,
+                    content.rects as i32 + 1,
+                ),
+            ),
+        }
+    }
+
+    // A producer's reach changes only with its content, which pushes damage for it.
+    fn update_synthetic_cull_reaches(host: &mut TestHost) {
+        for ((owner, kind), content) in host.contents.iter_mut() {
+            content.cull_reach = synthetic_cull_reach(owner.slot_index(), *kind, content);
+        }
+    }
+
     // Six card contexts under the viewport foreground. Cards 2 and 5 nest a context of their
     // own; card 3 paints an svg whose output depends on the foreground scope nested below it.
     fn random_tree_host() -> TestHost {
@@ -1395,6 +1709,7 @@ mod tests {
             }
             host.plan(foreground(row(card)), true, &foreground_items);
         }
+        update_synthetic_cull_reaches(&mut host);
         host
     }
 
@@ -1491,6 +1806,8 @@ mod tests {
                 }
             }
 
+            update_synthetic_cull_reaches(&mut host);
+
             // Hit tests between two published frames record frames that publish nothing.
             let published_structure = tree.structure();
             for _ in 0..step % 3 {
@@ -1500,7 +1817,7 @@ mod tests {
             }
 
             let frame = record_next_frame(&mut host, &mut tree);
-            assert_matches_from_scratch(&mut host, &frame);
+            assert_cull_summaries_cover(&tree, &assert_matches_from_scratch(&mut host, &frame));
             host.clear_damage();
             assert!(tree.scope_count() <= 32, "retired scopes are freed at once");
         }

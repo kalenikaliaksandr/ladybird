@@ -10,7 +10,8 @@
 //! host with them.
 
 use super::assemble::{AssemblyEvent, AssemblyHost, OutputPosition, ProducerOutcome, ScopeAction, ScopePlan};
-use super::order_tree::ProducerKind;
+use super::cull::ProducerPlacement;
+use super::order_tree::{CullReach, ProducerKind};
 use super::trace::{Action, Observer, Operation};
 use super::{PaintPhase, PaintRecorder};
 use crate::css::css_pixels::CssPixelRect;
@@ -193,6 +194,7 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
                 .observe(|log| log.leaf(Operation::Producer(owner, kind), Action::Skip, true));
             return ProducerOutcome::default();
         }
+        let placement = self.placement_of_producer(owner, kind);
         self.live_producer = false;
         self.producer_reads_window_focus.set(false);
         let start = self.output_position();
@@ -231,9 +233,10 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
         let outcome = ProducerOutcome {
             live: self.live_producer,
             reads_window_focus: self.producer_reads_window_focus.get(),
+            cull_reach: placement.map_or(CullReach::UNPLACED, ProducerPlacement::cull_reach),
         };
-        if self.cull_spaces.is_some() {
-            self.verify_recorded_producer_placement(owner, kind, start.bytes as usize..end.bytes as usize);
+        if let Some(placement) = placement {
+            self.verify_recorded_producer_placement(owner, kind, placement, start.bytes as usize..end.bytes as usize);
         }
         outcome
     }
