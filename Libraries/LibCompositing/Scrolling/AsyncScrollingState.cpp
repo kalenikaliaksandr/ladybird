@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/HashMap.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <LibCompositing/DisplayList/DisplayList.h>
@@ -212,6 +213,21 @@ AsyncScrollingState async_scrolling_state_from_display_list(Compositing::Display
         }
     }
 
+    if (auto const& recorded_interest = display_list.recorded_interest(); recorded_interest.has_value()) {
+        async_scrolling_state.answered_refresh_request_id = recorded_interest->answered_refresh_request_id;
+        async_scrolling_state.leaves_out_wheel_routing_outside_recorded_rects = recorded_interest->leaves_out_wheel_routing_outside_recorded_rects;
+
+        HashMap<Web::AsyncScrollNodeStableID, AsyncScrollNode*> scroll_nodes_of_list_document_by_stable_id;
+        for (auto& scroll_node : async_scrolling_state.scroll_nodes) {
+            if (async_scrolling_state.document_id == scroll_node.node_id.document_id)
+                scroll_nodes_of_list_document_by_stable_id.set(scroll_node.stable_node_id, &scroll_node);
+        }
+        for (auto const& recorded_rect : recorded_interest->scroll_node_rects) {
+            if (auto scroll_node = scroll_nodes_of_list_document_by_stable_id.get(recorded_rect.scroll_node); scroll_node.has_value())
+                (*scroll_node)->recorded_content_rect = recorded_rect.rect;
+        }
+    }
+
     return async_scrolling_state;
 }
 
@@ -253,6 +269,16 @@ static JsonObject rect_to_json(Web::CSSPixelRect const& rect)
     return object;
 }
 
+static JsonObject device_rect_in_css_pixels_to_json(Gfx::IntRect const& rect, double device_pixels_per_css_pixel)
+{
+    JsonObject object;
+    object.set("x"sv, rect.x() / device_pixels_per_css_pixel);
+    object.set("y"sv, rect.y() / device_pixels_per_css_pixel);
+    object.set("width"sv, rect.width() / device_pixels_per_css_pixel);
+    object.set("height"sv, rect.height() / device_pixels_per_css_pixel);
+    return object;
+}
+
 static JsonObject point_to_json(Web::CSSPixelPoint const& point)
 {
     JsonObject object;
@@ -271,6 +297,8 @@ JsonObject async_scrolling_state_to_json(AsyncScrollingState const& state)
         node.set("parentDocumentID"sv, scroll_node.parent_node_id.has_value() ? scroll_node.parent_node_id->document_id.value() : 0);
         node.set("parentScrollNodeIndex"sv, scroll_node.parent_node_id.has_value() ? scroll_node.parent_node_id->scroll_node_index.value() : 0);
         node.set("isViewport"sv, scroll_node.is_viewport);
+        if (scroll_node.recorded_content_rect.has_value())
+            node.set("recordedRect"sv, device_rect_in_css_pixels_to_json(*scroll_node.recorded_content_rect, state.device_pixels_per_css_pixel));
         scroll_nodes.must_append(move(node));
     }
 

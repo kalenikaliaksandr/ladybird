@@ -23,6 +23,7 @@
 #include <LibGfx/Color.h>
 #include <LibGfx/Forward.h>
 #include <LibIPC/Forward.h>
+#include <LibWebCommon/Page/AsyncScrollNodeStableID.h>
 
 namespace Compositing {
 
@@ -52,12 +53,25 @@ public:
         Compositing::KeyboardScrollState keyboard_scroll_state {};
     };
 
+    struct RecordedInterest {
+        // Every scroll node whose content the list records only part of, with the part it records. A side at the end of
+        // a node's scroll range is unbounded, 1 << 24 away from the origin. Any other scroll node is recorded whole.
+        Vector<Web::ScrollNodeContentRect> scroll_node_rects;
+        // The compositor's request to record around new rects that the list answers, or 0.
+        u64 answered_refresh_request_id { 0 };
+        // Whether the list leaves out the wheel hit test targets, wheel event regions and scroll chaining barriers
+        // outside the rects.
+        bool leaves_out_wheel_routing_outside_recorded_rects { false };
+    };
+
     // Everything about a list that travels alongside its tape when it is sent to the Compositor.
     struct Properties {
         u64 id { 0 };
         u64 compatible_visual_context_tree_structural_epoch { 0 };
         Optional<Gfx::Color> surface_clear_color;
         Optional<AsyncScrollingMetadata> async_scrolling_metadata;
+        // Empty when the list records the whole document.
+        Optional<RecordedInterest> recorded_interest;
     };
 
     // An empty list.
@@ -91,6 +105,7 @@ public:
     Optional<Gfx::Color> surface_clear_color() const { return m_surface_clear_color; }
     void set_async_scrolling_metadata(AsyncScrollingMetadata metadata) { m_async_scrolling_metadata = metadata; }
     Optional<AsyncScrollingMetadata> const& async_scrolling_metadata() const { return m_async_scrolling_metadata; }
+    Optional<RecordedInterest> const& recorded_interest() const { return m_recorded_interest; }
 
     // The ids of the resources the list's commands reference, including the commands nested in others, each once.
     struct ReferencedResourceIds {
@@ -118,7 +133,7 @@ private:
     // Takes over the storage of a tape that came from another process and passed its checks.
     static NonnullRefPtr<DisplayList> adopt_received_storage(Properties, void const* storage);
 
-    DisplayList(u64 compatible_visual_context_tree_structural_epoch, u64 id, void const* storage, Optional<Gfx::Color> surface_clear_color, Optional<AsyncScrollingMetadata>);
+    DisplayList(u64 compatible_visual_context_tree_structural_epoch, u64 id, void const* storage, Optional<Gfx::Color> surface_clear_color, Optional<AsyncScrollingMetadata>, Optional<RecordedInterest>);
 
     u64 m_compatible_visual_context_tree_structural_epoch { 0 };
     u64 m_id { 0 };
@@ -126,6 +141,7 @@ private:
     void const* m_storage { nullptr };
     Optional<Gfx::Color> m_surface_clear_color;
     Optional<AsyncScrollingMetadata> m_async_scrolling_metadata;
+    Optional<RecordedInterest> m_recorded_interest;
 
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);
@@ -143,6 +159,11 @@ template<>
 COMPOSITING_API ErrorOr<void> encode(Encoder&, Compositing::DisplayList::AsyncScrollingMetadata const&);
 template<>
 COMPOSITING_API ErrorOr<Compositing::DisplayList::AsyncScrollingMetadata> decode(Decoder&);
+
+template<>
+COMPOSITING_API ErrorOr<void> encode(Encoder&, Compositing::DisplayList::RecordedInterest const&);
+template<>
+COMPOSITING_API ErrorOr<Compositing::DisplayList::RecordedInterest> decode(Decoder&);
 
 template<>
 COMPOSITING_API ErrorOr<void> encode(Encoder&, Compositing::DisplayList::Properties const&);

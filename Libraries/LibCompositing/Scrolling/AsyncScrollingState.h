@@ -86,6 +86,9 @@ struct AsyncScrollNode {
     // Whether a touchpad may pull the scroller past the edges of its scroll range.
     bool shows_overscroll_effect_horizontally { true };
     bool shows_overscroll_effect_vertically { true };
+    // What the display list records of the scroller's content, in the device pixels of that content at scroll offset
+    // zero. Empty when it records all of it.
+    Optional<Gfx::IntRect> recorded_content_rect {};
 };
 
 // A region with a non-passive wheel listener. Wheels inside it must stay on the main thread because script may cancel.
@@ -185,6 +188,12 @@ struct AsyncScrollingState {
     bool viewport_keeps_horizontal_scrolls { false };
     bool viewport_keeps_vertical_scrolls { false };
     double device_pixels_per_css_pixel { 1.0 };
+
+    // The compositor's request to record around new rects that the display list answers, or 0.
+    u64 answered_refresh_request_id { 0 };
+    // Whether the display list leaves out the wheel hit test targets, wheel event regions and scroll chaining barriers
+    // outside the recorded content rects of the scroll nodes.
+    bool leaves_out_wheel_routing_outside_recorded_rects { false };
 };
 
 enum class WheelRoutingAdmission {

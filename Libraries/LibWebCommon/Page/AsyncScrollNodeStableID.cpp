@@ -47,6 +47,23 @@ ErrorOr<Web::CompositorScrollOffset> decode(Decoder& decoder)
 }
 
 template<>
+ErrorOr<void> encode(Encoder& encoder, Web::ScrollNodeContentRect const& content_rect)
+{
+    TRY(encoder.encode(content_rect.scroll_node));
+    TRY(encoder.encode(content_rect.rect));
+    return {};
+}
+
+template<>
+ErrorOr<Web::ScrollNodeContentRect> decode(Decoder& decoder)
+{
+    return Web::ScrollNodeContentRect {
+        .scroll_node = TRY(decoder.decode<Web::AsyncScrollNodeStableID>()),
+        .rect = TRY(decoder.decode<Gfx::IntRect>()),
+    };
+}
+
+template<>
 ErrorOr<void> encode(Encoder& encoder, Web::ScrollbarDraggedByCompositor const& scrollbar)
 {
     TRY(encoder.encode(scrollbar.context_id));

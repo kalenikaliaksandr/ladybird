@@ -9,6 +9,7 @@
 #include <AK/HashFunctions.h>
 #include <AK/Traits.h>
 #include <AK/Types.h>
+#include <LibGfx/Rect.h>
 #include <LibIPC/Forward.h>
 #include <LibWebCommon/Export.h>
 #include <LibWebCommon/Forward.h>
@@ -39,6 +40,14 @@ struct CompositorScrollOffset {
     CSSPixelPoint offset;
 
     bool operator==(CompositorScrollOffset const&) const = default;
+};
+
+// A rect of a scroll node's content, in the device pixels of that content at scroll offset zero.
+struct ScrollNodeContentRect {
+    AsyncScrollNodeStableID scroll_node;
+    Gfx::IntRect rect;
+
+    bool operator==(ScrollNodeContentRect const&) const = default;
 };
 
 // The compositor drags the thumb of a scrollbar the display list paints, while the mouse events of that drag still
@@ -83,6 +92,11 @@ template<>
 WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::CompositorScrollOffset const&);
 template<>
 WEBCOMMON_API ErrorOr<Web::CompositorScrollOffset> decode(Decoder&);
+
+template<>
+WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::ScrollNodeContentRect const&);
+template<>
+WEBCOMMON_API ErrorOr<Web::ScrollNodeContentRect> decode(Decoder&);
 
 template<>
 WEBCOMMON_API ErrorOr<void> encode(Encoder&, Web::ScrollbarDraggedByCompositor const&);
