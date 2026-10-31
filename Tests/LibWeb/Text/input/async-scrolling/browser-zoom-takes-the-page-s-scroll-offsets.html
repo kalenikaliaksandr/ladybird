@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 60000px; }
+</style>
+<script>
+// The compositor holds scroll offsets in the device pixels of its display list, which name other places in the page
+// once the browser zooms. It takes the offsets of the page's frame instead, so a wheel scrolls on from where the page
+// is.
+promiseTest(async () => {
+    try {
+        await animationFrame();
+        await animationFrame();
+        await scrollSettled(document, () => internals.wheelThroughUIProcess(100, 100, 0, 9000, true));
+        const scrollYBeforeZooming = window.scrollY;
+        const scale = internals.compositorScrollState().devicePixelsPerCssPixel;
+
+        internals.setBrowserZoom(2);
+        await waitForCondition(() => internals.compositorScrollState().devicePixelsPerCssPixel === 2 * scale);
+        await scrollSettled(document, () => internals.wheelThroughUIProcess(100, 100, 0, 100));
+        println(`scrolled on from where the page was: ${window.scrollY > scrollYBeforeZooming && window.scrollY < scrollYBeforeZooming + 1000}`);
+    } finally {
+        internals.setBrowserZoom(1);
+    }
+});
+</script>

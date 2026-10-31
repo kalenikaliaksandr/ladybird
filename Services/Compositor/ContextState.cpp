@@ -159,6 +159,10 @@ void ContextState::install_display_list_update(
 
     auto async_scrolling_state = Compositing::async_scrolling_state_from_display_list(*m_scene.display_list());
     auto async_scrolling_viewport_rect = async_scrolling_state.viewport_rect;
+    // Scroll offsets are device pixels of the scale the display list was recorded at, so at another scale the offsets
+    // this context held name other places in the content, and those of the main thread's frame take over.
+    if (async_scrolling_state.device_pixels_per_css_pixel != m_async_scroll_tree.device_pixels_per_css_pixel())
+        scroll_offsets_of_known_nodes.clear();
     m_wheel_gesture_routing.did_install_scrolling_state(async_scrolling_state);
     // The visual viewport of another document is where that document's visual context tree has it.
     if (m_scene.has_async_visual_viewport_transform() && async_scrolling_state.document_id != m_visual_viewport_document_id) {
