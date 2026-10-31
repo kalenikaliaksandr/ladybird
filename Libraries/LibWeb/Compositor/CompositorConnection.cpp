@@ -499,12 +499,12 @@ Compositing::AsyncScrollEnqueueResult CompositorConnection::async_scroll_by(Web:
     return response->take_result();
 }
 
-String CompositorConnection::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID stretched_scroller)
+String CompositorConnection::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID reported_scroller)
 {
     if (!can_send_message_to_compositor())
         return {};
 
-    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::ScrollStateForTesting>(context_id, stretched_scroller);
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::ScrollStateForTesting>(context_id, reported_scroller);
     if (!response) {
         did_lose_compositor();
         return {};

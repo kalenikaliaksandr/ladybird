@@ -180,8 +180,8 @@ void ContextState::install_display_list_update(
     m_scroll_snap_controller.did_install_scrolling_state(m_async_scroll_tree);
     if (auto viewport_scroll_offset = keep_scroll_offsets_of_known_nodes(scroll_offsets_of_known_nodes); viewport_scroll_offset.has_value())
         async_scrolling_viewport_rect.set_location(viewport_scroll_offset->to_type<int>());
-    rebuild_wheel_hit_test_targets();
     m_async_scrolling_viewport_rect = async_scrolling_viewport_rect;
+    rebuild_wheel_hit_test_targets();
     m_has_async_scrolling_state = true;
     if (auto const& metadata = m_scene.display_list()->async_scrolling_metadata(); metadata.has_value())
         adopt_keyboard_scroll_state(metadata->keyboard_scroll_state);
@@ -1901,7 +1901,7 @@ Compositing::FirstWheelStepRouteForTesting ContextState::route_first_wheel_step_
     return { m_async_scroll_tree.route_first_wheel_step(m_wheel_gesture_routing.admission(), m_scene.visual_context_tree_for_compositing(), position, delta, nested_context_regions), document_id };
 }
 
-String ContextState::scroll_state_for_testing(Web::AsyncScrollNodeStableID stretched_scroller) const
+String ContextState::scroll_state_for_testing(Web::AsyncScrollNodeStableID reported_scroller) const
 {
     auto const& display_list = m_scene.display_list();
     auto scroll_state = Compositing::async_scrolling_state_to_json(display_list ? Compositing::async_scrolling_state_from_display_list(*display_list) : Compositing::AsyncScrollingState {});
@@ -1912,11 +1912,27 @@ String ContextState::scroll_state_for_testing(Web::AsyncScrollNodeStableID stret
         : Web::input_routing_decision_name(Compositing::input_routing_decision_for_wheel_step_not_admitted_by(admission));
     scroll_state.set("wheelRoutingAdmission"sv, admission_name);
 
-    auto stretch = m_elastic_overscroll_controller.stretch_of(stretched_scroller).scaled(1.0f / static_cast<float>(m_async_scroll_tree.device_pixels_per_css_pixel()));
+    auto stretch = m_elastic_overscroll_controller.stretch_of(reported_scroller).scaled(1.0f / static_cast<float>(m_async_scroll_tree.device_pixels_per_css_pixel()));
     JsonObject stretch_object;
     stretch_object.set("x"sv, stretch.x());
     stretch_object.set("y"sv, stretch.y());
     scroll_state.set("stretch"sv, move(stretch_object));
+
+    JsonValue visible_content_rect;
+    Optional<Compositing::ScrollNodeVisibility> visibility;
+    if (auto reported_scroll_node_id = m_async_scroll_tree.scroll_node_id_for_stable_id(reported_scroller); reported_scroll_node_id.has_value() && m_scene.visual_context_tree().has_value())
+        visibility = m_async_scroll_tree.visibility_of_scroll_node_for_testing(*reported_scroll_node_id, m_scene.current_visual_context_tree(), m_async_scrolling_viewport_rect.size());
+    if (visibility.has_value()) {
+        auto device_pixels_per_css_pixel = m_async_scroll_tree.device_pixels_per_css_pixel();
+        JsonObject rect_object;
+        rect_object.set("x"sv, visibility->in_content.x() / device_pixels_per_css_pixel);
+        rect_object.set("y"sv, visibility->in_content.y() / device_pixels_per_css_pixel);
+        rect_object.set("width"sv, visibility->in_content.width() / device_pixels_per_css_pixel);
+        rect_object.set("height"sv, visibility->in_content.height() / device_pixels_per_css_pixel);
+        visible_content_rect = move(rect_object);
+    }
+    scroll_state.set("visibleContentRect"sv, move(visible_content_rect));
+
     scroll_state.set("visualViewportScale"sv, m_scene.visual_viewport_scale().value_or(1.0f));
     return scroll_state.serialized();
 }
@@ -2498,7 +2514,8 @@ void ContextState::rebuild_wheel_hit_test_targets()
     m_async_scroll_tree.rebuild_wheel_hit_test_targets(
         m_scene.display_list(),
         &m_scene.visual_context_tree_for_compositing(),
-        m_scroll_state_snapshot);
+        m_scroll_state_snapshot,
+        m_async_scrolling_viewport_rect.size());
 }
 
 bool ContextState::visual_animations_need_frame()

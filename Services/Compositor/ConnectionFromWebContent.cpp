@@ -532,11 +532,11 @@ void ConnectionFromWebContent::apply_scroll_requests(Web::CompositorContextId co
     m_compositor_state->apply_scroll_requests(context_id, scroll_requests);
 }
 
-Messages::CompositorWebContentServer::ScrollStateForTestingResponse ConnectionFromWebContent::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID stretched_scroller)
+Messages::CompositorWebContentServer::ScrollStateForTestingResponse ConnectionFromWebContent::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID reported_scroller)
 {
     if (!context_is_owned_by_this_connection(context_id))
         return String {};
-    return m_compositor_state->scroll_state_for_testing(context_id, stretched_scroller);
+    return m_compositor_state->scroll_state_for_testing(context_id, reported_scroller);
 }
 
 Messages::CompositorWebContentServer::RouteFirstWheelStepForTestingResponse ConnectionFromWebContent::route_first_wheel_step_for_testing(Web::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels)

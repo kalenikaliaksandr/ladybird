@@ -67,9 +67,9 @@ Compositing::AsyncScrollEnqueueResult CompositorContextHandle::async_scroll_by(U
     return m_host.async_scroll_by(m_context_id, expected_document_id, position, delta_in_device_pixels, viewport_rect, wheel_delta_precision, scroll_gesture_phase, modifiers, operation_tracking, wheel_step_dispatch, input_event_id);
 }
 
-String CompositorContextHandle::scroll_state_for_testing(Web::AsyncScrollNodeStableID stretched_scroller)
+String CompositorContextHandle::scroll_state_for_testing(Web::AsyncScrollNodeStableID reported_scroller)
 {
-    return m_host.scroll_state_for_testing(m_context_id, stretched_scroller);
+    return m_host.scroll_state_for_testing(m_context_id, reported_scroller);
 }
 
 void CompositorContextHandle::synchronize_for_testing()
@@ -470,10 +470,10 @@ Compositing::AsyncScrollEnqueueResult CompositorHost::async_scroll_by(Web::Compo
     return {};
 }
 
-String CompositorHost::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID stretched_scroller)
+String CompositorHost::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID reported_scroller)
 {
     if (auto* connection = compositor_connection())
-        return connection->scroll_state_for_testing(context_id, stretched_scroller);
+        return connection->scroll_state_for_testing(context_id, reported_scroller);
     return {};
 }
 

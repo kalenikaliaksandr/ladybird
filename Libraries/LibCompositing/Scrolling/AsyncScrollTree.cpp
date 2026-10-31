@@ -6,8 +6,13 @@
 
 #include <LibCompositing/DisplayList/DisplayList.h>
 #include <LibCompositing/Scrolling/AsyncScrollTree.h>
+#include <LibGfx/AffineTransform.h>
+#include <LibGfx/Matrix4x4.h>
 
+#include <AK/AnyOf.h>
 #include <AK/Debug.h>
+#include <AK/HashMap.h>
+#include <AK/Math.h>
 
 namespace Compositing {
 
@@ -31,6 +36,8 @@ void AsyncScrollTree::set_state(AsyncScrollingState&& state)
     m_cached_blocking_wheel_event_targets.clear();
     m_cached_scroll_chaining_barriers.clear();
     m_visual_context_tree_structural_epoch.clear();
+    m_scroll_node_visibilities.clear();
+    m_records_part_of_some_scroll_node = any_of(m_scroll_nodes, [](auto const& node) { return node.recorded_content_rect.has_value(); });
 }
 
 Web::InputRoutingDecision input_routing_decision_for_first_wheel_step(WheelHitTestOutcome outcome)
@@ -278,7 +285,115 @@ Optional<WheelScrollTarget> AsyncScrollTree::select_wheel_scroll_target(AsyncScr
     return {};
 }
 
-void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::DisplayList const> const& display_list, Compositing::AccumulatedVisualContextTree const* visual_context_tree, Compositing::ScrollStateSnapshot const& scroll_state_snapshot)
+static bool rect_is_finite(Gfx::FloatRect const& rect)
+{
+    return isfinite(rect.x()) && isfinite(rect.y()) && isfinite(rect.width()) && isfinite(rect.height());
+}
+
+// Scrollports from WebContent and the offsets it scrolls them to can lie anywhere, so the edges are kept where the
+// width and height of the rect cannot overflow.
+static Gfx::IntRect enclosing_int_rect_without_overflow(Gfx::FloatRect const& rect)
+{
+    static constexpr float edge_limit = 1 << 29;
+    auto clamped_edge = [](float edge) { return isnan(edge) ? 0 : static_cast<int>(clamp(edge, -edge_limit, edge_limit)); };
+    return Gfx::IntRect::from_two_points(
+        { clamped_edge(floorf(rect.left())), clamped_edge(floorf(rect.top())) },
+        { clamped_edge(ceilf(rect.right())), clamped_edge(ceilf(rect.bottom())) });
+}
+
+Vector<Optional<ScrollNodeVisibility>> AsyncScrollTree::scroll_node_visibilities_in(Compositing::AccumulatedVisualContextTree const& visual_context_tree, Compositing::ScrollStateSnapshot const& scroll_state_snapshot, ReadonlySpan<bool> spatial_node_moves_with_transform_animation, Gfx::IntSize layout_viewport_size) const
+{
+    Vector<Optional<ScrollNodeVisibility>> visibilities;
+    visibilities.resize(m_scroll_nodes.size());
+
+    HashMap<u32, size_t> position_of_scroll_node_index;
+    for (size_t position = 0; position < m_scroll_nodes.size(); ++position)
+        position_of_scroll_node_index.set(m_scroll_nodes[position].node_id.scroll_node_index.value(), position);
+    auto position_of_parent = [&](AsyncScrollNode const& node) -> Optional<size_t> {
+        if (!node.parent_node_id.has_value())
+            return {};
+        auto position = position_of_scroll_node_index.get(node.parent_node_id->scroll_node_index.value());
+        if (!position.has_value() || m_scroll_nodes[*position].node_id != *node.parent_node_id)
+            return {};
+        return position;
+    };
+
+    auto visibility_within = [&](AsyncScrollNode const& node, Gfx::FloatRect const& parent_in_viewport) -> Optional<ScrollNodeVisibility> {
+        auto content_rect_at_scroll_offset = node.scrollport_rect.to_type<float>().translated(scroll_offset_for_node(node, scroll_state_snapshot));
+        // Scroll offsets come from WebContent, which may send any float.
+        if (!rect_is_finite(content_rect_at_scroll_offset))
+            content_rect_at_scroll_offset = node.scrollport_rect.to_type<float>();
+        auto index = node.node_id.scroll_node_index;
+        auto placement_is_known = visual_context_tree.context_is_valid({ .spatial = index })
+            && !spatial_node_moves_with_transform_animation[index.value()];
+
+        Gfx::FloatRect in_viewport = parent_in_viewport;
+        Gfx::FloatRect in_content = content_rect_at_scroll_offset;
+        if (placement_is_known) {
+            auto scrollport_in_viewport = visual_context_tree.transform_rect_to_viewport(index, content_rect_at_scroll_offset, scroll_state_snapshot, Compositing::AccumulatedVisualContextTree::IncludeVisualViewportTransform::No);
+            if (rect_is_finite(scrollport_in_viewport)) {
+                in_viewport.intersect(scrollport_in_viewport);
+                auto content_to_viewport = visual_context_tree.accumulated_matrix(index, scroll_state_snapshot, Compositing::AccumulatedVisualContextTree::IncludeVisualViewportTransform::No);
+                if (Gfx::is_2d_affine_transform(content_to_viewport)) {
+                    if (auto viewport_to_content = Gfx::extract_2d_affine_transform(content_to_viewport).inverse(); viewport_to_content.has_value()) {
+                        auto mapped_back = viewport_to_content->map(in_viewport);
+                        if (rect_is_finite(mapped_back))
+                            in_content.intersect(mapped_back);
+                    }
+                }
+            }
+        }
+        if (in_viewport.is_empty() || in_content.is_empty())
+            return {};
+        return ScrollNodeVisibility { .in_viewport = in_viewport, .in_content = enclosing_int_rect_without_overflow(in_content) };
+    };
+
+    // Each node is worked out after the node around it. A parent link that leads back to a node still waiting for its
+    // parent is malformed, and the cycle is cut there.
+    enum class Progress : u8 {
+        NotStarted,
+        WaitingForParent,
+        WorkedOut,
+    };
+    Vector<Progress> progress;
+    progress.resize(m_scroll_nodes.size());
+    Vector<size_t> nodes_waiting_for_parent;
+    auto layout_viewport = Gfx::IntRect { {}, layout_viewport_size }.to_type<float>();
+    for (size_t position = 0; position < m_scroll_nodes.size(); ++position) {
+        for (Optional<size_t> waiting = position; waiting.has_value() && progress[*waiting] == Progress::NotStarted; waiting = position_of_parent(m_scroll_nodes[*waiting])) {
+            progress[*waiting] = Progress::WaitingForParent;
+            nodes_waiting_for_parent.append(*waiting);
+        }
+        while (!nodes_waiting_for_parent.is_empty()) {
+            auto waiting = nodes_waiting_for_parent.take_last();
+            auto const& node = m_scroll_nodes[waiting];
+            auto parent = position_of_parent(node);
+            // A scroll node clips the content of the scroll nodes in it, so none of a node in a parent that does not show
+            // shows either.
+            Optional<Gfx::FloatRect> parent_in_viewport = layout_viewport;
+            if (parent.has_value() && progress[*parent] == Progress::WorkedOut)
+                parent_in_viewport = visibilities[*parent].map([](auto const& visibility) { return visibility.in_viewport; });
+            if (parent_in_viewport.has_value())
+                visibilities[waiting] = visibility_within(node, *parent_in_viewport);
+            progress[waiting] = Progress::WorkedOut;
+        }
+    }
+    return visibilities;
+}
+
+Optional<ScrollNodeVisibility> AsyncScrollTree::visibility_of_scroll_node_for_testing(AsyncScrollNodeID node_id, Compositing::AccumulatedVisualContextTree const& visual_context_tree, Gfx::IntSize layout_viewport_size) const
+{
+    if (!has_wheel_hit_test_targets_for(visual_context_tree))
+        return {};
+    auto visibilities = scroll_node_visibilities_in(visual_context_tree, m_scroll_state_snapshot, visual_context_tree.spatial_nodes_in_subtrees_of_transform_animations(), layout_viewport_size);
+    for (size_t position = 0; position < m_scroll_nodes.size(); ++position) {
+        if (m_scroll_nodes[position].node_id == node_id)
+            return visibilities[position];
+    }
+    return {};
+}
+
+void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::DisplayList const> const& display_list, Compositing::AccumulatedVisualContextTree const* visual_context_tree, Compositing::ScrollStateSnapshot const& scroll_state_snapshot, Gfx::IntSize layout_viewport_size)
 {
     m_cached_wheel_hit_test_targets.clear();
     m_cached_main_thread_wheel_event_targets.clear();
@@ -286,6 +401,7 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::Display
     m_cached_blocking_wheel_event_targets.clear();
     m_cached_scroll_chaining_barriers.clear();
     m_visual_context_tree_structural_epoch.clear();
+    m_scroll_node_visibilities.clear();
     m_scroll_state_snapshot = scroll_state_snapshot;
     if (!display_list || !visual_context_tree)
         return;
@@ -298,6 +414,9 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::Display
     };
 
     auto spatial_context_has_visual_animation = visual_context_tree->spatial_nodes_in_subtrees_of_transform_animations();
+    // Only a display list that leaves out part of a scroll node's content needs to know what of each node shows.
+    if (m_records_part_of_some_scroll_node)
+        m_scroll_node_visibilities = scroll_node_visibilities_in(*visual_context_tree, scroll_state_snapshot, spatial_context_has_visual_animation, layout_viewport_size);
     auto viewport_rect_for_context = [&](Compositing::ContextRef context, Gfx::FloatRect const& rect) -> Optional<Gfx::FloatRect> {
         if (spatial_context_has_visual_animation[context.spatial.value()])
             return {};

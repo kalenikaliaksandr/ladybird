@@ -148,7 +148,7 @@ public:
     void presented_bitmap_ready_to_paint(Web::CompositorContextId, i32 bitmap_id);
     void set_client_gpu_presentation_capability(CompositorStateClient&, bool supported, u64 adapter_luid);
     void set_scrollbar_track_press_jumps(CompositorStateClient&, bool jumps);
-    String scroll_state_for_testing(Web::CompositorContextId, Web::AsyncScrollNodeStableID stretched_scroller) const;
+    String scroll_state_for_testing(Web::CompositorContextId, Web::AsyncScrollNodeStableID reported_scroller) const;
     Optional<Compositing::FirstWheelStepRouteForTesting> route_first_wheel_step_for_testing(Web::CompositorContextId, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels);
     void begin_input_trace_for_testing(Web::CompositorContextId);
     void clear_per_test_input_state_for_testing(Web::CompositorContextId);

@@ -127,13 +127,30 @@ enum class ScrollChaining : u8 {
     None,
 };
 
+// What of a scroll node shows in the layout viewport. Pinch zoom only magnifies part of the layout viewport, so it never
+// shows more of a node than this.
+struct ScrollNodeVisibility {
+    // Where the node's scrollport shows, cut by the scrollports of the scroll nodes around it, in the space of the
+    // viewport without the pinch zoom transform.
+    Gfx::FloatRect in_viewport;
+    // What of the node's content shows there, in the device pixels of that content at scroll offset zero. Content that
+    // moves with a transform animation, or that the node's transforms cannot map back, counts as all of the content its
+    // scrollport shows at the node's scroll offset.
+    Gfx::IntRect in_content;
+};
+
 // Mutable compositor-side copy of AsyncScrollingState. Current scroll offsets live in ScrollStateSnapshot; this tree
 // owns scroll node geometry and derived hit-test targets.
 class COMPOSITING_API AsyncScrollTree {
 public:
     void set_state(AsyncScrollingState&&);
 
-    void rebuild_wheel_hit_test_targets(RefPtr<Compositing::DisplayList const> const&, Compositing::AccumulatedVisualContextTree const*, Compositing::ScrollStateSnapshot const&);
+    // Also works out what of each scroll node shows in the layout viewport, which sits at the origin of the space the
+    // visual context tree maps to.
+    void rebuild_wheel_hit_test_targets(RefPtr<Compositing::DisplayList const> const&, Compositing::AccumulatedVisualContextTree const*, Compositing::ScrollStateSnapshot const&, Gfx::IntSize layout_viewport_size);
+    // Nothing when none of the node shows, as of the last rebuild of the wheel hit test targets, worked out afresh as
+    // only a display list that records part of some node keeps it.
+    Optional<ScrollNodeVisibility> visibility_of_scroll_node_for_testing(AsyncScrollNodeID, Compositing::AccumulatedVisualContextTree const&, Gfx::IntSize layout_viewport_size) const;
 
     Optional<Gfx::FloatPoint> scroll_offset_for_node(AsyncScrollNodeID, Compositing::ScrollStateSnapshot const&) const;
     Optional<Web::UniqueNodeID> document_id() const;
@@ -195,9 +212,12 @@ private:
     Optional<NestedContextWheelRegionHit> topmost_nested_context_wheel_region_at(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
     Optional<AsyncScrollNodeID> scrollable_ancestor_for_node(AsyncScrollNodeID, Compositing::ScrollStateSnapshot const&, Gfx::FloatPoint delta) const;
     Gfx::FloatPoint apply_scroll_delta_to_node(AsyncScrollNode const&, Gfx::FloatPoint delta, Compositing::ScrollStateSnapshot&);
+    Vector<Optional<ScrollNodeVisibility>> scroll_node_visibilities_in(Compositing::AccumulatedVisualContextTree const&, Compositing::ScrollStateSnapshot const&, ReadonlySpan<bool> spatial_node_moves_with_transform_animation, Gfx::IntSize layout_viewport_size) const;
 
     Optional<Web::UniqueNodeID> m_document_id;
     Vector<AsyncScrollNode> m_scroll_nodes;
+    // One per scroll node, empty when none of the node shows. Only worked out while some node is recorded in part.
+    Vector<Optional<ScrollNodeVisibility>> m_scroll_node_visibilities;
     Vector<AsyncSnapContainer> m_snap_containers;
     double m_device_pixels_per_css_pixel { 1.0 };
     Vector<WheelHitTestTarget> m_wheel_hit_test_regions;
@@ -215,6 +235,7 @@ private:
     bool m_has_blocking_wheel_event_region_covering_viewport { false };
     bool m_viewport_keeps_horizontal_scrolls { false };
     bool m_viewport_keeps_vertical_scrolls { false };
+    bool m_records_part_of_some_scroll_node { false };
 };
 
 }

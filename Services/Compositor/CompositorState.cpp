@@ -1731,12 +1731,12 @@ void CompositorState::set_scrollbar_track_press_jumps(CompositorStateClient& pre
     update_scroll_capabilities();
 }
 
-String CompositorState::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID stretched_scroller) const
+String CompositorState::scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID reported_scroller) const
 {
     auto const* context = context_if_present(context_id);
     if (!context)
         return {};
-    return context->scroll_state_for_testing(stretched_scroller);
+    return context->scroll_state_for_testing(reported_scroller);
 }
 
 Optional<Compositing::FirstWheelStepRouteForTesting> CompositorState::route_first_wheel_step_for_testing(Web::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels)

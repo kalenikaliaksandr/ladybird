@@ -61,7 +61,7 @@ TEST_CASE(wheel_hit_testing_rejects_a_different_visual_context_tree_structural_e
 
     Compositing::AsyncScrollTree scroll_tree;
     scroll_tree.set_state(move(state));
-    scroll_tree.rebuild_wheel_hit_test_targets(make_empty_display_list(visual_context_tree), &visual_context_tree, {});
+    scroll_tree.rebuild_wheel_hit_test_targets(make_empty_display_list(visual_context_tree), &visual_context_tree, {}, {});
     auto current_result = scroll_tree.hit_test_scroll_node_for_wheel(
         visual_context_tree, { 20, 20 }, { 0, 10 });
     EXPECT_EQ(current_result.outcome, Compositing::WheelHitTestOutcome::BlockedByMainThreadRegion);
@@ -83,7 +83,7 @@ TEST_CASE(wheel_hit_testing_ignores_invalid_visual_context_indices)
 
     Compositing::AsyncScrollTree scroll_tree;
     scroll_tree.set_state(move(state));
-    scroll_tree.rebuild_wheel_hit_test_targets(make_empty_display_list(visual_context_tree), &visual_context_tree, {});
+    scroll_tree.rebuild_wheel_hit_test_targets(make_empty_display_list(visual_context_tree), &visual_context_tree, {}, {});
     auto result = scroll_tree.hit_test_scroll_node_for_wheel(
         visual_context_tree, { 20, 20 }, { 0, 10 });
     EXPECT_NE(result.outcome, Compositing::WheelHitTestOutcome::BlockedByMainThreadRegion);
@@ -102,7 +102,7 @@ TEST_CASE(blocking_wheel_event_hit_testing_fails_closed_for_invalid_visual_conte
     auto display_list = make_empty_display_list(visual_context_tree);
     Compositing::AsyncScrollTree scroll_tree;
     scroll_tree.set_state(move(state));
-    scroll_tree.rebuild_wheel_hit_test_targets(display_list, &visual_context_tree, {});
+    scroll_tree.rebuild_wheel_hit_test_targets(display_list, &visual_context_tree, {}, {});
     EXPECT(scroll_tree.blocks_wheel_event_at_position(visual_context_tree, { 200, 200 }));
     auto result = scroll_tree.hit_test_scroll_node_for_wheel(visual_context_tree, { 200, 200 }, { 0, 10 });
     EXPECT_EQ(result.outcome, Compositing::WheelHitTestOutcome::BlockedByWheelEventRegion);
@@ -126,7 +126,7 @@ TEST_CASE(first_wheel_step_route_puts_main_thread_region_before_blocking_region_
     auto route_first_wheel_step_at = [&](Compositing::AsyncScrollingState state) {
         Compositing::AsyncScrollTree scroll_tree;
         scroll_tree.set_state(move(state));
-        scroll_tree.rebuild_wheel_hit_test_targets(display_list, &visual_context_tree, {});
+        scroll_tree.rebuild_wheel_hit_test_targets(display_list, &visual_context_tree, {}, {});
         EXPECT(scroll_tree.blocks_wheel_event_at_position(visual_context_tree, { 20, 20 }));
         return scroll_tree.route_first_wheel_step(Compositing::WheelRoutingAdmission::Accepted, visual_context_tree, { 20, 20 }, { 0, 10 }).decision;
     };

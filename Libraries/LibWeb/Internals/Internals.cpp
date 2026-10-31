@@ -1035,19 +1035,19 @@ GC::Ref<JS::Object> Internals::compositor_scroll_state(GC::Ptr<DOM::Element> scr
     let_compositor_take_in_every_rendered_frame(window());
 
     auto& document = window().associated_document();
-    Web::AsyncScrollNodeStableID stretched_scroller { .node_id = document.unique_id(), .kind = Web::AsyncScrollNodeKind::Viewport };
+    Web::AsyncScrollNodeStableID reported_scroller { .node_id = document.unique_id(), .kind = Web::AsyncScrollNodeKind::Viewport };
     if (scroller) {
         Layout::ForcedReadScope read { document };
         document.update_layout(DOM::UpdateLayoutReason::InternalsHitTest);
         if (auto const* scrolling_box = scroller->layout_node(read)) {
             if (auto scroller_stable_node_id = Painting::async_scroll_node_stable_id(*scrolling_box); scroller_stable_node_id.has_value())
-                stretched_scroller = *scroller_stable_node_id;
+                reported_scroller = *scroller_stable_node_id;
         }
     }
 
     String scroll_state;
     if (auto navigable = document.navigable(); navigable && navigable->has_compositor_context())
-        scroll_state = navigable->compositor_context().scroll_state_for_testing(stretched_scroller);
+        scroll_state = navigable->compositor_context().scroll_state_for_testing(reported_scroller);
     auto report = JsonValue::from_string(scroll_state);
     if (report.is_error() || !report.value().is_object())
         return scrolling_state_report_to_object(window(), Compositing::async_scrolling_state_to_json({}));
@@ -1618,8 +1618,9 @@ static Optional<RecordedScrollTree> recorded_scroll_tree_of(DOM::Document& docum
     };
     auto async_scrolling_state = Compositing::async_scrolling_state_from_display_list(*display_list);
     recorded.admission = Compositing::wheel_routing_admission_for(async_scrolling_state, document.wheel_event_listener_state_generation());
+    auto layout_viewport_size = async_scrolling_state.viewport_rect.size();
     recorded.scroll_tree.set_state(move(async_scrolling_state));
-    recorded.scroll_tree.rebuild_wheel_hit_test_targets(display_list, &recorded.visual_context_tree, document.scroll_state_snapshot());
+    recorded.scroll_tree.rebuild_wheel_hit_test_targets(display_list, &recorded.visual_context_tree, document.scroll_state_snapshot(), layout_viewport_size);
     return recorded;
 }
 

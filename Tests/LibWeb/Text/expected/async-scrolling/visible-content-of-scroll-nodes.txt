@@ -1,0 +1,6 @@
+window.scrollY: 100 innerWidth: 800 innerHeight: 600
+viewport: x=0 y=100 width=800 height=600
+#partly-in-view (scrollTop 40): x=0 y=540 width=200 height=200
+#cut-by-its-parent (scrollTop 20): x=0 y=560 width=150 height=60
+#out-of-view (scrollTop 0): none
+#transformed (scrollTop 30): x=500 y=330 width=150 height=200

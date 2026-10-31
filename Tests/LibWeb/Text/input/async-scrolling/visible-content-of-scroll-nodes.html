@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    html {
+        scrollbar-width: none;
+    }
+
+    body {
+        margin: 0;
+    }
+
+    .scroller {
+        position: absolute;
+        width: 200px;
+        height: 300px;
+        overflow: auto;
+        scrollbar-width: none;
+    }
+
+    .scroller > div {
+        height: 1000px;
+    }
+
+    #partly-in-view {
+        left: 0;
+        top: 500px;
+    }
+
+    #cut-by-its-parent {
+        width: 150px;
+        height: 100px;
+        overflow: auto;
+        scrollbar-width: none;
+    }
+
+    #cut-by-its-parent > div {
+        height: 400px;
+    }
+
+    #out-of-view {
+        left: 250px;
+        top: 2000px;
+    }
+
+    #transformed {
+        left: 500px;
+        top: 300px;
+        transform: scale(2);
+        transform-origin: 0 0;
+    }
+
+    #page-spacer {
+        height: 4000px;
+    }
+</style>
+<div id="partly-in-view" class="scroller">
+    <div id="cut-by-its-parent"><div></div></div>
+    <div></div>
+</div>
+<div id="out-of-view" class="scroller"><div></div></div>
+<div id="transformed" class="scroller"><div></div></div>
+<div id="page-spacer"></div>
+<script>
+    function visibleContentRectToString(rect) {
+        if (!rect) return "none";
+        return `x=${rect.x} y=${rect.y} width=${rect.width} height=${rect.height}`;
+    }
+
+    promiseTest(async () => {
+        const scrollers = ["partly-in-view", "cut-by-its-parent", "out-of-view", "transformed"].map(id => document.getElementById(id));
+        scrollers[0].scrollTop = 40;
+        scrollers[1].scrollTop = 20;
+        scrollers[3].scrollTop = 30;
+        await animationFrame();
+        await animationFrame();
+        await waitForCondition(() => internals.compositorScrollState().document === document);
+
+        await scrollSettled(document, () => internals.wheelThroughUIProcess(300, 50, 0, 100));
+        await animationFrame();
+        println(`window.scrollY: ${window.scrollY} innerWidth: ${window.innerWidth} innerHeight: ${window.innerHeight}`);
+        println(`viewport: ${visibleContentRectToString(internals.compositorScrollState().visibleContentRect)}`);
+        for (const scroller of scrollers)
+            println(`#${scroller.id} (scrollTop ${scroller.scrollTop}): ${visibleContentRectToString(internals.compositorScrollState(scroller).visibleContentRect)}`);
+    });
+</script>
