@@ -190,6 +190,27 @@ bool DisplayListResourceStorage::display_list_requires_direct_replay(DisplayList
     return nested_display_list_requires_direct_replay(id, visited_display_lists);
 }
 
+bool DisplayListResourceStorage::nested_display_lists_draw_video_sink(DisplayList const& outermost_display_list, VideoSinkResourceId video_sink_id) const
+{
+    if (m_display_lists.is_empty())
+        return false;
+    HashTable<u64> visited_display_lists;
+    Vector<DisplayList const*> display_lists_to_search { &outermost_display_list };
+    while (!display_lists_to_search.is_empty()) {
+        auto const& searched_display_list = *display_lists_to_search.take_last();
+        for (auto nested_id : searched_display_list.referenced_resource_ids().display_lists) {
+            DisplayListResourceId nested_display_list_id { nested_id };
+            if (!has_display_list(nested_display_list_id) || visited_display_lists.set(nested_id) != HashSetResult::InsertedNewEntry)
+                continue;
+            auto const& nested_display_list = display_list(nested_display_list_id);
+            if (nested_display_list.referenced_resource_ids().video_sinks.contains_slow(video_sink_id.value()))
+                return true;
+            display_lists_to_search.append(&nested_display_list);
+        }
+    }
+    return false;
+}
+
 // Determines whether reusing a rasterization of the display list can produce different pixels than replaying it
 // in place on every frame. That is the case when a destination-reading operation (a non-normal blend mode on a
 // command or a visual context effect, or a backdrop filter carried by a visual context effect) can see canvas

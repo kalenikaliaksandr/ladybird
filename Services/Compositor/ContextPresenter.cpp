@@ -450,15 +450,21 @@ Gfx::IntRect ContextPresenter::damage_since_last_raster(Gfx::IntSize viewport_si
             canvases_with_new_content.append(canvas_id);
     }
     Vector<Compositing::VideoSinkResourceId> video_sinks_with_new_frames;
-    auto video_sinks_drawn_by_list = m_scene.display_list()->referenced_resource_ids().video_sinks;
+    auto const& display_list = *m_scene.display_list();
+    auto video_sinks_drawn_by_list = display_list.referenced_resource_ids().video_sinks;
     for (auto const& [video_sink_id, frame_id] : last_frame.video_frame_ids) {
         if (current_video_frame_id(video_sink_id) == frame_id)
             continue;
+        if (video_sinks_drawn_by_list.contains_slow(video_sink_id.value())) {
+            video_sinks_with_new_frames.append(video_sink_id);
+            continue;
+        }
         // A video drawn only by a nested display list, such as an SVG image's, has no command in
         // this list to damage.
-        if (!video_sinks_drawn_by_list.contains_slow(video_sink_id.value()))
+        if (m_scene.resource_storage().nested_display_lists_draw_video_sink(display_list, video_sink_id))
             return viewport_rect;
-        video_sinks_with_new_frames.append(video_sink_id);
+        // The list doesn't draw the video. If the last rasterized list did, the diff below damages
+        // the command it no longer has.
     }
     auto display_list_damage = Compositing::compute_display_list_damage(
         *last_frame.display_list,
@@ -491,7 +497,8 @@ void ContextPresenter::remember_rasterized_frame(Gfx::IntSize viewport_size, Com
         Compositing::CanvasId canvas_id { id };
         canvas_content_generations.set(canvas_id, m_canvas_surfaces.canvas_content_generation(canvas_id));
     }
-    // Every video the context holds is drawn by the list or by a display list it nests.
+    // Remember every video the context holds, even though the list may not draw some of them: damage_since_last_raster()
+    // works out which ones it draws only for the videos whose frame changed.
     HashMap<Compositing::VideoSinkResourceId, Optional<u64>> video_frame_ids;
     for (auto const& [id, handle] : m_scene.video_sink_handles()) {
         Compositing::VideoSinkResourceId video_sink_id { id };

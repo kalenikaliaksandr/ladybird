@@ -131,6 +131,8 @@ public:
     // Whether reusing a raster of the display list could show other pixels than a replay in place, worked out once
     // and cached.
     bool display_list_requires_direct_replay(DisplayListResourceId) const;
+    // Whether a display list nested in the given one at any depth, among those this storage holds, draws the video sink.
+    bool nested_display_lists_draw_video_sink(DisplayList const&, VideoSinkResourceId) const;
     RefPtr<Media::DisplayingVideoSink const> video_sink(VideoSinkResourceId id) const;
     Optional<Media::VideoSinkHandle> video_sink_handle(VideoSinkResourceId id) const { return m_video_sink_handles.get(id.value()); }
     HashMap<u64, Media::VideoSinkHandle> const& video_sink_handles() const { return m_video_sink_handles; }
