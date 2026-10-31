@@ -13,11 +13,12 @@ use crate::css::css_enums::{
 use crate::css::css_pixels::CssPixelRect;
 use crate::css::css_pixels::CssPixels;
 use crate::layout::node_data::NodeSlotId;
+use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::{PaintStyleOrColor, StrokePathParams};
 use crate::painting::force_dark::ForceDarkRole;
 use crate::painting::record::PaintRecorder;
 use libgfx_rust::path::Path;
-use libgfx_rust::{CapStyle, Color, FloatPoint, IntPoint, JoinStyle, LineStyle, ShouldAntiAlias};
+use libgfx_rust::{CapStyle, Color, FloatPoint, IntPoint, IntRect, JoinStyle, LineStyle, ShouldAntiAlias};
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct TextDecorationSet {
@@ -425,20 +426,24 @@ fn build_triangle_wave_path(from: IntPoint, to: IntPoint, amplitude: f32) -> Pat
     path
 }
 
-pub(crate) fn paint_decoration_lines<O: Observer>(
-    recorder: &mut PaintRecorder<'_, O>,
-    block: NodeSlotId,
-    fragment_index: u32,
-    fragment_box: CssPixelRect,
-    set: &TextDecorationSet,
-) {
-    let converter = recorder.converter;
+/// One line a decoration set draws across a fragment.
+struct DecorationLine {
+    line: u8,
+    thickness: CssPixels,
+    style: u8,
+    color: Color,
+    /// The vertical center of the stroke, from the top of the fragment.
+    center_y: CssPixels,
+}
+
+/// The lines of `set` in paint order, up to the first that draws nothing.
+fn decoration_lines(set: &TextDecorationSet) -> impl Iterator<Item = DecorationLine> + '_ {
     let glyph_height = CssPixels::nearest_value_for_f32(set.decorating_font_pixel_size);
     let baseline = set.baseline;
     let two = CssPixels::from_integer(2);
 
-    for index in 0..set.line_count as usize {
-        let mut line = set.lines[index];
+    set.lines[..set.line_count as usize].iter().map_while(move |&line| {
+        let mut line = line;
         let mut line_thickness = set.thickness;
         let mut line_style = set.style;
         let mut line_color = Color(set.color);
@@ -470,12 +475,10 @@ pub(crate) fn paint_decoration_lines<O: Observer>(
             text_underline_offset = CssPixels::from_integer(2);
         }
 
-        let device_line_thickness = converter.rounded_device_pixels(line_thickness);
-
         // Compute the center Y of the decoration stroke. For underline and overline, offset by half the thickness
         // so the near edge of the stroke aligns with the intended position.
         let line_center_y = match line {
-            text_decoration_line::NONE => return,
+            text_decoration_line::NONE => return None,
             text_decoration_line::UNDERLINE => {
                 // https://drafts.csswg.org/css-text-decor-4/#text-underline-position-property
                 // FIXME: Support text-decoration: underline on vertical text
@@ -506,8 +509,66 @@ pub(crate) fn paint_decoration_lines<O: Observer>(
                 baseline - point_size * CssPixels::nearest_value_for_f32(0.5)
             }
             // Blink: conforming user agents may simply not blink the text.
-            _ => return,
+            _ => return None,
         };
+        Some(DecorationLine {
+            line,
+            thickness: line_thickness,
+            style: line_style,
+            color: line_color,
+            center_y: line_center_y,
+        })
+    })
+}
+
+/// Encloses every line `paint_decoration_lines` draws for `set` across `fragment_box`, whatever its style.
+pub(crate) fn decoration_lines_bounds(
+    converter: &DevicePixelConverter,
+    fragment_box: CssPixelRect,
+    set: &TextDecorationSet,
+) -> IntRect {
+    decoration_lines(set).fold(IntRect::default(), |bounds, decoration| {
+        let thickness = converter.rounded_device_pixels(decoration.thickness);
+        let start = converter.rounded_device_point(
+            fragment_box
+                .location()
+                .translated(CssPixels::from_raw(0), decoration.center_y),
+        );
+        let end = converter.rounded_device_point(
+            crate::css::css_pixels::CssPixelPoint::new(fragment_box.right(), fragment_box.y)
+                .translated(CssPixels::from_raw(0), decoration.center_y),
+        );
+        // A double line draws a second line a thickness and a pixel away, and a wavy line swings one and a half
+        // thicknesses around a center half a thickness and a pixel away; each is stroked a thickness wide.
+        let vertical_reach = thickness * 3 + 3;
+        let horizontal_reach = thickness + 2;
+        bounds.united(IntRect::new(
+            start.x - horizontal_reach,
+            start.y - vertical_reach,
+            end.x - start.x + horizontal_reach * 2,
+            vertical_reach * 2,
+        ))
+    })
+}
+
+pub(crate) fn paint_decoration_lines<O: Observer>(
+    recorder: &mut PaintRecorder<'_, O>,
+    block: NodeSlotId,
+    fragment_index: u32,
+    fragment_box: CssPixelRect,
+    set: &TextDecorationSet,
+) {
+    let converter = recorder.converter;
+
+    for DecorationLine {
+        line,
+        thickness: line_thickness,
+        style: line_style,
+        color: line_color,
+        center_y: line_center_y,
+    } in decoration_lines(set)
+    {
+        let device_line_thickness = converter.rounded_device_pixels(line_thickness);
 
         let line_start_point = converter.rounded_device_point(
             fragment_box

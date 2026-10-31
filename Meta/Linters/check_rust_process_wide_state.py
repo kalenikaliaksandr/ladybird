@@ -119,6 +119,7 @@ RENDER_STATE_ALLOWED = {
             "css/style/mod.rs:STYLE_PLAN_PROVENANCE",
             "layout/run_repeatability.rs:ENABLED",
             "layout/run_repeatability.rs:VERIFICATION",
+            "painting/record/cull.rs:REQUESTED",
             "render_state/clock/hover.rs:LOGS",
         ],
     ),

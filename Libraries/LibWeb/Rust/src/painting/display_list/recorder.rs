@@ -434,6 +434,10 @@ impl DisplayListRecorder {
         self.builder.bytes()
     }
 
+    pub fn command_runs(&self) -> &[DisplayListCommandRun] {
+        self.builder.command_runs()
+    }
+
     pub fn accumulated_visual_context(&self) -> ContextRef {
         self.context
     }

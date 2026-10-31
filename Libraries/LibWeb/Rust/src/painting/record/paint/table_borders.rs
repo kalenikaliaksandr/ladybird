@@ -4,10 +4,11 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+use crate::painting::paint_read::GeometryRead;
 use crate::painting::record::trace::Observer;
 
 use crate::css::css_enums::line_style;
-use crate::css::css_pixels::CssPixels;
+use crate::css::css_pixels::{CssPixelRect, CssPixels};
 use crate::layout::node_data::NodeSlotId;
 use crate::layout::table_formatting_context;
 use crate::layout::used_values::{collapsed_border_part_after_line, collapsed_border_part_before_line};
@@ -182,6 +183,33 @@ fn paint_edge<O: Observer>(recorder: &mut PaintRecorder<'_, O>, rect: IntRect, e
     }
     // FIXME: Support the remaining line styles instead of rendering them as solid.
     recorder.recorder.fill_rect(rect, edge.color, ForceDarkRole::Border);
+}
+
+/// Encloses every collapsed border `paint_table_borders` paints for a table: its outermost grid lines, grown by twice
+/// the widest border, which covers the part of a border past its line as well as a dotted or dashed line drawn along
+/// the edge of its rect.
+pub(crate) fn collapsed_table_borders_bounds(
+    arena: &impl GeometryRead,
+    table_paintable: NodeSlotId,
+) -> Option<CssPixelRect> {
+    let borders = crate::painting::paintable_geometry::committed_collapsed_table_borders(arena, table_paintable)?;
+    let (first_column_offset, last_column_offset) = (*borders.column_offsets.first()?, *borders.column_offsets.last()?);
+    let (first_row_offset, last_row_offset) = (*borders.row_offsets.first()?, *borders.row_offsets.last()?);
+    let widest_border = borders
+        .horizontal_edges
+        .iter()
+        .chain(&borders.vertical_edges)
+        .map(|edge| edge.border_data.width)
+        .max()
+        .unwrap_or_default();
+    let reach = widest_border + widest_border;
+    let origin = crate::painting::paintable_geometry::absolute_rect(arena, table_paintable).location();
+    Some(CssPixelRect::new(
+        origin.x + first_column_offset - reach,
+        origin.y + first_row_offset - reach,
+        last_column_offset - first_column_offset + reach + reach,
+        last_row_offset - first_row_offset + reach + reach,
+    ))
 }
 
 pub(crate) fn paint_table_borders<O: Observer>(recorder: &mut PaintRecorder<'_, O>, table_paintable: NodeSlotId) {

@@ -232,7 +232,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
-    fn kind_of_compositor_scroll_node_recorded_for(
+    pub(super) fn kind_of_compositor_scroll_node_recorded_for(
         &mut self,
         paintable: NodeSlotId,
     ) -> Option<CompositorScrollNodeKind> {

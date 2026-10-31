@@ -26,7 +26,7 @@ use crate::painting::scroll_snap;
 use smallvec::SmallVec;
 use std::ops::Range;
 
-fn draw_phase(kind: ProducerKind) -> Option<PaintPhase> {
+pub(super) fn draw_phase(kind: ProducerKind) -> Option<PaintPhase> {
     match kind {
         ProducerKind::DrawBackground => Some(PaintPhase::Background),
         ProducerKind::DrawBorder => Some(PaintPhase::Border),
@@ -144,6 +144,15 @@ impl<O: Observer> PaintRecorder<'_, O> {
         self.recorder.set_accumulated_visual_context(ContextRef::default());
     }
 
+    /// The box whose lines hold the inline box piece or text fragment that a producer of `owner` paints.
+    pub(super) fn line_root_of_inline_producer(&self, owner: NodeSlotId) -> NodeSlotId {
+        if crate::painting::node_painting::has_lines(self.source, owner) {
+            owner
+        } else {
+            self.data(owner).containing_block
+        }
+    }
+
     fn producer_is_skipped(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
         draw_phase(kind).is_some_and(|phase| self.base_paint_facts(owner).paint_phase_mask & phase.bit() == 0)
     }
@@ -194,11 +203,7 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
             ProducerKind::ScrollMetadata => self.record_scroll_metadata(owner),
             ProducerKind::Svg => self.record_svg_box_foreground(owner),
             ProducerKind::InlinePiece(index) | ProducerKind::TextFragment(index) => {
-                let root = if crate::painting::node_painting::has_lines(self.source, owner) {
-                    owner
-                } else {
-                    self.data(owner).containing_block
-                };
+                let root = self.line_root_of_inline_producer(owner);
                 if matches!(kind, ProducerKind::InlinePiece(_)) {
                     super::paint::inline_box::paint_piece(self, root, index);
                 } else {
@@ -223,10 +228,14 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
             self.recorder.is_producer_boundary(),
             "a producer ends at a closed group boundary without ambient state"
         );
-        ProducerOutcome {
+        let outcome = ProducerOutcome {
             live: self.live_producer,
             reads_window_focus: self.producer_reads_window_focus.get(),
+        };
+        if self.cull_spaces.is_some() {
+            self.verify_recorded_producer_placement(owner, kind, start.bytes as usize..end.bytes as usize);
         }
+        outcome
     }
 
     fn output_position(&self) -> OutputPosition {

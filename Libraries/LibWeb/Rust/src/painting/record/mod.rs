@@ -9,6 +9,7 @@ use crate::painting::record::trace::{Observer, Operation};
 
 pub(crate) mod assemble;
 pub mod async_scroll_metadata;
+pub(crate) mod cull;
 pub(crate) mod damage;
 pub(crate) mod frame_inputs;
 pub mod hit_test_items;
@@ -207,6 +208,8 @@ pub struct PaintRecorder<'a, O: Observer> {
     pub(crate) scratch: &'a mut scratch::RecordingScratch,
     pub(crate) resources: resources::RecordingResourceManifest,
     line_root_positions: Option<(NodeSlotId, crate::painting::paintable_geometry::LineRootPositions)>,
+    // Present while the recording places its producers, which it does to verify their placement.
+    cull_spaces: Option<cull::CullSpaces>,
 }
 
 #[derive(Clone, Copy, Default)]

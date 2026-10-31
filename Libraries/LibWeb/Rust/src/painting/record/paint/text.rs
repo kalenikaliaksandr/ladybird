@@ -10,6 +10,7 @@ use crate::painting::record::trace::Observer;
 use crate::css::css_pixels::{CssPixelRect, CssPixels};
 use crate::layout::node_data::{NodeFlag, NodeSlotId};
 use crate::painting::display_list::commands::{DisplayListGlyph, FontResourceId, TextShadowLayer};
+use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::GlyphRunForRecording;
 use crate::painting::force_dark::ForceDarkRole;
 use crate::painting::paintable_data::{FragmentRecord, SELECTION_STATE_START_AND_END};
@@ -202,7 +203,7 @@ fn highlight_style<O: Observer>(
     }
 }
 
-fn compute_render_spans<O: Observer>(
+pub(crate) fn compute_render_spans<O: Observer>(
     recorder: &mut PaintRecorder<'_, O>,
     block: NodeSlotId,
     owned_fragment_indices: &[u32],
@@ -421,11 +422,17 @@ pub(crate) fn paint_fragments_foreground<O: Observer>(
     block: NodeSlotId,
     owner: Option<NodeSlotId>,
 ) {
-    let filter = crate::painting::fragment_ownership::effective_filter(recorder.source, owner.unwrap_or(block));
-    let fragment_count = recorder.source.committed_side_data(block).fragments().len();
+    let indices = owned_fragment_indices(recorder.source, block, owner);
+    paint_fragments(recorder, block, &indices);
+}
+
+/// The fragments of `block` that `owner`, or the block itself when there is none, paints in its foreground.
+pub(crate) fn owned_fragment_indices(arena: &impl PaintRead, block: NodeSlotId, owner: Option<NodeSlotId>) -> Vec<u32> {
+    let filter = crate::painting::fragment_ownership::effective_filter(arena, owner.unwrap_or(block));
+    let fragment_count = arena.committed_side_data(block).fragments().len();
     let mut indices = Vec::with_capacity(fragment_count);
     filter.for_each_owned_fragment_index(fragment_count, |index| indices.push(index as u32));
-    paint_fragments(recorder, block, &indices);
+    indices
 }
 
 pub(crate) fn paint_fragments<O: Observer>(recorder: &mut PaintRecorder<'_, O>, block: NodeSlotId, indices: &[u32]) {
@@ -500,7 +507,11 @@ pub(crate) fn paint_fragments<O: Observer>(recorder: &mut PaintRecorder<'_, O>, 
     }
 }
 
-fn highlight_rect<O: Observer>(recorder: &PaintRecorder<'_, O>, block: NodeSlotId, span: &RenderSpan) -> CssPixelRect {
+pub(crate) fn highlight_rect<O: Observer>(
+    recorder: &PaintRecorder<'_, O>,
+    block: NodeSlotId,
+    span: &RenderSpan,
+) -> CssPixelRect {
     let side = recorder.source.committed_side_data(block);
     let fragment = &side.fragments()[span.fragment_index as usize];
     let offsets = SelectionOffsets {
@@ -572,29 +583,9 @@ fn paint_text_shadow<O: Observer>(
         .iter()
         .rev()
         .map(|layer| {
-            let blur_radius = converter.rounded_device_pixels(layer.blur_radius);
-            let offset = FloatPoint {
-                x: layer.offset_x.to_float() * scale as f32,
-                y: layer.offset_y.to_float() * scale as f32,
-            };
-            let rounded_offset = IntPoint {
-                x: offset.x.round() as i32,
-                y: offset.y.round() as i32,
-            };
-            // Space around the painted text to allow it to blur.
-            let margin = blur_radius * 2;
-            shadows_bounding_rect = shadows_bounding_rect.united(IntRect::new(
-                fragment_device_rect.x + rounded_offset.x - margin,
-                fragment_device_rect.y + rounded_offset.y - margin,
-                fragment_device_rect.width + margin * 2,
-                fragment_device_rect.height + margin * 2,
-            ));
-            TextShadowLayer {
-                offset,
-                rounded_offset,
-                blur_radius,
-                color: Color(layer.color),
-            }
+            let (layer, layer_bounding_rect) = text_shadow_layer(&converter, scale, fragment_device_rect, layer);
+            shadows_bounding_rect = shadows_bounding_rect.united(layer_bounding_rect);
+            layer
         })
         .collect();
     recorder.recorder.paint_text_shadow(
@@ -616,6 +607,42 @@ fn paint_text_shadow<O: Observer>(
         orientation,
         ForceDarkRole::None,
     );
+}
+
+/// A shadow layer of a text fragment as it is recorded, and what it covers: the fragment moved by the shadow's offset,
+/// with room around it for the blur.
+pub(crate) fn text_shadow_layer(
+    converter: &DevicePixelConverter,
+    scale: f64,
+    fragment_device_rect: IntRect,
+    layer: &ShadowLayer,
+) -> (TextShadowLayer, IntRect) {
+    let blur_radius = converter.rounded_device_pixels(layer.blur_radius);
+    let offset = FloatPoint {
+        x: layer.offset_x.to_float() * scale as f32,
+        y: layer.offset_y.to_float() * scale as f32,
+    };
+    let rounded_offset = IntPoint {
+        x: offset.x.round() as i32,
+        y: offset.y.round() as i32,
+    };
+    // Space around the painted text to allow it to blur.
+    let margin = blur_radius * 2;
+    let bounding_rect = IntRect::new(
+        fragment_device_rect.x + rounded_offset.x - margin,
+        fragment_device_rect.y + rounded_offset.y - margin,
+        fragment_device_rect.width + margin * 2,
+        fragment_device_rect.height + margin * 2,
+    );
+    (
+        TextShadowLayer {
+            offset,
+            rounded_offset,
+            blur_radius,
+            color: Color(layer.color),
+        },
+        bounding_rect,
+    )
 }
 
 fn paint_text_fragment<O: Observer>(

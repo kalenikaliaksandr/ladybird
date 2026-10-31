@@ -120,7 +120,11 @@ fn record_display_list_impl<O: Observer>(
         ),
         scratch,
         resources: RecordingResourceManifest::default(),
+        cull_spaces: None,
     };
+    if super::cull::verifies_paint_producer_bounds() {
+        recorder.cull_spaces = recorder.cull_spaces_of_recording();
+    }
     recorder
         .observer
         .observe(|log| log.damage = Some(source.frame().damage().summary()));

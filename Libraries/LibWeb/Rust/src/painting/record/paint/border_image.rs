@@ -7,7 +7,7 @@
 use crate::painting::paint_read::PaintRead;
 use crate::painting::record::trace::Observer;
 
-use crate::css::computed_value_views::LengthPercentageRef;
+use crate::css::computed_value_views::{ComputedValuesView, LengthPercentageRef};
 use crate::css::css_enums::border_image_repeat;
 use crate::css::css_pixels::{CssPixelFraction, CssPixels};
 use crate::css::css_pixels::{CssPixelRect, CssPixelSize};
@@ -253,6 +253,22 @@ fn resolve_outset_px(value: &StyleValueData, border_width: CssPixels) -> CssPixe
         }
         other => LengthPercentageRef::over(other).absolute_length_to_px(),
     }
+}
+
+/// How far the border image of a box with `style` reaches out of each side of its border box, in the order top, right,
+/// bottom, left, as if every edge of the box were present.
+pub(crate) fn border_image_outsets(style: ComputedValuesView<'_>) -> [CssPixels; 4] {
+    let Some(outset_value) = style_queries::handle_value(&style.border().border_image_outset) else {
+        return [CssPixels::default(); 4];
+    };
+    let outset_items = component_items(outset_value);
+    let border_widths = [
+        style.border_top_width(),
+        style.border_right_width(),
+        style.border_bottom_width(),
+        style.border_left_width(),
+    ];
+    std::array::from_fn(|side| resolve_outset_px(outset_items[side % outset_items.len()], border_widths[side]))
 }
 
 /// https://drafts.csswg.org/css-backgrounds-3/#border-image-width
