@@ -40,6 +40,21 @@ pub unsafe extern "C" fn ladybird_web_force_dark_should_filter_image(
     crate::force_dark::should_filter(&features)
 }
 
+/// Writes `rect`, as WebContent sent it, with a negative extent made empty and its edges kept within the unbounded
+/// edges, through `out_rect`.
+///
+/// # Safety
+/// `out_rect` must point to a writable rect.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn interest_rect_within_unbounded_edges(
+    rect: libgfx_rust::IntRect,
+    out_rect: *mut libgfx_rust::IntRect,
+) {
+    let within = crate::visual_context::interest::interest_rect_within_unbounded_edges(rect);
+    // SAFETY: Guaranteed by the caller.
+    unsafe { out_rect.write(within) };
+}
+
 /// # Safety
 ///
 /// Both storages must be live storage handles, both trees live retained tree handles, and the

@@ -428,9 +428,11 @@ pub(crate) fn record_frame(
     drop(frame);
     let publishes_recording = inputs.publishes_recording;
     if publishes_recording {
-        // Recordings made with these inputs later, such as clock lane frames, are no test's recordings.
+        // Recordings made with these inputs later, such as clock lane frames, are no test's recordings, and answer no
+        // request: the recording that took a request answers it.
         let interest = match inputs.interest {
             InterestInput::AroundScrollPositionsForTesting => InterestInput::WholeDocument,
+            InterestInput::AroundScrollPositions { .. } => InterestInput::AroundScrollPositions { requested: None },
             ref interest => interest.clone(),
         };
         *published_inputs = Some(RecordingInputs { interest, ..inputs });

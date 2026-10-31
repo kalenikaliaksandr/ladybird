@@ -1668,24 +1668,30 @@ void Internals::record_display_list_for_testing(bool paint_overlay, bool cold, B
     (void)document.record_display_list(read, HTML::PaintConfig { .paint_overlay = paint_overlay }, document.navigable()->display_list_resource_storage(), Painting::PaintCommandCacheMode::ReadWrite, recording_coverage);
 }
 
+// The scroll node of the scroller's content, or of the viewport's if no scroller is given, as the compositor names it.
+static Optional<Web::AsyncScrollNodeStableID> scroll_node_of_scroller_or_viewport(DOM::Document& document, GC::Ptr<DOM::Element> scroller)
+{
+    if (!scroller)
+        return Web::AsyncScrollNodeStableID { .node_id = document.unique_id(), .kind = Web::AsyncScrollNodeKind::Viewport };
+    Layout::ForcedReadScope read { document };
+    document.update_layout(DOM::UpdateLayoutReason::InternalsHitTest);
+    auto const* scrolling_box = scroller->layout_node(read);
+    if (!scrolling_box)
+        return {};
+    return Painting::async_scroll_node_stable_id(*scrolling_box);
+}
+
 GC::Ptr<JS::Object> Internals::recorded_interest_rect(GC::Ptr<DOM::Element> scroller)
 {
     auto& document = window().associated_document();
-    Web::AsyncScrollNodeStableID scroll_node { .node_id = document.unique_id(), .kind = Web::AsyncScrollNodeKind::Viewport };
-    if (scroller) {
-        Layout::ForcedReadScope read { document };
-        document.update_layout(DOM::UpdateLayoutReason::InternalsHitTest);
-        auto const* scrolling_box = scroller->layout_node(read);
-        auto scroller_stable_node_id = scrolling_box ? Painting::async_scroll_node_stable_id(*scrolling_box) : Optional<Web::AsyncScrollNodeStableID> {};
-        if (!scroller_stable_node_id.has_value())
-            return nullptr;
-        scroll_node = *scroller_stable_node_id;
-    }
+    auto scroll_node = scroll_node_of_scroller_or_viewport(document, scroller);
+    if (!scroll_node.has_value())
+        return nullptr;
     auto* display_list = document.paint_state().display_list_used_as_paint_command_cache_source();
     if (!display_list || !display_list->recorded_interest().has_value())
         return nullptr;
     auto const& scroll_node_rects = display_list->recorded_interest()->scroll_node_rects;
-    auto recorded_rect = scroll_node_rects.find_if([&](auto const& recorded_rect) { return recorded_rect.scroll_node == scroll_node; });
+    auto recorded_rect = scroll_node_rects.find_if([&](auto const& recorded_rect) { return recorded_rect.scroll_node == *scroll_node; });
     if (recorded_rect == scroll_node_rects.end())
         return nullptr;
 
@@ -1705,6 +1711,46 @@ GC::Ptr<JS::Object> Internals::recorded_interest_rect(GC::Ptr<DOM::Element> scro
     object->define_direct_property("right"_utf16_fly_string, JS::Value(edge_in_css_pixels(rect.right())), JS::default_attributes);
     object->define_direct_property("bottom"_utf16_fly_string, JS::Value(edge_in_css_pixels(rect.bottom())), JS::default_attributes);
     return object;
+}
+
+void Internals::inject_interest_refresh(Bindings::InterestRect const& rect, GC::Ptr<DOM::Element> scroller)
+{
+    auto& document = window().associated_document();
+    auto* navigable = as_if<HTML::LocalNavigable>(document.navigable().ptr());
+    if (!navigable || !navigable->has_compositor_context())
+        return;
+    auto scroll_node = scroll_node_of_scroller_or_viewport(document, scroller);
+    if (!scroll_node.has_value())
+        return;
+
+    constexpr auto unbounded_rect_edge = Compositing::RustFFI::UNBOUNDED_INTEREST_EDGE;
+    auto device_pixels_per_css_pixel = page().client().device_pixels_per_css_pixel();
+    auto device_edge = [&](double css_edge, auto round_edge) {
+        if (isnan(css_edge))
+            return 0;
+        return static_cast<int>(clamp(round_edge(css_edge * device_pixels_per_css_pixel), static_cast<double>(-unbounded_rect_edge), static_cast<double>(unbounded_rect_edge)));
+    };
+    auto left = device_edge(rect.left, [](double edge) { return floor(edge); });
+    auto top = device_edge(rect.top, [](double edge) { return floor(edge); });
+    auto right = max(left, device_edge(rect.right, [](double edge) { return ceil(edge); }));
+    auto bottom = max(top, device_edge(rect.bottom, [](double edge) { return ceil(edge); }));
+    Web::ScrollNodeContentRect scroll_node_rect { .scroll_node = *scroll_node, .rect = { left, top, right - left, bottom - top } };
+    Compositor::RenderClock::inject_interest_refresh_for_testing(navigable->compositor_context().id(), { &scroll_node_rect, 1 });
+}
+
+void Internals::hold_interest_refreshes()
+{
+    Layout::RustFFI::interest_refresh_hold_for_testing();
+}
+
+void Internals::release_interest_refreshes()
+{
+    Layout::RustFFI::interest_refresh_release_for_testing();
+}
+
+WebIDL::UnsignedLong Internals::interest_refresh_count()
+{
+    return static_cast<WebIDL::UnsignedLong>(Layout::RustFFI::interest_refresh_serviced_count_for_testing());
 }
 
 void Internals::set_autoplay_policy(Utf16String const& policy)

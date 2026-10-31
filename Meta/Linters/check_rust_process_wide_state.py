@@ -180,6 +180,7 @@ RENDER_STATE_ALLOWED = {
             "css/style/atoms.rs:GLOBAL_ATOMS",
             "css/style/inputs.rs:CUSTOM_PROPERTY_DATA_LET_GO_BESIDE_THE_HOST",
             "css/style/user_agent_selectors.rs:PROGRAMS",
+            "painting/interest_refresh.rs:REGISTRY",
         ],
     ),
     **render_state_entries(

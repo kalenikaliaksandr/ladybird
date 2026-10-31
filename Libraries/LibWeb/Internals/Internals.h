@@ -192,6 +192,10 @@ public:
     GC::Ref<JS::Object> recorded_async_scrolling_state_object();
     void record_display_list_for_testing(bool paint_overlay, bool cold, Bindings::DisplayListRecordingCoverage);
     GC::Ptr<JS::Object> recorded_interest_rect(GC::Ptr<DOM::Element> scroller);
+    void inject_interest_refresh(Bindings::InterestRect const&, GC::Ptr<DOM::Element> scroller);
+    void hold_interest_refreshes();
+    void release_interest_refreshes();
+    WebIDL::UnsignedLong interest_refresh_count();
     void set_autoplay_policy(Utf16String const& policy);
 
     Utf16String get_computed_role(DOM::Element& element);

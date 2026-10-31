@@ -156,6 +156,9 @@ public:
         Compositing::ScrollStateSnapshot&&);
     void update_visual_context_tree(Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&);
     void update_scroll_state(Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState);
+    // A display list WebContent sent, or WebContent on its own, answered the context's request to record around new
+    // rects.
+    void note_answered_interest_refresh_request(u64 request_id) { m_newest_answered_interest_refresh_request_id = max(m_newest_answered_interest_refresh_request_id, request_id); }
     void set_video_sink(Compositing::VideoSinkResourceId, RefPtr<Media::DisplayingVideoSink>);
     HashMap<u64, Media::VideoSinkHandle> const& video_sink_handles() const { return m_scene.video_sink_handles(); }
 
@@ -445,6 +448,8 @@ private:
     ElasticOverscrollController m_elastic_overscroll_controller;
     Gfx::IntRect m_async_scrolling_viewport_rect;
     bool m_has_async_scrolling_state { false };
+    // The newest of the context's requests to record around new rects that WebContent answered.
+    u64 m_newest_answered_interest_refresh_request_id { 0 };
 
     CaretBlinkTimer m_caret_blink_timer;
     Function<void()> m_request_animation_frames;

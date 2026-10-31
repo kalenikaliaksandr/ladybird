@@ -201,6 +201,15 @@ interface Internals {
     // offset zero. An unbounded side is -Infinity or Infinity, and a rect with no area records none of the content.
     // Null when the list records all of it.
     object? recordedInterestRect(optional Element? scroller = null);
+    // Hands this document's compositor context a request to record its display list around the rect, in CSS pixels of
+    // the scroller's content at scroll offset zero, or of the viewport's if no scroller is given, as the compositor
+    // would, but in an id space of its own: the compositor never hears of it.
+    undefined injectInterestRefresh(InterestRect rect, optional Element? scroller = null);
+    // While held, requests to record display lists around new rects wait to be serviced. The next test begins unheld.
+    undefined holdInterestRefreshes();
+    undefined releaseInterestRefreshes();
+    // How many requests to record display lists around new rects were serviced since the test began.
+    unsigned long interestRefreshCount();
     undefined setAutoplayPolicy(DOMString policy);
 
     DOMString getComputedRole(Element element);
@@ -439,6 +448,14 @@ enum SpellingMenuItem { "none", "guess", "ignore", "learn" };
 enum ScrollGesturePhase { "none", "ongoing", "momentum", "ended" };
 enum DisplayListRecordingCoverage { "whole-document", "around-scroll-positions" };
 enum MouseEventThroughUIProcessType { "mousedown", "mouseup", "mousemove", "mouseleave" };
+
+// A rect of a scroll node's content, as recordedInterestRect() reads it.
+dictionary InterestRect {
+    required unrestricted double left;
+    required unrestricted double top;
+    required unrestricted double right;
+    required unrestricted double bottom;
+};
 
 // How many wheel ticks a wheel step amounts to on each axis. By default, they are counted from the pixel delta.
 dictionary WheelTicks {

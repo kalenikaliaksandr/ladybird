@@ -14,4 +14,9 @@ endpoint RenderClockClient
     pointer_moved(Web::CompositorContextId context_id, Web::DevicePixelPoint position, u32 buttons, bool scrolled_since_frame, u64 input_event_id) =|
     // The pointer left the context, beside the mouse event with the input event id `input_event_id`.
     pointer_left(Web::CompositorContextId context_id, u64 input_event_id) =|
+
+    // The compositor scrolled the context's scroll nodes close to the edges of what its display list records. WebContent
+    // records the list again around the rects, each in the device pixels of its node's content at scroll offset zero,
+    // and names `request_id` in the list that does. A later request replaces one not yet answered.
+    request_interest_refresh(Web::CompositorContextId context_id, u64 request_id, Vector<Web::ScrollNodeContentRect> scroll_node_rects) =|
 }

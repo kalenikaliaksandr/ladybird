@@ -6690,6 +6690,20 @@ OwnPtr<Compositor::CompositorContextHandle> LocalNavigable::take_compositor_cont
     return move(m_compositor_context);
 }
 
+void LocalNavigable::schedule_frame_for_interest_refresh(Web::CompositorContextId context_id)
+{
+    if (!Layout::RustFFI::interest_refresh_host_task_runs(context_id.value()))
+        return;
+    for (auto& navigable : all_local_navigables()) {
+        if (!navigable->has_compositor_context() || navigable->compositor_context().id() != context_id)
+            continue;
+        // A bare flag would wait for a rendering update that an idle page never runs.
+        if (auto document = navigable->active_document())
+            document->set_needs_repaint(Badge<LocalNavigable> {}, InvalidateDisplayList::PaintCommands);
+        return;
+    }
+}
+
 void LocalNavigable::repaint_after_compositor_process_reconnect()
 {
     resolve_all_pending_async_scroll_operations();

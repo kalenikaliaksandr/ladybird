@@ -7,12 +7,14 @@
 #include <AK/Math.h>
 #include <Compositor/RenderClockClientEndpoint.h>
 #include <Compositor/RenderClockServerEndpoint.h>
+#include <LibCompositing/Scrolling/AsyncScrollingState.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/ThreadEventQueue.h>
 #include <LibIPC/ConnectionToServer.h>
 #include <LibIPC/Transport.h>
 #include <LibThreading/Thread.h>
 #include <LibWeb/Compositor/RenderClock.h>
+#include <LibWeb/HTML/LocalNavigable.h>
 #include <LibWeb/Layout/LayoutRustFFI.h>
 
 namespace Web::Compositor {
@@ -53,6 +55,12 @@ private:
     {
         if (!m_detached)
             m_clock.did_receive_pointer_move(context_id, {}, 0, false, input_event_id);
+    }
+
+    virtual void request_interest_refresh(Web::CompositorContextId context_id, u64 request_id, Vector<Web::ScrollNodeContentRect> scroll_node_rects) override
+    {
+        if (!m_detached)
+            m_clock.did_receive_interest_refresh_request(context_id, request_id, scroll_node_rects);
     }
 
     RenderClock& m_clock;
@@ -141,6 +149,11 @@ bool RenderClock::invoke_on_clock_thread(Function<void()> function)
 
 ErrorOr<void> RenderClock::attach(IPC::TransportHandle handle)
 {
+    {
+        MutexLocker locker(m_mutex);
+        m_main_thread_event_loop = Core::EventLoop::current_weak();
+    }
+
     Mutex result_mutex;
     ConditionVariable result_condition { result_mutex };
     Optional<ErrorOr<void>> result;
@@ -174,6 +187,7 @@ void RenderClock::drop_channel()
 {
     m_armed_contexts.clear();
     m_pointer_lanes.clear();
+    Layout::RustFFI::interest_refresh_forget_requests();
     if (auto channel = move(m_channel)) {
         channel->detach();
         channel->shutdown();
@@ -294,13 +308,67 @@ void RenderClock::did_lose_channel()
 {
     m_armed_contexts.clear();
     m_pointer_lanes.clear();
+    Layout::RustFFI::interest_refresh_forget_requests();
     // The channel is dying from inside its own handler, which keeps it alive until it returns.
     m_channel = nullptr;
+}
+
+// A request names scroll nodes as the Compositor does, a pseudo-element's by its generator and pseudo-element type. The
+// visual viewport is never recorded around its scroll position, so a rect for it asks for nothing.
+static Vector<Layout::RustFFI::FfiScrollNodeContentRect> ffi_scroll_node_content_rects(ReadonlySpan<Web::ScrollNodeContentRect> scroll_node_rects)
+{
+    Vector<Layout::RustFFI::FfiScrollNodeContentRect> ffi_rects;
+    ffi_rects.ensure_capacity(scroll_node_rects.size());
+    for (auto const& scroll_node_rect : scroll_node_rects) {
+        auto kind = Compositing::compositor_scroll_node_kind_for(scroll_node_rect.scroll_node.kind);
+        if (!kind.has_value())
+            continue;
+        ffi_rects.unchecked_append({
+            .scrollable_node_id = scroll_node_rect.scroll_node.node_id.value(),
+            .scroll_node_kind = *kind,
+            .pseudo_element_type = scroll_node_rect.scroll_node.pseudo_element_type,
+            .rect = scroll_node_rect.rect,
+        });
+    }
+    return ffi_rects;
+}
+
+void RenderClock::did_receive_interest_refresh_request(Web::CompositorContextId context_id, u64 request_id, ReadonlySpan<Web::ScrollNodeContentRect> scroll_node_rects)
+{
+    auto ffi_rects = ffi_scroll_node_content_rects(scroll_node_rects);
+    Layout::RustFFI::interest_refresh_receive_request(context_id.value(), request_id, ffi_rects.data(), ffi_rects.size());
+}
+
+void RenderClock::inject_interest_refresh_for_testing(Web::CompositorContextId context_id, ReadonlySpan<Web::ScrollNodeContentRect> scroll_node_rects)
+{
+    auto ffi_rects = ffi_scroll_node_content_rects(scroll_node_rects);
+    Layout::RustFFI::interest_refresh_inject_for_testing(context_id.value(), ffi_rects.data(), ffi_rects.size());
+}
+
+bool RenderClock::ask_host_for_interest_refresh(Web::CompositorContextId context_id)
+{
+    RefPtr<Core::WeakEventLoopReference> main_thread_event_loop;
+    {
+        MutexLocker locker(m_mutex);
+        main_thread_event_loop = m_main_thread_event_loop;
+    }
+    if (!main_thread_event_loop)
+        return false;
+    auto event_loop = main_thread_event_loop->take();
+    if (!event_loop.is_alive())
+        return false;
+    event_loop->deferred_invoke([context_id] {
+        HTML::LocalNavigable::schedule_frame_for_interest_refresh(context_id);
+    });
+    // A post from another thread does not wake the loop by itself.
+    event_loop->wake();
+    return true;
 }
 
 }
 
 extern "C" void web_render_clock_hand_pointer_move(u64, bool, float, float, u32, bool, u64);
+extern "C" bool web_render_clock_ask_host_for_interest_refresh(u64);
 
 // The lane of a document hands the render clock a pointer move over a same-process iframe's compositor context.
 extern "C" void web_render_clock_hand_pointer_move(u64 context_id, bool has_position, float x, float y, u32 buttons, bool scrolled_since_frame, u64 input_event_id)
@@ -309,4 +377,11 @@ extern "C" void web_render_clock_hand_pointer_move(u64 context_id, bool has_posi
     if (has_position)
         position = Gfx::FloatPoint { x, y };
     Web::Compositor::RenderClock::the().hand_pointer_move(Web::CompositorContextId { context_id }, position, buttons, scrolled_since_frame, input_event_id);
+}
+
+// The registry of the Compositor's requests to record display lists around new rects asks the host for a frame of a
+// context, from the clock thread or from a test's.
+extern "C" bool web_render_clock_ask_host_for_interest_refresh(u64 context_id)
+{
+    return Web::Compositor::RenderClock::the().ask_host_for_interest_refresh(Web::CompositorContextId { context_id });
 }

@@ -39,6 +39,8 @@ struct AsyncScrollNodeID {
 };
 
 COMPOSITING_API Web::AsyncScrollNodeKind async_scroll_node_kind_for(Compositing::CompositorScrollNodeKind);
+// None for the visual viewport, which no display list records a scroll node for, and for a kind no process names.
+COMPOSITING_API Optional<Compositing::CompositorScrollNodeKind> compositor_scroll_node_kind_for(Web::AsyncScrollNodeKind);
 
 struct AsyncScrollOffset {
     Web::AsyncScrollNodeStableID stable_node_id;

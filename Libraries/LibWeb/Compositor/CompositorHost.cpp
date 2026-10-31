@@ -15,6 +15,7 @@
 #include <LibWeb/Compositor/NavigablePresenter.h>
 #include <LibWeb/Compositor/RenderClock.h>
 #include <LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h>
+#include <LibWeb/Layout/LayoutRustFFI.h>
 #include <LibWeb/WebGL/RemoteWebGLTransport.h>
 
 namespace Web::Compositor {
@@ -132,6 +133,8 @@ CompositorHost::~CompositorHost() = default;
 
 OwnPtr<CompositorContextHandle> CompositorHost::create_context(Web::CompositorContextId context_id)
 {
+    // The compositor's requests to record around new rects name contexts by id, and only one made here takes them.
+    Layout::RustFFI::interest_refresh_register_context(context_id.value());
     return adopt_own(*new CompositorContextHandle(*this, context_id));
 }
 
@@ -406,6 +409,7 @@ void CompositorHost::destroy_context(Web::CompositorContextId context_id)
         // A connection attached the render clock, whose lanes of the context hear of it no more.
         RenderClock::the().forget_context(context_id);
     }
+    Layout::RustFFI::interest_refresh_forget_context(context_id.value());
     context_was_destroyed(context_id);
 }
 

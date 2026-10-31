@@ -703,7 +703,8 @@ Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRe
     if (committed.has_value()) {
         committed->sealed->recording = recording;
         recording.in_flight = true;
-        Layout::RustFFI::render_state_commit_recorded_frame(host, &read, viewport, inputs, rendering_update_timestamp(document), give_up(committed.release_value()));
+        auto compositor_context_id = committed->sealed->context_id.value();
+        Layout::RustFFI::render_state_commit_recorded_frame(host, &read, viewport, inputs, compositor_context_id, rendering_update_timestamp(document), give_up(committed.release_value()));
         return recording;
     }
     if (Layout::RustFFI::render_state_record_display_list(host, &read, viewport, inputs) == Layout::RustFFI::FfiRecordingStart::NothingToRecord)
@@ -754,6 +755,7 @@ NonnullRefPtr<Compositing::DisplayList> display_list_of_published_recording(Disp
     stamp_async_scrolling_metadata(*display_list);
     if (presented.recorded_scroll_node_rect_count != 0) {
         Compositing::DisplayList::RecordedInterest recorded_interest;
+        recorded_interest.answered_refresh_request_id = presented.answered_refresh_request_id;
         recorded_interest.leaves_out_wheel_routing_outside_recorded_rects = presented.leaves_out_wheel_routing_outside_recorded_rects;
         for (auto const& recorded_rect : ReadonlySpan<Layout::RustFFI::FfiScrollNodeContentRect> { presented.recorded_scroll_node_rects, presented.recorded_scroll_node_rect_count }) {
             recorded_interest.scroll_node_rects.append({

@@ -227,6 +227,18 @@ pub fn saturate_at_scroll_range(rect: IntRect, content_area: IntRect, axes: Scro
     })
 }
 
+/// `rect`, as another process sent it, with a negative extent made empty and its edges clamped to the unbounded edges,
+/// so that arithmetic on its edges cannot overflow.
+pub fn interest_rect_within_unbounded_edges(rect: IntRect) -> IntRect {
+    rect_from_axis_spans(|axis| {
+        let span = axis.span_of(rect);
+        AxisSpan {
+            start: span.start,
+            end: span.end.max(span.start),
+        }
+    })
+}
+
 /// Whether `recorded` still holds `must_be_recorded` with room to scroll: on each axis the node can
 /// scroll, every bounded side keeps half a scrollport plus that side's lead beyond it; on each axis
 /// it cannot, `recorded` contains it.
@@ -646,6 +658,22 @@ mod tests {
             HORIZONTAL,
         );
         assert_eq!(placed_exactly, from_edges(400, 2300, 1201, 2600));
+    }
+
+    #[test]
+    fn a_rect_from_another_process_keeps_its_edges_within_the_unbounded_edges() {
+        assert_eq!(
+            interest_rect_within_unbounded_edges(from_edges(-300, 512, 700, 4096)),
+            from_edges(-300, 512, 700, 4096)
+        );
+        assert_eq!(
+            interest_rect_within_unbounded_edges(IntRect::new(i32::MAX - 10, -5, 100, -20)),
+            from_edges(UNBOUNDED, -5, UNBOUNDED, -5)
+        );
+        assert_eq!(
+            interest_rect_within_unbounded_edges(IntRect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX)),
+            from_edges(-UNBOUNDED, -UNBOUNDED, -1, -1)
+        );
     }
 
     #[test]

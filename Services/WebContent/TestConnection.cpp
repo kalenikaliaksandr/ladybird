@@ -6,6 +6,7 @@
 
 #include <LibWeb/Compositor/RenderClock.h>
 #include <LibWeb/HTML/LocalTraversableNavigable.h>
+#include <LibWeb/Layout/LayoutRustFFI.h>
 #include <WebContent/ConnectionFromClient.h>
 #include <WebContent/PageClient.h>
 #include <WebContent/TestConnection.h>
@@ -39,6 +40,8 @@ void TestConnection::reset_state_for_testing(Web::PageId page_id)
         // the document, so restore them at the test boundary before acknowledging the reset.
         Web::Compositor::RenderClock::the().set_manual_for_testing(false);
         page->page().client().set_manual_rendering_opportunities(false);
+        // A test's requests to record around new rects, and its hold on them, are forgotten rather than serviced.
+        Web::Layout::RustFFI::interest_refresh_reset_for_testing();
         as<Web::HTML::LocalTraversableNavigable>(*page->page().local_traversable()).reset_session_history_for_testing();
         auto active_entry = page->page().local_traversable()->active_session_history_entry();
         VERIFY(active_entry);

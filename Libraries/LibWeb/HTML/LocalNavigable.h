@@ -347,6 +347,9 @@ public:
     bool needs_to_record_display_list() const { return m_needs_to_record_display_list; }
     void set_needs_to_record_display_list() { m_needs_to_record_display_list = true; }
     void repaint_after_compositor_process_reconnect();
+    // The compositor asked to record the display list of the context again around new rects: the navigable presenting
+    // to the context records its next frame, which takes the newest request, unless a frame took it since.
+    static void schedule_frame_for_interest_refresh(Web::CompositorContextId);
 
     [[nodiscard]] bool has_inclusive_ancestor_with_visibility_hidden() const;
 

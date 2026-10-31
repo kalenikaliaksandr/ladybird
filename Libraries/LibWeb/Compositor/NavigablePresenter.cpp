@@ -29,13 +29,28 @@ struct PresenterFFI {
             sealed.published->referenced_resources = presenter.m_compositor_display_list_command_resources;
     }
 
-    static void present(NavigablePresenter& presenter, SealedPresentation& sealed, NonnullRefPtr<Compositing::DisplayList> display_list, CompositorFrameSink* sink)
+    // A request the frame's recording answers reaches the compositor on its own where no display list the frame sends
+    // names it: the recording found that the display list the compositor has records the rects already.
+    static void answer_interest_refresh_request(CompositorFrame& frame, u64 answered_refresh_request_id)
+    {
+        if (answered_refresh_request_id == 0)
+            return;
+        if (auto const& update = frame.display_list_update; update.has_value()) {
+            auto const& recorded_interest = update->display_list->recorded_interest();
+            if (recorded_interest.has_value() && recorded_interest->answered_refresh_request_id == answered_refresh_request_id)
+                return;
+        }
+        frame.answered_interest_refresh_request_id = answered_refresh_request_id;
+    }
+
+    static void present(NavigablePresenter& presenter, SealedPresentation& sealed, NonnullRefPtr<Compositing::DisplayList> display_list, u64 answered_refresh_request_id, CompositorFrameSink* sink)
     {
         MutexLocker locker(presenter.m_mutex);
         if (is_stale(presenter, sealed))
             return;
         auto frame = presenter.build_frame_beside_event_loop(sealed, move(display_list));
         frame.scroll_requests = move(sealed.scroll_requests);
+        answer_interest_refresh_request(frame, answered_refresh_request_id);
         note_presented(presenter, sealed);
         if (sink)
             sink->submit(move(frame));
@@ -277,5 +292,5 @@ extern "C" WEB_API void web_navigable_presenter_present(void* presenter, void* s
 {
     auto& sealed = *static_cast<Web::Compositor::SealedPresentation*>(sealed_pointer);
     auto display_list = Web::Painting::display_list_of_published_recording(sealed.recording.value(), *presented);
-    Web::Compositor::PresenterFFI::present(*static_cast<Web::Compositor::NavigablePresenter*>(presenter), sealed, move(display_list), static_cast<Web::Compositor::CompositorFrameSink*>(sink));
+    Web::Compositor::PresenterFFI::present(*static_cast<Web::Compositor::NavigablePresenter*>(presenter), sealed, move(display_list), presented->answered_refresh_request_id, static_cast<Web::Compositor::CompositorFrameSink*>(sink));
 }

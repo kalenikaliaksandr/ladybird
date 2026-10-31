@@ -62,6 +62,10 @@ struct CompositorFrame {
         Gfx::ShareableBitmap target;
     };
     Optional<ScreenshotRequest> screenshot_request;
+
+    // The compositor's request to record around new rects that the frame's recording answers, where no display list the
+    // frame sends names it: the display list the compositor has records the rects already.
+    Optional<u64> answered_interest_refresh_request_id;
 };
 
 struct FrameSinkFFI;

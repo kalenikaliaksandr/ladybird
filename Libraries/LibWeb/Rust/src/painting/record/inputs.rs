@@ -10,8 +10,10 @@ use crate::painting::display_list::commands::UniqueNodeId;
 use crate::painting::ffi::FfiChromeMetrics;
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::host::{FfiFlexOverlayInput, FfiGridOverlayInput, RootBackgroundSource};
+use crate::painting::interest_refresh::{InterestRequest, take_newest_interest_request};
 use libgfx_rust::font::FontHandle;
 use libgfx_rust::{Color, IntRect, IntSize};
+use std::sync::Arc;
 
 /// The inputs read by content that is recorded outside per-box captures: scroll metadata,
 /// viewport scrollbars, the wheel-target facts of hit-test items. Reusing a subtree capture from
@@ -50,6 +52,14 @@ impl UnframedRecordingInputs {
         inputs.device_pixels_per_css_pixel = tree_inputs.device_pixels_per_css_pixel;
         inputs.uncaptured.root_background_source = root_background_source;
         inputs
+    }
+
+    /// Has the recording of a frame committed for the compositor context `context_id` take the context's newest request
+    /// to record around new rects, where it records around the scroll positions.
+    pub(crate) fn take_interest_request_of_context(&mut self, context_id: u64) {
+        if let InterestInput::AroundScrollPositions { requested } = &mut self.0.interest {
+            *requested = take_newest_interest_request(context_id);
+        }
     }
 }
 
@@ -110,8 +120,11 @@ pub(crate) struct RecordingInputs {
 #[derive(Clone)]
 pub(crate) enum InterestInput {
     WholeDocument,
-    /// What lies around the part of each scroll node that its scroll position shows.
-    AroundScrollPositions,
+    /// What lies around the part of each scroll node that its scroll position shows, or the rect the compositor's
+    /// `requested` names where that holds the part.
+    AroundScrollPositions {
+        requested: Option<Arc<InterestRequest>>,
+    },
     /// Like `AroundScrollPositions`, but keeping only what an earlier testing recording aimed for, so that what a test
     /// records never depends on recordings made outside it.
     AroundScrollPositionsForTesting,

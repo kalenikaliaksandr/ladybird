@@ -137,7 +137,7 @@ impl FfiRecordingInputs {
             css_viewport_rect: self.css_viewport_rect.into(),
             interest: match self.coverage {
                 FfiRecordingCoverage::WholeDocument => InterestInput::WholeDocument,
-                FfiRecordingCoverage::AroundScrollPositions => InterestInput::AroundScrollPositions,
+                FfiRecordingCoverage::AroundScrollPositions => InterestInput::AroundScrollPositions { requested: None },
                 FfiRecordingCoverage::AroundScrollPositionsForTesting => InterestInput::AroundScrollPositionsForTesting,
                 FfiRecordingCoverage::AsSourceRecording => InterestInput::AsSourceRecording,
             },

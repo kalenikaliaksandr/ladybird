@@ -595,6 +595,13 @@ void ConnectionFromWebContent::present_frame(Web::CompositorContextId context_id
     m_compositor_state->present_frame(context_id, viewport_rect);
 }
 
+void ConnectionFromWebContent::answer_interest_refresh_request(Web::CompositorContextId context_id, u64 request_id)
+{
+    if (!context_is_owned_by_this_connection(context_id))
+        return;
+    m_compositor_state->answer_interest_refresh_request(context_id, request_id);
+}
+
 void ConnectionFromWebContent::request_screenshot(Web::CompositorContextId context_id, Compositing::ScreenshotRequestId request_id, Gfx::ShareableBitmap target_bitmap)
 {
     if (!context_is_owned_by_this_connection(context_id))

@@ -3000,6 +3000,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             manifest_dir.join("src/painting/paint_changes.rs"),
             manifest_dir.join("src/painting/ffi/main_thread_entries.rs"),
             manifest_dir.join("src/painting/paint_passes.rs"),
+            manifest_dir.join("src/painting/interest_refresh.rs"),
         ],
         &out_dir,
         Path::new("Layout/LayoutRustFFI.h"),

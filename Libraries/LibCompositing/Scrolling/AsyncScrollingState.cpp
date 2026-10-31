@@ -31,6 +31,21 @@ Web::AsyncScrollNodeKind async_scroll_node_kind_for(Compositing::CompositorScrol
     VERIFY_NOT_REACHED();
 }
 
+Optional<Compositing::CompositorScrollNodeKind> compositor_scroll_node_kind_for(Web::AsyncScrollNodeKind kind)
+{
+    switch (kind) {
+    case Web::AsyncScrollNodeKind::Viewport:
+        return Compositing::CompositorScrollNodeKind::Viewport;
+    case Web::AsyncScrollNodeKind::Element:
+        return Compositing::CompositorScrollNodeKind::Element;
+    case Web::AsyncScrollNodeKind::PseudoElement:
+        return Compositing::CompositorScrollNodeKind::PseudoElement;
+    case Web::AsyncScrollNodeKind::VisualViewport:
+        return {};
+    }
+    return {};
+}
+
 static Web::AsyncScrollNodeStableID stable_scroll_node_id_for(Web::UniqueNodeID scrollable_node_id, Compositing::CompositorScrollNodeKind kind, u8 pseudo_element_type)
 {
     return {

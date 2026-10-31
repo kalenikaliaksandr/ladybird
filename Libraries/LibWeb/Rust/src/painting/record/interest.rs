@@ -9,7 +9,8 @@
 //! scrollport on each side it can scroll. What the recording published last aimed for is kept while it still holds what
 //! the scrollport shows, so that scrolling a little records nothing new. A node culls by its aimed rect snapped to the
 //! interest grid and unbounded where it reaches the end of its scroll range, which is also what the display list tells
-//! the compositor it records.
+//! the compositor it records. A committed frame aims for the rect the compositor requested instead, where what it
+//! records for that rect holds what the scrollport shows.
 
 use super::PaintRecorder;
 use super::assemble::AssemblyCulling;
@@ -21,6 +22,7 @@ use crate::css::style::fast_hash::FastMap;
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::display_list::commands::{ClipNodeIndex, ContextRef, SpatialNodeIndex};
 use crate::painting::ffi::FfiScrollNodeContentRect;
+use crate::painting::interest_refresh::InterestRequest;
 use crate::painting::paint_read::PaintRead;
 use crate::painting::visual_context::interest::{
     CullSpace, LeadPerSide, ScrollRange, default_interest_rect, interest_rect_covers, saturate_at_scroll_range,
@@ -42,6 +44,9 @@ pub(crate) struct RecordedInterest {
     /// Whether the display list leaves out per-box wheel targets, wheel regions, scroll chaining barriers or nested
     /// context regions outside the rects.
     pub(crate) leaves_out_wheel_routing: bool,
+    /// The compositor's request to record around new rects that the recording answers: it records every rect the
+    /// request asks for.
+    pub(crate) answered_request_id: Option<u64>,
     // Where the recording's producers landed, for a later recording to tell whether they land there still. None when
     // the recording left nothing out by interest.
     cull_mapping: Option<CullMapping>,
@@ -68,7 +73,8 @@ struct CullMapping {
 }
 
 impl RecordedInterest {
-    /// Whether a display list with this interest tells the compositor what one with `other` tells it.
+    /// Whether a display list with this interest tells the compositor what one with `other` tells it. The request it
+    /// answers does not count: the frame that presents the list tells the compositor apart from the list.
     pub(crate) fn tells_the_compositor_the_same_as(&self, other: &Self) -> bool {
         self.scroll_node_rects == other.scroll_node_rects
             && self.leaves_out_wheel_routing == other.leaves_out_wheel_routing
@@ -166,6 +172,13 @@ impl ResolvedInterest {
         }
     }
 
+    // Notes the request the recording answers, where what it records holds every rect `requested` asks for.
+    fn note_answered_request(&mut self, requested: &InterestRequest) {
+        if let ResolvedRecordedInterest::Resolved(recorded) = &mut self.recorded {
+            recorded.answered_request_id = requested.compositor_request_answered_by(&recorded.scroll_node_rects);
+        }
+    }
+
     /// What the recording records, once assembly told whether it left out wheel routing.
     pub(crate) fn into_recorded_interest(self, leaves_out_wheel_routing: bool) -> Arc<RecordedInterest> {
         match self.recorded {
@@ -188,13 +201,31 @@ struct ScrollNodeGeometry {
 impl<O: Observer> PaintRecorder<'_, O> {
     /// What the recording records of its document, given `published`, what the recording published last records. A
     /// recording that may leave producers out by interest, or that verifies their placement, learns its cull spaces
-    /// here; any other places none of its producers.
+    /// here; any other places none of its producers. A recording that took the compositor's request answers it where
+    /// it records every rect the request asks for.
     pub(crate) fn resolve_interest(&mut self, published: Option<&Arc<RecordedInterest>>) -> ResolvedInterest {
+        let inputs = self.inputs;
+        let requested = match &inputs.interest {
+            InterestInput::AroundScrollPositions { requested } => requested.as_deref(),
+            _ => None,
+        };
+        let mut resolved = self.resolve_interest_around(published, requested);
+        if let Some(requested) = requested {
+            resolved.note_answered_request(requested);
+        }
+        resolved
+    }
+
+    fn resolve_interest_around(
+        &mut self,
+        published: Option<&Arc<RecordedInterest>>,
+        requested: Option<&InterestRequest>,
+    ) -> ResolvedInterest {
         let inputs = self.inputs;
         let leaves_out_by_interest = match inputs.interest {
             InterestInput::WholeDocument => false,
             InterestInput::AsSourceRecording => published.is_some_and(|published| published.cull_mapping.is_some()),
-            InterestInput::AroundScrollPositions | InterestInput::AroundScrollPositionsForTesting => true,
+            InterestInput::AroundScrollPositions { .. } | InterestInput::AroundScrollPositionsForTesting => true,
         };
         if leaves_out_by_interest || super::cull::verifies_paint_producer_bounds() {
             self.cull_spaces = self.cull_spaces_of_recording();
@@ -213,11 +244,11 @@ impl<O: Observer> PaintRecorder<'_, O> {
             (InterestInput::AsSourceRecording, Some(published)) => {
                 self.interest_of_source_recording(tree, &cull_spaces, published)
             }
-            (InterestInput::AroundScrollPositions, _) => {
-                self.interest_around_scroll_positions(tree, &cull_spaces, published.map(Arc::as_ref), false)
+            (InterestInput::AroundScrollPositions { .. }, _) => {
+                self.interest_around_scroll_positions(tree, &cull_spaces, published.map(Arc::as_ref), false, requested)
             }
             (InterestInput::AroundScrollPositionsForTesting, _) => {
-                self.interest_around_scroll_positions(tree, &cull_spaces, published.map(Arc::as_ref), true)
+                self.interest_around_scroll_positions(tree, &cull_spaces, published.map(Arc::as_ref), true, None)
             }
             (InterestInput::WholeDocument | InterestInput::AsSourceRecording, _) => ResolvedInterest::whole_document(),
         };
@@ -231,6 +262,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         cull_spaces: &CullSpaces,
         published: Option<&RecordedInterest>,
         for_testing: bool,
+        requested: Option<&InterestRequest>,
     ) -> ResolvedInterest {
         let published_nodes = published.map(ScrollNodesByOwner::new);
         // A test never depends on what a recording outside it aimed for.
@@ -280,25 +312,30 @@ impl<O: Observer> PaintRecorder<'_, O> {
                 } => rects.rect_of(parent),
                 _ => None,
             };
-            let axes = geometry.range.axes;
-            let view = view_to_record_around(geometry.scrollport, geometry.scroll_offset, parent_recorded, axes);
+            let view = view_to_record_around(
+                geometry.scrollport,
+                geometry.scroll_offset,
+                parent_recorded,
+                geometry.range.axes,
+            );
             let scrollport_size = IntSize {
                 width: geometry.scrollport.width,
                 height: geometry.scrollport.height,
             };
-            let aimed = if view.is_empty() {
-                IntRect::default()
-            } else {
-                kept_from
-                    .and_then(|published| published.aimed_rect_of(owner))
-                    .filter(|aimed| interest_rect_covers(*aimed, view, scrollport_size, LeadPerSide::default(), axes))
-                    .unwrap_or_else(|| default_interest_rect(view, scrollport_size, axes))
+            let named = FfiScrollNodeContentRect {
+                scrollable_node_id: self.data(owner).node_identity,
+                scroll_node_kind: kind,
+                pseudo_element_type: self.source.node_generated_for(owner).saturating_sub(1),
+                rect: IntRect::default(),
             };
-            let culled_by = if aimed.is_empty() {
-                IntRect::default()
-            } else {
-                saturate_at_scroll_range(snap_to_interest_grid(aimed), geometry.range.content_area, axes)
-            };
+            let aimed = aimed_interest_rect(
+                view,
+                requested.and_then(|requested| requested.rect_requested_for(&named)),
+                kept_from.and_then(|published| published.aimed_rect_of(owner)),
+                scrollport_size,
+                geometry.range,
+            );
+            let culled_by = interest_rect_recorded_for(aimed, geometry.range);
             rects.by_spatial_node[index] = Some(culled_by);
             let published_rect = published_nodes
                 .as_ref()
@@ -310,10 +347,8 @@ impl<O: Observer> PaintRecorder<'_, O> {
                     .insert(scroll_node, published_rect);
             }
             recorded.scroll_node_rects.push(FfiScrollNodeContentRect {
-                scrollable_node_id: self.data(owner).node_identity,
-                scroll_node_kind: kind,
-                pseudo_element_type: self.source.node_generated_for(owner).saturating_sub(1),
                 rect: culled_by,
+                ..named
             });
             recorded.scroll_nodes.push(ScrollNodeInterest {
                 scroll_node,
@@ -401,6 +436,65 @@ impl<O: Observer> PaintRecorder<'_, O> {
     }
 }
 
+// What a node records of its content where it aims for `aimed`: that snapped to the interest grid, and unbounded where it
+// reaches the end of the node's scroll range.
+fn interest_rect_recorded_for(aimed: IntRect, range: ScrollRange) -> IntRect {
+    if aimed.is_empty() {
+        return IntRect::default();
+    }
+    saturate_at_scroll_range(snap_to_interest_grid(aimed), range.content_area, range.axes)
+}
+
+// What a node aims to record around `view`: the rect the compositor requested while what the node records for it holds
+// the view with room to scroll, else the rect the published recording aimed for while that holds the view, else the
+// default rect around the view.
+fn aimed_interest_rect(
+    view: IntRect,
+    requested: Option<IntRect>,
+    published_aimed: Option<IntRect>,
+    scrollport_size: IntSize,
+    range: ScrollRange,
+) -> IntRect {
+    let holds_view =
+        |rect: IntRect| interest_rect_covers(rect, view, scrollport_size, LeadPerSide::default(), range.axes);
+    if let Some(requested) = requested
+        .map(|requested| requested_rect_joined_with_view_on_unscrollable_axes(requested, view, range))
+        .filter(|requested| holds_view(interest_rect_recorded_for(*requested, range)))
+    {
+        return requested;
+    }
+    if view.is_empty() {
+        return IntRect::default();
+    }
+    published_aimed
+        .filter(|aimed| holds_view(*aimed))
+        .unwrap_or_else(|| default_interest_rect(view, scrollport_size, range.axes))
+}
+
+// `requested`, joined with `view` on each axis `range` does not scroll, where a node records all of its view. The
+// compositor cuts such an axis by where it takes the node to lie in its parent, which it tells without the filters that
+// spread the node's content, so it may ask for less of that axis than the node records.
+fn requested_rect_joined_with_view_on_unscrollable_axes(
+    requested: IntRect,
+    view: IntRect,
+    range: ScrollRange,
+) -> IntRect {
+    if view.is_empty() {
+        return requested;
+    }
+    let (left, right) = if range.axes.horizontal {
+        (requested.x, requested.right())
+    } else {
+        (requested.x.min(view.x), requested.right().max(view.right()))
+    };
+    let (top, bottom) = if range.axes.vertical {
+        (requested.y, requested.bottom())
+    } else {
+        (requested.y.min(view.y), requested.bottom().max(view.bottom()))
+    };
+    IntRect::new(left, top, right - left, bottom - top)
+}
+
 fn cull_mapping_of(tree: &VisualContextTree, cull_spaces: &CullSpaces) -> CullMapping {
     let compositor_scroll_nodes = tree
         .spatial_nodes
@@ -424,5 +518,116 @@ fn cull_mapping_of(tree: &VisualContextTree, cull_spaces: &CullSpaces) -> CullMa
     CullMapping {
         compositor_scroll_nodes,
         effects_under_spreading_filters,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::painting::visual_context::interest::{ScrollableAxes, UNBOUNDED_INTEREST_EDGE};
+
+    const UNBOUNDED: i32 = UNBOUNDED_INTEREST_EDGE;
+    const SCROLLPORT: IntRect = IntRect::new(0, 0, 1000, 800);
+    const SCROLLPORT_SIZE: IntSize = IntSize {
+        width: 1000,
+        height: 800,
+    };
+    const VERTICAL: ScrollableAxes = ScrollableAxes {
+        horizontal: false,
+        vertical: true,
+    };
+
+    fn from_edges(left: i32, top: i32, right: i32, bottom: i32) -> IntRect {
+        IntRect::new(left, top, right - left, bottom - top)
+    }
+
+    // A root that scrolls 20000 px of content vertically.
+    fn root_range() -> ScrollRange {
+        ScrollRange::new(
+            SCROLLPORT,
+            FloatPoint { x: 0.0, y: 0.0 },
+            FloatPoint { x: 0.0, y: 19200.0 },
+        )
+    }
+
+    fn view_at(scroll_offset_y: f32) -> IntRect {
+        view_to_record_around(
+            SCROLLPORT,
+            FloatPoint {
+                x: 0.0,
+                y: scroll_offset_y,
+            },
+            None,
+            VERTICAL,
+        )
+    }
+
+    #[test]
+    fn a_frame_aims_for_the_requested_rect_while_it_holds_what_the_frame_shows() {
+        let view = view_at(5000.0);
+        let requested = from_edges(-UNBOUNDED, 4000, UNBOUNDED, 7000);
+        assert_eq!(
+            aimed_interest_rect(view, Some(requested), None, SCROLLPORT_SIZE, root_range()),
+            requested
+        );
+
+        // A rect that leaves less than half a scrollport above what the frame shows is not aimed for.
+        let behind_the_frame = from_edges(-UNBOUNDED, 5200, UNBOUNDED, 7000);
+        assert_eq!(
+            aimed_interest_rect(view, Some(behind_the_frame), None, SCROLLPORT_SIZE, root_range()),
+            from_edges(-UNBOUNDED, 4200, UNBOUNDED, 6600)
+        );
+        let published_aimed = from_edges(-UNBOUNDED, 4500, UNBOUNDED, 6300);
+        assert_eq!(
+            aimed_interest_rect(
+                view,
+                Some(behind_the_frame),
+                Some(published_aimed),
+                SCROLLPORT_SIZE,
+                root_range()
+            ),
+            published_aimed
+        );
+    }
+
+    #[test]
+    fn a_frame_takes_a_requested_rect_narrower_than_its_view_where_the_node_cannot_scroll() {
+        // The root's view spans its whole width, which it cannot scroll, while the compositor asked for its scrollport's.
+        let view = view_at(5000.0);
+        let requested = from_edges(0, 4000, 1000, 7000);
+        let aimed = aimed_interest_rect(view, Some(requested), None, SCROLLPORT_SIZE, root_range());
+        assert_eq!(aimed, from_edges(-UNBOUNDED, 4000, UNBOUNDED, 7000));
+        assert!(interest_rect_recorded_for(aimed, root_range()).contains_rect(requested));
+    }
+
+    #[test]
+    fn a_requested_rect_that_ends_with_the_content_holds_the_end_of_the_scroll_range() {
+        // The rect ends where the content does, so what the frame records for it is unbounded below.
+        let requested = from_edges(-UNBOUNDED, 18000, UNBOUNDED, 20000);
+        assert_eq!(
+            aimed_interest_rect(view_at(19200.0), Some(requested), None, SCROLLPORT_SIZE, root_range()),
+            requested
+        );
+        assert_eq!(
+            interest_rect_recorded_for(requested, root_range()),
+            from_edges(-UNBOUNDED, 17920, UNBOUNDED, UNBOUNDED)
+        );
+    }
+
+    #[test]
+    fn a_node_its_parent_cuts_away_records_only_what_the_compositor_requests() {
+        let cut_away = view_to_record_around(
+            SCROLLPORT,
+            FloatPoint { x: 0.0, y: 0.0 },
+            Some(from_edges(0, 4096, 1024, 8192)),
+            VERTICAL,
+        );
+        assert!(cut_away.is_empty());
+        assert!(aimed_interest_rect(cut_away, None, None, SCROLLPORT_SIZE, root_range()).is_empty());
+        let requested = from_edges(0, 0, 1000, 1600);
+        assert_eq!(
+            aimed_interest_rect(cut_away, Some(requested), None, SCROLLPORT_SIZE, root_range()),
+            requested
+        );
     }
 }

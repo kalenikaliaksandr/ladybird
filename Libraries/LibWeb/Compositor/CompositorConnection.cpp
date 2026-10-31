@@ -237,6 +237,12 @@ bool CompositorConnectionFrameSink::submit(CompositorFrame&& frame)
     }
     if (auto& request = frame.screenshot_request; request.has_value()) {
         auto encoded_message = MUST(Messages::CompositorWebContentServer::RequestScreenshot::static_encode(context_id, request->id, request->target));
+        if (!post(encoded_message))
+            return false;
+    }
+    // Last, so that the compositor has the display list the answer is about.
+    if (auto request_id = frame.answered_interest_refresh_request_id; request_id.has_value()) {
+        auto encoded_message = MUST(Messages::CompositorWebContentServer::AnswerInterestRefreshRequest::static_encode(context_id, *request_id));
         return post(encoded_message);
     }
     return true;

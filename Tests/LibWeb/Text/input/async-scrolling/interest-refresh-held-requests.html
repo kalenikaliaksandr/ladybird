@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 6000px; }
+    #scroller { overflow: auto; width: 200px; height: 200px; }
+    #scroller-content { height: 2000px; }
+</style>
+<div id="scroller"><div id="scroller-content"></div></div>
+<script>
+// A held request waits until released, when only the newest request of the context is serviced. A request that
+// arrives once the host was asked for a frame is taken by that frame, so it asks for nothing more.
+test(() => {
+    const serviced = internals.interestRefreshCount();
+    internals.holdInterestRefreshes();
+    internals.injectInterestRefresh({ left: 0, top: 0, right: 800, bottom: 1200 });
+    internals.injectInterestRefresh({ left: 0, top: 400, right: 200, bottom: 1600 }, document.getElementById("scroller"));
+    println(`serviced while held: ${internals.interestRefreshCount() - serviced}`);
+    internals.releaseInterestRefreshes();
+    println(`serviced once released: ${internals.interestRefreshCount() - serviced}`);
+    internals.injectInterestRefresh({ left: -Infinity, top: 600, right: Infinity, bottom: Infinity });
+    println(`serviced after a request that the asked-for frame takes: ${internals.interestRefreshCount() - serviced}`);
+});
+</script>

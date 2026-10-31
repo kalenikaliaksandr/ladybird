@@ -139,6 +139,8 @@ public:
     void set_context_visibility(Web::CompositorContextId, Compositing::ContextVisibility);
     void set_context_presents_from_cpu_memory(Web::CompositorContextId, bool);
     void present_frame(Web::CompositorContextId, Gfx::IntRect viewport_rect);
+    // WebContent answered the context's request to record around new rects without a new display list.
+    void answer_interest_refresh_request(Web::CompositorContextId, u64 request_id);
     // Delivers the rendering opportunity a context requested now rather than at the next display tick: a
     // viewport change that arrived while an animation's opportunity was outstanding starts its update at once.
     void hurry_rendering_opportunity(Web::CompositorContextId);

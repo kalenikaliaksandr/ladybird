@@ -90,6 +90,7 @@ private:
     virtual void request_rendering_opportunity(Web::CompositorContextId, double maximum_frames_per_second) override;
     virtual void hurry_rendering_opportunity(Web::CompositorContextId) override;
     virtual void present_frame(Web::CompositorContextId, Gfx::IntRect viewport_rect) override;
+    virtual void answer_interest_refresh_request(Web::CompositorContextId, u64 request_id) override;
     virtual void request_screenshot(Web::CompositorContextId, Compositing::ScreenshotRequestId request_id, Gfx::ShareableBitmap target_bitmap) override;
 
     virtual void dispatch_mouse_event_to_web_content(u64 page_id, Web::MouseEvent const&) override;

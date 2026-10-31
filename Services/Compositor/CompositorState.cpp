@@ -1292,6 +1292,12 @@ void CompositorState::present_frame(Web::CompositorContextId context_id, Gfx::In
     schedule_pending_present_frame(context_id, *context);
 }
 
+void CompositorState::answer_interest_refresh_request(Web::CompositorContextId context_id, u64 request_id)
+{
+    if (auto* context = context_if_present(context_id))
+        context->note_answered_interest_refresh_request(request_id);
+}
+
 void CompositorState::present_frame(Web::CompositorContextId context_id, ContextState& context, PendingFrame pending_frame)
 {
     auto composited_context_resolver = resolver_for(context_id);

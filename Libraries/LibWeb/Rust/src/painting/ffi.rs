@@ -492,6 +492,8 @@ pub struct FfiPresentedRecording {
     pub recorded_scroll_node_rects: *const FfiScrollNodeContentRect,
     pub recorded_scroll_node_rect_count: usize,
     pub leaves_out_wheel_routing_outside_recorded_rects: bool,
+    /// The compositor's request to record around new rects that the recording answers, or 0.
+    pub answered_refresh_request_id: u64,
 }
 
 impl FfiPresentedRecording {
@@ -506,6 +508,7 @@ impl FfiPresentedRecording {
             recorded_scroll_node_rects: recorded_interest.scroll_node_rects.as_ptr(),
             recorded_scroll_node_rect_count: recorded_interest.scroll_node_rects.len(),
             leaves_out_wheel_routing_outside_recorded_rects: recorded_interest.leaves_out_wheel_routing,
+            answered_refresh_request_id: recorded_interest.answered_request_id.unwrap_or(0),
         }
     }
 
@@ -521,6 +524,7 @@ impl FfiPresentedRecording {
                 recorded_scroll_node_rects: std::ptr::null(),
                 recorded_scroll_node_rect_count: 0,
                 leaves_out_wheel_routing_outside_recorded_rects: false,
+                answered_refresh_request_id: 0,
             },
         }
     }

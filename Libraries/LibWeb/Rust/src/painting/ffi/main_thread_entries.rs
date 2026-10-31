@@ -664,7 +664,9 @@ unsafe fn commit_frame(
     host.recording().fly(flight);
 }
 
-/// Commits the frame of `host`'s document as a recording of its viewport with `inputs` (see [`commit_frame`]).
+/// Commits the frame of `host`'s document as a recording of its viewport with `inputs` (see [`commit_frame`]), for the
+/// compositor context `compositor_context_id`, whose newest request to record around new rects a recording around the
+/// scroll positions takes.
 ///
 /// # Safety
 ///
@@ -675,15 +677,16 @@ pub unsafe extern "C" fn render_state_commit_recorded_frame(
     read: &crate::render_state::BegunRead,
     viewport: NodeSlotId,
     inputs: crate::painting::host::FfiRecordingInputs,
+    compositor_context_id: u64,
     timestamp: f64,
     presentation: crate::painting::ffi::FfiPresentation,
 ) {
     let recorder = take_recorder_for_recording(host, read);
-    let content = crate::render_state::CommittedContent::Recording {
-        frame_inputs: frame_inputs(host, viewport, &inputs, &recorder),
-        // SAFETY: The host lends the input arrays and buffers for this call, and the inputs copy what they read of them.
-        inputs: unsafe { inputs.recording_inputs() },
-    };
+    let frame_inputs = frame_inputs(host, viewport, &inputs, &recorder);
+    // SAFETY: The host lends the input arrays and buffers for this call, and the inputs copy what they read of them.
+    let mut inputs = unsafe { inputs.recording_inputs() };
+    inputs.take_interest_request_of_context(compositor_context_id);
+    let content = crate::render_state::CommittedContent::Recording { frame_inputs, inputs };
     let held_for_testing = crate::painting::recording_slot::take_recording_hold_for_testing();
     // SAFETY: Guaranteed by the caller.
     unsafe { commit_frame(host, read, recorder, content, held_for_testing, timestamp, presentation) };

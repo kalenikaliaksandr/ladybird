@@ -1,0 +1,3 @@
+serviced while held: 0
+serviced once released: 1
+serviced after a request that the asked-for frame takes: 1

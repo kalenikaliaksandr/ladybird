@@ -17,28 +17,13 @@
 
 namespace Compositing {
 
-// Recorded content rects come from WebContent. A side at or past the unbounded edge leaves nothing out beyond it, so it
-// is kept there, where the extent of the rect cannot overflow; a rect without area records nothing.
-static Gfx::IntRect recorded_content_rect_within_unbounded_edges(Gfx::IntRect const& rect)
-{
-    if (rect.width() <= 0 || rect.height() <= 0)
-        return { rect.location(), {} };
-    auto edge_within_unbounded_edges = [](i64 edge) {
-        constexpr i64 unbounded_edge = Compositing::RustFFI::UNBOUNDED_INTEREST_EDGE;
-        return static_cast<int>(clamp(edge, -unbounded_edge, unbounded_edge));
-    };
-    auto left = edge_within_unbounded_edges(rect.x());
-    auto top = edge_within_unbounded_edges(rect.y());
-    auto right = edge_within_unbounded_edges(static_cast<i64>(rect.x()) + rect.width());
-    auto bottom = edge_within_unbounded_edges(static_cast<i64>(rect.y()) + rect.height());
-    return { left, top, right - left, bottom - top };
-}
-
 void AsyncScrollTree::set_state(AsyncScrollingState&& state)
 {
+    // Recorded content rects come from WebContent. A side at or past the unbounded edge leaves nothing out beyond it, so
+    // it is kept there, where arithmetic on the edges cannot overflow.
     for (auto& node : state.scroll_nodes) {
         if (node.recorded_content_rect.has_value())
-            node.recorded_content_rect = recorded_content_rect_within_unbounded_edges(*node.recorded_content_rect);
+            Compositing::RustFFI::interest_rect_within_unbounded_edges(*node.recorded_content_rect, &*node.recorded_content_rect);
     }
     m_document_id = state.document_id;
     m_scroll_nodes = move(state.scroll_nodes);
