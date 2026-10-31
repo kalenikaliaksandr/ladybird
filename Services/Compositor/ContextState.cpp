@@ -2040,6 +2040,7 @@ ContextPresenter::FrameContent ContextState::frame_content(Compositing::ScrollSt
     return {
         .presented_scroll_state_snapshot = presented_scroll_state_snapshot,
         .scrollbar_controller = m_scrollbar_controller,
+        .async_scroll_tree = m_async_scroll_tree,
         .viewport_scroll_node_index = m_async_scroll_tree.viewport_scroll_node_id().map([](auto const& node_id) { return node_id.scroll_node_index; }),
         .composited_context_resolver = composited_context_resolver,
     };

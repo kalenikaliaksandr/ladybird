@@ -86,6 +86,7 @@ private:
     struct SentRequest {
         u64 id { 0 };
         MonotonicTime sent_at;
+        u64 checkerboarded_frame_count_when_sent { 0 };
     };
 
     void note_answered(u64 request_id);

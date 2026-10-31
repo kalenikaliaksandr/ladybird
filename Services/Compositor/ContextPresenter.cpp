@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Array.h>
+#include <AK/HashMap.h>
 #include <Compositor/CanvasSurfaceRegistry.h>
 #include <Compositor/ContextPresenter.h>
 #include <Compositor/ContextScene.h>
@@ -13,6 +15,8 @@
 #include <Compositor/ScrollbarController.h>
 #include <Compositor/SkiaUtils.h>
 #include <LibCompositing/DisplayList/DisplayListDamage.h>
+#include <LibCompositing/RustFFI.h>
+#include <LibCompositing/Scrolling/AsyncScrollTree.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/Bitmap.h>
 #include <LibMedia/Sinks/VideoSink.h>
@@ -466,15 +470,18 @@ Gfx::IntRect ContextPresenter::damage_since_last_raster(Gfx::IntSize viewport_si
         // The list doesn't draw the video. If the last rasterized list did, the diff below damages
         // the command it no longer has.
     }
-    auto display_list_damage = Compositing::compute_display_list_damage(
-        *last_frame.display_list,
-        last_frame.visual_context_tree,
-        last_frame.scroll_state_snapshot,
-        *m_scene.display_list(),
-        m_scene.visual_context_tree_for_compositing(),
-        presented_scroll_state_snapshot,
-        viewport_rect,
-        { .canvases = canvases_with_new_content, .video_sinks = video_sinks_with_new_frames });
+    Compositing::LiveContentChanges live_content_changes { .canvases = canvases_with_new_content, .video_sinks = video_sinks_with_new_frames };
+    auto display_list_damage = records_content_of_last_rasterized_list_around_other_rects(last_frame)
+        ? damage_since_list_recorded_around_other_rects(last_frame, frame_content, viewport_rect, live_content_changes)
+        : Compositing::compute_display_list_damage(
+              *last_frame.display_list,
+              last_frame.visual_context_tree,
+              last_frame.scroll_state_snapshot,
+              display_list,
+              m_scene.visual_context_tree_for_compositing(),
+              presented_scroll_state_snapshot,
+              viewport_rect,
+              live_content_changes);
     if (!display_list_damage.has_value())
         return viewport_rect;
 
@@ -485,6 +492,123 @@ Gfx::IntRect ContextPresenter::damage_since_last_raster(Gfx::IntSize viewport_si
         if (last_frame.scroll_state_snapshot.device_offset_for_index(scrollbar.scroll_node_index) == presented_scroll_state_snapshot.device_offset_for_index(scrollbar.scroll_node_index))
             continue;
         damage_rect.unite(scrollbar.gutter_rect.united(scrollbar.expanded_gutter_rect));
+    }
+    damage_rect.intersect(viewport_rect);
+    return damage_rect;
+}
+
+// A list recorded again around other rects keeps the content generation of the list whose content it records. Under the
+// same tree structure, each of the two lists can be diffed against itself under the other's tree.
+bool ContextPresenter::records_content_of_last_rasterized_list_around_other_rects(RasterizedFrame const& last_frame) const
+{
+    auto const& display_list = *m_scene.display_list();
+    auto const& last_display_list = *last_frame.display_list;
+    return &display_list != &last_display_list
+        && display_list.content_generation() != 0
+        && display_list.content_generation() == last_display_list.content_generation()
+        && display_list.compatible_visual_context_tree_structural_epoch() == last_display_list.compatible_visual_context_tree_structural_epoch();
+}
+
+// Two lists of the same content draw it alike wherever both record it, as each records whole every command that reaches
+// what it records. Their pixels differ only where content moved or live content changed since the last raster, which
+// diffing each list against itself under the last and the current tree and scroll offsets finds, and where they record
+// a scroll node differently. Diffing the two lists against each other would damage every command one leaves out.
+Optional<Gfx::IntRect> ContextPresenter::damage_since_list_recorded_around_other_rects(RasterizedFrame const& last_frame, FrameContent const& frame_content, Gfx::IntRect viewport_rect, Compositing::LiveContentChanges live_content_changes)
+{
+    auto const& display_list = *m_scene.display_list();
+    auto const& visual_context_tree = m_scene.visual_context_tree_for_compositing();
+    auto const& presented_scroll_state_snapshot = frame_content.presented_scroll_state_snapshot;
+    auto damage_rect = Compositing::compute_display_list_damage(
+        display_list,
+        last_frame.visual_context_tree,
+        last_frame.scroll_state_snapshot,
+        display_list,
+        visual_context_tree,
+        presented_scroll_state_snapshot,
+        viewport_rect,
+        live_content_changes);
+    if (!damage_rect.has_value())
+        return {};
+
+    // Content only the last list draws must be repainted where it was drawn, which may not be where it would be now.
+    auto content_may_have_moved = last_frame.visual_context_tree.rust_handle() != visual_context_tree.rust_handle()
+        || last_frame.scroll_state_snapshot.device_offsets() != presented_scroll_state_snapshot.device_offsets();
+    if (content_may_have_moved) {
+        auto last_display_list_damage = Compositing::compute_display_list_damage(
+            *last_frame.display_list,
+            last_frame.visual_context_tree,
+            last_frame.scroll_state_snapshot,
+            *last_frame.display_list,
+            visual_context_tree,
+            presented_scroll_state_snapshot,
+            viewport_rect,
+            {});
+        if (!last_display_list_damage.has_value())
+            return {};
+        damage_rect->unite(*last_display_list_damage);
+    }
+
+    auto scroll_node_damage = damage_where_lists_record_scroll_nodes_differently(*last_frame.display_list, frame_content, viewport_rect);
+    if (!scroll_node_damage.has_value())
+        return {};
+    damage_rect->unite(*scroll_node_damage);
+    return damage_rect;
+}
+
+// What shows of the content of each scroll node that the two lists record differently, where one may draw what the
+// other leaves out. Nothing when that cannot be told.
+Optional<Gfx::IntRect> ContextPresenter::damage_where_lists_record_scroll_nodes_differently(Compositing::DisplayList const& last_display_list, FrameContent const& frame_content, Gfx::IntRect viewport_rect)
+{
+    auto rects_recorded_by = [](Compositing::DisplayList const& display_list) {
+        HashMap<Web::AsyncScrollNodeStableID, Gfx::IntRect> rects;
+        if (auto const& recorded_interest = display_list.recorded_interest(); recorded_interest.has_value()) {
+            for (auto const& recorded_rect : recorded_interest->scroll_node_rects)
+                rects.set(recorded_rect.scroll_node, recorded_rect.rect);
+        }
+        return rects;
+    };
+    auto last_recorded_rects = rects_recorded_by(last_display_list);
+    auto recorded_rects = rects_recorded_by(*m_scene.display_list());
+
+    auto const& async_scroll_tree = frame_content.async_scroll_tree;
+    auto const& visual_context_tree = m_scene.visual_context_tree_for_compositing();
+    auto const& presented_scroll_state_snapshot = frame_content.presented_scroll_state_snapshot;
+    auto viewport = viewport_rect.to_type<float>();
+    Gfx::IntRect damage_rect;
+    auto add_damage_of_scroll_node = [&](Web::AsyncScrollNodeStableID stable_node_id, Optional<Gfx::IntRect> last_recorded, Optional<Gfx::IntRect> recorded) {
+        if (last_recorded == recorded)
+            return true;
+        auto node_id = async_scroll_tree.scroll_node_id_for_stable_id(stable_node_id);
+        auto const* node = node_id.has_value() ? async_scroll_tree.scroll_node_for_id(*node_id) : nullptr;
+        if (!node || !visual_context_tree.context_is_valid({ .spatial = node->node_id.scroll_node_index }))
+            return false;
+        Array<Gfx::IntRect, 4> content_rects;
+        auto content_rect_count = Compositing::RustFFI::shown_content_recorded_differently(
+            node->scrollport_rect,
+            async_scroll_tree.scroll_offset_for_node(*node_id, presented_scroll_state_snapshot).value_or({}),
+            last_recorded.has_value(),
+            last_recorded.value_or({}),
+            recorded.has_value(),
+            recorded.value_or({}),
+            content_rects.data());
+        for (size_t index = 0; index < content_rect_count; ++index) {
+            auto rect = visual_context_tree.transform_rect_to_viewport(node->node_id.scroll_node_index, content_rects[index].to_type<float>(), presented_scroll_state_snapshot);
+            if (!isfinite(rect.x()) || !isfinite(rect.y()) || !isfinite(rect.width()) || !isfinite(rect.height()))
+                return false;
+            rect.intersect(viewport);
+            if (!rect.is_empty())
+                damage_rect.unite(Gfx::enclosing_int_rect(rect).inflated(1, 1, 1, 1));
+        }
+        return true;
+    };
+
+    for (auto const& [stable_node_id, recorded] : recorded_rects) {
+        if (!add_damage_of_scroll_node(stable_node_id, last_recorded_rects.get(stable_node_id), recorded))
+            return {};
+    }
+    for (auto const& [stable_node_id, last_recorded] : last_recorded_rects) {
+        if (!recorded_rects.contains(stable_node_id) && !add_damage_of_scroll_node(stable_node_id, last_recorded, {}))
+            return {};
     }
     damage_rect.intersect(viewport_rect);
     return damage_rect;

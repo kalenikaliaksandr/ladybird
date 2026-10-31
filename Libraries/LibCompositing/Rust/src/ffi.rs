@@ -59,6 +59,34 @@ pub unsafe extern "C" fn interest_rect_within_unbounded_edges(
     unsafe { out_rect.write(within) };
 }
 
+/// Writes what of a scroll node's content shows where two display lists of the same content may draw it differently,
+/// as `shown_content_recorded_differently` works it out from what each records of the node, through `out_rects`, and
+/// returns how many rects it wrote. A list that does not record part of the node records all of it.
+///
+/// # Safety
+/// `out_rects` must point to four writable rects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn shown_content_recorded_differently(
+    scrollport: libgfx_rust::IntRect,
+    scroll_offset: libgfx_rust::FloatPoint,
+    old_records_part: bool,
+    old_recorded: libgfx_rust::IntRect,
+    new_records_part: bool,
+    new_recorded: libgfx_rust::IntRect,
+    out_rects: *mut libgfx_rust::IntRect,
+) -> usize {
+    let pieces = crate::visual_context::interest::shown_content_recorded_differently(
+        scrollport,
+        scroll_offset,
+        old_records_part.then_some(old_recorded),
+        new_records_part.then_some(new_recorded),
+    );
+    let count = pieces.iter().take_while(|piece| !piece.is_empty()).count();
+    // SAFETY: Guaranteed by the caller.
+    unsafe { std::ptr::copy_nonoverlapping(pieces.as_ptr(), out_rects, count) };
+    count
+}
+
 /// # Safety
 ///
 /// Both storages must be live storage handles, both trees live retained tree handles, and the

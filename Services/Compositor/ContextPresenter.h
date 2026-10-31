@@ -37,6 +37,13 @@ class SkiaBackendContext;
 
 }
 
+namespace Compositing {
+
+class AsyncScrollTree;
+struct LiveContentChanges;
+
+}
+
 namespace Compositor {
 
 class ContextScene;
@@ -67,6 +74,7 @@ public:
     struct FrameContent {
         Compositing::ScrollStateSnapshot const& presented_scroll_state_snapshot;
         ScrollbarController const& scrollbar_controller;
+        Compositing::AsyncScrollTree const& async_scroll_tree;
         Optional<Compositing::SpatialNodeIndex> viewport_scroll_node_index;
         CompositedContextResolver const* composited_context_resolver { nullptr };
     };
@@ -143,6 +151,9 @@ private:
     Gfx::IntRect raster_damage_rect(Gfx::IntRect) const;
     Gfx::IntRect frame_damage_for(PendingFrame const&, FrameContent const&);
     Gfx::IntRect damage_since_last_raster(Gfx::IntSize viewport_size, FrameContent const&);
+    bool records_content_of_last_rasterized_list_around_other_rects(RasterizedFrame const&) const;
+    Optional<Gfx::IntRect> damage_since_list_recorded_around_other_rects(RasterizedFrame const&, FrameContent const&, Gfx::IntRect viewport_rect, Compositing::LiveContentChanges);
+    Optional<Gfx::IntRect> damage_where_lists_record_scroll_nodes_differently(Compositing::DisplayList const& last_display_list, FrameContent const&, Gfx::IntRect viewport_rect);
     void remember_rasterized_frame(Gfx::IntSize viewport_size, Compositing::ScrollStateSnapshot const& presented_scroll_state_snapshot);
     Optional<u64> current_video_frame_id(Compositing::VideoSinkResourceId);
     void stop_backing_store_shrink_timer();

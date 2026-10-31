@@ -121,7 +121,7 @@ void RecordingRefreshController::note_sent(Request const& request, MonotonicTime
     m_request_in_flight = RequestInFlight { .id = request.id, .sent_at = now, .scroll_node_rects = request.scroll_node_rects, .resend_count = resend_count };
     if (m_recently_sent_requests.size() == recently_sent_request_count)
         m_recently_sent_requests.take_first();
-    m_recently_sent_requests.append({ .id = request.id, .sent_at = now });
+    m_recently_sent_requests.append({ .id = request.id, .sent_at = now, .checkerboarded_frame_count_when_sent = m_checkerboarded_frame_count });
     ++m_requests_sent;
 }
 
@@ -133,7 +133,7 @@ void RecordingRefreshController::note_answered_by_display_list(u64 request_id, M
         auto latency = now - sent_request.sent_at;
         m_planner.note_display_list_answered_request_after(latency);
         if (interest_refresh_logging_enabled())
-            dbgln("INTEREST_REFRESH answered={} latency={} µs checkerboarded_frames={}", request_id, latency.to_microseconds(), m_checkerboarded_frame_count);
+            dbgln("INTEREST_REFRESH answered={} latency={} µs checkerboarded_frames={}", request_id, latency.to_microseconds(), m_checkerboarded_frame_count - sent_request.checkerboarded_frame_count_when_sent);
         break;
     }
     note_answered(request_id);

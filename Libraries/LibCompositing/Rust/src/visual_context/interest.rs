@@ -421,6 +421,90 @@ pub fn area_outside(visible: IntRect, recorded: IntRect) -> u64 {
     area(visible).saturating_sub(area(inside))
 }
 
+/// What of a scroll node's content shows, through `scrollport` at `scroll_offset`, where two recordings of the same
+/// content may draw it differently when one records `old_recorded` of the node and the other `new_recorded`, None
+/// standing for all of it: nowhere when they record the same, else wherever not both of them record, as each records
+/// whole every command that reaches what it records, which then draws past it. Up to four disjoint rects, the empty ones
+/// last. Along an axis whose offset is not finite, all of the content shows.
+pub fn shown_content_recorded_differently(
+    scrollport: IntRect,
+    scroll_offset: FloatPoint,
+    old_recorded: Option<IntRect>,
+    new_recorded: Option<IntRect>,
+) -> [IntRect; 4] {
+    let mut pieces = [IntRect::default(); 4];
+    // Every rect that records nothing records the same.
+    let part_recorded = |recorded: Option<IntRect>| {
+        recorded.map(|rect| {
+            let rect = interest_rect_within_unbounded_edges(rect);
+            if rect.is_empty() { IntRect::default() } else { rect }
+        })
+    };
+    let (old_recorded, new_recorded) = (part_recorded(old_recorded), part_recorded(new_recorded));
+    if old_recorded == new_recorded {
+        return pieces;
+    }
+    let recorded_by_both = match (old_recorded, new_recorded) {
+        (Some(old_recorded), Some(new_recorded)) => Some(rect_from_axis_spans(|axis| {
+            axis.span_of(old_recorded).intersected(axis.span_of(new_recorded))
+        })),
+        (recorded, None) | (None, recorded) => recorded,
+    };
+    let Some(recorded_by_both) = recorded_by_both else {
+        return pieces;
+    };
+
+    let unbounded = i64::from(UNBOUNDED_INTEREST_EDGE);
+    let shown_on = |axis: Axis| {
+        let distance = axis.coordinate_of(scroll_offset);
+        if !distance.is_finite() {
+            return AxisSpan {
+                start: -unbounded,
+                end: unbounded,
+            };
+        }
+        axis.span_of(scrollport).moved_enclosing(distance)
+    };
+    let (shown_horizontally, shown_vertically) = (shown_on(Axis::Horizontal), shown_on(Axis::Vertical));
+    let recorded_horizontally = Axis::Horizontal
+        .span_of(recorded_by_both)
+        .intersected(shown_horizontally);
+    let recorded_vertically = Axis::Vertical.span_of(recorded_by_both).intersected(shown_vertically);
+    let rect_of = |horizontal: AxisSpan, vertical: AxisSpan| {
+        rect_from_axis_spans(|axis| match axis {
+            Axis::Horizontal => horizontal,
+            Axis::Vertical => vertical,
+        })
+    };
+    if recorded_horizontally.length() == 0 || recorded_vertically.length() == 0 {
+        pieces[0] = rect_of(shown_horizontally, shown_vertically);
+        return pieces;
+    }
+    let span = |start, end| AxisSpan { start, end };
+    let candidates = [
+        rect_of(
+            shown_horizontally,
+            span(shown_vertically.start, recorded_vertically.start),
+        ),
+        rect_of(shown_horizontally, span(recorded_vertically.end, shown_vertically.end)),
+        rect_of(
+            span(shown_horizontally.start, recorded_horizontally.start),
+            recorded_vertically,
+        ),
+        rect_of(
+            span(recorded_horizontally.end, shown_horizontally.end),
+            recorded_vertically,
+        ),
+    ];
+    for (piece, candidate) in pieces
+        .iter_mut()
+        .zip(candidates.into_iter().filter(|candidate| !candidate.is_empty()))
+    {
+        *piece = candidate;
+    }
+    pieces
+}
+
 // How far `motion` carries content toward each side, in whole device pixels.
 fn lead_toward_sides(motion: FloatPoint) -> LeadPerSide {
     let toward = |distance: f32| -> i32 {
@@ -939,6 +1023,179 @@ mod tests {
         assert_eq!(
             interest_rect_within_unbounded_edges(IntRect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX)),
             from_edges(-UNBOUNDED, -UNBOUNDED, -1, -1)
+        );
+    }
+
+    fn shown_differently(
+        scrollport: IntRect,
+        scroll_offset: FloatPoint,
+        old_recorded: Option<IntRect>,
+        new_recorded: Option<IntRect>,
+    ) -> Vec<IntRect> {
+        let pieces = shown_content_recorded_differently(scrollport, scroll_offset, old_recorded, new_recorded);
+        let count = pieces.iter().take_while(|piece| !piece.is_empty()).count();
+        assert!(pieces[count..].iter().all(|piece| piece.is_empty()));
+        pieces[..count].to_vec()
+    }
+
+    fn intersection(a: IntRect, b: IntRect) -> IntRect {
+        rect_from_axis_spans(|axis| axis.span_of(a).intersected(axis.span_of(b)))
+    }
+
+    fn area(rect: IntRect) -> i64 {
+        Axis::BOTH.into_iter().map(|axis| axis.span_of(rect).length()).product()
+    }
+
+    #[test]
+    fn recordings_of_the_same_rect_draw_alike_even_where_neither_records() {
+        let scrollport = IntRect::new(0, 0, 1000, 800);
+        let recorded = from_edges(-UNBOUNDED, -UNBOUNDED, UNBOUNDED, 2048);
+
+        assert!(shown_differently(scrollport, offset(0.0, 1800.0), Some(recorded), Some(recorded)).is_empty());
+        assert!(shown_differently(scrollport, offset(0.0, 1800.0), None, None).is_empty());
+        // Each records nothing of the node, wherever its empty rect sits.
+        assert!(
+            shown_differently(
+                scrollport,
+                offset(0.0, 1800.0),
+                Some(IntRect::new(0, 512, 0, 1024)),
+                Some(IntRect::new(-300, 0, 600, -5))
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn content_shows_differently_wherever_not_both_recordings_record_it() {
+        let scrollport = IntRect::new(0, 0, 1000, 800);
+        let around_the_top = Some(from_edges(-UNBOUNDED, -UNBOUNDED, UNBOUNDED, 2048));
+        let further_down = Some(from_edges(-UNBOUNDED, 1024, UNBOUNDED, 3072));
+
+        // What shows lies in what both record, whatever each records elsewhere.
+        assert!(shown_differently(scrollport, offset(0.0, 1100.0), around_the_top, further_down).is_empty());
+        // Only what the old recording left out of what shows.
+        assert_eq!(
+            shown_differently(scrollport, offset(0.0, 1500.0), around_the_top, further_down),
+            [from_edges(0, 2048, 1000, 2300)]
+        );
+        // The same, the other way around.
+        assert_eq!(
+            shown_differently(scrollport, offset(0.0, 1500.0), further_down, around_the_top),
+            [from_edges(0, 2048, 1000, 2300)]
+        );
+        // None of what shows lies in what both record: all of it, also where neither records, where commands one
+        // recording records whole may draw past what it records.
+        assert_eq!(
+            shown_differently(scrollport, offset(0.0, 3000.0), around_the_top, further_down),
+            [from_edges(0, 3000, 1000, 3800)]
+        );
+        // A fractional offset shows every pixel it touches.
+        assert_eq!(
+            shown_differently(scrollport, offset(0.5, 1500.25), around_the_top, further_down),
+            [from_edges(0, 2048, 1001, 2301)]
+        );
+    }
+
+    #[test]
+    fn a_recording_of_all_of_a_node_differs_from_one_of_part_of_it_outside_that_part() {
+        let scrollport = IntRect::new(0, 0, 1000, 800);
+        let part = Some(from_edges(-UNBOUNDED, 4096, UNBOUNDED, 6656));
+
+        assert_eq!(
+            shown_differently(scrollport, offset(0.0, 6200.0), None, part),
+            [from_edges(0, 6656, 1000, 7000)]
+        );
+        assert_eq!(
+            shown_differently(scrollport, offset(0.0, 6200.0), part, None),
+            [from_edges(0, 6656, 1000, 7000)]
+        );
+        assert!(shown_differently(scrollport, offset(0.0, 5000.0), part, None).is_empty());
+    }
+
+    #[test]
+    fn the_pieces_tile_what_of_the_shown_content_not_both_recordings_record() {
+        let scrollport = IntRect::new(100, 200, 1000, 800);
+        let scroll_offset = offset(250.0, 3000.0);
+        let shown = from_edges(350, 3200, 1350, 4000);
+        let recorded_rects = [
+            from_edges(-UNBOUNDED, 2560, UNBOUNDED, 4608),
+            from_edges(512, 3584, 1024, 3712),
+            from_edges(0, 0, 512, 3584),
+            from_edges(1024, 3584, 2048, 5120),
+            from_edges(-UNBOUNDED, 3072, 1024, UNBOUNDED),
+            from_edges(4096, 0, 5120, 512),
+            IntRect::default(),
+        ];
+        for old_recorded in recorded_rects {
+            for new_recorded in recorded_rects {
+                let pieces = shown_differently(scrollport, scroll_offset, Some(old_recorded), Some(new_recorded));
+                if old_recorded == new_recorded {
+                    assert!(pieces.is_empty());
+                    continue;
+                }
+                let recorded_by_both = intersection(old_recorded, new_recorded);
+                for (index, piece) in pieces.iter().enumerate() {
+                    assert_eq!(intersection(*piece, shown), *piece);
+                    assert_eq!(area(intersection(*piece, recorded_by_both)), 0);
+                    for other in &pieces[index + 1..] {
+                        assert_eq!(area(intersection(*piece, *other)), 0);
+                    }
+                }
+                assert_eq!(
+                    pieces.iter().map(|piece| area(*piece)).sum::<i64>(),
+                    area(shown) - area(intersection(shown, recorded_by_both)),
+                    "{old_recorded:?} then {new_recorded:?}"
+                );
+            }
+        }
+        // What both record sits inside what shows: one piece on each side of it.
+        assert_eq!(
+            shown_differently(
+                scrollport,
+                scroll_offset,
+                Some(from_edges(512, 3584, 1024, 3712)),
+                Some(from_edges(0, 0, 2048, 5120))
+            ),
+            [
+                from_edges(350, 3200, 1350, 3584),
+                from_edges(350, 3712, 1350, 4000),
+                from_edges(350, 3584, 512, 3712),
+                from_edges(1024, 3584, 1350, 3712),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rect_from_another_process_or_an_offset_that_is_not_finite_keeps_the_pieces_conservative() {
+        let scrollport = IntRect::new(0, 0, 1000, 800);
+        let part = Some(from_edges(-UNBOUNDED, 0, UNBOUNDED, 2048));
+
+        // A negative extent records nothing.
+        assert_eq!(
+            shown_differently(
+                scrollport,
+                offset(0.0, 100.0),
+                Some(IntRect::new(0, 0, 1000, -2048)),
+                part
+            ),
+            [from_edges(0, 100, 1000, 900)]
+        );
+        // All of the content shows along an axis whose offset is not finite.
+        assert_eq!(
+            shown_differently(scrollport, offset(0.0, f32::NAN), None, part),
+            [from_edges(0, -UNBOUNDED, 1000, 0), from_edges(0, 2048, 1000, UNBOUNDED)]
+        );
+        assert_eq!(
+            shown_differently(
+                scrollport,
+                offset(f32::INFINITY, 100.0),
+                None,
+                Some(from_edges(0, 0, 1000, 2048))
+            ),
+            [
+                from_edges(-UNBOUNDED, 100, 0, 900),
+                from_edges(1000, 100, UNBOUNDED, 900)
+            ]
         );
     }
 
