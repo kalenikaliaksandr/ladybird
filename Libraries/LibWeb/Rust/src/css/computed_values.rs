@@ -1537,6 +1537,51 @@ pub(crate) unsafe fn style_payloads_layout_inputs_equal(
     })
 }
 
+/// https://drafts.csswg.org/css-anchor-position-1/#fallback-sensitive
+///
+/// # Safety
+/// Every payload must be a live payload of the group at its index.
+pub(crate) unsafe fn style_payloads_position_fallback_inputs_equal(a: &[*const c_void], b: &[*const c_void]) -> bool {
+    debug_assert_eq!(a.len(), group_index::COUNT);
+    debug_assert_eq!(b.len(), group_index::COUNT);
+    /// # Safety
+    /// The payloads at `group` must be live payloads of that group, of type `T`.
+    unsafe fn payloads_of_group<'a, T>(a: &[*const c_void], b: &[*const c_void], group: usize) -> (&'a T, &'a T) {
+        // SAFETY: Guaranteed by the caller.
+        unsafe { (payload_ref::<T>(a[group]), payload_ref::<T>(b[group])) }
+    }
+    // SAFETY: The caller guarantees live payloads of each group.
+    let (box_a, box_b) = unsafe { payloads_of_group::<BoxValues>(a, b, group_index::BOX) };
+    // SAFETY: As above.
+    let (surround_a, surround_b) = unsafe { payloads_of_group::<SurroundValues>(a, b, group_index::SURROUND) };
+    // SAFETY: As above.
+    let (sizing_a, sizing_b) = unsafe { payloads_of_group::<SizingValues>(a, b, group_index::SIZING) };
+    // SAFETY: As above.
+    let (alignment_a, alignment_b) = unsafe { payloads_of_group::<AlignmentValues>(a, b, group_index::ALIGNMENT) };
+    // SAFETY: As above.
+    let (anchor_a, anchor_b) = unsafe { payloads_of_group::<AnchorValues>(a, b, group_index::ANCHOR) };
+    box_a.position == box_b.position
+        && surround_a.inset == surround_b.inset
+        && surround_a.top_anchor_inset == surround_b.top_anchor_inset
+        && surround_a.right_anchor_inset == surround_b.right_anchor_inset
+        && surround_a.bottom_anchor_inset == surround_b.bottom_anchor_inset
+        && surround_a.left_anchor_inset == surround_b.left_anchor_inset
+        && surround_a.position_anchor == surround_b.position_anchor
+        && surround_a.margin == surround_b.margin
+        && sizing_a == sizing_b
+        && alignment_a.align_self == alignment_b.align_self
+        && alignment_a.align_self_is_last_baseline == alignment_b.align_self_is_last_baseline
+        && alignment_a.align_self_overflow == alignment_b.align_self_overflow
+        && alignment_a.justify_self == alignment_b.justify_self
+        && alignment_a.justify_self_overflow == alignment_b.justify_self_overflow
+        && anchor_a.position_anchor_type == anchor_b.position_anchor_type
+        && anchor_a.position_anchor_name == anchor_b.position_anchor_name
+        && anchor_a.position_area == anchor_b.position_area
+        && anchor_a.position_try_fallbacks == anchor_b.position_try_fallbacks
+        && anchor_a.has_position_try_order == anchor_b.has_position_try_order
+        && anchor_a.position_try_order == anchor_b.position_try_order
+}
+
 /// The style groups in `groups` whose payloads differ between two records, `[base, composed]` each: explicit
 /// inheritance reads both the base and the composition over it. `None` when a record holds fewer groups.
 ///

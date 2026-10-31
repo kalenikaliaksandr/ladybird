@@ -2266,8 +2266,41 @@ impl LayoutNodeArena {
         }
         self.publish_new_size_container_geometry(slot);
         self.enroll_node_for_svg_paint_resources_sync(slot);
-        if previous_payloads.is_some_and(|previous| !self.style_move_keeps_layout_inputs(slot, previous, payloads)) {
+        let Some(previous_payloads) = previous_payloads else {
+            return;
+        };
+        self.forget_last_successful_position_option_after_fallback_sensitive_change(slot, previous_payloads, payloads);
+        if !self.style_move_keeps_layout_inputs(slot, previous_payloads, payloads) {
             self.invalidate_fragments_and_intrinsic_sizes_of_self_and_ancestors(slot);
+        }
+    }
+
+    /// https://drafts.csswg.org/css-anchor-position-1/#last-successful-position-option
+    fn forget_last_successful_position_option_after_fallback_sensitive_change(
+        &mut self,
+        slot: NodeSlotId,
+        previous: StylePayloadsRef,
+        new: StylePayloadsRef,
+    ) {
+        if previous == new
+            || self.last_successful_position_options.is_empty()
+            || !self.last_successful_position_options.contains_key(&slot)
+        {
+            return;
+        }
+        let made_fallback_sensitive_change = previous.is_null() || new.is_null() || {
+            // SAFETY: A row's non-null style addresses the payload array of the record pinned for it.
+            let (previous, new) = unsafe { (previous.deref(), new.deref()) };
+            // SAFETY: Published style-group payloads stay live while their records do.
+            !unsafe {
+                crate::css::computed_values::style_payloads_position_fallback_inputs_equal(
+                    &previous.groups,
+                    &new.groups,
+                )
+            }
+        };
+        if made_fallback_sensitive_change {
+            self.last_successful_position_options.remove(&slot);
         }
     }
 
