@@ -72,6 +72,9 @@ public:
         Optional<AsyncScrollingMetadata> async_scrolling_metadata;
         // Empty when the list records the whole document.
         Optional<RecordedInterest> recorded_interest;
+        // What the list shows, counted per navigable: a list that records what the one before it showed around other
+        // rects keeps that list's generation. 0 when unknown.
+        u64 content_generation { 0 };
     };
 
     // An empty list.
@@ -107,6 +110,8 @@ public:
     Optional<AsyncScrollingMetadata> const& async_scrolling_metadata() const { return m_async_scrolling_metadata; }
     void set_recorded_interest(Optional<RecordedInterest> recorded_interest) { m_recorded_interest = move(recorded_interest); }
     Optional<RecordedInterest> const& recorded_interest() const { return m_recorded_interest; }
+    void set_content_generation(u64 content_generation) { m_content_generation = content_generation; }
+    u64 content_generation() const { return m_content_generation; }
 
     // The ids of the resources the list's commands reference, including the commands nested in others, each once.
     struct ReferencedResourceIds {
@@ -143,6 +148,7 @@ private:
     Optional<Gfx::Color> m_surface_clear_color;
     Optional<AsyncScrollingMetadata> m_async_scrolling_metadata;
     Optional<RecordedInterest> m_recorded_interest;
+    u64 m_content_generation { 0 };
 
     template<typename T>
     friend ErrorOr<void> IPC::encode(IPC::Encoder&, T const&);

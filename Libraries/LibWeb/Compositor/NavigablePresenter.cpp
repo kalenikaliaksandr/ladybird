@@ -12,21 +12,55 @@ namespace Web::Compositor {
 
 // What the Paint thread presents a frame through. Only Rust calls it, from a job that presents.
 struct PresenterFFI {
-    // A clock lane's frame that starts from an older frame than the last one a rendering update committed shows what the
-    // screen no longer shows: it is not presented, and the compositor hears nothing of it.
+    // A clock lane's frame or a refresh that starts from an older frame than the last one a rendering update committed
+    // shows what the screen no longer shows, and so does a refresh once the compositor shows another display list than
+    // the one it copies paint commands from, or a clock lane's frame: it is not presented, and the compositor hears
+    // nothing of it.
     static bool is_stale(NavigablePresenter const& presenter, SealedPresentation const& sealed)
     {
-        return sealed.presented_by == PresentedBy::Clock && sealed.generation < presenter.m_last_committed_generation;
+        if (sealed.presented_by == PresentedBy::Commit)
+            return false;
+        if (sealed.generation < presenter.m_last_committed_generation)
+            return true;
+        return sealed.presented_by == PresentedBy::Refresh
+            && (sealed.paint_command_cache_source != presenter.m_compositor_display_list || presenter.m_last_frame_presented_by == PresentedBy::Clock);
     }
 
     static void note_presented(NavigablePresenter& presenter, SealedPresentation& sealed)
     {
-        if (sealed.presented_by == PresentedBy::Commit) {
+        switch (sealed.presented_by) {
+        case PresentedBy::Commit:
             presenter.m_last_committed_generation = max(presenter.m_last_committed_generation, sealed.generation);
-            presenter.m_committed_command_resources = presenter.m_compositor_display_list_command_resources;
+            // An unrecorded frame keeps the display list the compositor has, which a refresh may have recorded: the
+            // next frame a rendering update commits copies paint commands from the display list the recording before
+            // it published.
+            presenter.m_committed_command_resources = sealed.published.has_value()
+                ? presenter.m_compositor_display_list_command_resources
+                : sealed.paint_command_cache_source_resources;
+            presenter.m_refresh_chain_command_resources = {};
+            presenter.m_last_committed_scroll_state_snapshot = sealed.scroll_state_snapshot;
+            presenter.m_last_committed_keyboard_scroll_state = sealed.keyboard_scroll_state;
+            presenter.m_last_committed_present_viewport_rect = sealed.present_viewport_rect;
+            break;
+        case PresentedBy::Clock:
+            break;
+        case PresentedBy::Refresh:
+            presenter.m_refresh_chain_command_resources = presenter.m_compositor_display_list_command_resources;
+            break;
         }
         if (sealed.published.has_value())
             sealed.published->referenced_resources = presenter.m_compositor_display_list_command_resources;
+    }
+
+    // A display list the compositor does not have yet shows new content, but for a refresh's, which records what the
+    // compositor's display list shows around other rects.
+    static void stamp_content_generation(NavigablePresenter& presenter, SealedPresentation const& sealed, Compositing::DisplayList& display_list)
+    {
+        if (&display_list == presenter.m_compositor_display_list.ptr())
+            return;
+        if (sealed.presented_by != PresentedBy::Refresh)
+            ++presenter.m_content_generation;
+        display_list.set_content_generation(presenter.m_content_generation);
     }
 
     // A request the frame's recording answers reaches the compositor on its own where no display list the frame sends
@@ -48,6 +82,7 @@ struct PresenterFFI {
         MutexLocker locker(presenter.m_mutex);
         if (is_stale(presenter, sealed))
             return;
+        stamp_content_generation(presenter, sealed, *display_list);
         auto frame = presenter.build_frame_beside_event_loop(sealed, move(display_list));
         frame.scroll_requests = move(sealed.scroll_requests);
         answer_interest_refresh_request(frame, answered_refresh_request_id);
@@ -87,10 +122,12 @@ CompositorFrame NavigablePresenter::build_frame(SealedPresentation const& sealed
     auto resources_with = [&](Compositing::DisplayListResourceSet resources, Compositing::AccumulatedVisualContextTree const& visual_context_tree) {
         if (!published.has_value() || !published->replaces_paint_command_cache_source)
             resources.include(sealed.paint_command_cache_source_resources);
-        // The next frame a rendering update commits copies paint commands from the one it committed last, whatever a
-        // clock lane presented since.
-        if (sealed.presented_by == PresentedBy::Clock)
+        // Later recordings copy paint commands from the display list of the frame a rendering update committed last, and
+        // from that of the last refresh of it, whatever a clock lane or a refresh presented since.
+        if (sealed.presented_by != PresentedBy::Commit) {
             resources.include(m_committed_command_resources);
+            resources.include(m_refresh_chain_command_resources);
+        }
         resources.include(m_resource_storage.collect_referenced_resources(visual_context_tree));
         return resources;
     };
@@ -174,6 +211,18 @@ CompositorFrame NavigablePresenter::build_frame_beside_event_loop(SealedPresenta
     return frame;
 }
 
+Painting::DisplayListRecording NavigablePresenter::recording_from_compositor_display_list() const
+{
+    return Painting::DisplayListRecording {
+        .visual_context_tree = *m_compositor_visual_context_tree,
+        .surface_clear_color = m_compositor_display_list->surface_clear_color(),
+        .cache_mode = Painting::PaintCommandCacheMode::ReadWrite,
+        .in_flight = true,
+        .async_scrolling_metadata = m_compositor_display_list->async_scrolling_metadata(),
+        .paint_command_cache_source = m_compositor_display_list,
+    };
+}
+
 OwnPtr<SealedPresentation> NavigablePresenter::seal_for_clock_lane(SealedPresentation const& committed) const
 {
     MutexLocker locker(m_mutex);
@@ -191,18 +240,43 @@ OwnPtr<SealedPresentation> NavigablePresenter::seal_for_clock_lane(SealedPresent
     sealed->keyboard_scroll_state = committed.keyboard_scroll_state;
     sealed->paint_command_cache_source = m_compositor_display_list;
     sealed->paint_command_cache_source_resources = m_compositor_display_list_command_resources;
-    sealed->recording = Painting::DisplayListRecording {
-        .visual_context_tree = *m_compositor_visual_context_tree,
-        .surface_clear_color = m_compositor_display_list->surface_clear_color(),
-        .cache_mode = Painting::PaintCommandCacheMode::ReadWrite,
-        .in_flight = true,
-        .async_scrolling_metadata = m_compositor_display_list->async_scrolling_metadata(),
-        .paint_command_cache_source = m_compositor_display_list,
-    };
+    sealed->recording = recording_from_compositor_display_list();
     sealed->context_id = committed.context_id;
     sealed->present_viewport_rect = committed.present_viewport_rect;
     sealed->presented_by = PresentedBy::Clock;
     sealed->generation = committed.generation;
+    return sealed;
+}
+
+OwnPtr<SealedPresentation> NavigablePresenter::seal_for_refresh(SealedPresentation const& retained) const
+{
+    MutexLocker locker(m_mutex);
+    RefPtr<Compositing::DisplayList> source = retained.paint_command_cache_source;
+    if (retained.published.has_value())
+        source = retained.published->display_list;
+    if (!source || source != m_compositor_display_list || !m_compositor_visual_context_tree.has_value() || !retained.recording.has_value())
+        return nullptr;
+    // The refresh records the frame as `retained`'s recording did, against a tree of the structure it had and for the
+    // viewport it had. An unrecorded frame since changes neither, as a frame of another size repaints, but a refresh
+    // would show what the screen no longer shows if one did.
+    if (retained.recording->visual_context_tree.structural_epoch() != m_compositor_visual_context_tree->structural_epoch())
+        return nullptr;
+    if (!retained.present_viewport_rect.has_value() || !m_last_committed_present_viewport_rect.has_value() || retained.present_viewport_rect->size() != m_last_committed_present_viewport_rect->size())
+        return nullptr;
+    auto sealed = make<SealedPresentation>();
+    sealed->paint_config = retained.paint_config;
+    sealed->visual_context_tree = *m_compositor_visual_context_tree;
+    sealed->scroll_state_snapshot = m_last_committed_scroll_state_snapshot;
+    sealed->keyboard_scroll_state = m_last_committed_keyboard_scroll_state;
+    sealed->paint_command_cache_source = m_compositor_display_list;
+    sealed->paint_command_cache_source_resources = m_compositor_display_list_command_resources;
+    sealed->recording = recording_from_compositor_display_list();
+    sealed->context_id = retained.context_id;
+    sealed->present_viewport_rect = m_last_committed_present_viewport_rect;
+    sealed->presented_by = PresentedBy::Refresh;
+    sealed->generation = retained.generation;
+    if (PresenterFFI::is_stale(*this, *sealed))
+        return nullptr;
     return sealed;
 }
 

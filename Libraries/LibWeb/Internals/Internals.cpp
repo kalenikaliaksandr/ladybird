@@ -2603,6 +2603,8 @@ Utf16String Internals::last_frame_presented_by(DOM::Document& document)
         return "commit"_utf16;
     case Compositor::PresentedBy::Clock:
         return "clock"_utf16;
+    case Compositor::PresentedBy::Refresh:
+        return "refresh"_utf16;
     }
     VERIFY_NOT_REACHED();
 }

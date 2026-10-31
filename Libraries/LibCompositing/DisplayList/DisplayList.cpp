@@ -56,7 +56,9 @@ NonnullRefPtr<DisplayList> DisplayList::share_rust_command_storage(AccumulatedVi
 
 NonnullRefPtr<DisplayList> DisplayList::adopt_received_storage(Properties properties, void const* storage)
 {
-    return adopt_ref(*new DisplayList(properties.compatible_visual_context_tree_structural_epoch, properties.id, storage, properties.surface_clear_color, move(properties.async_scrolling_metadata), move(properties.recorded_interest)));
+    auto display_list = adopt_ref(*new DisplayList(properties.compatible_visual_context_tree_structural_epoch, properties.id, storage, properties.surface_clear_color, move(properties.async_scrolling_metadata), move(properties.recorded_interest)));
+    display_list->set_content_generation(properties.content_generation);
+    return display_list;
 }
 
 // Copies a tape and run table that came from another process into Rust memory through `fill`, then checks them and
@@ -167,6 +169,7 @@ DisplayList::Properties DisplayList::properties() const
         .surface_clear_color = m_surface_clear_color,
         .async_scrolling_metadata = m_async_scrolling_metadata,
         .recorded_interest = m_recorded_interest,
+        .content_generation = m_content_generation,
     };
 }
 
@@ -239,6 +242,7 @@ ErrorOr<void> encode(Encoder& encoder, Compositing::DisplayList::Properties cons
     TRY(encoder.encode(properties.surface_clear_color));
     TRY(encoder.encode(properties.async_scrolling_metadata));
     TRY(encoder.encode(properties.recorded_interest));
+    TRY(encoder.encode(properties.content_generation));
     return {};
 }
 
@@ -251,6 +255,7 @@ ErrorOr<Compositing::DisplayList::Properties> decode(Decoder& decoder)
         .surface_clear_color = TRY(decoder.decode<Optional<Gfx::Color>>()),
         .async_scrolling_metadata = TRY(decoder.decode<Optional<Compositing::DisplayList::AsyncScrollingMetadata>>()),
         .recorded_interest = TRY(decoder.decode<Optional<Compositing::DisplayList::RecordedInterest>>()),
+        .content_generation = TRY(decoder.decode<u64>()),
     };
 }
 

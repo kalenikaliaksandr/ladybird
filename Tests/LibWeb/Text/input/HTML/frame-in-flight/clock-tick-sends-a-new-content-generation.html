@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../../include.js"></script>
+<script src="frame-in-flight.js"></script>
+<style>
+    #box { width: 100px; height: 0px; background: green; }
+</style>
+<div id="box"></div>
+<script>
+    // A clock lane's frame shows other content than the committed frame it starts from, so the display list it sends the
+    // compositor never keeps that frame's content generation: only a list recorded again around other rects does.
+    asyncTest(async done => {
+        const result = await whileLaneAnimates(() => {
+            return box.animate([{ height: "0px" }, { height: "100px" }], { duration: 10000, easing: "linear" });
+        }, frameTime => {
+            const committed = {
+                presentedBy: internals.lastFramePresentedBy(document),
+                contentGeneration: internals.compositorInterestRefreshState().contentGeneration,
+            };
+            internals.injectClockTick(frameTime + 5000);
+            return {
+                committed,
+                presentedBy: internals.lastFramePresentedBy(document),
+                contentGeneration: internals.compositorInterestRefreshState().contentGeneration,
+            };
+        });
+        println(`before the tick, last frame presented by: ${result.committed.presentedBy}`);
+        println(`committed frame's content generation is known: ${result.committed.contentGeneration > 0}`);
+        println(`after the tick, last frame presented by: ${result.presentedBy}`);
+        println(`lane frame's content generation is newer: ${result.contentGeneration > result.committed.contentGeneration}`);
+        done();
+    });
+</script>

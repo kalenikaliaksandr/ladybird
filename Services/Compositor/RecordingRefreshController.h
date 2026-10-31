@@ -6,10 +6,10 @@
 
 #pragma once
 
+#include <AK/JsonObject.h>
 #include <AK/Noncopyable.h>
 #include <AK/Optional.h>
 #include <AK/Span.h>
-#include <AK/String.h>
 #include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibCompositing/Forward.h>
@@ -72,7 +72,7 @@ public:
 
     // Request ids keep increasing, since WebContent drops a request older than one it took.
     void reset_for_testing();
-    String state_for_testing(AK::Duration frame_interval) const;
+    JsonObject state_for_testing(AK::Duration frame_interval) const;
 
 private:
     struct RequestInFlight {

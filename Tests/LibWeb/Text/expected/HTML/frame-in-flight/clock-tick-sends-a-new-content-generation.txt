@@ -1,0 +1,4 @@
+before the tick, last frame presented by: commit
+committed frame's content generation is known: true
+after the tick, last frame presented by: clock
+lane frame's content generation is newer: true

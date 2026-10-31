@@ -2617,7 +2617,10 @@ void ContextState::forget_interest_refresh_request_in_flight()
 
 String ContextState::interest_refresh_state_for_testing() const
 {
-    return m_recording_refresh_controller.state_for_testing(display_frame_interval());
+    auto state = m_recording_refresh_controller.state_for_testing(display_frame_interval());
+    auto const& display_list = m_scene.display_list();
+    state.set("contentGeneration"sv, display_list ? JsonValue { display_list->content_generation() } : JsonValue {});
+    return state.serialized();
 }
 
 AK::Duration ContextState::display_frame_interval() const

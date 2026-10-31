@@ -41,11 +41,13 @@ struct PublishedDisplayList {
     Compositing::DisplayListResourceSet referenced_resources;
 };
 
-// What presented a navigable's last frame: the recording of a frame a rendering update committed, or a tick of the
-// document's clock lane.
+// What presented a navigable's last frame: the recording of a frame a rendering update committed, a tick of the
+// document's clock lane, or a refresh, which records the frame a rendering update committed last again around the rects
+// the compositor asked for.
 enum class PresentedBy : u8 {
     Commit,
     Clock,
+    Refresh,
 };
 
 // Where a smooth scroll that a navigable asked for takes a box the compositor scrolls, in device pixels.
@@ -91,8 +93,9 @@ struct SealedPresentation {
     Optional<PublishedDisplayList> published;
     // Whether the frame sends a visual context tree the compositor's display list was not recorded against, for a test.
     bool visual_context_tree_mismatches_for_testing { false };
-    // The frame a rendering update committed, counted per navigable, or the one a clock lane's frames start from: a
-    // lane's frame of an older one than the presenter presented last shows what the screen no longer shows.
+    // The frame a rendering update committed, counted per navigable, or the one a clock lane's frames or a refresh start
+    // from: a lane's frame or a refresh of an older one than the presenter presented last shows what the screen no
+    // longer shows.
     u64 generation { 0 };
 };
 
@@ -153,6 +156,14 @@ public:
     // commands from it. On the Paint thread.
     OwnPtr<SealedPresentation> seal_for_clock_lane(SealedPresentation const& committed) const;
 
+    // The seal of a refresh, which records the frame a rendering update committed last again around other rects, from
+    // `retained`, the seal that frame or the last refresh of it presented with, or none where that frame no longer
+    // shows: the compositor shows another display list than `retained` presented, or a clock lane's frame since, or has
+    // a tree of another structure or a viewport of another size. The refresh copies paint commands from the compositor's
+    // display list, with the tree the compositor has and the scroll state the last committed frame presented with,
+    // which an unrecorded frame may have moved past `retained`'s. On the Paint thread.
+    OwnPtr<SealedPresentation> seal_for_refresh(SealedPresentation const& retained) const;
+
 private:
     // Only the Paint thread builds and presents frames.
     friend struct PresenterFFI;
@@ -165,6 +176,10 @@ private:
     // Builds the frame `sealed` sealed, with `display_list`, the display list its recording published, beside the event
     // loop, keeping what it published in the seal, which the next frame from the seal copies paint commands from.
     CompositorFrame build_frame_beside_event_loop(SealedPresentation&, NonnullRefPtr<Compositing::DisplayList>);
+
+    // A recording beside the event loop that copies paint commands from the compositor's display list, against the tree
+    // the compositor has. With `m_mutex` held, while the compositor has both.
+    Painting::DisplayListRecording recording_from_compositor_display_list() const;
 
     NavigablePresenter() = default;
 
@@ -182,9 +197,20 @@ private:
     Optional<Compositing::AccumulatedVisualContextTree> m_compositor_visual_context_tree;
     // The generation of the last frame a rendering update committed that the presenter presented.
     u64 m_last_committed_generation { 0 };
-    // What the display list of the last frame a rendering update committed references, which the frames of a clock lane
-    // keep beside their own.
+    // What the display list the next frame a rendering update commits copies paint commands from references, which the
+    // frames of a clock lane and refreshes keep beside their own.
     Compositing::DisplayListResourceSet m_committed_command_resources;
+    // What the display list of the last refresh presented since the last frame a rendering update committed references,
+    // which the frames of a clock lane and later refreshes keep beside their own.
+    Compositing::DisplayListResourceSet m_refresh_chain_command_resources;
+    // The scroll state, keyboard scroll state and viewport rect the last frame a rendering update committed presented
+    // with, which a refresh presents with.
+    Compositing::ScrollStateSnapshot m_last_committed_scroll_state_snapshot;
+    Optional<Compositing::KeyboardScrollState> m_last_committed_keyboard_scroll_state;
+    Optional<Gfx::IntRect> m_last_committed_present_viewport_rect;
+    // The content generation of the last display list the presenter sent the compositor, which each new display list of
+    // a committed frame or a clock lane's frame counts up, and a refresh's keeps.
+    u64 m_content_generation { 0 };
 };
 
 // A navigable's presenter and a frame sealed for it, which what presents the frame beside the event loop holds until it

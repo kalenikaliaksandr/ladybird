@@ -185,7 +185,7 @@ void RecordingRefreshController::reset_for_testing()
     m_last_checkerboarded_area = 0;
 }
 
-String RecordingRefreshController::state_for_testing(AK::Duration frame_interval) const
+JsonObject RecordingRefreshController::state_for_testing(AK::Duration frame_interval) const
 {
     JsonObject state;
     state.set("requestsSent"sv, m_requests_sent);
@@ -194,7 +194,7 @@ String RecordingRefreshController::state_for_testing(AK::Duration frame_interval
     state.set("latencyMilliseconds"sv, m_planner.refresh_latency(frame_interval).to_seconds_f64() * 1000);
     state.set("checkerboardedFrames"sv, m_checkerboarded_frame_count);
     state.set("lastCheckerboardedArea"sv, m_last_checkerboarded_area);
-    return state.serialized();
+    return state;
 }
 
 }

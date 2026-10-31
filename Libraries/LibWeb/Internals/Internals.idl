@@ -110,7 +110,9 @@ interface Internals {
     // How the compositor's requests to record this document's display list around new rects went, from the frames
     // rendered so far: requestsSent, inFlightRequestId (null when none awaits an answer), lastAnsweredRequestId,
     // latencyMilliseconds (the refresh latency it expects), checkerboardedFrames (frames that showed content outside
-    // what the display list records) and lastCheckerboardedArea (in device pixels).
+    // what the display list records), lastCheckerboardedArea (in device pixels) and contentGeneration (that of the
+    // display list the compositor shows, which a list recorded again around other rects keeps, 0 when unknown, or null
+    // when it shows none).
     object compositorInterestRefreshState();
     undefined pinch(double x, double y, double scaleDelta, optional unsigned short modifiers = 0);
     // Sends a pinch through the UI process as it sends the user's, so that the compositor zooms for it if it can.
@@ -355,7 +357,8 @@ interface Internals {
     // before it reads anything.
     undefined holdNextFrame(optional DOMString hold = "");
     // What presented the last frame of the document's navigable: "commit" for a frame a rendering update committed,
-    // "clock" for a tick of the document's clock lane, or "none" before the first frame.
+    // "clock" for a tick of the document's clock lane, "refresh" for a recording of the last committed frame again
+    // around the rects the compositor asked for, or "none" before the first frame.
     DOMString lastFramePresentedBy(Document document);
     // Whether the last frame of the page handed the compositor the keyboard scroll state the page holds now.
     boolean lastFrameKeyboardScrollStateIsCurrent();
