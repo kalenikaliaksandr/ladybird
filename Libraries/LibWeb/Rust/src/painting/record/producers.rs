@@ -232,7 +232,7 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
     fn output_position(&self) -> OutputPosition {
         OutputPosition {
             bytes: u32::try_from(self.recorder.byte_size()).expect("display list exceeds u32"),
-            hits: u32::try_from(self.list.items.len()).expect("hit-test list exceeds u32"),
+            hits: u32::try_from(self.list.len()).expect("hit-test list exceeds u32"),
             blocking_wheel_event_regions: self.blocking_wheel_event_region_count,
         }
     }
@@ -242,15 +242,8 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
             .source_recording
             .as_ref()
             .expect("clean output is copied from a published recording");
-        let items = self
-            .source_items
-            .as_ref()
-            .expect("clean output is copied from a published recording");
         self.recorder.append_cached_commands(&frame.display_list, bytes);
-        if !hits.is_empty() {
-            self.list
-                .append_copies_of(&items.items[hits.start as usize..hits.end as usize]);
-        }
+        self.list.append_published(hits.start as usize..hits.end as usize);
         self.blocking_wheel_event_region_count += blocking_wheel_event_regions;
     }
 

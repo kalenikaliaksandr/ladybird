@@ -514,8 +514,9 @@ mod tests {
     use crate::painting::display_list::commands::ContextRef;
     use crate::painting::display_list::recorder::DisplayListRecorder;
     use crate::painting::force_dark::ForceDarkRole;
-    use crate::painting::hit_test::{HitTestItem, HitTestItemKind, HitTestList};
+    use crate::painting::hit_test::{HitTestItem, HitTestItemKind};
     use crate::painting::paint_order_plan::StackingContextPaintPhase;
+    use crate::painting::record::AssembledHitTestItems;
     use libgfx_rust::{Color, IntRect};
     use std::collections::{HashMap, HashSet};
 
@@ -567,21 +568,21 @@ mod tests {
 
     struct Frame {
         display_list: RecordedDisplayList,
-        hit_test_items: Vec<HitTestItem>,
+        hit_test_items: std::sync::Arc<Vec<HitTestItem>>,
         prologue_bytes: u32,
         root_output: OutputSize,
     }
 
     struct Output {
         recorder: DisplayListRecorder,
-        hit_test_list: HitTestList,
+        hit_test_items: AssembledHitTestItems,
         blocking_wheel_event_region_count: u32,
     }
 
-    fn new_output() -> Output {
+    fn new_output(published_hit_test_items: Option<std::sync::Arc<Vec<HitTestItem>>>) -> Output {
         Output {
             recorder: DisplayListRecorder::new(None),
-            hit_test_list: HitTestList::default(),
+            hit_test_items: AssembledHitTestItems::new(published_hit_test_items, 0),
             blocking_wheel_event_region_count: 0,
         }
     }
@@ -608,7 +609,7 @@ mod tests {
                 descendant_readers: HashSet::new(),
                 recorded: Vec::new(),
                 events: Vec::new(),
-                output: new_output(),
+                output: new_output(None),
                 source: None,
             }
         }
@@ -673,7 +674,7 @@ mod tests {
                 );
             }
             for index in 0..content.hits {
-                output.hit_test_list.append(HitTestItem {
+                output.hit_test_items.append(HitTestItem {
                     kind: HitTestItemKind::Box,
                     paintable: owner,
                     hit_node: owner,
@@ -708,7 +709,7 @@ mod tests {
         fn output_position(&self) -> OutputPosition {
             OutputPosition {
                 bytes: self.output.recorder.byte_size() as u32,
-                hits: self.output.hit_test_list.items.len() as u32,
+                hits: self.output.hit_test_items.len() as u32,
                 blocking_wheel_event_regions: self.output.blocking_wheel_event_region_count,
             }
         }
@@ -716,11 +717,9 @@ mod tests {
         fn copy_published(&mut self, bytes: Range<u32>, hits: Range<u32>, blocking_wheel_event_regions: u32) {
             let source = self.source.as_ref().expect("a published recording to copy from");
             self.output.recorder.append_cached_commands(&source.display_list, bytes);
-            if !hits.is_empty() {
-                self.output
-                    .hit_test_list
-                    .append_copies_of(&source.hit_test_items[hits.start as usize..hits.end as usize]);
-            }
+            self.output
+                .hit_test_items
+                .append_published(hits.start as usize..hits.end as usize);
             self.output.blocking_wheel_event_region_count += blocking_wheel_event_regions;
         }
 
@@ -756,7 +755,7 @@ mod tests {
     }
 
     fn record_frame_rewriting_tree(host: &mut TestHost, tree: &mut PaintOrderTree, rewrites_tree: bool) -> Frame {
-        host.output = new_output();
+        host.output = new_output(host.source.as_ref().map(|frame| frame.hit_test_items.clone()));
         host.output.recorder.fill_rect(
             IntRect {
                 x: 0,
@@ -771,11 +770,10 @@ mod tests {
         let source_prologue_bytes = host.source.as_ref().map(|frame| frame.prologue_bytes);
         let root_output =
             Assembler::new(host, tree, source_prologue_bytes, rewrites_tree, false).assemble_root(context(row(0)));
-        let output = std::mem::replace(&mut host.output, new_output());
-        let hit_test_items = std::sync::Arc::try_unwrap(output.hit_test_list.items).expect("items are unshared");
+        let output = std::mem::replace(&mut host.output, new_output(None));
         Frame {
             display_list: output.recorder.into_builder().finish(),
-            hit_test_items,
+            hit_test_items: output.hit_test_items.finish().items,
             prologue_bytes,
             root_output,
         }
@@ -898,6 +896,51 @@ mod tests {
             .filter(|event| matches!(event, AssemblyEvent::ScopeCopied(_)))
             .collect();
         assert_eq!(copied_scopes.len(), 2);
+        assert_matches_from_scratch(&mut host, &second);
+    }
+
+    #[test]
+    fn a_frame_that_copies_every_hit_test_producer_shares_the_published_items() {
+        let mut host = cards_host();
+        let mut tree = PaintOrderTree::default();
+        let first = record_frame(&mut host, &mut tree);
+        let published_items = first.hit_test_items.clone();
+        host.source = Some(first);
+        host.clear_damage();
+
+        host.contents
+            .get_mut(&(row(2), ProducerKind::DrawForeground))
+            .unwrap()
+            .version = 2;
+        host.push(row(2), PaintDamage::DRAW_FOREGROUND);
+        host.push(row(0), PaintDamage::DESCENDANT_READERS);
+        let second = record_next_frame(&mut host, &mut tree);
+
+        assert_eq!(host.recorded, vec![(row(2), ProducerKind::DrawForeground)]);
+        assert!(std::sync::Arc::ptr_eq(&second.hit_test_items, &published_items));
+        assert_matches_from_scratch(&mut host, &second);
+    }
+
+    #[test]
+    fn a_recorded_hit_test_producer_assembles_items_of_its_own() {
+        let mut host = cards_host();
+        let mut tree = PaintOrderTree::default();
+        let first = record_frame(&mut host, &mut tree);
+        let published_items = first.hit_test_items.clone();
+        host.source = Some(first);
+        host.clear_damage();
+
+        host.contents
+            .get_mut(&(row(2), ProducerKind::HitForeground))
+            .unwrap()
+            .version = 2;
+        host.push(row(2), PaintDamage::HIT_FOREGROUND);
+        host.push(row(0), PaintDamage::DESCENDANT_READERS);
+        let second = record_next_frame(&mut host, &mut tree);
+
+        assert_eq!(host.recorded, vec![(row(2), ProducerKind::HitForeground)]);
+        assert!(!std::sync::Arc::ptr_eq(&second.hit_test_items, &published_items));
+        assert_eq!(second.hit_test_items.len(), published_items.len());
         assert_matches_from_scratch(&mut host, &second);
     }
 

@@ -13,7 +13,6 @@ use crate::layout::node_facts;
 use crate::painting::display_list::commands::ContextRef;
 use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::display_list::recorder::DisplayListRecorder;
-use crate::painting::hit_test::HitTestList;
 use crate::painting::node_painting;
 use crate::painting::paint_order_plan::PaintScope;
 use crate::painting::paint_read::{GeometryRead, PaintSource};
@@ -26,7 +25,7 @@ use crate::painting::record::resources::RecordingResourceManifest;
 use crate::painting::record::scratch::RecordingScratch;
 use crate::painting::record::svg_resources::MaskLayerSet;
 use crate::painting::record::trace::{Action, Operation};
-use crate::painting::record::{PublishedHitTestItems, RecordingOutput, RecordingResult};
+use crate::painting::record::{AssembledHitTestItems, PublishedHitTestItems, RecordingOutput, RecordingResult};
 use std::sync::Arc;
 
 #[allow(clippy::too_many_arguments)]
@@ -107,7 +106,6 @@ fn record_display_list_impl<O: Observer>(
         svg_resource_walk: None,
         viewport,
         source_recording,
-        source_items,
         live_producer: false,
         producer_reads_window_focus: std::cell::Cell::new(false),
         line_root_positions: None,
@@ -115,10 +113,10 @@ fn record_display_list_impl<O: Observer>(
         blocking_wheel_event_region_count: 0,
         records_per_box_wheel_hit_test_targets: frame_inputs.records_per_box_wheel_hit_test_targets(),
         observer: O::default(),
-        list: HitTestList {
-            item_capacity_hint_from_previous_list: paint_state.hit_test_item_capacity_hint,
-            ..HitTestList::default()
-        },
+        list: AssembledHitTestItems::new(
+            source_items.map(|published| Arc::clone(&published.items)),
+            paint_state.hit_test_item_capacity_hint,
+        ),
         scratch,
         resources: RecordingResourceManifest::default(),
     };
@@ -137,20 +135,19 @@ fn record_display_list_impl<O: Observer>(
     let unchanged_frame = recorder
         .source_recording
         .as_ref()
-        .zip(recorder.source_items.as_ref())
-        .filter(|(frame, _)| {
+        .filter(|frame| {
             frame_is_unchanged(tree, !source.frame().damage().is_empty(), window_focus_changed)
                 && !has_inspector_overlays
                 && frame.prologue_bytes == prologue_bytes
                 && recorder.recorder.bytes() == &frame.display_list.bytes[..prologue_bytes as usize]
         })
-        .map(|(frame, items)| (frame.display_list.clone(), items.items.clone()));
+        .map(|frame| frame.display_list.clone());
     let display_list = match unchanged_frame {
-        Some((display_list, items)) => {
+        Some(display_list) => {
             recorder
                 .observer
                 .observe(|log| log.leaf(Operation::Scope(root_scope), Action::Copy, false));
-            recorder.list.items = items;
+            recorder.list.append_every_published_item();
             recorder.blocking_wheel_event_region_count = tree.root_entry().output().blocking_wheel_event_regions;
             display_list
         }
@@ -173,7 +170,7 @@ fn record_display_list_impl<O: Observer>(
             Arc::new(recorder.recorder.into_builder().finish())
         }
     };
-    let mut hit_test_list = recorder.list;
+    let mut hit_test_list = recorder.list.finish();
     hit_test_list.generation = paint_state.hit_test_list_generation + 1;
     let output = RecordingOutput {
         recorded_structural_epoch: structural_epoch,
@@ -228,13 +225,13 @@ impl<O: Observer> PaintRecorder<'_, O> {
         if self.declare_mask_contents(svg_box, MaskLayerSet::SvgOnly) {
             return;
         }
-        let before = self.list.items.len();
+        let before = self.list.len();
         self.record_hit_test_items(svg_box, PaintPhase::Foreground);
         self.observer.observe(|log| {
             log.leaf(
                 Operation::Producer(svg_box, ProducerKind::HitForeground),
                 Action::Record,
-                self.list.items.len() == before,
+                self.list.len() == before,
             );
         });
         if self.layout_kind(svg_box) == Some(NodeKind::SVGForeignObjectBox) {

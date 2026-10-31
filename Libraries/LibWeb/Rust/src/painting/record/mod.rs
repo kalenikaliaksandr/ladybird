@@ -78,6 +78,82 @@ pub struct PublishedHitTestItems {
     pub structural_epoch: u64,
 }
 
+/// The hit-test items a recording assembles. While they are the leading published items, copied in order, only their
+/// count is kept, so a recording whose hit-test producers were all copied shares the published items instead of
+/// copying each one.
+pub(crate) struct AssembledHitTestItems {
+    list: HitTestList,
+    published: Option<Arc<Vec<HitTestItem>>>,
+    // Set while the list holds none of the items assembled so far, which are this many leading published items.
+    leading_published_item_count: Option<usize>,
+}
+
+impl AssembledHitTestItems {
+    pub(crate) fn new(published: Option<Arc<Vec<HitTestItem>>>, item_capacity_hint_from_previous_list: usize) -> Self {
+        Self {
+            list: HitTestList {
+                item_capacity_hint_from_previous_list,
+                ..HitTestList::default()
+            },
+            published,
+            leading_published_item_count: Some(0),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.leading_published_item_count.unwrap_or(self.list.items.len())
+    }
+
+    pub(crate) fn append(&mut self, item: HitTestItem) {
+        self.copy_in_leading_published_items();
+        self.list.append(item);
+    }
+
+    pub(crate) fn append_published(&mut self, range: std::ops::Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        if self.leading_published_item_count == Some(range.start) {
+            self.leading_published_item_count = Some(range.end);
+            return;
+        }
+        self.copy_in_leading_published_items();
+        let published = self
+            .published
+            .as_ref()
+            .expect("copied items come from a published recording");
+        self.list.append_copies_of(&published[range]);
+    }
+
+    pub(crate) fn append_every_published_item(&mut self) {
+        let published_item_count = self.published.as_ref().map_or(0, |published| published.len());
+        self.append_published(0..published_item_count);
+    }
+
+    fn copy_in_leading_published_items(&mut self) {
+        if let Some(count) = self.leading_published_item_count.take()
+            && count > 0
+        {
+            let published = self
+                .published
+                .as_ref()
+                .expect("copied items come from a published recording");
+            self.list.append_copies_of(&published[..count]);
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> HitTestList {
+        if let Some(published) = &self.published
+            && self.leading_published_item_count == Some(published.len())
+        {
+            self.list.items = Arc::clone(published);
+            return self.list;
+        }
+        self.copy_in_leading_published_items();
+        self.list
+    }
+}
+
 // What a recording shares with hit testing and with later recordings.
 const _: () = {
     const fn assert_send_and_sync<T: Send + Sync>() {}
@@ -113,7 +189,6 @@ pub struct PaintRecorder<'a, O: Observer> {
     pub(crate) viewport: NodeSlotId,
     // The published recording whose clean output this recording copies, when its inputs match.
     pub(crate) source_recording: Option<Arc<RecordingOutput>>,
-    pub(crate) source_items: Option<Arc<PublishedHitTestItems>>,
     // Set while a producer records output that must record again every frame.
     live_producer: bool,
     // Set while a producer records output that depends on whether the window is focused.
@@ -123,7 +198,7 @@ pub struct PaintRecorder<'a, O: Observer> {
     pub(crate) blocking_wheel_event_region_count: u32,
     pub(crate) records_per_box_wheel_hit_test_targets: bool,
     pub(crate) observer: O,
-    list: HitTestList,
+    list: AssembledHitTestItems,
     pub(crate) scratch: &'a mut scratch::RecordingScratch,
     pub(crate) resources: resources::RecordingResourceManifest,
     line_root_positions: Option<(NodeSlotId, crate::painting::paintable_geometry::LineRootPositions)>,
