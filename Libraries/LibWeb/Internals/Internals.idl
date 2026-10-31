@@ -216,8 +216,12 @@ interface Internals {
     // While held, requests to record display lists around new rects wait to be serviced. The next test begins unheld.
     undefined holdInterestRefreshes();
     undefined releaseInterestRefreshes();
-    // How many requests to record display lists around new rects were serviced since the test began.
+    // How many requests to record display lists around new rects were serviced since the test began, once the Paint
+    // thread ran the jobs handed to it before, unless a test holds a recording on it.
     unsigned long interestRefreshCount();
+    // How many refreshes recorded a display list since the test began but left the request to the host without
+    // presenting it, once the Paint thread ran the jobs handed to it before, unless a test holds a recording on it.
+    unsigned long interestRefreshDiscardedRecordingCount();
     // Whether committed frames record around the scroll positions rather than the whole document, until the next test
     // begins. Every navigable records its next frame as it says.
     undefined setRecordsAroundScrollPositions(boolean recordsAroundScrollPositions);

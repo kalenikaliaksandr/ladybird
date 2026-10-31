@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A frame that keeps the display list the compositor has sends a visual context tree of another structure than the
+// list was recorded against, so the last committed frame can no longer be recorded again for the compositor. A request
+// to record around a new rect then goes to the host, whose next rendering update records it, and nothing presents
+// until then.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    internals.setManualRenderingOpportunities(true);
+    let presentedByWhileTheHostRendersNothing;
+    try {
+        await nextTask();
+        internals.sendMismatchedVisualContextTreeUpdateToCompositor();
+        internals.synchronizeCompositor();
+        internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+        // Once the request was serviced, the host was asked for a frame, which it renders at its next opportunity.
+        internals.interestRefreshCount();
+        presentedByWhileTheHostRendersNothing = internals.lastFramePresentedBy(document);
+    } finally {
+        internals.setManualRenderingOpportunities(false);
+    }
+    println(`last frame presented by, while the host renders nothing: ${presentedByWhileTheHostRendersNothing}`);
+    println(`the host's frame records the rect: ${await waitForCondition(recordsTheRect)}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
+});
+</script>

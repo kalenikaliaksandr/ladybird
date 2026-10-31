@@ -10,7 +10,10 @@ use crate::painting::display_list::commands::UniqueNodeId;
 use crate::painting::ffi::{FfiChromeMetrics, FfiScrollNodeDestination};
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::host::{FfiFlexOverlayInput, FfiGridOverlayInput, RootBackgroundSource};
-use crate::painting::interest_refresh::{InterestRequest, newest_interest_request, take_newest_interest_request};
+use crate::painting::interest_refresh::{
+    InterestRequest, interest_requested_and_presented, take_newest_interest_request,
+};
+use crate::painting::record::interest::PresentedInterest;
 use libgfx_rust::font::FontHandle;
 use libgfx_rust::{Color, IntRect, IntSize};
 use std::sync::Arc;
@@ -86,6 +89,8 @@ pub(crate) struct RecordingInputs {
     // No producer's output depends on it, so a recording of another part of the document still copies the clean output
     // of the published one.
     pub interest: InterestInput,
+    // No producer's output depends on it either.
+    pub purpose: RecordingPurpose,
     pub should_show_line_box_borders: bool,
     pub force_dark_enabled: bool,
     pub force_dark_settings: ForceDarkSettings,
@@ -128,26 +133,64 @@ pub(crate) struct RecordingInputs {
 
 impl RecordingInputs {
     /// These inputs, which a recording that published recorded with, for a clock lane's frame of the compositor context
-    /// `context_id`: where they record around the scroll positions, the frame records the rects of the context's newest
-    /// request to record around new rects, as `InterestInput::AsRequested` says.
+    /// `context_id`, on the Paint thread as it records the frame: where they record around the scroll positions, the
+    /// frame records the rects of the context's newest request to record around new rects, and what the display list
+    /// the context holds records of the other scroll nodes, as `InterestInput::AsRequested` says.
     pub(crate) fn for_clock_lane_of_context(mut self, context_id: u64) -> Self {
         if let InterestInput::AroundScrollPositions { .. } | InterestInput::AsRequested { .. } = self.interest {
-            self.interest = InterestInput::AsRequested {
-                requested: newest_interest_request(context_id),
-            };
+            let (requested, presented) = interest_requested_and_presented(context_id);
+            self.interest = InterestInput::AsRequested { requested, presented };
         }
         self
+    }
+
+    /// These inputs, which the recording of a committed frame recorded with, for a refresh of the frame around the rects
+    /// of the compositor's `request`, as it names them. The display list the refresh replaces is the one the last
+    /// recording of the frame published.
+    pub(crate) fn for_interest_refresh(&self, request: Arc<InterestRequest>) -> Self {
+        Self {
+            interest: InterestInput::AsRequested {
+                requested: Some(request),
+                presented: None,
+            },
+            purpose: RecordingPurpose::InterestRefresh,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the recording records around the scroll positions, as a committed frame that refreshes may record again
+    /// does.
+    pub(crate) fn records_around_scroll_positions(&self) -> bool {
+        matches!(self.interest, InterestInput::AroundScrollPositions { .. })
     }
 
     /// The compositor's request to record around new rects that the recording records around, if any.
     pub(crate) fn interest_request(&self) -> Option<&Arc<InterestRequest>> {
         match &self.interest {
-            InterestInput::AroundScrollPositions { requested, .. } | InterestInput::AsRequested { requested } => {
+            InterestInput::AroundScrollPositions { requested, .. } | InterestInput::AsRequested { requested, .. } => {
                 requested.as_ref()
             }
             InterestInput::WholeDocument
             | InterestInput::AroundScrollPositionsForTesting
             | InterestInput::AsSourceRecording => None,
+        }
+    }
+}
+
+/// What a recording is for: a frame of the document, or a refresh, which records a committed frame again around other
+/// rects, so that it shares the hit-test list of the recording it copies from, as no hit-test item depends on what a
+/// recording leaves out.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordingPurpose {
+    Frame,
+    InterestRefresh,
+}
+
+impl RecordingPurpose {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Frame => "frame",
+            Self::InterestRefresh => "interest-refresh",
         }
     }
 }
@@ -167,13 +210,27 @@ pub(crate) enum InterestInput {
     /// records never depends on recordings made outside it.
     AroundScrollPositionsForTesting,
     /// The rect the compositor's `requested` names of each scroll node, as it names it, whatever the scroll positions
-    /// show, and what the recording published last aimed for of the other nodes: a clock lane's frame shows the scroll
-    /// positions of the committed frame it starts from, which the compositor may have scrolled on from since.
+    /// show, and what the display list the frame replaces on screen aimed for of the other nodes: `presented`, or the
+    /// recording published last where that is none. A clock lane's frame or a refresh shows the scroll positions of
+    /// the committed frame it starts from, which the compositor may have scrolled on from since.
     AsRequested {
         requested: Option<Arc<InterestRequest>>,
+        presented: Option<PresentedInterest>,
     },
     /// What the recording published last records: a recording that only rebuilds the hit-test list records no more.
     AsSourceRecording,
+}
+
+impl InterestInput {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::WholeDocument => "whole-document",
+            Self::AroundScrollPositions { .. } => "around-scroll-positions",
+            Self::AroundScrollPositionsForTesting => "around-scroll-positions-for-testing",
+            Self::AsRequested { .. } => "as-requested",
+            Self::AsSourceRecording => "as-source-recording",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

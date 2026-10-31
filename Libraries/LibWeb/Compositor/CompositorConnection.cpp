@@ -942,6 +942,7 @@ Optional<CompositorConnection::PendingScreenshot> CompositorConnection::take_scr
 extern "C" WEB_API void web_frame_sink_release(void* sink);
 extern "C" WEB_API void web_frame_sink_request_screenshot(void* sink, void* request);
 extern "C" WEB_API void web_screenshot_request_destroy(void* request);
+extern "C" WEB_API void web_frame_sink_answer_interest_refresh_request(void* sink, u64 context_id, u64 request_id);
 
 extern "C" WEB_API void web_frame_sink_release(void* sink)
 {
@@ -960,4 +961,14 @@ extern "C" WEB_API void web_frame_sink_request_screenshot(void* sink, void* requ
 extern "C" WEB_API void web_screenshot_request_destroy(void* request)
 {
     delete static_cast<Web::Compositor::ScreenshotRequestForPaintThread*>(request);
+}
+
+// A request to record a context's display list around new rects that the display list the compositor has records
+// already is answered on its own.
+extern "C" WEB_API void web_frame_sink_answer_interest_refresh_request(void* sink, u64 context_id, u64 request_id)
+{
+    Web::Compositor::CompositorFrame frame;
+    frame.context_id = Web::CompositorContextId { context_id };
+    frame.answered_interest_refresh_request_id = request_id;
+    Web::Compositor::FrameSinkFFI::submit(*static_cast<Web::Compositor::CompositorFrameSink*>(sink), move(frame));
 }

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+    img { position: absolute; top: 100px; left: 0; width: 100px; height: 100px; }
+</style>
+<script>
+// Only the host renders SVG images: a committed frame that draws one no recording drew waits for the host to render
+// it, and presents after. The Paint thread keeps that frame once it presented, so a request to record around a rect the
+// display list leaves out is recorded again from it, drawing the image the host rendered, and presented as a refresh
+// while one long task keeps the event loop from rendering.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const icon = document.createElement("img");
+    icon.src =
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='green'/%3E%3C/svg%3E";
+    document.body.append(icon);
+    await icon.decode();
+    await twoFramesLanded();
+    await interestCoverageSettled();
+    const paints = internals.getRenderingSchedulerCounters().paints;
+
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const recordedDuringTheTask = conditionHoldsWithinTask(recordsTheRect);
+
+    println(`the compositor holds a list that records the rect during the task: ${recordedDuringTheTask}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(`rendering updates that painted meanwhile: ${internals.getRenderingSchedulerCounters().paints - paints}`);
+});
+</script>

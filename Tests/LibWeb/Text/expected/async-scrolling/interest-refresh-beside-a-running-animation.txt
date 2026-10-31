@@ -1,0 +1,2 @@
+the compositor holds a list that records the rect during the task: true
+last frame presented by: refresh

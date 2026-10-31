@@ -60,6 +60,15 @@ async function waitForCondition(condition, attempts = 600, interval = 25) {
     return true;
 }
 
+// Polls the condition within the current task, so that no rendering update runs meanwhile, until it holds or 10 seconds
+// pass, and returns whether it held.
+function conditionHoldsWithinTask(condition) {
+    const deadline = performance.now() + 10000;
+    let holds = condition();
+    while (!holds && performance.now() < deadline) holds = condition();
+    return holds;
+}
+
 // Each round runs in a task of its own, so that pending tasks can drop their references and the objects that WeakRefs
 // kept alive for an earlier job are released.
 async function collectGarbageUntilCleared(weakRefs, rounds = 100) {

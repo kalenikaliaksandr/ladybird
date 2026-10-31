@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// The main thread checks the scroll positions it moves its scroll nodes to against what the display list the
+// compositor holds records, which a refresh may have recorded beyond what the last committed frame recorded: a scroll
+// within what the refresh recorded commits a frame that keeps that list, and records nothing new.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+
+    // Within one task, so that no rendering update commits a frame meanwhile.
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const deadline = performance.now() + 10000;
+    let recorded = recordsTheRect();
+    while (!recorded && performance.now() < deadline)
+        recorded = recordsTheRect();
+    const presentedByTheRefresh = internals.lastFramePresentedBy(document);
+    const contentGeneration = internals.compositorInterestRefreshState().contentGeneration;
+
+    window.scrollTo(0, 10000);
+    await twoFramesLanded();
+    println(`the refresh recorded the rect: ${recorded}`);
+    println(`presented by: ${presentedByTheRefresh}`);
+    println(`the scroll's frame presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(
+        `the scroll's frame kept the list: ${internals.compositorInterestRefreshState().contentGeneration === contentGeneration}`
+    );
+    println(`the list records what shows: ${await interestCoverageSettled()}`);
+    println(`the compositor shows the scroll position: ${internals.compositorScrollState().visibleContentRect.y === 10000}`);
+});
+</script>

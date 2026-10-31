@@ -1,0 +1,6 @@
+the scroll's frame presented by: commit
+the scroll's frame kept the list: true
+the compositor holds a list that records the rect: true
+last frame presented by: refresh
+the compositor shows the scroll position: true
+the keyboard scroll state is current: true

@@ -516,10 +516,10 @@ static Vector<Layout::RustFFI::FfiScrollNodeDestination> ffi_smooth_scroll_desti
     return ffi_destinations;
 }
 
-bool published_recording_misses_scroll_positions(Layout::BegunRead const& read, DOM::Document& document, Web::CompositorContextId context_id, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations)
+bool presented_display_list_misses_scroll_positions(Layout::BegunRead const& read, DOM::Document& document, Web::CompositorContextId context_id, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations)
 {
     auto ffi_destinations = ffi_smooth_scroll_destinations(smooth_scroll_destinations);
-    return Layout::RustFFI::render_state_published_recording_misses_scroll_positions(document_host(document), &read, context_id.value(), ffi_destinations.data(), ffi_destinations.size());
+    return Layout::RustFFI::render_state_presented_display_list_misses_scroll_positions(document_host(document), &read, context_id.value(), ffi_destinations.data(), ffi_destinations.size());
 }
 
 static Layout::RustFFI::FfiRecordingCoverage ffi_recording_coverage(RecordingCoverage coverage)

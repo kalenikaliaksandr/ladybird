@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; }
+    #target { width: 200px; height: 50px; background: rgb(0, 0, 255); }
+    #target:hover { background: rgb(0, 128, 0); }
+</style>
+<div id="target"></div>
+<script>
+// A refresh presents a display list that records more than the last committed frame's. A clock lane's hover frame after
+// it, which starts from the committed frame, takes its place on screen and records no less of the page than it.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    internals.mouseMove(100, 400);
+    await nextFrame();
+
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const result = await whileLaneHovers(async frameTime => {
+        internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+        const deadline = performance.now() + 10000;
+        let recorded = recordsTheRect();
+        while (!recorded && performance.now() < deadline)
+            recorded = recordsTheRect();
+        const presentedByTheRefresh = internals.lastFramePresentedBy(document);
+        internals.injectHoverPointer(100, 25, frameTime + 16);
+        return {
+            recorded,
+            presentedByTheRefresh,
+            presentedByTheHover: internals.lastFramePresentedBy(document),
+            hoverFrameRecordsTheRect: recordsTheRect(),
+        };
+    });
+    println(`the refresh recorded the rect: ${result.recorded}`);
+    println(`presented by: ${result.presentedByTheRefresh}`);
+    println(`the hover presented by: ${result.presentedByTheHover}`);
+    println(`the hover's frame records the rect: ${result.hoverFrameRecordsTheRect}`);
+});
+</script>

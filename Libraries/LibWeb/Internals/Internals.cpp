@@ -1766,6 +1766,11 @@ WebIDL::UnsignedLong Internals::interest_refresh_count()
     return static_cast<WebIDL::UnsignedLong>(Layout::RustFFI::interest_refresh_serviced_count_for_testing());
 }
 
+WebIDL::UnsignedLong Internals::interest_refresh_discarded_recording_count()
+{
+    return static_cast<WebIDL::UnsignedLong>(Layout::RustFFI::interest_refresh_discarded_recording_count_for_testing());
+}
+
 void Internals::set_records_around_scroll_positions(bool records_around_scroll_positions)
 {
     HTML::LocalNavigable::set_commits_record_around_scroll_positions_for_testing(records_around_scroll_positions);

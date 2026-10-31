@@ -749,7 +749,7 @@ private:
     Vector<Compositor::SmoothScrollDestination> smooth_scroll_destinations() const;
     // Whether a scroll this navigable asked for since its last frame, or `smooth_scroll_destinations`, show what the
     // display list it published last leaves out, which its next frame then records.
-    bool asked_for_scrolls_to_what_the_published_display_list_leaves_out(Layout::BegunRead const&, DOM::Document&, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations) const;
+    bool asked_for_scrolls_to_what_the_presented_display_list_leaves_out(Layout::BegunRead const&, DOM::Document&, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations) const;
     u64 last_scroll_request_id_for(Web::AsyncScrollNodeStableID) const;
     void request_scroll_jump(Web::AsyncScrollNodeStableID, ScrollTrigger);
     void request_relative_scroll(Web::AsyncScrollNodeStableID, CSSPixelPoint displacement, ScrollTrigger);

@@ -1,0 +1,4 @@
+the compositor shows the resized viewport: true
+the compositor holds a list that records the rect: true
+last frame presented by: refresh
+the refresh shows the resized viewport: true

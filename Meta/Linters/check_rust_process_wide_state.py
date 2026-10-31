@@ -120,6 +120,8 @@ RENDER_STATE_ALLOWED = {
             "layout/run_repeatability.rs:ENABLED",
             "layout/run_repeatability.rs:VERIFICATION",
             "painting/record/cull.rs:REQUESTED",
+            "painting/recording_slot.rs:COUNTS_CULLED_PRODUCERS",
+            "painting/recording_slot.rs:TIMES_RECORDINGS",
             "render_state/clock/hover.rs:LOGS",
         ],
     ),

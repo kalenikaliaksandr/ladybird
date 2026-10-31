@@ -156,6 +156,10 @@ public:
     // commands from it. On the Paint thread.
     OwnPtr<SealedPresentation> seal_for_clock_lane(SealedPresentation const& committed) const;
 
+    // A clock lane's frame shows samples the frame a rendering update committed last lacks, which a refresh of that frame
+    // would take off the screen.
+    bool shows_clock_frame() const;
+
     // The seal of a refresh, which records the frame a rendering update committed last again around other rects, from
     // `retained`, the seal that frame or the last refresh of it presented with, or none where that frame no longer
     // shows: the compositor shows another display list than `retained` presented, or a clock lane's frame since, or has
@@ -226,8 +230,12 @@ struct FlightPresentation {
 extern "C" {
 WEB_API void web_navigable_presenter_unref(void* presenter);
 WEB_API void* web_navigable_presenter_seal_for_clock_lane(void* presenter, void const* committed);
+WEB_API void* web_navigable_presenter_seal_for_refresh(void* presenter, void const* retained);
+WEB_API void* web_navigable_presenter_keep_presented_seal(void* presenter, void const* presented);
+WEB_API bool web_navigable_presenter_shows_clock_frame(void const* presenter);
 WEB_API void web_sealed_presentation_destroy(void* sealed);
 WEB_API u64 web_sealed_presentation_context_id(void const* sealed);
+WEB_API void web_sealed_presentation_take_generation(void* sealed, void const* committed);
 WEB_API void web_sealed_presentation_take_visual_context_tree(void* sealed, void const* tree, Gfx::FloatPoint const* restructured_scroll_offsets, size_t scroll_offset_count);
 WEB_API void web_navigable_presenter_add_font(void* presenter, void const* font);
 WEB_API void web_navigable_presenter_add_image_frame(void* presenter, void const* frame);

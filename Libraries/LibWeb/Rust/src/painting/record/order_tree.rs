@@ -297,6 +297,25 @@ impl CullReach {
     }
 }
 
+/// How many producers a recording left out, by what they record: paint commands, hit-test items with wheel routing, or
+/// scroll and scope metadata.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CulledProducerCounts {
+    draw: usize,
+    hit_test: usize,
+    metadata: usize,
+}
+
+impl std::fmt::Display for CulledProducerCounts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "draw:{},hit-test:{},metadata:{}",
+            self.draw, self.hit_test, self.metadata
+        )
+    }
+}
+
 /// Scroll nodes, kept like the scroll nodes of a `CullReach`, so that whether some content may land in one is a single
 /// test. A set holds more than it was given where spatial node indices share a bit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -477,6 +496,39 @@ impl PaintOrderTree {
 
     pub(crate) fn root_entry(&self) -> ChildEntry {
         self.root_entry
+    }
+
+    /// How many producers of the recording the tree describes leave their commands out, by what they record, for a
+    /// recording's timing line.
+    pub(crate) fn culled_producer_counts(&self) -> CulledProducerCounts {
+        let mut counts = CulledProducerCounts::default();
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            if id.is_none() {
+                continue;
+            }
+            for entry in self.children(id) {
+                let kind = match entry.key() {
+                    ChildKey::Scope(child) => {
+                        stack.push(child);
+                        continue;
+                    }
+                    ChildKey::Producer(kind) => kind,
+                };
+                if !entry.output().culled {
+                    continue;
+                }
+                let count = match kind {
+                    ProducerKind::HitBackground | ProducerKind::HitForeground | ProducerKind::HitOverlay => {
+                        &mut counts.hit_test
+                    }
+                    ProducerKind::ScrollMetadata | ProducerKind::ScopePreamble => &mut counts.metadata,
+                    _ => &mut counts.draw,
+                };
+                *count += 1;
+            }
+        }
+        counts
     }
 
     #[cfg(test)]

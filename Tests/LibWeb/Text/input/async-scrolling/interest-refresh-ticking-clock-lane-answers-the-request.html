@@ -8,9 +8,10 @@
 <div id="box"></div>
 <script>
 // While a clock lane ticks an animation beside a task, the compositor scrolls past what its display list records and
-// asks for a recording there, which waits while held. Once released, the lane's next frame records the rects asked for
-// and answers the request, though no rendering update runs meanwhile, and the lane's frames after it go on recording
-// what shows, though the frame the lane started from shows the top of the page.
+// asks for a recording there, which waits while held. Once released, the request waits for the lane rather than going
+// to the host, the lane's next frame records the rects asked for and answers the request, though no rendering update
+// runs meanwhile, and the lane's frames after it go on recording what shows, though the frame the lane started from
+// shows the top of the page.
 asyncTest(async done => {
     await startRecordingAroundScrollPositions();
     await interestCoverageSettled();
@@ -30,8 +31,10 @@ asyncTest(async done => {
         const requestInFlight = internals.compositorInterestRefreshState().inFlightRequestId;
         const scrolled = internals.compositorScrollState();
         const paints = internals.getRenderingSchedulerCounters().paints;
+        const requestsServiced = internals.interestRefreshCount();
 
         internals.releaseInterestRefreshes();
+        const leftToTheLane = internals.interestRefreshCount() === requestsServiced;
         const answeredBeforeTheTick = internals.compositorInterestRefreshState().lastAnsweredRequestId >= requestInFlight;
         internals.injectClockTick(frameTime + 2000);
         const presentedBy = internals.lastFramePresentedBy(document);
@@ -47,6 +50,7 @@ asyncTest(async done => {
         );
         return {
             scrolledPastTheList: scrolled.visibleContentRect.y >= scrolled.recordedRect.y + scrolled.recordedRect.height,
+            leftToTheLane,
             answeredBeforeTheTick,
             presentedBy,
             answered,
@@ -56,6 +60,7 @@ asyncTest(async done => {
         };
     });
     println(`scrolled past what the list records: ${result.scrolledPastTheList}`);
+    println(`the released request waits for the lane: ${result.leftToTheLane}`);
     println(`answered before the lane's next tick: ${result.answeredBeforeTheTick}`);
     println(`last frame presented by: ${result.presentedBy}`);
     println(`the lane's frame answered the request: ${result.answered}`);

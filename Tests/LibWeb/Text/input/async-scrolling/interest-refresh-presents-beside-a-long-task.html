@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A request to record around a rect the display list leaves out is recorded again from the last committed frame, and
+// presented as a refresh, while a long task keeps the event loop from rendering: the compositor comes to hold a list
+// that records the rect before the task ends, which keeps the content generation of the list it records around other
+// rects.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const paints = internals.getRenderingSchedulerCounters().paints;
+    const contentGeneration = internals.compositorInterestRefreshState().contentGeneration;
+
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const deadline = performance.now() + 10000;
+    let recordedDuringTheTask = recordsTheRect();
+    while (!recordedDuringTheTask && performance.now() < deadline)
+        recordedDuringTheTask = recordsTheRect();
+
+    println(`the compositor holds a list that records the rect during the task: ${recordedDuringTheTask}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(`rendering updates that painted meanwhile: ${internals.getRenderingSchedulerCounters().paints - paints}`);
+    println(
+        `the list keeps its content generation: ${internals.compositorInterestRefreshState().contentGeneration === contentGeneration}`
+    );
+});
+</script>

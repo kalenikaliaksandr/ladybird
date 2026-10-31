@@ -1,0 +1,6 @@
+a rect without the image is recorded: true
+presented by: refresh
+last frame presented by, while the host renders nothing: refresh
+refresh recordings discarded: 0
+the host's frame records the rect with the image: true
+presented by: commit

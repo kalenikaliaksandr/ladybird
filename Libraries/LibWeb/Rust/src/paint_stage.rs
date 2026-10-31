@@ -4,14 +4,17 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The Paint thread, and the stage it presents frames on: the frame sink frames reach the compositor through.
+//! The Paint thread, and the stage it presents frames on: the frame sink frames reach the compositor through, and the
+//! last committed frame of each navigable, which refreshes record again (see [`RetainedCommits`]).
 //!
 //! Presenting a frame takes a [`Presenting`], which only the jobs this module hands the Paint thread are lent, there,
-//! and which alone reaches the frame sink. The Paint thread runs its jobs one at a time and in the order they were
-//! handed to it, so frames reach the compositor in the order their jobs were handed out, and code that runs anywhere
-//! else cannot present a frame: it has no [`Presenting`] to present with.
+//! and which alone reaches the frame sink and the retained commits. The Paint thread runs its jobs one at a time and in
+//! the order they were handed to it, so frames reach the compositor in the order their jobs were handed out, and code
+//! that runs anywhere else cannot present a frame: it has no [`Presenting`] to present with. A job that presents is
+//! handed a frame the render owner sampled, or, for a refresh, re-presents one it sampled earlier, which a retained
+//! commit holds.
 
-use crate::render_state::SampledFrame;
+use crate::render_state::{RetainedCommits, SampledFrame};
 use crate::stage_thread::{InFlight, Relay, Riding, StageThread};
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -23,6 +26,7 @@ unsafe extern "C" {
     fn web_frame_sink_release(sink: *mut c_void);
     fn web_frame_sink_request_screenshot(sink: *mut c_void, request: *mut c_void);
     fn web_screenshot_request_destroy(request: *mut c_void);
+    fn web_frame_sink_answer_interest_refresh_request(sink: *mut c_void, context_id: u64, request_id: u64);
 }
 
 /// The Paint thread, which records display lists from the frames the render states publish, and presents frames.
@@ -44,6 +48,8 @@ unsafe impl Sync for StageCell {}
 struct PaintStage {
     /// The frame sink of the connection to the compositor, while there is one.
     sink: Option<FrameSinkBox>,
+    /// The last committed frame of each navigable that refreshes record again.
+    retained_commits: RetainedCommits,
 }
 
 fn the_paint_thread() -> &'static PaintThread {
@@ -108,11 +114,28 @@ impl Presenting<'_> {
             .as_ref()
             .map_or(std::ptr::null_mut(), |sink| sink.0.as_ptr())
     }
+
+    /// The last committed frame of each navigable, which refreshes record again.
+    pub(crate) fn retained_commits(&mut self) -> &mut RetainedCommits {
+        &mut self.stage.retained_commits
+    }
+
+    /// Tells the compositor context `context_id` that its display list records the rects of its request `request_id`
+    /// already, after the frames presented before.
+    pub(crate) fn answer_interest_refresh_request(&mut self, context_id: u64, request_id: u64) {
+        let sink = self.sink();
+        if sink.is_null() {
+            return;
+        }
+        // SAFETY: The stage holds the sink.
+        unsafe { web_frame_sink_answer_interest_refresh_request(sink, context_id, request_id) };
+    }
 }
 
 /// Hands `job` to the Paint thread with `frame`, which the render owner sampled: the Paint thread runs it after the jobs
-/// handed to it before, beside whoever holds the ride, and lends it what it presents with. A job that presents is only
-/// ever handed a sampled frame, so the Paint thread presents frames in the order the render owner sampled them.
+/// handed to it before, beside whoever holds the ride, and lends it what it presents with. A job that presents is
+/// handed a sampled frame, or refreshes one sampled earlier (see [`post_interest_refresh`]), so the Paint thread
+/// presents frames in the order the render owner sampled them.
 pub(crate) fn ride_presenting<T: Send + 'static, R: Send + 'static>(
     frame: SampledFrame<T>,
     job: impl FnOnce(SampledFrame<T>, &mut Presenting) -> R + Send + 'static,
@@ -139,6 +162,19 @@ pub(crate) fn submit_presenting<T: Send + 'static, R: Send + 'static>(
     job: impl FnOnce(SampledFrame<T>, &mut Presenting) -> R + Send + 'static,
 ) -> InFlight<R> {
     paint_thread().submit(move |_| Presenting::lend(|presenting| job(frame, presenting)))
+}
+
+/// Posts the job that services the compositor's requests to record display lists around new rects to the Paint thread,
+/// which runs it after the jobs handed to it before, and lends it what it presents with: it presents nothing but
+/// refreshes of the frames the retained commits hold, which the render owner sampled before the commits that hold them
+/// were presented.
+pub(crate) fn post_interest_refresh() {
+    paint_thread().post(|| Presenting::lend(crate::render_state::service_interest_requests));
+}
+
+/// Posts `job` to the Paint thread, which runs it on the retained commits after the jobs handed to it before.
+pub(crate) fn post_to_retained_commits(job: impl FnOnce(&mut RetainedCommits) + Send + 'static) {
+    paint_thread().post(move || Presenting::lend(|presenting| job(presenting.retained_commits())));
 }
 
 /// Has the Paint stage present frames through `sink`, a reference to the frame sink of a new connection to the
@@ -204,4 +240,7 @@ mod ffi_test_stubs {
 
     #[unsafe(no_mangle)]
     extern "C" fn web_screenshot_request_destroy(_: *mut c_void) {}
+
+    #[unsafe(no_mangle)]
+    extern "C" fn web_frame_sink_answer_interest_refresh_request(_: *mut c_void, _: u64, _: u64) {}
 }

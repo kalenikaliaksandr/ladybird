@@ -701,11 +701,11 @@ pub unsafe extern "C" fn render_state_commit_recorded_frame(
     unsafe { commit_frame(host, read, recorder, content, held_for_testing, timestamp, presentation) };
 }
 
-/// Whether the display list that `host`'s document published last leaves out part of what the document shows of a scroll
-/// node at the scroll positions the main thread moved it to, or would show where the smooth scrolls it asked for take
-/// the nodes, the `smooth_scroll_destination_count` destinations at `smooth_scroll_destinations`, and the newest request
-/// of the compositor context `compositor_context_id` does not ask for that part either: a frame that shows it records
-/// again.
+/// Whether the display list the compositor context `compositor_context_id` holds, as the Paint thread presented it last,
+/// leaves out part of what `host`'s document shows of a scroll node at the scroll positions the main thread moved it to,
+/// or would show where the smooth scrolls it asked for take the nodes, the `smooth_scroll_destination_count`
+/// destinations at `smooth_scroll_destinations`, and the context's newest request does not ask for that part either: a
+/// frame that shows it records again.
 ///
 /// # Safety
 ///
@@ -713,7 +713,7 @@ pub unsafe extern "C" fn render_state_commit_recorded_frame(
 /// `smooth_scroll_destinations` must point to `smooth_scroll_destination_count` destinations, or be null with a count of
 /// zero.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn render_state_published_recording_misses_scroll_positions(
+pub unsafe extern "C" fn render_state_presented_display_list_misses_scroll_positions(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
     compositor_context_id: u64,
@@ -723,17 +723,18 @@ pub unsafe extern "C" fn render_state_published_recording_misses_scroll_position
     // SAFETY: Guaranteed by the caller.
     let smooth_scroll_destinations =
         unsafe { ak::slice_from_raw_parts(smooth_scroll_destinations, smooth_scroll_destination_count) };
-    let Some(published) = host.recording().published_recording() else {
+    let (requested, Some(presented)) =
+        crate::painting::interest_refresh::interest_requested_and_presented(compositor_context_id)
+    else {
         return false;
     };
-    let requested = crate::painting::interest_refresh::newest_interest_request(compositor_context_id);
     read_arena(
         host,
         read,
-        (&*published, requested.as_deref(), smooth_scroll_destinations),
-        |arena, (published, requested, smooth_scroll_destinations)| {
+        (&presented, requested.as_deref(), smooth_scroll_destinations),
+        |arena, (presented, requested, smooth_scroll_destinations)| {
             let visual_context = &arena.paint_state().visual_context;
-            published.misses_what_scroll_positions_show(
+            presented.misses_what_scroll_positions_show(
                 visual_context.structural_epoch(),
                 visual_context.scroll_state.own_offsets(),
                 requested,

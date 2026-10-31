@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A main-thread scroll within what the display list records commits a frame that keeps the display list the compositor
+// has. A refresh of the last recorded frame after it starts from that frame: it presents, with the scroll state and the
+// keyboard scroll state that frame committed.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    await twoFramesLanded();
+    const contentGeneration = internals.compositorInterestRefreshState().contentGeneration;
+    window.scrollTo(0, 200);
+    await twoFramesLanded();
+    println(`the scroll's frame presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(
+        `the scroll's frame kept the list: ${internals.compositorInterestRefreshState().contentGeneration === contentGeneration}`
+    );
+
+    // Within one task, so that no rendering update commits a frame meanwhile.
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const deadline = performance.now() + 10000;
+    let recorded = recordsTheRect();
+    while (!recorded && performance.now() < deadline)
+        recorded = recordsTheRect();
+    println(`the compositor holds a list that records the rect: ${recorded}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(`the compositor shows the scroll position: ${internals.compositorScrollState().visibleContentRect.y === 200}`);
+    println(`the keyboard scroll state is current: ${internals.lastFrameKeyboardScrollStateIsCurrent()}`);
+});
+</script>

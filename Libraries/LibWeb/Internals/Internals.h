@@ -197,6 +197,7 @@ public:
     void hold_interest_refreshes();
     void release_interest_refreshes();
     WebIDL::UnsignedLong interest_refresh_count();
+    WebIDL::UnsignedLong interest_refresh_discarded_recording_count();
     void set_records_around_scroll_positions(bool);
     void set_autoplay_policy(Utf16String const& policy);
 

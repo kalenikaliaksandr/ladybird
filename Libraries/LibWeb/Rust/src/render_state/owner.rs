@@ -223,13 +223,17 @@ pub(super) fn with_lanes<R>(
     })
 }
 
-/// On the owner: drops the render state of `document`, where a job made one, and its lanes.
+/// On the owner: drops the render state of `document`, where a job made one, and its lanes. The state goes once the
+/// Paint thread dropped the committed frames of the document it kept to refresh, which read the style records of its
+/// engine, without waiting for the Paint thread meanwhile.
 pub(super) fn retire(document: DocumentId) {
-    hold(|| {
-        if let Some(entry) = with_states(|states| states.remove(&document)) {
-            let DocumentEntry { state, lanes, .. } = *entry;
-            super::clock::retire_slot(lanes.into_inner());
-            state.into_inner().retire();
-        }
+    let state = hold(|| {
+        let entry = with_states(|states| states.remove(&document))?;
+        let DocumentEntry { state, lanes, .. } = *entry;
+        super::clock::retire_slot(lanes.into_inner());
+        Some(state.into_inner())
     });
+    if let Some(state) = state {
+        super::clock::forget_retained_commits_of_document_then(document, move || hold(|| state.retire()));
+    }
 }

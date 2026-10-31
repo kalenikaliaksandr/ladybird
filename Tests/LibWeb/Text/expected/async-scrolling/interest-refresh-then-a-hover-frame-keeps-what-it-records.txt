@@ -1,0 +1,4 @@
+the refresh recorded the rect: true
+presented by: refresh
+the hover presented by: clock
+the hover's frame records the rect: true

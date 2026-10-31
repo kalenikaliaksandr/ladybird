@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A resize commits a frame of another viewport size, which takes the place of the committed frame refreshes record
+// again: a refresh after it records the resized frame, never the one before, which no longer shows.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const heightBefore = internals.compositorScrollState().visibleContentRect.height;
+    internals.resizeWindow(800, 400);
+    const resized = () => internals.compositorScrollState().visibleContentRect.height !== heightBefore;
+    println(`the compositor shows the resized viewport: ${await waitForCondition(resized)}`);
+    await twoFramesLanded();
+    await interestCoverageSettled();
+
+    // Within one task, so that no rendering update commits a frame meanwhile.
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const deadline = performance.now() + 10000;
+    let recorded = recordsTheRect();
+    while (!recorded && performance.now() < deadline)
+        recorded = recordsTheRect();
+    println(`the compositor holds a list that records the rect: ${recorded}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(
+        `the refresh shows the resized viewport: ${internals.compositorScrollState().visibleContentRect.height === window.innerHeight}`
+    );
+    internals.resizeWindow(800, 600);
+});
+</script>

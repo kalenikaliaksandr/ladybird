@@ -11,15 +11,15 @@
 //! interest grid and unbounded where it reaches the end of its scroll range, which is also what the display list tells
 //! the compositor it records. A committed frame aims for the rect the compositor requested instead, where what it
 //! records for that rect holds what the scrollport shows, and also holds what the scrollport shows where a smooth
-//! scroll the main thread asked for takes the node. A clock lane's frame shows the scroll positions of the committed
-//! frame it starts from, which the compositor may have scrolled on from, so it aims for the requested rect as it is,
-//! and for what the published recording aimed for of a node the request does not name. A node whose content reaches
-//! past the unbounded edges records all of it.
+//! scroll the main thread asked for takes the node. A clock lane's frame or a refresh shows the scroll positions of the
+//! committed frame it starts from, which the compositor may have scrolled on from, so it aims for the requested rect as
+//! it is, and for what the display list it replaces on screen aimed for of a node the request does not name. A node
+//! whose content reaches past the unbounded edges records all of it.
 //!
 //! What a recording reads of its frame to work this out holds while the frame's visual context tree, geometry and scroll
 //! metadata do, so a later recording of such a frame works it out over the compositor's scroll nodes alone. The same
-//! keeps telling the host whether the scroll positions the main thread moved its scroll nodes to show what the published
-//! recording leaves out.
+//! keeps telling the host whether the scroll positions the main thread moved its scroll nodes to show what the display
+//! list the compositor holds leaves out.
 
 use super::PaintRecorder;
 use super::assemble::AssemblyCulling;
@@ -213,14 +213,69 @@ impl RecordedInterest {
             !(view.is_empty() || records(self.scroll_node_rects[position].rect) || requested.is_some_and(records))
         })
     }
+    // Of each scroll node that a frame whose scroll state holds `own_offsets` shows part of that this recording leaves
+    // out, the default rect around what it shows. A node is cut by what this recording records of the node it is placed
+    // exactly in, and a node the scroll state has no slot for is left out.
+    fn rects_around_what_scroll_positions_show_that_it_leaves_out(
+        &self,
+        own_offsets: &[CssPixelPoint],
+    ) -> Vec<FfiScrollNodeContentRect> {
+        let Some(basis) = &self.basis else {
+            return Vec::new();
+        };
+        basis
+            .scroll_nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(position, node)| {
+                let own_offset = match node.state_slot {
+                    NO_SCROLL_STATE_SLOT => CssPixelPoint::default(),
+                    state_slot => *own_offsets.get(state_slot)?,
+                };
+                let parent_recorded = node.placed_exactly_in.map(|parent| self.scroll_node_rects[parent].rect);
+                let view = node.view_heading_to_smooth_scroll_destinations(
+                    device_scroll_offset(own_offset, basis.device_pixels_per_css_pixel),
+                    parent_recorded,
+                    &[],
+                );
+                (!view.is_empty() && !self.scroll_node_rects[position].rect.contains_rect(view)).then(|| {
+                    FfiScrollNodeContentRect {
+                        rect: default_interest_rect(view, size_of(node.scrollport), node.range.axes),
+                        ..node.named
+                    }
+                })
+            })
+            .collect()
+    }
 }
 
-impl super::RecordingOutput {
+/// What the display list a compositor context holds records, as the Paint thread presented it last, with the structural
+/// epoch of the visual context tree it was recorded against. A frame recorded beside the event loop aims for what it
+/// records of the scroll nodes no request names, so that it records no less of them than the list it replaces, and a
+/// frame the main thread commits records where its scroll positions show what it leaves out.
+#[derive(Clone)]
+pub(crate) struct PresentedInterest {
+    interest: Arc<RecordedInterest>,
+    structural_epoch: u64,
+}
+
+impl PresentedInterest {
+    pub(crate) fn of(output: &super::RecordingOutput) -> Self {
+        Self {
+            interest: Arc::clone(&output.recorded_interest),
+            structural_epoch: output.recorded_structural_epoch,
+        }
+    }
+
+    pub(crate) fn interest(&self) -> &RecordedInterest {
+        &self.interest
+    }
+
     /// Whether a frame whose visual context tree has `structural_epoch`, and whose scroll state holds `own_offsets`,
-    /// shows part of a scroll node that this recording leaves out and `requested`, the compositor's newest request, does
-    /// not ask for, or would show it at one of `smooth_scroll_destinations`, where smooth scrolls the main thread asked
-    /// for take the nodes. A recording of the whole document leaves nothing out; one of another tree may leave out
-    /// anything.
+    /// shows part of a scroll node that the display list leaves out and `requested`, the compositor's newest request,
+    /// does not ask for, or would show it at one of `smooth_scroll_destinations`, where smooth scrolls the main thread
+    /// asked for take the nodes. A display list of the whole document leaves nothing out; one of another tree may leave
+    /// out anything.
     pub(crate) fn misses_what_scroll_positions_show(
         &self,
         structural_epoch: u64,
@@ -228,12 +283,29 @@ impl super::RecordingOutput {
         requested: Option<&InterestRequest>,
         smooth_scroll_destinations: &[FfiScrollNodeDestination],
     ) -> bool {
-        let interest = &self.recorded_interest;
-        if interest.basis.is_none() {
+        if self.interest.basis.is_none() {
             return false;
         }
-        self.recorded_structural_epoch != structural_epoch
-            || interest.misses_what_scroll_positions_show(own_offsets, requested, smooth_scroll_destinations)
+        self.structural_epoch != structural_epoch
+            || self
+                .interest
+                .misses_what_scroll_positions_show(own_offsets, requested, smooth_scroll_destinations)
+    }
+
+    /// The rects to record around of the scroll nodes that a frame whose visual context tree has `structural_epoch`,
+    /// and whose scroll state holds `own_offsets`, shows part of that the display list leaves out: the default rect
+    /// around what each shows. None where the display list was recorded against another tree, whose scroll nodes the
+    /// frame's scroll state does not name.
+    pub(crate) fn rects_around_what_scroll_positions_show_that_it_leaves_out(
+        &self,
+        structural_epoch: u64,
+        own_offsets: &[CssPixelPoint],
+    ) -> Vec<FfiScrollNodeContentRect> {
+        if self.structural_epoch != structural_epoch {
+            return Vec::new();
+        }
+        self.interest
+            .rects_around_what_scroll_positions_show_that_it_leaves_out(own_offsets)
     }
 }
 
@@ -493,6 +565,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
             ) => self.interest_around_scroll_positions(
                 &basis,
                 published.map(Arc::as_ref),
+                None,
                 Aiming::AroundScrollPositions,
                 requested,
                 smooth_scroll_destinations,
@@ -500,13 +573,15 @@ impl<O: Observer> PaintRecorder<'_, O> {
             (InterestInput::AroundScrollPositionsForTesting, _) => self.interest_around_scroll_positions(
                 &basis,
                 published.map(Arc::as_ref),
+                None,
                 Aiming::AroundScrollPositionsForTesting,
                 None,
                 &[],
             ),
-            (InterestInput::AsRequested { .. }, _) => self.interest_around_scroll_positions(
+            (InterestInput::AsRequested { presented, .. }, _) => self.interest_around_scroll_positions(
                 &basis,
                 published.map(Arc::as_ref),
+                presented.as_ref().map(PresentedInterest::interest),
                 Aiming::AsRequested,
                 requested,
                 &[],
@@ -618,20 +693,28 @@ impl<O: Observer> PaintRecorder<'_, O> {
         })
     }
 
+    // What the recording records around the scroll positions, or as requested, given `published`, what the recording
+    // published last records, and `presented`, what the display list the recording's frame takes the place of on screen
+    // records where that is not the published recording, whose aims a node the request does not name keeps.
     fn interest_around_scroll_positions(
         &mut self,
         basis: &Arc<InterestBasis>,
         published: Option<&RecordedInterest>,
+        presented: Option<&RecordedInterest>,
         aiming: Aiming,
         requested: Option<&InterestRequest>,
         smooth_scroll_destinations: &[FfiScrollNodeDestination],
     ) -> ResolvedInterest {
         let for_testing = aiming == Aiming::AroundScrollPositionsForTesting;
         let published_nodes = published.map(|published| PublishedScrollNodes::new(published, basis));
+        let presented_nodes = presented.map(|presented| PublishedScrollNodes::new(presented, basis));
         // A test never depends on what a recording outside it aimed for.
-        let kept_from = published_nodes.as_ref().filter(|published| {
-            published.interest().basis.is_some() && (!for_testing || published.interest().recorded_for_testing)
-        });
+        let kept_from = presented_nodes
+            .as_ref()
+            .or(published_nodes.as_ref())
+            .filter(|kept_from| {
+                kept_from.interest().basis.is_some() && (!for_testing || kept_from.interest().recorded_for_testing)
+            });
         let mut rects = InterestRects::new(basis.spatial_node_count);
         let mut recorded = RecordedInterest {
             scroll_node_rects: Vec::with_capacity(basis.scroll_nodes.len()),
@@ -771,9 +854,9 @@ fn aimed_interest_rect(
         .unwrap_or_else(|| default_interest_rect(view, scrollport_size, range.axes))
 }
 
-// What a node of a clock lane's frame aims to record: the rect the compositor requested, whatever `view`, which the
-// scroll position of the committed frame the lane starts from shows, else the rect the published recording aimed for,
-// which the compositor holds, else the default rect around the view. An empty requested rect asks for nothing.
+// What a node of a frame recorded beside the event loop aims to record: the rect the compositor requested, whatever
+// `view`, which the scroll position of the committed frame the frame starts from shows, else the rect the display list
+// the frame replaces aimed for, else the default rect around the view. An empty requested rect asks for nothing.
 fn interest_rect_as_requested(
     view: IntRect,
     requested: Option<IntRect>,
@@ -1102,6 +1185,31 @@ mod tests {
         // A scroll state that has no slot for a node is of another tree.
         assert!(recorded.misses_what_scroll_positions_show(&[own_offset_at(0)], None, &[]));
         assert!(!RecordedInterest::default().misses_what_scroll_positions_show(&[], None, &[]));
+    }
+
+    #[test]
+    fn a_frame_that_keeps_the_list_asks_for_what_its_scroll_positions_show_that_the_list_leaves_out() {
+        let presented = PresentedInterest {
+            interest: Arc::new(recorded_around_the_top()),
+            structural_epoch: 1,
+        };
+        let asks_for_at = |structural_epoch: u64, root_scroll_offset_y: i64| {
+            presented.rects_around_what_scroll_positions_show_that_it_leaves_out(
+                structural_epoch,
+                &[own_offset_at(root_scroll_offset_y), own_offset_at(0)],
+            )
+        };
+        assert!(asks_for_at(1, 0).is_empty());
+        // The root asks for the default rect around what shows, and the scroller the root's rect cuts away shows nothing.
+        assert_eq!(
+            asks_for_at(1, 5000),
+            vec![FfiScrollNodeContentRect {
+                rect: from_edges(-UNBOUNDED, 4200, UNBOUNDED, 6600),
+                ..named(ROOT)
+            }]
+        );
+        // The scroll state of another tree names other scroll nodes.
+        assert!(asks_for_at(2, 5000).is_empty());
     }
 
     #[test]

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 60000px; background: linear-gradient(white, teal); }
+    img { position: absolute; top: 100px; left: 0; width: 100px; height: 100px; }
+</style>
+<script>
+// Only the host renders SVG images, but a refresh draws one the committed frame drew though the last refresh of the
+// frame left it out: the presenter keeps the display list the host rendered it as while the committed frame's list
+// draws it. After a main-thread scroll within what a refresh recorded, a refresh around the scroll position leaves the
+// image out, and one that reaches back to it draws it again, both while one long task keeps the event loop from
+// rendering.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const icon = new Image();
+    icon.src =
+        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='green'/%3E%3C/svg%3E";
+    await icon.decode();
+    document.body.append(icon);
+    await twoFramesLanded();
+    await interestCoverageSettled();
+
+    const recordsFrom = (top, bottom) => () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= top && recorded.y + recorded.height >= bottom;
+    };
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsWhatTheCommittedFrameDrew = conditionHoldsWithinTask(recordsFrom(0, 20000));
+    const contentGeneration = internals.compositorInterestRefreshState().contentGeneration;
+    window.scrollTo(0, 10000);
+    await twoFramesLanded();
+    const scrollKeptTheList = internals.compositorInterestRefreshState().contentGeneration === contentGeneration;
+    const paints = internals.getRenderingSchedulerCounters().paints;
+
+    internals.injectInterestRefresh({ left: -Infinity, top: 10000, right: Infinity, bottom: 30000 });
+    const leavesOutTheImage = conditionHoldsWithinTask(
+        () => recordsFrom(10000, 30000)() && internals.compositorScrollState().recordedRect.y > 200
+    );
+    const leavingOutPresentedBy = internals.lastFramePresentedBy(document);
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 30000 });
+    const drawsTheImageAgain = conditionHoldsWithinTask(recordsFrom(0, 30000));
+
+    println(`a refresh records what the committed frame drew: ${recordsWhatTheCommittedFrameDrew}`);
+    println(`the scroll's frame kept the list: ${scrollKeptTheList}`);
+    println(`a refresh around the scroll position leaves out the image: ${leavesOutTheImage}`);
+    println(`presented by: ${leavingOutPresentedBy}`);
+    println(`a refresh that reaches back draws the image: ${drawsTheImageAgain}`);
+    println(`presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(`rendering updates that painted meanwhile: ${internals.getRenderingSchedulerCounters().paints - paints}`);
+});
+</script>

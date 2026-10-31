@@ -1,0 +1,5 @@
+the committed frame records the background: false
+a list records the background, while the host renders nothing: false
+refresh recordings discarded: 0
+the host's frame records the rect with the background: true
+presented by: commit

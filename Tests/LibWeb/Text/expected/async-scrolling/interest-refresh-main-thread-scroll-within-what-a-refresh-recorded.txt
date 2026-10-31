@@ -1,0 +1,6 @@
+the refresh recorded the rect: true
+presented by: refresh
+the scroll's frame presented by: commit
+the scroll's frame kept the list: true
+the list records what shows: true
+the compositor shows the scroll position: true

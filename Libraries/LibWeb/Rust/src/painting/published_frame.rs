@@ -21,12 +21,13 @@ use crate::layout::SLOTS_PER_CHUNK;
 use crate::layout::fragment_tree::FragmentLink;
 use crate::layout::node_data::{NodeSlotId, PaintNode};
 use crate::layout::tree_shape::PUBLISHED_ROWS_PER_CHUNK;
+use crate::painting::image_content::ImageContent;
 use crate::painting::layer_image_paint_facts::LayerImagePaintFactsTable;
 use crate::painting::paint_state::{PaintState, SelectionPseudoStyles};
 use crate::painting::paintable_data::{CommittedSideData, PaintableData};
 use crate::painting::paintable_rows::{CommittedFragmentLinkSlot, PAINTABLE_SLOTS_PER_CHUNK};
 use crate::painting::record::damage::FrameDamage;
-use crate::painting::replaced_paint_facts::ReplacedPaintFactsTable;
+use crate::painting::replaced_paint_facts::{ReplacedPaintFacts, ReplacedPaintFactsTable};
 use crate::painting::selection::{
     HighlightPseudoElement, SearchTextHighlights, SelectionRange, SpellingErrorHighlights,
 };
@@ -206,12 +207,36 @@ impl PublishedPaintState {
 /// What a document published for one recording to read: its rows, its paint damage and the paint
 /// state the recording reads, with a lease on the style records its rows name. [`LayoutNodeArena::freeze_frame`] is
 /// its only constructor and it has no `Clone`: a recording borrows a frame from the job it runs in, which drops it
-/// before it answers, and nothing keeps one past the next write to the arena.
+/// before it answers, but for the frame of a commit that presented what it recorded, which the Paint thread keeps as a
+/// [`RetainedFrame`] until the next commit of its navigable, for refreshes to record again. Its rows and paint state are
+/// copy-on-write snapshots, so the arena's writes meanwhile leave it as it was published.
 pub(crate) struct PublishedFrame {
     pub(super) rows: PublishedRows,
     damage: FrameDamage,
     paint_state: PublishedPaintState,
-    _style_records: StyleRecordLease,
+    style_records: FrameStyleRecords,
+}
+
+/// What keeps the payloads of the style records a frame's rows name: a lease on every record published so far, which
+/// keeps the style engine from freeing any record while a recording reads the frame, and, for a frame that may be kept
+/// past its recording, a lease on its rows' own records, animation overlay records among them, which leaves the others
+/// reclaimable once the frame lets go of the first.
+enum FrameStyleRecords {
+    Every {
+        _every_record: StyleRecordLease,
+        row_records: Option<Arc<[u64]>>,
+    },
+    RowsOnly(Arc<[u64]>),
+}
+
+/// The frame of a commit that presented what it recorded, which refreshes record again: it holds no paint damage, which
+/// the commit's recording painted, and keeps only the style records its rows name.
+pub(crate) struct RetainedFrame(PublishedFrame);
+
+impl RetainedFrame {
+    pub(crate) fn get(&self) -> &PublishedFrame {
+        &self.0
+    }
 }
 
 // A frame is read on whichever thread paints it while the document writes its live columns: it
@@ -232,12 +257,55 @@ impl LayoutNodeArena {
             rows,
             damage: self.paint_damage_for_frame(),
             paint_state: PublishedPaintState::new(self.paint_state(), hit_test_item_capacity_hint),
-            _style_records: self.with_style_store(|engine| engine.lease_style_records()),
+            style_records: FrameStyleRecords::Every {
+                _every_record: self.with_style_store(|engine| engine.lease_style_records()),
+                row_records: None,
+            },
         }
     }
 }
 
 impl PublishedFrame {
+    /// Has the frame keep `row_records`, a lease on the style records its rows name, so that it may be kept past its
+    /// recording (see [`Self::retain`]).
+    pub(crate) fn lease_row_style_records(&mut self, row_records: Arc<[u64]>) {
+        if let FrameStyleRecords::Every {
+            row_records: leased, ..
+        } = &mut self.style_records
+        {
+            *leased = Some(row_records);
+        }
+    }
+
+    /// Whether the frame leases the style records its rows name, which lets it be kept past its recording.
+    pub(crate) fn leases_row_style_records(&self) -> bool {
+        match &self.style_records {
+            FrameStyleRecords::Every { row_records, .. } => row_records.is_some(),
+            FrameStyleRecords::RowsOnly(_) => true,
+        }
+    }
+
+    /// The frame, kept past its recording, which painted its damage, with the lease on its rows' style records alone,
+    /// or none where it leases none.
+    pub(crate) fn retain(self) -> Option<RetainedFrame> {
+        let Self {
+            rows,
+            paint_state,
+            style_records,
+            ..
+        } = self;
+        let row_records = match style_records {
+            FrameStyleRecords::Every { row_records, .. } => row_records?,
+            FrameStyleRecords::RowsOnly(row_records) => row_records,
+        };
+        Some(RetainedFrame(Self {
+            rows,
+            damage: FrameDamage::default(),
+            paint_state,
+            style_records: FrameStyleRecords::RowsOnly(row_records),
+        }))
+    }
+
     /// What the frame's recording reads of the document's paint state.
     pub(crate) fn paint_state(&self) -> &PublishedPaintState {
         &self.paint_state
@@ -256,6 +324,24 @@ impl PublishedFrame {
     /// How many paintable rows the frame has room for.
     pub(crate) fn paintable_row_capacity(&self) -> usize {
         self.rows.rows.slot_capacity()
+    }
+
+    /// The rows whose paint facts hold an SVG image: replaced boxes that show one, and boxes with one among their
+    /// background, mask or border images.
+    pub(crate) fn rows_with_vector_images(&self) -> impl Iterator<Item = NodeSlotId> + '_ {
+        let is_vector = |content: &ImageContent| matches!(content, ImageContent::Vector { .. });
+        let paint_facts = &self.rows.paint_facts;
+        let replaced = paint_facts
+            .replaced
+            .iter()
+            .filter(move |(_, facts)| matches!(facts, ReplacedPaintFacts::Image(image) if is_vector(&image.content)))
+            .map(|(row, _)| *row);
+        let layered = paint_facts
+            .layer_images
+            .iter()
+            .filter(move |(_, entries)| entries.iter().any(|entry| is_vector(&entry.facts.content)))
+            .map(|(row, _)| *row);
+        replaced.chain(layered)
     }
 
     /// The epoch of the geometry the frame was published with, which moves on with every write that moves a row.

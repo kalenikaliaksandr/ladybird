@@ -13,7 +13,10 @@
 
 use crate::paint_stage::Presenting;
 use crate::painting::ffi::{FfiPresentation, FfiPresentedRecording};
+use crate::painting::interest_refresh::note_interest_presented;
 use crate::painting::paint_passes::ClockTickVisualContexts;
+use crate::painting::record::RecordingOutput;
+use crate::painting::record::interest::PresentedInterest;
 use crate::painting::record::publish::RecordingResourceSink;
 use crate::painting::visual_context::VisualContextTree;
 use libgfx_rust::FloatPoint;
@@ -24,8 +27,12 @@ use std::sync::Arc;
 unsafe extern "C" {
     fn web_navigable_presenter_unref(presenter: *mut c_void);
     fn web_navigable_presenter_seal_for_clock_lane(presenter: *mut c_void, committed: *const c_void) -> *mut c_void;
+    fn web_navigable_presenter_seal_for_refresh(presenter: *mut c_void, retained: *const c_void) -> *mut c_void;
+    fn web_navigable_presenter_keep_presented_seal(presenter: *mut c_void, presented: *const c_void) -> *mut c_void;
+    fn web_navigable_presenter_shows_clock_frame(presenter: *const c_void) -> bool;
     fn web_sealed_presentation_destroy(sealed: *mut c_void);
     fn web_sealed_presentation_context_id(sealed: *const c_void) -> u64;
+    fn web_sealed_presentation_take_generation(sealed: *mut c_void, committed: *const c_void);
     fn web_sealed_presentation_take_visual_context_tree(
         sealed: *mut c_void,
         tree: *const c_void,
@@ -40,7 +47,7 @@ unsafe extern "C" {
         sealed: *mut c_void,
         presented: *const FfiPresentedRecording,
         sink: *mut c_void,
-    );
+    ) -> bool;
     fn web_navigable_presenter_present_unrecorded(presenter: *mut c_void, sealed: *mut c_void, sink: *mut c_void);
     fn web_vector_image_resources_destroy(resources: *mut c_void);
     fn web_navigable_presenter_take_vector_image_resources(
@@ -164,6 +171,45 @@ impl Presentation {
         })
     }
 
+    /// What the refreshes of the frame this presented seal theirs from: the presenter, and a copy of the seal it presented
+    /// with. On the Paint thread, once this presented.
+    pub(crate) fn for_refreshes(&self) -> Self {
+        // SAFETY: The presentation owns both objects. The copy of the seal comes with a reference to the presenter.
+        let sealed =
+            unsafe { web_navigable_presenter_keep_presented_seal(self.presenter.0.as_ptr(), self.sealed.0.as_ptr()) };
+        Self {
+            presenter: PresenterBox(self.presenter.0),
+            sealed: SealedPresentationBox(NonNull::new(sealed).expect("a copy of a seal")),
+        }
+    }
+
+    /// What presents a refresh of the frame this presented, which the refreshes of that frame since may have presented
+    /// last, or none where that frame no longer shows (see `NavigablePresenter::seal_for_refresh`). On the Paint thread.
+    pub(crate) fn for_refresh(&self) -> Option<Self> {
+        // SAFETY: The presentation owns both objects. A seal the call answers comes with a reference to the presenter.
+        let sealed = NonNull::new(unsafe {
+            web_navigable_presenter_seal_for_refresh(self.presenter.0.as_ptr(), self.sealed.0.as_ptr())
+        })?;
+        Some(Self {
+            presenter: PresenterBox(self.presenter.0),
+            sealed: SealedPresentationBox(sealed),
+        })
+    }
+
+    /// Whether a clock lane's frame shows, with samples the frame a rendering update committed last lacks, which a
+    /// refresh of that frame would take off the screen.
+    pub(crate) fn shows_clock_frame(&self) -> bool {
+        // SAFETY: The presentation owns the presenter.
+        unsafe { web_navigable_presenter_shows_clock_frame(self.presenter.0.as_ptr()) }
+    }
+
+    /// Has the seal take the generation of the frame `committed` presented, a frame a rendering update committed that
+    /// keeps the display list the compositor has.
+    pub(crate) fn take_generation_of(&mut self, committed: &Presentation) {
+        // SAFETY: Each presentation owns its seal.
+        unsafe { web_sealed_presentation_take_generation(self.sealed.0.as_ptr(), committed.sealed.0.as_ptr()) };
+    }
+
     pub(crate) fn compositor_context_id(&self) -> u64 {
         // SAFETY: The presentation owns the seal.
         unsafe { web_sealed_presentation_context_id(self.sealed.0.as_ptr()) }
@@ -220,18 +266,23 @@ impl Presentation {
         }
     }
 
-    /// Presents the sealed frame with the recording `presented` describes, whose resources the presenter took already.
-    pub(crate) fn present(&mut self, presented: &FfiPresentedRecording, presenting: &mut Presenting) {
+    /// Presents the sealed frame with the recording that published `output`, whose resources the presenter took
+    /// already, and answers whether it did: a frame that shows what the screen no longer shows is not presented.
+    pub(crate) fn present(&mut self, output: &RecordingOutput, presenting: &mut Presenting) -> bool {
         // SAFETY: The presentation owns both objects, the recording's display list is live for the call, and the stage
         // holds the sink.
-        unsafe {
+        let presented = unsafe {
             web_navigable_presenter_present(
                 self.presenter.0.as_ptr(),
                 self.sealed.0.as_ptr(),
-                presented,
+                &FfiPresentedRecording::of_output(output),
                 presenting.sink(),
-            );
+            )
+        };
+        if presented {
+            note_interest_presented(self.compositor_context_id(), PresentedInterest::of(output));
         }
+        presented
     }
 }
 
@@ -249,12 +300,30 @@ mod ffi_test_stubs {
     }
 
     #[unsafe(no_mangle)]
+    extern "C" fn web_navigable_presenter_seal_for_refresh(_: *mut c_void, _: *const c_void) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn web_navigable_presenter_keep_presented_seal(_: *mut c_void, presented: *const c_void) -> *mut c_void {
+        presented.cast_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn web_navigable_presenter_shows_clock_frame(_: *const c_void) -> bool {
+        false
+    }
+
+    #[unsafe(no_mangle)]
     extern "C" fn web_sealed_presentation_destroy(_: *mut c_void) {}
 
     #[unsafe(no_mangle)]
     extern "C" fn web_sealed_presentation_context_id(_: *const c_void) -> u64 {
         0
     }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn web_sealed_presentation_take_generation(_: *mut c_void, _: *const c_void) {}
 
     #[unsafe(no_mangle)]
     extern "C" fn web_sealed_presentation_take_visual_context_tree(
@@ -280,7 +349,8 @@ mod ffi_test_stubs {
         _: *mut c_void,
         _: *const FfiPresentedRecording,
         _: *mut c_void,
-    ) {
+    ) -> bool {
+        true
     }
 
     #[unsafe(no_mangle)]

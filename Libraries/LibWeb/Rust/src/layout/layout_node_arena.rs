@@ -3944,6 +3944,11 @@ impl LayoutNodeArena {
         }
     }
 
+    /// The style record of each row, or zero, as a frame frozen now publishes them.
+    pub(crate) fn row_style_records(&self) -> &[u64] {
+        &self.style_records
+    }
+
     pub(crate) fn hover_frame_style_records(&self) -> Vec<u64> {
         let mut records: Vec<_> = self
             .style_records

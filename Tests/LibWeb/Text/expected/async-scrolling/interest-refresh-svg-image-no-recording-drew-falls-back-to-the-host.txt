@@ -1,0 +1,5 @@
+the committed frame records the image: false
+a list records the image, while the host renders nothing: false
+refresh recordings discarded: 0
+the host's frame records the rect with the image: true
+presented by: commit

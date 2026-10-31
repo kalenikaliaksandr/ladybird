@@ -1,0 +1,7 @@
+a refresh records what the committed frame drew: true
+the scroll's frame kept the list: true
+a refresh around the scroll position leaves out the image: true
+presented by: refresh
+a refresh that reaches back draws the image: true
+presented by: refresh
+rendering updates that painted meanwhile: 0

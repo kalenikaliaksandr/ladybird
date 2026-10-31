@@ -1,0 +1,6 @@
+the first refresh records its rect: true
+first presented by: refresh
+the second refresh records its rect: true
+second presented by: refresh
+rendering updates that painted meanwhile: 0
+the lists keep their content generation: true

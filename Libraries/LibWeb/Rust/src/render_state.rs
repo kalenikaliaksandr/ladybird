@@ -26,6 +26,9 @@ pub use clock::FfiPlannedScrollTimeline;
 pub use clock::hover::FfiHoverPlanInputs;
 pub(crate) use clock::hover::HoverPlan;
 pub(crate) use clock::{ClockPlan, CommittedContent, CommittedFrame, LaneDelivery, SampledFrame};
+pub(crate) use clock::{
+    RetainedCommits, forget_retained_commit_of_context, forget_retained_commits, service_interest_requests,
+};
 pub use document_host::DocumentHost;
 pub(crate) use document_host::OwedWorkPayment;
 #[cfg(test)]
@@ -50,6 +53,10 @@ pub(crate) struct RenderState {
     streamed_marks: Option<crate::layout::tree_update_marks::LayoutTreeUpdateMarks>,
     /// The times the document's frames are sampled at.
     sample_clock: clock::SampleClock,
+    /// The lease on the style records the rows named at the rows version it was taken at, which a committed frame the
+    /// Paint thread may keep past its recording holds, and which the next such frame shares while the rows name the same
+    /// records and the frame before it still holds it.
+    row_style_records: Option<(crate::layout::RowsVersion, std::sync::Weak<[u64]>)>,
 }
 
 impl RenderState {
@@ -76,6 +83,7 @@ impl RenderState {
             owed: Vec::new(),
             streamed_marks: None,
             sample_clock: clock::SampleClock::default(),
+            row_style_records: None,
         }
     }
 
@@ -124,7 +132,24 @@ impl RenderState {
             owed: Vec::new(),
             streamed_marks: None,
             sample_clock: self.sample_clock.clone(),
+            row_style_records: None,
         }))
+    }
+
+    /// A lease on the style records the rows name at `rows_version`, the rows version of a frame frozen just now, for a
+    /// frame kept past its recording.
+    fn lease_row_style_records(&mut self, rows_version: crate::layout::RowsVersion) -> std::sync::Arc<[u64]> {
+        if let Some((leased_at, lease)) = &self.row_style_records
+            && leased_at.has_styles_of(rows_version)
+            && let Some(lease) = lease.upgrade()
+        {
+            return lease;
+        }
+        let lease = self
+            .engine_ref()
+            .lease_style_records_of_rows(self.arena.arena().row_style_records());
+        self.row_style_records = Some((rows_version, std::sync::Arc::downgrade(&lease)));
+        lease
     }
 
     /// Drops the state, which must hold no layout node any more.

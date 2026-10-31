@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; }
+    #target { width: 200px; height: 50px; background: rgb(0, 0, 255); }
+    #target:hover { background: rgb(0, 128, 0); }
+</style>
+<div id="target"></div>
+<script>
+// A clock lane's hover frame shows over the last committed frame, which a refresh of that frame would take off the
+// screen. A request that arrives meanwhile has the lane, which ticks no animation, tick for it: the lane's next frame
+// records around the request beside the event loop, while the host renders nothing.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    internals.mouseMove(100, 400);
+    await nextFrame();
+
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const result = await whileLaneHovers(async frameTime => {
+        internals.injectHoverPointer(100, 25, frameTime + 16);
+        const laneState = internals.clockLaneState(document);
+        const presentedByTheHover = internals.lastFramePresentedBy(document);
+        const paints = internals.getRenderingSchedulerCounters().paints;
+        internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+        const deadline = performance.now() + 10000;
+        let recorded = recordsTheRect();
+        while (!recorded && performance.now() < deadline)
+            recorded = recordsTheRect();
+        return {
+            laneState,
+            presentedByTheHover,
+            recorded,
+            presentedBy: internals.lastFramePresentedBy(document),
+            paintsMeanwhile: internals.getRenderingSchedulerCounters().paints - paints,
+        };
+    });
+    println(`lane: ${result.laneState}`);
+    println(`the hover presented by: ${result.presentedByTheHover}`);
+    println(`the compositor holds a list that records the rect, while the host renders nothing: ${result.recorded}`);
+    println(`last frame presented by: ${result.presentedBy}`);
+    println(`rendering updates that painted meanwhile: ${result.paintsMeanwhile}`);
+});
+</script>

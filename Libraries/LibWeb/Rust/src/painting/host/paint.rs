@@ -92,7 +92,7 @@ impl FfiRecordingInputs {
         use crate::painting::force_dark::ForceDarkSettings;
         use crate::painting::record::inputs::{
             CaretPaint, CaretTarget, FocusedAreaOutline, FocusedTextControlSelection, GridOverlays, InspectorHighlight,
-            InterestInput, RecordingInputs, UnframedRecordingInputs,
+            InterestInput, RecordingInputs, RecordingPurpose, UnframedRecordingInputs,
         };
 
         // SAFETY: The caller lends these arrays and buffers for this call.
@@ -144,6 +144,7 @@ impl FfiRecordingInputs {
                 FfiRecordingCoverage::AroundScrollPositionsForTesting => InterestInput::AroundScrollPositionsForTesting,
                 FfiRecordingCoverage::AsSourceRecording => InterestInput::AsSourceRecording,
             },
+            purpose: RecordingPurpose::Frame,
             should_show_line_box_borders: self.should_show_line_box_borders,
             force_dark_enabled: self.force_dark_enabled,
             force_dark_settings: ForceDarkSettings {

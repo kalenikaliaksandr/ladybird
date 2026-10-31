@@ -1,4 +1,5 @@
 scrolled past what the list records: true
+the released request waits for the lane: true
 answered before the lane's next tick: false
 last frame presented by: clock
 the lane's frame answered the request: true

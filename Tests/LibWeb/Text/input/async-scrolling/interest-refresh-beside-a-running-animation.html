@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #spinner { position: fixed; top: 10px; right: 10px; width: 40px; height: 40px; background: purple; animation: spin 1s linear infinite; }
+</style>
+<div id="spinner"></div>
+<script>
+// A running animation leaves the rows of each committed frame naming animation overlay records, which the frame the
+// Paint thread keeps to refresh leases with its rows' other records: a request during a long task is still recorded
+// from it beside the event loop.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+
+    // Within one task, so that no rendering update commits a frame meanwhile.
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= 20000;
+    };
+    const deadline = performance.now() + 10000;
+    let recorded = recordsTheRect();
+    while (!recorded && performance.now() < deadline)
+        recorded = recordsTheRect();
+    println(`the compositor holds a list that records the rect during the task: ${recorded}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
+});
+</script>

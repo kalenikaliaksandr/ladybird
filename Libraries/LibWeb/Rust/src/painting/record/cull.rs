@@ -371,7 +371,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
-    fn inline_piece_node(&self, owner: NodeSlotId, index: u32) -> NodeSlotId {
+    pub(super) fn inline_piece_node(&self, owner: NodeSlotId, index: u32) -> NodeSlotId {
         let root = self.line_root_of_inline_producer(owner);
         self.source.committed_side_data(root).inline_box_pieces()[index as usize].node
     }

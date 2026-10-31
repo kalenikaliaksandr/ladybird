@@ -4175,6 +4175,10 @@ impl RetainedState {
         self.computed_group_sets.lease_selected_style_records(records)
     }
 
+    pub(crate) fn lease_style_records_of_rows(&self, row_records: &[u64]) -> std::sync::Arc<[u64]> {
+        self.computed_group_sets.lease_style_records_of_rows(row_records)
+    }
+
     pub(crate) fn lease_style_records(&self) -> computed::StyleRecordLease {
         self.computed_group_sets.lease_style_records()
     }

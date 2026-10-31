@@ -431,6 +431,7 @@ impl LaneSlot {
 
     fn tick(&mut self) {
         self.take_in_scroll_offsets();
+        let records_interest_request = self.ticks.take_interest_request_wait();
         // A recording of the host's own adds to the resource storage the lane presents with: a move waits for it.
         if self.ticks.is_held() {
             return;
@@ -475,11 +476,12 @@ impl LaneSlot {
             }
             return;
         }
-        self.run_tick(pointer, samples_animations);
+        self.run_tick(pointer, samples_animations, records_interest_request);
     }
 
-    /// Ticks the lane, which has a fork, with `pointer`, and sampling its animations where `samples_animations`.
-    fn run_tick(&mut self, pointer: Option<PendingPointer>, samples_animations: bool) {
+    /// Ticks the lane, which has a fork, with `pointer`, sampling its animations where `samples_animations`, and
+    /// recording a frame around the compositor's newest request where `records_interest_request`.
+    fn run_tick(&mut self, pointer: Option<PendingPointer>, samples_animations: bool, records_interest_request: bool) {
         let Some(lane) = self.lanes.current() else {
             return;
         };
@@ -492,6 +494,7 @@ impl LaneSlot {
             self.ticks.latest.load(Ordering::Acquire),
             pointer,
             samples_animations && animations_stand,
+            records_interest_request,
         );
         self.nested = lane.hovered.nested();
         let Some(ticked) = ticked else {
@@ -524,12 +527,21 @@ impl LaneSlot {
 
     fn publish(&self) {
         let lane = self.lanes.current_ref();
-        *self.ticks.published() = LanePublication {
+        let publication = LanePublication {
             state: lane.map_or(FfiClockLaneState::None, Lane::state),
             planned_animation_changes: lane.map_or(0, |lane| lane.plan.animation_changes),
             transitions_run: lane.is_some_and(Lane::transitions_run),
             follows_pointer: lane.is_some_and(|lane| lane.plan.follows_pointer() && !lane.hovered.is_parked()),
             awaits_lane: matches!(self.lanes, Lanes::Coming { .. }),
         };
+        let mut published = self.ticks.published();
+        let recorded_interest_requests = self.ticks.lane_records_interest_requests_in(&published);
+        *published = publication;
+        let records_interest_requests = self.ticks.lane_records_interest_requests_in(&published);
+        drop(published);
+        // A request left to the lane goes to the host once the lane no longer records it.
+        if recorded_interest_requests && !records_interest_requests {
+            crate::painting::interest_refresh::service_waiting_interest_requests();
+        }
     }
 }

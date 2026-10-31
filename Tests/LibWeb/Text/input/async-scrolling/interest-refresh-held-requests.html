@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
 <style>
     body { margin: 0; height: 6000px; }
     #scroller { overflow: auto; width: 200px; height: 200px; }
@@ -7,9 +8,13 @@
 </style>
 <div id="scroller"><div id="scroller-content"></div></div>
 <script>
-// A held request waits until released, when only the newest request of the context is serviced. A request that
-// arrives once the host was asked for a frame is taken by that frame, so it asks for nothing more.
-test(() => {
+// A held request waits until released, when only the newest request of the context is serviced. Committed frames
+// record the whole document here, so no frame beside the event loop records around the request: the host is asked for
+// a frame, and a request that arrives once it was is taken by that frame, so it asks for nothing more.
+promiseTest(async () => {
+    internals.setRecordsAroundScrollPositions(false);
+    await twoFramesLanded();
+    await waitForCondition(() => internals.compositorScrollState().recordedRect === null);
     const serviced = internals.interestRefreshCount();
     internals.holdInterestRefreshes();
     internals.injectInterestRefresh({ left: 0, top: 0, right: 800, bottom: 1200 });

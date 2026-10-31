@@ -15,8 +15,10 @@
 //! never sees, and record with a fork of the recorder state the frame recorded with: nothing on the host's thread
 //! begins, waits for or ends a lane. What a tick presents starts from the lane's frame, and the presenter drops it once
 //! the host presented a later frame. The compositor may have scrolled on from the frame's scroll positions, so where
-//! the frame recorded around them, a tick records the rects the compositor asked for last instead, and the frame that
-//! presents them answers the request (see [`crate::painting::interest_refresh`]).
+//! the frame recorded around them, a tick records the rects the compositor asked for last instead, and what the display
+//! list it replaces records of the other scroll nodes, which a refresh may have recorded, and the frame that presents
+//! them answers the request (see [`crate::painting::interest_refresh`]). A request that arrives while a lane that
+//! follows the pointer shows a frame has the lane tick for it.
 //!
 //! The lane's pieces come together on the render owner (see [`lane`]): the fork, before the host first writes the state
 //! after the frame or at the first tick that needs it, the recorder state and the seal its frames are presented with,
@@ -30,7 +32,7 @@
 
 use super::owner::DocumentId;
 use super::{DocumentHost, RenderState};
-use crate::css::css_pixels::CssPixelRect;
+use crate::css::css_pixels::{CssPixelPoint, CssPixelRect};
 use crate::css::ffi_support::OwnedArc;
 use crate::css::style::animations::{AnimationTimelineSamples, ScrollProgress};
 use crate::css::style::engine_sample::{DependentRestyle, NeedsHost, TickShownRecords};
@@ -41,7 +43,9 @@ use crate::layout::tree_update_marks::{FfiLayoutTreeUpdateMark, layout_tree_upda
 use crate::layout::used_values::FfiCssPixelRect;
 use crate::layout::{ClockRound, ClockRoundDeclined, HostStyle, LayoutNodeArena, build_keeps_box};
 use crate::paint_stage::Presenting;
-use crate::painting::interest_refresh::forget_interest_request_answered_by_clock_lane;
+use crate::painting::interest_refresh::{
+    CommitOnPaintQueue, ask_for_what_kept_display_list_leaves_out, forget_interest_request_answered_by_clock_lane,
+};
 use crate::painting::paint_passes::{ClockTickVisualContexts, VisualContextsNeedHost, prepare_for_clock_tick};
 use crate::painting::paintable_geometry::absolute_border_box_rect;
 use crate::painting::presentation::Presentation;
@@ -65,9 +69,14 @@ use std::sync::{Arc, Mutex};
 mod effects;
 pub(crate) mod hover;
 mod lane;
+mod refresh;
 pub(crate) use hover::PendingPointer;
 pub(crate) use lane::LaneDelivery;
 pub(super) use lane::{LaneSlot, note_host_write, retire_slot, seal_plan, take_lanes_in};
+pub(super) use refresh::forget_retained_commits_of_document_then;
+pub(crate) use refresh::{
+    RetainedCommits, forget_retained_commit_of_context, forget_retained_commits, service_interest_requests,
+};
 
 /// What the ticks of a lane sample, sealed at the end of the lane's frame's rendering update.
 pub(crate) struct ClockPlan {
@@ -339,7 +348,8 @@ impl SampleClock {
 }
 
 /// A frame of a document the render owner sampled, for the Paint thread to present. Only a [`SamplingTurn`] makes one,
-/// and the Paint thread presents nothing else (see [`crate::paint_stage`]).
+/// and the Paint thread presents nothing else (see [`crate::paint_stage`]) but refreshes of the committed frames it
+/// keeps once it presented them, which re-present frames sampled before (see [`refresh`]).
 pub(crate) struct SampledFrame<T>(T);
 
 impl<T> SampledFrame<T> {
@@ -378,18 +388,32 @@ pub(crate) enum CommittedSample {
     Recorded(RecordedFrame),
     Unrecorded {
         visual_context_tree: Option<Arc<VisualContextTree>>,
+        scroll_positions: Option<UnrecordedScrollPositions>,
     },
 }
 
+/// Where the scroll state of a frame that keeps the display list the compositor has, recorded around the scroll
+/// positions, moved the scroll nodes to, with the structural epoch of the visual context tree it is of.
+pub(crate) struct UnrecordedScrollPositions {
+    structural_epoch: u64,
+    own_offsets: Arc<Vec<CssPixelPoint>>,
+}
+
 impl SampledFrame<CommittedSample> {
-    /// Records the frame, which a rendering update committed, with `recorder`, where it records, and presents it with
-    /// `presentation`.
+    /// Records the frame, which a rendering update of the document `ticks` belong to committed, with `recorder`, where it
+    /// records, and presents it with `presentation`, or leaves it for the host to present once it rendered its SVG
+    /// images. The Paint thread keeps a frame that leases its rows' style records to refresh once it presented what it
+    /// recorded, in place of the navigable's last committed frame, which it drops where the frame records and cannot be
+    /// kept, and keeps where it records nothing. A frame that records nothing asks for a recording around what its
+    /// scroll positions show that the display list it keeps leaves out.
     fn present_committed(
         self,
         recorder: RecorderState,
         mut presentation: Presentation,
         presenting: &mut Presenting,
+        ticks: &Arc<ClockTicks>,
     ) -> RecordingAnswer {
+        let context_id = presentation.compositor_context_id();
         match self.0 {
             CommittedSample::Recorded(RecordedFrame {
                 frozen,
@@ -397,13 +421,31 @@ impl SampledFrame<CommittedSample> {
                 inputs,
                 visual_contexts: _,
             }) => {
-                let (answer, presented_frame) = RecordingJob::new(frozen, recorder, viewport, Some(presentation))
+                let refresh_inputs = frozen.frame.leases_row_style_records().then(|| inputs.clone());
+                let (answer, recorded_frame) = RecordingJob::new(frozen, recorder, viewport, Some(presentation))
                     .run_beside_host(inputs, presenting);
-                drop(presented_frame);
-                answer.hold_vector_images(SampledFrame)
+                let kept = recorded_frame
+                    .zip(refresh_inputs)
+                    .and_then(|(frame, inputs)| refresh::KeptCommit::of(frame, viewport, inputs, ticks, context_id));
+                let answer = answer.hold_vector_images(SampledFrame);
+                presenting.retained_commits().replace(context_id, kept, &answer);
+                answer
             }
-            CommittedSample::Unrecorded { visual_context_tree } => {
+            CommittedSample::Unrecorded {
+                visual_context_tree,
+                scroll_positions,
+            } => {
                 presentation.present_unrecorded(visual_context_tree, presenting);
+                presenting
+                    .retained_commits()
+                    .note_unrecorded_commit(context_id, &presentation);
+                if let Some(UnrecordedScrollPositions {
+                    structural_epoch,
+                    own_offsets,
+                }) = scroll_positions
+                {
+                    ask_for_what_kept_display_list_leaves_out(context_id, structural_epoch, &own_offsets);
+                }
                 RecordingAnswer::presented_unrecorded(recorder, presentation)
             }
         }
@@ -441,7 +483,9 @@ pub(crate) struct CommittedFrame {
 impl CommittedFrame {
     /// Samples the frame from `state`, as the render owner, and hands it on with `relay` to the Paint thread, which
     /// records and presents it beside the host, and starts its lane, whose ticks `ticks` hands it, once it presented
-    /// it. The frames the render clock samples after it sample no earlier.
+    /// it. The frames the render clock samples after it sample no earlier. A frame recorded around the scroll positions
+    /// leases the style records its rows name, so that the Paint thread may keep it to refresh, and the compositor's
+    /// requests wait for the Paint thread to present it.
     pub(super) fn sample(self, state: &mut RenderState, relay: Relay<RecordingAnswer>, ticks: &Arc<ClockTicks>) {
         let turn = SamplingTurn(());
         let Self {
@@ -454,11 +498,15 @@ impl CommittedFrame {
         let frame = match content {
             CommittedContent::Recording { frame_inputs, inputs } => {
                 let viewport = frame_inputs.viewport;
-                let Some(frozen) = freeze_recording_frame(state.arena_mut(), frame_inputs) else {
+                let Some(mut frozen) = freeze_recording_frame(state.arena_mut(), frame_inputs) else {
                     relay.land(RecordingAnswer::nothing_recorded(recorder, Some(presentation)));
                     return;
                 };
                 let inputs = inputs.for_frame(frozen.tree_inputs, frozen.root_background_source);
+                if inputs.records_around_scroll_positions() && !frozen.trace_recordings {
+                    let row_style_records = state.lease_row_style_records(frozen.rows_version);
+                    frozen.frame.lease_row_style_records(row_style_records);
+                }
                 SampledFrame::new(
                     &turn,
                     CommittedSample::Recorded(RecordedFrame {
@@ -471,23 +519,35 @@ impl CommittedFrame {
             }
             CommittedContent::Unrecorded {
                 sends_visual_context_tree,
-            } => SampledFrame::new(
-                &turn,
-                CommittedSample::Unrecorded {
-                    visual_context_tree: sends_visual_context_tree
-                        .then(|| state.arena_mut().paint_state().visual_context.tree.clone())
-                        .flatten(),
-                },
-            ),
+            } => {
+                let visual_context = &state.arena_mut().paint_state().visual_context;
+                let records_around_scroll_positions = recorder
+                    .published_inputs
+                    .as_ref()
+                    .is_some_and(RecordingInputs::records_around_scroll_positions);
+                SampledFrame::new(
+                    &turn,
+                    CommittedSample::Unrecorded {
+                        visual_context_tree: sends_visual_context_tree.then(|| visual_context.tree.clone()).flatten(),
+                        scroll_positions: records_around_scroll_positions.then(|| UnrecordedScrollPositions {
+                            structural_epoch: visual_context.structural_epoch(),
+                            own_offsets: Arc::clone(visual_context.scroll_state.own_offsets()),
+                        }),
+                    },
+                )
+            }
         };
         state.sample_clock.next(timestamp);
         let lane = lane::note_sampled(ticks);
+        let commit_on_paint_queue = CommitOnPaintQueue::note(presentation.compositor_context_id());
+        let ticks = Arc::clone(ticks);
         crate::paint_stage::relay_presenting(relay, frame, move |frame, presenting| {
             if held_for_testing {
                 wait_while_recording_is_held_for_testing();
             }
-            let mut answer = frame.present_committed(recorder, presentation, presenting);
+            let mut answer = frame.present_committed(recorder, presentation, presenting, &ticks);
             answer.start_clock_lane(lane);
+            answer.hold_commit_on_paint_queue(commit_on_paint_queue);
             answer
         });
     }
@@ -535,6 +595,9 @@ pub struct ClockTicks {
     holds: AtomicU32,
     /// Where the render clock heard the pointer went, until a tick hovers what is there.
     pointer: Mutex<hover::PointerState>,
+    /// Whether the compositor's newest request to record around new rects waits for the queued tick, which records a
+    /// frame around it where nothing else moved. The Paint thread sets it, and the tick that runs next takes it.
+    interest_request_waits: AtomicBool,
     /// The border boxes of the elements the lane sampled or its hover restyled in the last frame a tick presented, and
     /// the colors the boxes its hover's transitions restyled showed. For a test.
     presented_boxes: Mutex<PresentedBoxes>,
@@ -590,6 +653,7 @@ impl ClockTicks {
             animation_changes: AtomicU64::new(0),
             holds: AtomicU32::new(0),
             pointer: Mutex::new(hover::PointerState::default()),
+            interest_request_waits: AtomicBool::new(false),
             presented_boxes: Mutex::default(),
         })
     }
@@ -702,7 +766,11 @@ impl ClockTicks {
 
     /// Has the lanes sample no animations until a task begins, or lets them, as the event loop goes idle or begins one.
     pub(super) fn hold_animations(&self, held: bool) {
-        self.animations_held.store(held, Ordering::Relaxed);
+        let was_held = self.animations_held.swap(held, Ordering::Relaxed);
+        // A ticking lane no longer records the compositor's request it was left.
+        if held && !was_held {
+            crate::painting::interest_refresh::service_waiting_interest_requests();
+        }
     }
 
     /// Notes whether the plan the host sealed last samples running animations.
@@ -745,10 +813,54 @@ impl ClockTicks {
     pub(super) fn release(&self) {
         let previous = self.holds.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "a hold of the lanes is released once");
+        // The refreshes of the document's frames, which present with the same resource storage, waited for the release.
+        if previous == 1 {
+            crate::painting::interest_refresh::service_waiting_interest_requests();
+        }
     }
 
     fn is_held(&self) -> bool {
         self.holds.load(Ordering::Acquire) > 0
+    }
+
+    /// Whether the lane that follows the presented frame records around the compositor's newest request to record
+    /// around new rects at its next tick, on the Paint thread as a clock lane's frame shows: it samples animations beside
+    /// a task, or the transitions its hover started, or it follows the pointer, and a tick queued now records a frame
+    /// for the request.
+    fn lane_records_interest_requests(self: &Arc<Self>) -> bool {
+        let published = self.published();
+        if self.lane_ticks_beside_the_event_loop_in(&published) {
+            return true;
+        }
+        if !published.follows_pointer || published.awaits_lane {
+            return false;
+        }
+        drop(published);
+        self.interest_request_waits.store(true, Ordering::Release);
+        if !self.queued.swap(true, Ordering::AcqRel) {
+            let ticks = Arc::clone(self);
+            super::post_to_render_side(move || lane::tick(&ticks));
+        }
+        true
+    }
+
+    // Whether the lane `published` describes ticks beside the event loop by itself: it samples animations beside a task,
+    // or the transitions its hover started.
+    fn lane_ticks_beside_the_event_loop_in(&self, published: &LanePublication) -> bool {
+        published.transitions_run
+            || (self.lane_state_in(published) == FfiClockLaneState::Ticking
+                && !self.animations_held.load(Ordering::Relaxed))
+    }
+
+    /// Whether the lane `published` describes records around the compositor's requests (see
+    /// [`Self::lane_records_interest_requests`]).
+    pub(super) fn lane_records_interest_requests_in(&self, published: &LanePublication) -> bool {
+        self.lane_ticks_beside_the_event_loop_in(published) || (published.follows_pointer && !published.awaits_lane)
+    }
+
+    /// Whether the compositor's newest request waits for the tick that runs now, which takes it.
+    pub(super) fn take_interest_request_wait(&self) -> bool {
+        self.interest_request_waits.swap(false, Ordering::AcqRel)
     }
 
     /// The border box of `element` in the last frame a tick presented, if it presented one.
@@ -1166,12 +1278,15 @@ impl Lane {
     /// to, where `samples_animations`, shows the samples, lays out what they moved and presents the frame. A tick that
     /// needs the host parks the lane, and so does the tick that shows the ends of the
     /// animations where no scroll moves anything after them. A tick handed `pointer`, where the pointer moved since
-    /// the last tick, hovers what is under it first (see [`hover`]). Answers none where the lane has no fork to tick on.
+    /// the last tick, hovers what is under it first (see [`hover`]). A tick that `records_interest_request` presents a
+    /// frame, which records around the compositor's newest request, where it moves nothing. Answers none where the lane
+    /// has no fork to tick on.
     fn tick_on_fork(
         &mut self,
         frame_time_nanoseconds: i64,
         pointer: Option<PendingPointer>,
         samples_animations: bool,
+        records_interest_request: bool,
     ) -> Option<Ticked> {
         let mut fork = match std::mem::take(&mut self.state) {
             LaneState::Forked(fork) => fork,
@@ -1180,7 +1295,13 @@ impl Lane {
                 return None;
             }
         };
-        let ticked = self.tick(&mut fork, frame_time_nanoseconds, pointer, samples_animations);
+        let ticked = self.tick(
+            &mut fork,
+            frame_time_nanoseconds,
+            pointer,
+            samples_animations,
+            records_interest_request,
+        );
         self.state = LaneState::Forked(fork);
         Some(ticked)
     }
@@ -1191,6 +1312,7 @@ impl Lane {
         frame_time_nanoseconds: i64,
         pointer: Option<PendingPointer>,
         samples_animations: bool,
+        records_interest_request: bool,
     ) -> Ticked {
         let timestamp = frame_time_nanoseconds as f64 / 1_000_000.0 - self.plan.time_origin;
         let hovers = pointer.filter(|_| !self.hovered.is_parked());
@@ -1200,7 +1322,9 @@ impl Lane {
             hover_move: None,
             presented: false,
         };
-        if self.frame_left_to_host || (!samples_animations && hovers.is_none() && !transitions) {
+        if self.frame_left_to_host
+            || (!samples_animations && hovers.is_none() && !transitions && !records_interest_request)
+        {
             return ticked;
         }
         let turn = SamplingTurn(());
@@ -1210,7 +1334,7 @@ impl Lane {
             false => None,
             true => self.sample_progress(),
         };
-        if progress.is_none() && hovers.is_none() && !transitions {
+        if progress.is_none() && hovers.is_none() && !transitions && !records_interest_request {
             return ticked;
         }
         state.engine_mut().lend_tick_shown(std::mem::take(&mut self.shown));
@@ -1277,7 +1401,7 @@ impl Lane {
                 self.parked = true;
             }
         }
-        if moved {
+        if moved || records_interest_request {
             match self.lay_out_and_present(state, &turn, sampled_at.0) {
                 Ok(()) => {
                     if hover::logs_hover() {
@@ -1499,16 +1623,13 @@ impl Lane {
 }
 
 /// Takes the frame the last tick presented in as the document's last recording, and prepares and freezes the document's
-/// frame for the next recording, with the inputs of the last recording that published, but around the rects of the
-/// compositor's newest request where those inputs record around the scroll positions.
+/// frame for the next recording, with the inputs of the last recording that published.
 fn freeze_tick_frame(
     arena: &mut LayoutNodeArena,
     clock_recorder: &mut ClockRecorder,
 ) -> Result<(FrozenFrame, RecordingInputs, Option<ClockTickVisualContexts>), Park> {
     let ClockRecorder {
-        recorder,
-        presentation,
-        presented,
+        recorder, presented, ..
     } = clock_recorder;
     match std::mem::replace(presented, TickPresented::Nothing) {
         TickPresented::Nothing => {}
@@ -1546,16 +1667,17 @@ fn freeze_tick_frame(
         recorder.published_inputs = Some(inputs);
         return Err(Park("the frame does not freeze"));
     };
-    let inputs = inputs.for_clock_lane_of_context(presentation.compositor_context_id());
     Ok((frozen, inputs, visual_contexts))
 }
 
 impl ClockRecorder {
     /// Records `frame`, which a tick sampled, and presents it with the visual contexts the tick prepared for it, on the
-    /// Paint thread. Only the host renders an SVG image: the frame draws those the recording published last drew, as the
-    /// host rendered them for it, and leaves the frame to the host where it draws another. A frame presented with every
-    /// rect of the compositor's request it recorded around answers the request, which no host frame needs to take any
-    /// more.
+    /// Paint thread. Where the frame records around the scroll positions, it records around the compositor's newest
+    /// request and what the display list it replaces records, as they stand now (see
+    /// [`RecordingInputs::for_clock_lane_of_context`]). Only the host renders an SVG image: the frame draws those the
+    /// recording published last drew, as the host rendered them for it, and leaves the frame to the host where it draws
+    /// another. A frame presented with every rect of the compositor's request it recorded around answers the request,
+    /// which no host frame needs to take any more.
     fn record(mut self, frame: SampledFrame<RecordedFrame>, presenting: &mut Presenting) -> Self {
         let Self {
             recorder,
@@ -1568,6 +1690,7 @@ impl ClockRecorder {
             inputs,
             visual_contexts,
         }) = frame;
+        let inputs = inputs.for_clock_lane_of_context(presentation.compositor_context_id());
         let interest_request = inputs.interest_request().cloned();
         let (pending, _) = record_frame(&frozen.frame, recorder, viewport, false, inputs);
         drop(frozen);
@@ -1586,13 +1709,14 @@ impl ClockRecorder {
         if let Some(visual_contexts) = visual_contexts {
             presentation.take_visual_context_tree(visual_contexts);
         }
-        let output = match vector_image_display_lists {
+        let (output, presented_frame) = match vector_image_display_lists {
             Some(display_list_ids) => {
                 present_with_vector_images(presentation, pending, recorder, presenting, &display_list_ids)
             }
             None => present(presentation, pending, recorder, presenting),
         };
-        if let Some(interest_request) = interest_request
+        if presented_frame
+            && let Some(interest_request) = interest_request
             && interest_request.is_recorded_by(&output.recorded_interest.scroll_node_rects)
         {
             forget_interest_request_answered_by_clock_lane(presentation.compositor_context_id(), &interest_request);

@@ -46,10 +46,19 @@ impl RecorderState {
             published_inputs: self.published_inputs.clone(),
         }
     }
+
+    /// A fork of the recorder state, for recordings of the same frame again: it keeps the absolute rects computed, which
+    /// stay valid while the frame's geometry does.
+    pub(crate) fn fork_keeping_absolute_rects(&self) -> Self {
+        Self {
+            absolute_rects: RefCell::new(self.absolute_rects.borrow().clone()),
+            ..self.fork()
+        }
+    }
 }
 
 /// Each row's absolute rect, with the geometry epoch of the frame it was computed from.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct AbsoluteRectMemo {
     rects: Vec<Option<(NodeSlotId, u64, CssPixelRect)>>,
 }

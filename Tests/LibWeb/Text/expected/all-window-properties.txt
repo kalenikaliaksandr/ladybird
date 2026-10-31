@@ -646,6 +646,7 @@ __preventMultipleTestFunctions
 animationFrame
 asyncTest
 compositorScrollsWheelStepAt
+conditionHoldsWithinTask
 httpTestServer
 printElement
 printInputTrace

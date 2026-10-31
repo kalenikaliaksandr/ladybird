@@ -77,11 +77,11 @@ struct PresenterFFI {
         frame.answered_interest_refresh_request_id = answered_refresh_request_id;
     }
 
-    static void present(NavigablePresenter& presenter, SealedPresentation& sealed, NonnullRefPtr<Compositing::DisplayList> display_list, u64 answered_refresh_request_id, CompositorFrameSink* sink)
+    static bool present(NavigablePresenter& presenter, SealedPresentation& sealed, NonnullRefPtr<Compositing::DisplayList> display_list, u64 answered_refresh_request_id, CompositorFrameSink* sink)
     {
         MutexLocker locker(presenter.m_mutex);
         if (is_stale(presenter, sealed))
-            return;
+            return false;
         stamp_content_generation(presenter, sealed, *display_list);
         auto frame = presenter.build_frame_beside_event_loop(sealed, move(display_list));
         frame.scroll_requests = move(sealed.scroll_requests);
@@ -89,6 +89,7 @@ struct PresenterFFI {
         note_presented(presenter, sealed);
         if (sink)
             sink->submit(move(frame));
+        return true;
     }
 
     static void present_unrecorded(NavigablePresenter& presenter, SealedPresentation& sealed, CompositorFrameSink* sink)
@@ -248,6 +249,12 @@ OwnPtr<SealedPresentation> NavigablePresenter::seal_for_clock_lane(SealedPresent
     return sealed;
 }
 
+bool NavigablePresenter::shows_clock_frame() const
+{
+    MutexLocker locker(m_mutex);
+    return m_last_frame_presented_by == PresentedBy::Clock;
+}
+
 OwnPtr<SealedPresentation> NavigablePresenter::seal_for_refresh(SealedPresentation const& retained) const
 {
     MutexLocker locker(m_mutex);
@@ -297,6 +304,27 @@ extern "C" WEB_API void* web_navigable_presenter_seal_for_clock_lane(void* prese
     return sealed.leak_ptr();
 }
 
+extern "C" WEB_API void* web_navigable_presenter_seal_for_refresh(void* presenter, void const* retained)
+{
+    auto const& navigable_presenter = *static_cast<Web::Compositor::NavigablePresenter const*>(presenter);
+    auto sealed = navigable_presenter.seal_for_refresh(*static_cast<Web::Compositor::SealedPresentation const*>(retained));
+    if (!sealed)
+        return nullptr;
+    navigable_presenter.ref();
+    return sealed.leak_ptr();
+}
+
+extern "C" WEB_API void* web_navigable_presenter_keep_presented_seal(void* presenter, void const* presented)
+{
+    static_cast<Web::Compositor::NavigablePresenter*>(presenter)->ref();
+    return make<Web::Compositor::SealedPresentation>(*static_cast<Web::Compositor::SealedPresentation const*>(presented)).leak_ptr();
+}
+
+extern "C" WEB_API bool web_navigable_presenter_shows_clock_frame(void const* presenter)
+{
+    return static_cast<Web::Compositor::NavigablePresenter const*>(presenter)->shows_clock_frame();
+}
+
 extern "C" WEB_API void web_sealed_presentation_destroy(void* sealed)
 {
     delete static_cast<Web::Compositor::SealedPresentation*>(sealed);
@@ -305,6 +333,11 @@ extern "C" WEB_API void web_sealed_presentation_destroy(void* sealed)
 extern "C" WEB_API u64 web_sealed_presentation_context_id(void const* sealed)
 {
     return static_cast<Web::Compositor::SealedPresentation const*>(sealed)->context_id.value();
+}
+
+extern "C" WEB_API void web_sealed_presentation_take_generation(void* sealed, void const* committed)
+{
+    static_cast<Web::Compositor::SealedPresentation*>(sealed)->generation = static_cast<Web::Compositor::SealedPresentation const*>(committed)->generation;
 }
 
 extern "C" WEB_API void web_sealed_presentation_take_visual_context_tree(void* sealed_pointer, void const* tree, Gfx::FloatPoint const* restructured_scroll_offsets, size_t scroll_offset_count)
@@ -359,7 +392,7 @@ extern "C" WEB_API void web_navigable_presenter_add_video_sink(void* presenter, 
 }
 
 // Declared here, not in a header, so that no C++ presents a frame through them.
-extern "C" WEB_API void web_navigable_presenter_present(void* presenter, void* sealed, Web::Layout::RustFFI::FfiPresentedRecording const* presented, void* sink);
+extern "C" WEB_API bool web_navigable_presenter_present(void* presenter, void* sealed, Web::Layout::RustFFI::FfiPresentedRecording const* presented, void* sink);
 extern "C" WEB_API void web_navigable_presenter_present_unrecorded(void* presenter, void* sealed, void* sink);
 
 extern "C" WEB_API void web_navigable_presenter_present_unrecorded(void* presenter, void* sealed, void* sink)
@@ -367,9 +400,9 @@ extern "C" WEB_API void web_navigable_presenter_present_unrecorded(void* present
     Web::Compositor::PresenterFFI::present_unrecorded(*static_cast<Web::Compositor::NavigablePresenter*>(presenter), *static_cast<Web::Compositor::SealedPresentation*>(sealed), static_cast<Web::Compositor::CompositorFrameSink*>(sink));
 }
 
-extern "C" WEB_API void web_navigable_presenter_present(void* presenter, void* sealed_pointer, Web::Layout::RustFFI::FfiPresentedRecording const* presented, void* sink)
+extern "C" WEB_API bool web_navigable_presenter_present(void* presenter, void* sealed_pointer, Web::Layout::RustFFI::FfiPresentedRecording const* presented, void* sink)
 {
     auto& sealed = *static_cast<Web::Compositor::SealedPresentation*>(sealed_pointer);
     auto display_list = Web::Painting::display_list_of_published_recording(sealed.recording.value(), *presented);
-    Web::Compositor::PresenterFFI::present(*static_cast<Web::Compositor::NavigablePresenter*>(presenter), sealed, move(display_list), presented->answered_refresh_request_id, static_cast<Web::Compositor::CompositorFrameSink*>(sink));
+    return Web::Compositor::PresenterFFI::present(*static_cast<Web::Compositor::NavigablePresenter*>(presenter), sealed, move(display_list), presented->answered_refresh_request_id, static_cast<Web::Compositor::CompositorFrameSink*>(sink));
 }

@@ -6906,7 +6906,7 @@ bool LocalNavigable::commit_frame(PaintConfig paint_config)
         || !compositor_display_list_paint_config.has_value()
         || !compositor_display_list_paint_config->paints_as(paint_config)
         || (paint_config.records_whole_document && compositor_display_list && compositor_display_list->recorded_interest().has_value())
-        || (records_around_scroll_positions && asked_for_scrolls_to_what_the_published_display_list_leaves_out(read, *document, smooth_scroll_destinations));
+        || (records_around_scroll_positions && asked_for_scrolls_to_what_the_presented_display_list_leaves_out(read, *document, smooth_scroll_destinations));
     auto sealed = seal_presentation(*document, paint_config, should_record_display_list);
     set_rendering_pending(*document, RenderingPendingReason::NeedsRenderingUpdate, 0);
     if (!should_record_display_list) {
@@ -7382,12 +7382,12 @@ Vector<Compositor::SmoothScrollDestination> LocalNavigable::smooth_scroll_destin
 // An instant scroll moved the box before it asked for the scroll, so the scroll state the next frame records with holds
 // where it went. A relative one moves it in the compositor alone, which asks for a recording around where it goes once
 // it nears the edge of what the list records.
-bool LocalNavigable::asked_for_scrolls_to_what_the_published_display_list_leaves_out(Layout::BegunRead const& read, DOM::Document& document, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations) const
+bool LocalNavigable::asked_for_scrolls_to_what_the_presented_display_list_leaves_out(Layout::BegunRead const& read, DOM::Document& document, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations) const
 {
     bool const asked_for_a_scroll = !smooth_scroll_destinations.is_empty() || any_of(m_scroll_request_states, [](auto const& entry) { return entry.value.unsent_request.has_value(); });
     if (!asked_for_a_scroll)
         return false;
-    return Painting::published_recording_misses_scroll_positions(read, document, compositor_context().id(), smooth_scroll_destinations);
+    return Painting::presented_display_list_misses_scroll_positions(read, document, compositor_context().id(), smooth_scroll_destinations);
 }
 
 // A frame that went nowhere gives its requests back to be sent with the next one, ahead of anything asked for since.

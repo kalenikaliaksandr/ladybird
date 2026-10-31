@@ -24,6 +24,7 @@ use super::bridge::ElementBoxKind;
 use super::cascade::CascadeStateID;
 use super::column::BitColumn;
 use super::fast_hash::FastMap as HashMap;
+use super::fast_hash::FastSet as HashSet;
 use super::fast_hash::fast_hasher;
 use super::intern_table::InternIdentity;
 use super::intern_table::InternTable;
@@ -476,9 +477,12 @@ mod animation_overlay_slots {
             self.retired.len()
         }
 
-        /// Frees the retired records, which no reader may still read.
-        pub(super) fn free_retired(&mut self) {
-            self.retired.clear();
+        /// Frees the retired records, which no reader may still read, but for those `kept` names, and answers whether it
+        /// freed any.
+        pub(super) fn free_retired_but(&mut self, kept: impl Fn(FinalStyleRecordID) -> bool) -> bool {
+            let retired = self.retired.len();
+            self.retired.retain(|record| kept(record.final_style_record));
+            self.retired.len() != retired
         }
     }
 }
@@ -991,6 +995,59 @@ impl ComputedGroupSets {
             let base = record.base_record()?;
             assert!(self.style_record_generation_is_live(base, record.base_generation()));
         }
+        Some(self.register_selected_style_record_lease(records))
+    }
+
+    /// Leases the records `row_records` names, the style record of each row of a published frame or zero, each once, to
+    /// a frame that outlives its recording. The animation overlay records come first, which the owner then keeps once it
+    /// retires them, until the lease goes (see [`Self::free_retired_animation_overlays`]).
+    pub(crate) fn lease_style_records_of_rows(&self, row_records: &[u64]) -> std::sync::Arc<[u64]> {
+        let mut leased = BitColumn::default();
+        let mut overlay_records = HashSet::default();
+        let mut base_records = Vec::new();
+        for &raw_record in row_records {
+            let Some(record) = FinalStyleRecordID::from_raw(raw_record) else {
+                continue;
+            };
+            let Some(base) = record.base_record() else {
+                overlay_records.insert(record);
+                continue;
+            };
+            // A live record's index names it alone.
+            if !leased.set(base.index(), true).0 {
+                continue;
+            }
+            assert!(self.style_record_generation_is_live(base, record.base_generation()));
+            base_records.push(raw_record);
+        }
+        let records = overlay_records
+            .into_iter()
+            .map(FinalStyleRecordID::raw)
+            .chain(base_records)
+            .collect();
+        self.register_selected_style_record_lease(records)
+    }
+
+    // The animation overlay records the selected leases hold, which lead each lease.
+    fn selectively_leased_animation_overlay_records(&self) -> HashSet<FinalStyleRecordID> {
+        let leases = self
+            .selected_style_record_leases
+            .lock()
+            .expect("selected style-record leases");
+        leases
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .flat_map(|records| {
+                records
+                    .iter()
+                    .map(|&raw_record| FinalStyleRecordID(raw_record))
+                    .take_while(|record| record.is_animation_overlay())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn register_selected_style_record_lease(&self, records: Vec<u64>) -> std::sync::Arc<[u64]> {
         let records: std::sync::Arc<[u64]> = records.into();
         let mut leases = self
             .selected_style_record_leases
@@ -998,20 +1055,22 @@ impl ComputedGroupSets {
             .expect("selected style-record leases");
         leases.retain(|lease| lease.strong_count() != 0);
         leases.push(std::sync::Arc::downgrade(&records));
-        Some(records)
+        records
     }
 
     fn style_records_are_leased(&self) -> bool {
         self.leases.load(std::sync::atomic::Ordering::Acquire) != 0
     }
 
-    /// Frees the retired overlay records, if no lease is held, and answers whether it freed any.
+    /// Frees the retired overlay records, if no lease on every record is held, but for those a frame kept past its
+    /// recording leases, and answers whether it freed any.
     pub(super) fn free_retired_animation_overlays(&mut self) -> bool {
         if self.animation_overlay_slots.retired_records() == 0 || self.style_records_are_leased() {
             return false;
         }
-        self.animation_overlay_slots.free_retired();
-        true
+        let leased = self.selectively_leased_animation_overlay_records();
+        self.animation_overlay_slots
+            .free_retired_but(|record| leased.contains(&record))
     }
 
     pub(super) fn retired_animation_overlay_records(&self) -> usize {
@@ -3482,9 +3541,11 @@ impl ComputedGroupSets {
             for records in leases.iter().filter_map(std::sync::Weak::upgrade) {
                 for &raw_record in records.iter() {
                     let record = FinalStyleRecordID(raw_record);
-                    let identity = record
-                        .base_record()
-                        .expect("an immutable hover frame reads only base records");
+                    // NB: An overlay record a frame kept past its recording leases holds its own payloads, whatever
+                    //     becomes of its base.
+                    let Some(identity) = record.base_record() else {
+                        continue;
+                    };
                     // NB: A fork can share a reader published later by the host. It pins a record in this catalog only
                     //     where that generation exists here too.
                     if self.style_record_generation_is_live(identity, record.base_generation()) {
@@ -4514,6 +4575,52 @@ mod tests {
         fork.reclaim_unreachable();
         assert!(!sets.style_record_generation_is_live(kept.base_record().unwrap(), kept.base_generation()));
         assert!(!fork.style_record_generation_is_live(kept.base_record().unwrap(), kept.base_generation()));
+    }
+
+    #[test]
+    fn a_frame_kept_past_its_recording_with_its_rows_records_lets_the_others_go() {
+        let mut sets = ComputedGroupSets::default();
+        let node = StyleNodeID::from_raw(1).unwrap();
+        let animated_overlay = crate::css::animated_overlay::AnimatedOverlay::default();
+        let publish_overlay = |sets: &mut ComputedGroupSets, identity| {
+            let mut metadata = metadata(0, 0, 0);
+            metadata.animation_overlay_identity = identity;
+            metadata.animated_overlay = HostShared::new(std::ptr::from_ref(&animated_overlay));
+            sets.publish_unowned(Some(ComputedStyleTarget::new(node, u8::MAX)), &[], 0, 0, metadata)
+                .style_record_identity
+        };
+        let kept = sets
+            .publish_unowned(None, &[], 0, 0, metadata(1, 0, 0))
+            .style_record_identity;
+        let discarded = sets
+            .publish_unowned(None, &[], 0, 0, metadata(2, 0, 0))
+            .style_record_identity;
+        let overlay = publish_overlay(&mut sets, 1);
+
+        // The frame leases every record while its recording reads it, and its rows' records, each once, the overlay
+        // records first.
+        let every_record = sets.lease_style_records();
+        let row_records =
+            sets.lease_style_records_of_rows(&[0, kept.raw(), overlay.raw(), 0, kept.raw(), overlay.raw()]);
+        assert_eq!(&*row_records, &[overlay.raw(), kept.raw()]);
+        publish_overlay(&mut sets, 2);
+        assert_eq!(sets.retired_animation_overlay_records(), 1);
+        assert!(!sets.free_retired_animation_overlays());
+
+        // Once the recording is done, the kept frame holds its rows' records alone: the overlay record its rows name
+        // stays, and those it does not name go as they retire.
+        drop(every_record);
+        assert!(!sets.free_retired_animation_overlays());
+        publish_overlay(&mut sets, 3);
+        assert_eq!(sets.retired_animation_overlay_records(), 1);
+        sets.reclaim_unreachable();
+        assert!(sets.style_record_generation_is_live(kept.base_record().unwrap(), kept.base_generation()));
+        assert!(!sets.style_record_generation_is_live(discarded.base_record().unwrap(), discarded.base_generation()));
+        drop(row_records);
+        assert!(sets.free_retired_animation_overlays());
+        assert_eq!(sets.retired_animation_overlay_records(), 0);
+        sets.reclaim_unreachable();
+        assert!(!sets.style_record_generation_is_live(kept.base_record().unwrap(), kept.base_generation()));
     }
 
     #[test]

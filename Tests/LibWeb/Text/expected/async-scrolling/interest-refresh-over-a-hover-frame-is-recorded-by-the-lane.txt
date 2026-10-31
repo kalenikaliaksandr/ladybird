@@ -1,0 +1,5 @@
+lane: hovering
+the hover presented by: clock
+the compositor holds a list that records the rect, while the host renders nothing: true
+last frame presented by: clock
+rendering updates that painted meanwhile: 0

@@ -155,6 +155,22 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
+    /// The box whose foreground records the inline pieces of `inline_box` where the box does not paint itself: the nearest
+    /// inline box around it that does, or the box whose lines hold it.
+    pub(super) fn owner_of_inline_pieces_painted_for(&self, inline_box: NodeSlotId) -> Option<NodeSlotId> {
+        use crate::painting::fragment_ownership::{is_self_painting_inline, nearest_self_painting_inline_box};
+        if !crate::painting::node_painting::is_fragmented_inline(self.source, inline_box)
+            || is_self_painting_inline(self.source, inline_box)
+        {
+            return None;
+        }
+        Some(
+            nearest_self_painting_inline_box(self.source, inline_box)
+                .unwrap_or_else(|| self.line_root_of_inline_producer(inline_box)),
+        )
+        .filter(|owner| !owner.is_invalid())
+    }
+
     pub(super) fn producer_is_skipped(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
         draw_phase(kind).is_some_and(|phase| self.base_paint_facts(owner).paint_phase_mask & phase.bit() == 0)
     }
@@ -184,6 +200,15 @@ impl<O: Observer> PaintRecorder<'_, O> {
                 }
             }
         }
+    }
+
+    /// Records the commands of a producer outside assembly, for a recording that only reads the resources they use. A
+    /// producer of hit-test items or scroll metadata draws nothing.
+    pub(super) fn record_commands_of_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) {
+        if hit_phase(kind).is_some() || kind == ProducerKind::ScrollMetadata {
+            return;
+        }
+        self.record_producer_output(owner, kind);
     }
 
     /// The commands of a box phase inside a resource walk, which records into the referencing

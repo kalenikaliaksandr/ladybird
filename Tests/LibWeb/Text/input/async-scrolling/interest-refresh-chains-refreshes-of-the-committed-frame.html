@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 60000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// Refreshes chain: a second request is recorded again from the same committed frame, copying from the refresh the
+// compositor holds, while one long task keeps the event loop from rendering. Each list the compositor comes to hold
+// records its request, and none brings new content.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const paints = internals.getRenderingSchedulerCounters().paints;
+    const contentGeneration = internals.compositorInterestRefreshState().contentGeneration;
+
+    const recordsUpTo = bottom => () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 0 && recorded.y + recorded.height >= bottom;
+    };
+    const holdsWithinTheTask = condition => {
+        const deadline = performance.now() + 10000;
+        let holds = condition();
+        while (!holds && performance.now() < deadline)
+            holds = condition();
+        return holds;
+    };
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 20000 });
+    const firstRecorded = holdsWithinTheTask(recordsUpTo(20000));
+    const firstPresentedBy = internals.lastFramePresentedBy(document);
+    internals.injectInterestRefresh({ left: -Infinity, top: 0, right: Infinity, bottom: 40000 });
+    const secondRecorded = holdsWithinTheTask(recordsUpTo(40000));
+
+    println(`the first refresh records its rect: ${firstRecorded}`);
+    println(`first presented by: ${firstPresentedBy}`);
+    println(`the second refresh records its rect: ${secondRecorded}`);
+    println(`second presented by: ${internals.lastFramePresentedBy(document)}`);
+    println(`rendering updates that painted meanwhile: ${internals.getRenderingSchedulerCounters().paints - paints}`);
+    println(
+        `the lists keep their content generation: ${internals.compositorInterestRefreshState().contentGeneration === contentGeneration}`
+    );
+});
+</script>

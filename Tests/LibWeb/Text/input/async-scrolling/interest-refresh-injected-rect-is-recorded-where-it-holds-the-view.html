@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
 <style>
     body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
 </style>
 <script>
 // A frame records around the newest requested rect only where what it records for the rect holds what the frame shows.
 // A rect far from it is no rect to record around, so the frame records around what it shows; a rect around what shows
-// that reaches further is recorded, in device pixels of the content converted from the CSS pixels of the request.
+// that reaches further is recorded, in device pixels of the content converted from the CSS pixels of the request, by a
+// refresh of that frame, which the host's own recordings never copy from.
 promiseTest(async () => {
     await startRecordingAroundScrollPositions();
     await interestCoverageSettled();
@@ -20,15 +22,24 @@ promiseTest(async () => {
     window.scrollTo(0, 5000);
     println(`the list records what shows: ${await waitForCondition(recordsWhatShowsAt(5000))}`);
     println(`it left out the far rect: ${internals.compositorScrollState().recordedRect.y < 19000}`);
+    await twoFramesLanded();
 
+    // Within one task, so that no rendering update commits a frame meanwhile.
     internals.injectInterestRefresh({ left: -Infinity, top: 3000, right: Infinity, bottom: 9000 });
     internals.releaseInterestRefreshes();
     const recordsTheRect = () => {
         const recorded = internals.compositorScrollState().recordedRect;
         return recorded.y <= 3000 && recorded.y + recorded.height >= 9000;
     };
-    println(`the list records the rect around what shows: ${await waitForCondition(recordsTheRect)}`);
+    const deadline = performance.now() + 10000;
+    let recorded = recordsTheRect();
+    while (!recorded && performance.now() < deadline)
+        recorded = recordsTheRect();
+    println(`the list records the rect around what shows: ${recorded}`);
+    println(`last frame presented by: ${internals.lastFramePresentedBy(document)}`);
     const recordedInterest = internals.recordedInterestRect();
-    println(`so does what WebContent recorded: ${recordedInterest.top <= 3000 && recordedInterest.bottom >= 9000}`);
+    println(
+        `the host's own recording keeps what the frame recorded: ${recordedInterest.top > 3000 || recordedInterest.bottom < 9000}`
+    );
 });
 </script>

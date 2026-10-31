@@ -17,14 +17,16 @@ use crate::painting::node_painting;
 use crate::painting::paint_order_plan::PaintScope;
 use crate::painting::paint_read::{GeometryRead, PaintSource};
 use crate::painting::record::RecordingInputs;
-use crate::painting::record::assemble::{Assembler, frame_is_unchanged};
+use crate::painting::record::assemble::{Assembler, AssemblyCulling, frame_is_unchanged};
 use crate::painting::record::frame_inputs::FrameInputs;
-use crate::painting::record::order_tree::{PaintOrderTree, ProducerKind};
+use crate::painting::record::inputs::RecordingPurpose;
+use crate::painting::record::order_tree::{ChildKey, PaintOrderTree, ProducerKind};
 use crate::painting::record::paint::background_resolution::root_background_canvas_rect;
 use crate::painting::record::resources::RecordingResourceManifest;
 use crate::painting::record::scratch::RecordingScratch;
 use crate::painting::record::svg_resources::MaskLayerSet;
 use crate::painting::record::trace::{Action, Operation};
+use crate::painting::record::vector_images::VectorImageRenderRequest;
 use crate::painting::record::{AssembledHitTestItems, PublishedHitTestItems, RecordingOutput, RecordingResult};
 use std::sync::Arc;
 
@@ -100,33 +102,16 @@ fn record_display_list_impl<O: Observer>(
     let window_focus_changed = source_recording
         .as_ref()
         .is_some_and(|frame| frame.window_is_focused != inputs.window_is_focused);
-    let force_dark_settings = inputs.force_dark_enabled.then_some(inputs.force_dark_settings);
-    let mut recorder = PaintRecorder {
+    let shared_items = source_items.as_ref().map(|published| Arc::clone(&published.items));
+    let mut recorder = PaintRecorder::<O>::new(
         source,
-        paint_state,
-        inputs,
-        recorder: DisplayListRecorder::new(force_dark_settings),
-        converter: DevicePixelConverter::new(inputs.device_pixels_per_css_pixel),
-        svg_resource_walk: None,
-        viewport,
-        source_recording,
-        live_producer: false,
-        producer_reads_window_focus: std::cell::Cell::new(false),
-        line_root_positions: None,
-        moved_expansion: FastSet::default(),
-        blocking_wheel_event_region_count: 0,
-        records_per_box_wheel_hit_test_targets: frame_inputs.records_per_box_wheel_hit_test_targets(),
-        observer: O::default(),
-        list: AssembledHitTestItems::new(
-            source_items.map(|published| Arc::clone(&published.items)),
-            paint_state.hit_test_item_capacity_hint,
-        ),
         scratch,
-        resources: RecordingResourceManifest::default(),
-        cull_spaces: None,
-        last_placement: None,
-        interest_rects: Default::default(),
-    };
+        viewport,
+        inputs,
+        frame_inputs.records_per_box_wheel_hit_test_targets(),
+        source_recording,
+        AssembledHitTestItems::new(shared_items.clone(), paint_state.hit_test_item_capacity_hint),
+    );
     let mut interest = recorder.resolve_interest(published_interest.as_ref());
     recorder.interest_rects = std::mem::take(&mut interest.rects);
     recorder
@@ -186,6 +171,11 @@ fn record_display_list_impl<O: Observer>(
         }
     };
     let mut hit_test_list = recorder.list.finish();
+    debug_assert!(
+        inputs.purpose == RecordingPurpose::Frame
+            || shared_items.is_some_and(|items| Arc::ptr_eq(&items, &hit_test_list.items)),
+        "a refresh shares the hit-test items of the recording it copies from"
+    );
     hit_test_list.generation = paint_state.hit_test_list_generation + 1;
     let output = RecordingOutput {
         recorded_structural_epoch: structural_epoch,
@@ -205,6 +195,118 @@ fn record_display_list_impl<O: Observer>(
     RecordingResult {
         output,
         resources: recorder.resources,
+    }
+}
+
+/// Whether a recording of `source` for the document's `viewport` with `inputs`, which copies from `published` and
+/// assembles in `tree`, would draw an SVG image that `drawn` says no recording drew. Only a producer `published` left out
+/// that the recording does not can draw one, so the producers `tree` lists as left out that paint for a box whose facts
+/// hold an SVG image, its own and the inline pieces another box paints for it, are placed, and those the recording's
+/// interest no longer leaves out record aside. The tree is left as it was.
+pub(crate) fn would_draw_vector_image_not_drawn(
+    source: &PaintSource<'_>,
+    scratch: &mut RecordingScratch,
+    tree: &PaintOrderTree,
+    viewport: NodeSlotId,
+    inputs: &RecordingInputs,
+    published: Option<&Arc<RecordingOutput>>,
+    drawn: impl Fn(&VectorImageRenderRequest) -> bool,
+) -> bool {
+    let rows: Vec<NodeSlotId> = source.frame().rows_with_vector_images().collect();
+    if rows.is_empty() {
+        return false;
+    }
+    scratch.begin_recording(source.frame().paintable_row_capacity());
+    let records_per_box_wheel_hit_test_targets =
+        FrameInputs::from_recording_inputs(inputs, source.frame().paint_state())
+            .records_per_box_wheel_hit_test_targets();
+    let mut recorder = PaintRecorder::<super::trace::NoTrace>::new(
+        source,
+        scratch,
+        viewport,
+        inputs,
+        records_per_box_wheel_hit_test_targets,
+        None,
+        AssembledHitTestItems::new(None, 0),
+    );
+    let interest = recorder.resolve_interest(published.map(|published| &published.recorded_interest));
+    let leaves_out_by_interest = matches!(interest.culling, AssemblyCulling::ByInterest { .. });
+    recorder.interest_rects = interest.rects;
+    for row in rows {
+        let owner_of_inline_pieces = recorder.owner_of_inline_pieces_painted_for(row);
+        for owner in std::iter::once(row).chain(owner_of_inline_pieces) {
+            for scope in tree.scopes_owned_by(owner) {
+                for entry in tree.children(scope).iter() {
+                    let ChildKey::Producer(kind) = entry.key() else {
+                        continue;
+                    };
+                    if !entry.output().culled {
+                        continue;
+                    }
+                    let paints_for_row = match kind {
+                        _ if owner == row => true,
+                        ProducerKind::InlinePiece(index) => recorder.inline_piece_node(owner, index) == row,
+                        _ => false,
+                    };
+                    if !paints_for_row {
+                        continue;
+                    }
+                    let reach = recorder.cull_reach_of_producer(owner, kind);
+                    if reach.is_nothing() || (leaves_out_by_interest && recorder.interest_rects.miss(reach)) {
+                        continue;
+                    }
+                    recorder.record_commands_of_producer(owner, kind);
+                }
+            }
+        }
+    }
+    let draws_vector_image_not_drawn = recorder
+        .resources
+        .vector_image_render_requests
+        .iter()
+        .any(|request| !drawn(request));
+    drop(recorder);
+    scratch.clear_temporary_caches();
+    draws_vector_image_not_drawn
+}
+
+impl<'a, O: Observer> PaintRecorder<'a, O> {
+    /// A recorder of `source` for the document's `viewport` with `inputs`, which copies clean output from
+    /// `source_recording` and assembles its hit-test items in `list`.
+    fn new(
+        source: &'a PaintSource<'a>,
+        scratch: &'a mut RecordingScratch,
+        viewport: NodeSlotId,
+        inputs: &'a RecordingInputs,
+        records_per_box_wheel_hit_test_targets: bool,
+        source_recording: Option<Arc<RecordingOutput>>,
+        list: AssembledHitTestItems,
+    ) -> Self {
+        let paint_state = source.frame().paint_state();
+        let force_dark_settings = inputs.force_dark_enabled.then_some(inputs.force_dark_settings);
+        Self {
+            source,
+            paint_state,
+            inputs,
+            recorder: DisplayListRecorder::new(force_dark_settings),
+            converter: DevicePixelConverter::new(inputs.device_pixels_per_css_pixel),
+            svg_resource_walk: None,
+            viewport,
+            source_recording,
+            live_producer: false,
+            producer_reads_window_focus: std::cell::Cell::new(false),
+            line_root_positions: None,
+            moved_expansion: FastSet::default(),
+            blocking_wheel_event_region_count: 0,
+            records_per_box_wheel_hit_test_targets,
+            observer: O::default(),
+            list,
+            scratch,
+            resources: RecordingResourceManifest::default(),
+            cull_spaces: None,
+            last_placement: None,
+            interest_rects: Default::default(),
+        }
     }
 }
 

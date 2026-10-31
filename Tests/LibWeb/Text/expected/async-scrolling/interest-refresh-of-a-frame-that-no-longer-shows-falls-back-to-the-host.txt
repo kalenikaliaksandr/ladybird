@@ -1,0 +1,3 @@
+last frame presented by, while the host renders nothing: commit
+the host's frame records the rect: true
+last frame presented by: commit
