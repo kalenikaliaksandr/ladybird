@@ -156,6 +156,47 @@ function printInputTrace(trace, { stages } = {}) {
     }
 }
 
+// Has committed frames record around the scroll positions until the test ends, and resolves once the compositor holds
+// such a display list of the window's document.
+async function startRecordingAroundScrollPositions(targetWindow = window) {
+    internals.setRecordsAroundScrollPositions(true);
+    await waitForCondition(() => targetWindow.internals.compositorScrollState().recordedRect !== null);
+}
+
+// Resolves to true once the compositor has no request to record the display list of the window's document around new
+// rects in flight, and the display list it holds records what shows of the scroller, or of the viewport if none is
+// given. The frame that shows a scroll's last step decides whether the compositor asks for a recording, so the state is
+// read again a frame after it first holds. Coverage that does not settle within 10 seconds prints what the compositor
+// holds and resolves to false, so that the test fails with that rather than times out.
+async function interestCoverageSettled(scroller = null, targetWindow = window) {
+    const settled = () => {
+        if (targetWindow.internals.compositorInterestRefreshState().inFlightRequestId !== null) return false;
+        const { visibleContentRect: visible, recordedRect: recorded } =
+            targetWindow.internals.compositorScrollState(scroller);
+        if (!visible || !recorded) return true;
+        return (
+            recorded.x <= visible.x &&
+            recorded.y <= visible.y &&
+            recorded.x + recorded.width >= visible.x + visible.width &&
+            recorded.y + recorded.height >= visible.y + visible.height
+        );
+    };
+    const deadline = performance.now() + 10000;
+    while (performance.now() < deadline) {
+        const remainingAttempts = Math.max(1, Math.ceil((deadline - performance.now()) / 25));
+        if (!(await waitForCondition(settled, remainingAttempts))) break;
+        await new Promise(resolve => targetWindow.requestAnimationFrame(resolve));
+        if (settled()) return true;
+    }
+    const { visibleContentRect: visible, recordedRect: recorded } =
+        targetWindow.internals.compositorScrollState(scroller);
+    const refreshState = targetWindow.internals.compositorInterestRefreshState();
+    println(
+        `Interest coverage did not settle: shows ${JSON.stringify(visible)}, records ${JSON.stringify(recorded)}, requests ${JSON.stringify(refreshState)}`
+    );
+    return false;
+}
+
 // The offset has stopped once it holds for as long as five frames take at 60 Hz, however often frames come.
 async function scrollOffsetStopsChanging(readScrollOffset) {
     const settleDuration = (5 * 1000) / 60;

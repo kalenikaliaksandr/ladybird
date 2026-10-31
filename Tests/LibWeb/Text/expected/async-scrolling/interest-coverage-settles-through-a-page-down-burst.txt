@@ -1,0 +1,3 @@
+settled: true
+scrolled far: true
+at most one frame showed what the list leaves out: true

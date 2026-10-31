@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 2000px; }
+    iframe { display: block; width: 300px; height: 200px; border: 0; }
+</style>
+<script>
+// A same-process iframe's committed frames record around its scroll positions too, and the compositor asks for a
+// recording around where it scrolls the iframe's page to, which comes to record what shows there.
+promiseTest(async () => {
+    const frame = document.createElement("iframe");
+    const frameLoaded = new Promise(resolve => frame.addEventListener("load", resolve, { once: true }));
+    frame.srcdoc = "<body style='margin: 0; height: 20000px; background: linear-gradient(white, teal)'></body>";
+    document.body.prepend(frame);
+    await frameLoaded;
+    await startRecordingAroundScrollPositions(frame.contentWindow);
+    await interestCoverageSettled(null, frame.contentWindow);
+    const before = frame.contentWindow.internals.compositorScrollState().recordedRect;
+    println(`the iframe's list leaves out most of its page: ${before.y + before.height < 20000}`);
+
+    await waitForCondition(() => internals.compositorWheelTargetAt(150, 100, 0, 50).document === frame.contentDocument);
+    await scrollSettled(frame.contentDocument, () => internals.wheelThroughUIProcess(150, 100, 0, 6000, true));
+    await interestCoverageSettled(null, frame.contentWindow);
+    println(`scrolled the iframe's page: ${frame.contentWindow.scrollY > 5000}, the page: ${window.scrollY}`);
+    const { visibleContentRect: visible, recordedRect: recorded } = frame.contentWindow.internals.compositorScrollState();
+    println(`the iframe's list records what shows and leaves out its top: ${recorded.y <= visible.y && recorded.y > 0}`);
+});
+</script>

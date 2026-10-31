@@ -197,6 +197,7 @@ public:
     void hold_interest_refreshes();
     void release_interest_refreshes();
     WebIDL::UnsignedLong interest_refresh_count();
+    void set_records_around_scroll_positions(bool);
     void set_autoplay_policy(Utf16String const& policy);
 
     Utf16String get_computed_role(DOM::Element& element);

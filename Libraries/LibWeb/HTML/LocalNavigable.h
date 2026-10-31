@@ -294,7 +294,11 @@ public:
     // Commits the frame that brings the compositor context up to date to the render owner, which presents it beside the
     // event loop: a new display list, or what changed for the one it has. Answers whether it committed one.
     bool commit_frame(PaintConfig);
-    void paint_next_frame();
+    enum class RecordsWholeDocument : bool {
+        No,
+        Yes,
+    };
+    void paint_next_frame(RecordsWholeDocument = RecordsWholeDocument::No);
     // Commits a frame that sends the compositor the render state's visual context tree, whose structure the display
     // list the compositor has was not recorded against, for a test of the compositor.
     void commit_mismatched_visual_context_tree_for_testing();
@@ -303,8 +307,9 @@ public:
         Yes,
     };
     // Paints the next frame if it needs one, laying the active document out first unless `lay_out_first` says it is laid
-    // out as the frame is to show it.
-    bool paint_next_frame_if_needed(DOM::UpdateLayoutReason, LayOutFirst lay_out_first = LayOutFirst::Yes);
+    // out as the frame is to show it. A frame that records the whole document is needed too while the compositor has a
+    // display list of part of it.
+    bool paint_next_frame_if_needed(DOM::UpdateLayoutReason, LayOutFirst lay_out_first = LayOutFirst::Yes, RecordsWholeDocument = RecordsWholeDocument::No);
 
     enum class TakeIn {
         // Between two tasks: only a recording that has finished.
@@ -350,6 +355,11 @@ public:
     // The compositor asked to record the display list of the context again around new rects: the navigable presenting
     // to the context records its next frame, which takes the newest request, unless a frame took it since.
     static void schedule_frame_for_interest_refresh(Web::CompositorContextId);
+    // Whether committed frames record around the scroll positions rather than the whole document. The
+    // LADYBIRD_INTEREST_RECORDING environment variable turns it on, and a test may turn it on or off for itself until the
+    // next test begins, which the empty value stands for. Every navigable records its next frame as the switch says.
+    static bool commits_record_around_scroll_positions();
+    static void set_commits_record_around_scroll_positions_for_testing(Optional<bool>);
 
     [[nodiscard]] bool has_inclusive_ancestor_with_visibility_hidden() const;
 
@@ -735,6 +745,11 @@ private:
     // which it asks for nothing about.
     bool m_scroll_offset_changes_need_no_request { false };
     Compositing::ScrollRequest& unsent_scroll_request_for(Web::AsyncScrollNodeStableID);
+    // Where the smooth scrolls this navigable asked the compositor for, which are still under way, take their boxes.
+    Vector<Compositor::SmoothScrollDestination> smooth_scroll_destinations() const;
+    // Whether a scroll this navigable asked for since its last frame, or `smooth_scroll_destinations`, show what the
+    // display list it published last leaves out, which its next frame then records.
+    bool asked_for_scrolls_to_what_the_published_display_list_leaves_out(Layout::BegunRead const&, DOM::Document&, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations) const;
     u64 last_scroll_request_id_for(Web::AsyncScrollNodeStableID) const;
     void request_scroll_jump(Web::AsyncScrollNodeStableID, ScrollTrigger);
     void request_relative_scroll(Web::AsyncScrollNodeStableID, CSSPixelPoint displacement, ScrollTrigger);

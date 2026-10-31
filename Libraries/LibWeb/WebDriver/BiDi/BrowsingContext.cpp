@@ -1050,7 +1050,9 @@ void capture_screenshot(HTML::Navigable& navigable, JsonObject const& params, On
             return state->complete(Error::from_code(ErrorCode::UnableToCaptureScreen, "Unable to allocate the screenshot"sv));
 
         auto bitmap = framebuffer.release_value();
-        HTML::PaintConfig paint_config { .canvas_fill_rect = Gfx::IntRect { {}, viewport_device_rect.size() } };
+        // The compositor may show the viewport scrolled past what the last display list records, before a recording
+        // around where it scrolled to arrives.
+        HTML::PaintConfig paint_config { .canvas_fill_rect = Gfx::IntRect { {}, viewport_device_rect.size() }, .records_whole_document = true };
         navigable->render_screenshot(bitmap, paint_config, [state, framebuffer = bitmap, source_rectangle, destination_size, format_type = move(format_type), format_quality] mutable {
             auto cropped = framebuffer->cropped(source_rectangle);
             // NB: A screenshot too large to allocate is an unsupported operation.

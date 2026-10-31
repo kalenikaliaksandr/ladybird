@@ -1,0 +1,8 @@
+scrolled past what the list records: true
+#1 compositor: not-recorded-at-position
+#1 compositor: forwarded-to-page
+#2 compositor: not-recorded-at-position
+#2 compositor: forwarded-to-page
+#3 compositor: gesture-end-with-nothing-to-snap
+#3 compositor: forwarded-to-page
+a list that records there arrived mid-gesture: true

@@ -1,0 +1,4 @@
+settled: true
+the compositor's list records all of the page: true
+what WebContent recorded names no rect of the page: true
+requests sent: 0

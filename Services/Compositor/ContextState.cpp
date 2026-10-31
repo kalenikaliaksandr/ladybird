@@ -1935,20 +1935,28 @@ String ContextState::scroll_state_for_testing(Web::AsyncScrollNodeStableID repor
     stretch_object.set("y"sv, stretch.y());
     scroll_state.set("stretch"sv, move(stretch_object));
 
-    JsonValue visible_content_rect;
-    Optional<Compositing::ScrollNodeVisibility> visibility;
-    if (auto reported_scroll_node_id = m_async_scroll_tree.scroll_node_id_for_stable_id(reported_scroller); reported_scroll_node_id.has_value() && m_scene.visual_context_tree().has_value())
-        visibility = m_async_scroll_tree.visibility_of_scroll_node_for_testing(*reported_scroll_node_id, m_scene.current_visual_context_tree(), m_async_scrolling_viewport_rect.size());
-    if (visibility.has_value()) {
-        auto device_pixels_per_css_pixel = m_async_scroll_tree.device_pixels_per_css_pixel();
+    auto device_pixels_per_css_pixel = m_async_scroll_tree.device_pixels_per_css_pixel();
+    auto content_rect_in_css_pixels = [&](Gfx::IntRect const& rect) {
         JsonObject rect_object;
-        rect_object.set("x"sv, visibility->in_content.x() / device_pixels_per_css_pixel);
-        rect_object.set("y"sv, visibility->in_content.y() / device_pixels_per_css_pixel);
-        rect_object.set("width"sv, visibility->in_content.width() / device_pixels_per_css_pixel);
-        rect_object.set("height"sv, visibility->in_content.height() / device_pixels_per_css_pixel);
-        visible_content_rect = move(rect_object);
+        rect_object.set("x"sv, rect.x() / device_pixels_per_css_pixel);
+        rect_object.set("y"sv, rect.y() / device_pixels_per_css_pixel);
+        rect_object.set("width"sv, rect.width() / device_pixels_per_css_pixel);
+        rect_object.set("height"sv, rect.height() / device_pixels_per_css_pixel);
+        return rect_object;
+    };
+    JsonValue visible_content_rect;
+    JsonValue recorded_rect;
+    if (auto reported_scroll_node_id = m_async_scroll_tree.scroll_node_id_for_stable_id(reported_scroller); reported_scroll_node_id.has_value()) {
+        Optional<Compositing::ScrollNodeVisibility> visibility;
+        if (m_scene.visual_context_tree().has_value())
+            visibility = m_async_scroll_tree.visibility_of_scroll_node_for_testing(*reported_scroll_node_id, m_scene.current_visual_context_tree(), m_async_scrolling_viewport_rect.size());
+        if (visibility.has_value())
+            visible_content_rect = content_rect_in_css_pixels(visibility->in_content);
+        if (auto const* scroll_node = m_async_scroll_tree.scroll_node_for_id(*reported_scroll_node_id); scroll_node && scroll_node->recorded_content_rect.has_value())
+            recorded_rect = content_rect_in_css_pixels(*scroll_node->recorded_content_rect);
     }
     scroll_state.set("visibleContentRect"sv, move(visible_content_rect));
+    scroll_state.set("recordedRect"sv, move(recorded_rect));
 
     scroll_state.set("visualViewportScale"sv, m_scene.visual_viewport_scale().value_or(1.0f));
     return scroll_state.serialized();

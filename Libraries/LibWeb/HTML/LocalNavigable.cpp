@@ -14,6 +14,7 @@
 #include <AK/Utf16String.h>
 #include <AK/Utf16StringBuilder.h>
 #include <AK/Variant.h>
+#include <LibCore/Environment.h>
 #include <LibCore/Timer.h>
 #include <LibGC/RootVector.h>
 #include <LibWeb/CSS/ComputedValues.h>
@@ -6704,6 +6705,34 @@ void LocalNavigable::schedule_frame_for_interest_refresh(Web::CompositorContextI
     }
 }
 
+static bool commits_record_around_scroll_positions_by_environment()
+{
+    static bool const enabled = [] {
+        auto value = Core::Environment::get("LADYBIRD_INTEREST_RECORDING"sv);
+        return value.has_value() && !value->is_empty() && *value != "0"sv;
+    }();
+    return enabled;
+}
+
+static Optional<bool> s_commits_record_around_scroll_positions_for_testing;
+
+bool LocalNavigable::commits_record_around_scroll_positions()
+{
+    return s_commits_record_around_scroll_positions_for_testing.value_or(commits_record_around_scroll_positions_by_environment());
+}
+
+void LocalNavigable::set_commits_record_around_scroll_positions_for_testing(Optional<bool> records_around_scroll_positions)
+{
+    auto recorded_around_scroll_positions = commits_record_around_scroll_positions();
+    s_commits_record_around_scroll_positions_for_testing = records_around_scroll_positions;
+    if (commits_record_around_scroll_positions() == recorded_around_scroll_positions)
+        return;
+    for (auto& navigable : all_local_navigables()) {
+        if (auto document = navigable->active_document())
+            document->set_needs_repaint(Badge<LocalNavigable> {}, InvalidateDisplayList::PaintCommands);
+    }
+}
+
 void LocalNavigable::repaint_after_compositor_process_reconnect()
 {
     resolve_all_pending_async_scroll_operations();
@@ -6865,17 +6894,28 @@ bool LocalNavigable::commit_frame(PaintConfig paint_config)
     if (!compositor_context().ready_for_frame())
         return false;
 
+    bool const records_around_scroll_positions = commits_record_around_scroll_positions() && !paint_config.records_whole_document;
+    Vector<Compositor::SmoothScrollDestination> smooth_scroll_destinations;
+    if (records_around_scroll_positions)
+        smooth_scroll_destinations = this->smooth_scroll_destinations();
+    auto compositor_display_list = presenter().compositor_display_list();
     auto const& compositor_display_list_paint_config = presenter().compositor_display_list_paint_config();
+    // How much of the document a list records does not change what it paints, so a frame that records the whole document
+    // records only where the compositor has a list of part of it, and the frame after it keeps that list.
     auto should_record_display_list = m_needs_to_record_display_list
         || !compositor_display_list_paint_config.has_value()
-        || !(compositor_display_list_paint_config.value() == paint_config);
+        || !compositor_display_list_paint_config->paints_as(paint_config)
+        || (paint_config.records_whole_document && compositor_display_list && compositor_display_list->recorded_interest().has_value())
+        || (records_around_scroll_positions && asked_for_scrolls_to_what_the_published_display_list_leaves_out(read, *document, smooth_scroll_destinations));
     auto sealed = seal_presentation(*document, paint_config, should_record_display_list);
     set_rendering_pending(*document, RenderingPendingReason::NeedsRenderingUpdate, 0);
     if (!should_record_display_list) {
         commit_unrecorded_frame(read, *document, move(sealed));
         return true;
     }
-    auto recording = document->commit_display_list_recording(read, paint_config, Painting::RecordingCoverage::WholeDocument, take_presentation(move(sealed)));
+    sealed.smooth_scroll_destinations = move(smooth_scroll_destinations);
+    auto coverage = records_around_scroll_positions ? Painting::RecordingCoverage::AroundScrollPositions : Painting::RecordingCoverage::WholeDocument;
+    auto recording = document->commit_display_list_recording(read, paint_config, coverage, take_presentation(move(sealed)));
     // What asks for another recording once this one has started asks for the next one.
     m_needs_to_record_display_list = false;
     m_recording_in_flight = make<RecordingInFlight>(*document, move(recording));
@@ -7000,6 +7040,7 @@ Compositor::SealedPresentation LocalNavigable::seal_presentation(DOM::Document& 
         .scroll_state_snapshot = move(scroll_state_snapshot),
         .scroll_requests = take_unsent_scroll_requests(),
         .keyboard_scroll_state = move(keyboard_scroll_state),
+        .smooth_scroll_destinations = {},
         .paint_command_cache_source = paint_state.display_list_used_as_paint_command_cache_source(),
         .paint_command_cache_source_resources = paint_state.paint_command_cache_source_referenced_resources(),
         .recording = {},
@@ -7081,7 +7122,7 @@ void LocalNavigable::record_rendering_invalidation()
         set_rendering_pending(*document, RenderingPendingReason::NeedsRenderingUpdate, 1);
 }
 
-void LocalNavigable::paint_next_frame()
+void LocalNavigable::paint_next_frame(RecordsWholeDocument records_whole_document)
 {
     if (has_been_destroyed())
         return;
@@ -7090,7 +7131,7 @@ void LocalNavigable::paint_next_frame()
         return;
     }
 
-    PaintConfig paint_config { .paint_overlay = true, .should_show_caret_hit_test_debug_overlay = m_should_show_caret_hit_test_debug_overlay };
+    PaintConfig paint_config { .paint_overlay = true, .should_show_caret_hit_test_debug_overlay = m_should_show_caret_hit_test_debug_overlay, .records_whole_document = records_whole_document == RecordsWholeDocument::Yes };
     if (!is_local_root()) {
         // Nested navigables paint transparent bitmaps for their parent compositor context.
         auto parent = this->parent();
@@ -7107,14 +7148,20 @@ Gfx::IntRect LocalNavigable::present_viewport_rect() const
     return page().css_to_device_rect(viewport_rect()).to_type<int>();
 }
 
-bool LocalNavigable::paint_next_frame_if_needed(DOM::UpdateLayoutReason layout_reason, LayOutFirst lay_out_first)
+bool LocalNavigable::paint_next_frame_if_needed(DOM::UpdateLayoutReason layout_reason, LayOutFirst lay_out_first, RecordsWholeDocument records_whole_document)
 {
     // The selection and find-in-page match states the document holds stale decide what this paint has to redo.
     if (auto document = active_document()) {
         Layout::ForcedReadScope read { *document };
         document->update_highlight_states_if_needed(read);
     }
-    if (!needs_repaint())
+    auto compositor_has_display_list_of_part_of_the_document = [&] {
+        if (!has_compositor_context())
+            return false;
+        auto display_list = presenter().compositor_display_list();
+        return display_list && display_list->recorded_interest().has_value();
+    };
+    if (!needs_repaint() && !(records_whole_document == RecordsWholeDocument::Yes && compositor_has_display_list_of_part_of_the_document()))
         return false;
     // OPTIMIZATION: Don't paint navigables hidden by an ancestor iframe with visibility: hidden.
     //               needs_repaint() stays true — so, once the navigable becomes visible, it's painted.
@@ -7128,7 +7175,7 @@ bool LocalNavigable::paint_next_frame_if_needed(DOM::UpdateLayoutReason layout_r
         if (document->font_computer().should_defer_initial_paint())
             return false;
     }
-    paint_next_frame();
+    paint_next_frame(records_whole_document);
     return true;
 }
 
@@ -7141,11 +7188,13 @@ void LocalNavigable::render_screenshot(NonnullRefPtr<Gfx::Bitmap> target, PaintC
 
     // The compositor composes the display lists this process last published for the navigables of the subtree. A
     // descendant that has not painted since it changed, such as one whose document has just loaded, would be missing
-    // from the screenshot, so paint it first as the rendering update would.
+    // from the screenshot, so paint it first as the rendering update would. A screenshot of the whole document shows
+    // each descendant wherever its compositor scrolled it, which a display list of part of its document need not hold.
+    auto descendants_record_whole_document = paint_config.records_whole_document ? RecordsWholeDocument::Yes : RecordsWholeDocument::No;
     auto navigables = hosted_inclusive_descendant_navigables();
     for (auto& navigable : navigables.in_reverse()) {
         if (navigable.ptr() != this)
-            navigable->paint_next_frame_if_needed(DOM::UpdateLayoutReason::ProcessScreenshot);
+            navigable->paint_next_frame_if_needed(DOM::UpdateLayoutReason::ProcessScreenshot, LayOutFirst::Yes, descendants_record_whole_document);
     }
 
     if (!commit_frame(paint_config)) {
@@ -7318,6 +7367,27 @@ Vector<Compositing::ScrollRequest> LocalNavigable::take_unsent_scroll_requests()
             scroll_requests.append(state.unsent_request.release_value());
     }
     return scroll_requests;
+}
+
+Vector<Compositor::SmoothScrollDestination> LocalNavigable::smooth_scroll_destinations() const
+{
+    Vector<Compositor::SmoothScrollDestination> destinations;
+    for (auto const& pending : m_pending_async_scroll_operations) {
+        if (pending.stable_node_id.has_value() && pending.destination_scroll_offset.has_value())
+            destinations.append({ .scroll_node = *pending.stable_node_id, .offset = device_scroll_offset(*pending.destination_scroll_offset) });
+    }
+    return destinations;
+}
+
+// An instant scroll moved the box before it asked for the scroll, so the scroll state the next frame records with holds
+// where it went. A relative one moves it in the compositor alone, which asks for a recording around where it goes once
+// it nears the edge of what the list records.
+bool LocalNavigable::asked_for_scrolls_to_what_the_published_display_list_leaves_out(Layout::BegunRead const& read, DOM::Document& document, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations) const
+{
+    bool const asked_for_a_scroll = !smooth_scroll_destinations.is_empty() || any_of(m_scroll_request_states, [](auto const& entry) { return entry.value.unsent_request.has_value(); });
+    if (!asked_for_a_scroll)
+        return false;
+    return Painting::published_recording_misses_scroll_positions(read, document, compositor_context().id(), smooth_scroll_destinations);
 }
 
 // A frame that went nowhere gives its requests back to be sent with the next one, ahead of anything asked for since.

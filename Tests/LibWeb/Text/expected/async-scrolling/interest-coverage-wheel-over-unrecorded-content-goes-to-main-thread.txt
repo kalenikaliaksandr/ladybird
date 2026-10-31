@@ -1,0 +1,6 @@
+the list leaves out the far scroller's wheel routing, over the page: latched scroller=viewport
+scrolled past what the list records, over the page: not-recorded-at-position
+#1 compositor: not-recorded-at-position
+#1 compositor: forwarded-to-page
+the main thread scrolled the page: true
+the main thread's frame records there: true, over the page: latched scroller=viewport

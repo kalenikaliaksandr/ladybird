@@ -67,7 +67,9 @@ void draw_bounding_box_from_the_framebuffer(HTML::BrowsingContext& browsing_cont
     Gfx::IntRect paint_rect { rect.x(), rect.y(), paint_width, paint_height };
 
     auto bitmap = MUST(Gfx::Bitmap::create_shareable(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, Gfx::IntSize { paint_width, paint_height }));
-    HTML::PaintConfig paint_config { .canvas_fill_rect = paint_rect };
+    // The compositor may show the viewport scrolled past what the last display list records, before a recording around
+    // where it scrolled to arrives.
+    HTML::PaintConfig paint_config { .canvas_fill_rect = paint_rect, .records_whole_document = true };
     browsing_context.active_document()->navigable()->render_screenshot(bitmap, paint_config, [bitmap, element = GC::make_root(element), canvas = GC::make_root(canvas), callback = move(callback)] mutable {
         HTML::TemporaryExecutionContext execution_context { element->document().relevant_settings_object() };
 

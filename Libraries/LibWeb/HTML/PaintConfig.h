@@ -24,8 +24,20 @@ struct PaintConfig {
     i32 force_dark_foreground_threshold { default_force_dark_foreground_threshold };
     i32 force_dark_background_threshold { default_force_dark_background_threshold };
     Optional<Gfx::IntRect> canvas_fill_rect {};
+    // Whether the frame records the whole document even where frames record around the scroll positions, as a
+    // screenshot that shows more than the viewport does.
+    bool records_whole_document { false };
 
     bool operator==(PaintConfig const& other) const = default;
+
+    // Whether a display list recorded with `other` paints what one recorded with this config paints: how much of the
+    // document a list records leaves what it paints there alone.
+    bool paints_as(PaintConfig const& other) const
+    {
+        auto other_recording_this_much = other;
+        other_recording_this_much.records_whole_document = records_whole_document;
+        return *this == other_recording_this_much;
+    }
 };
 
 }

@@ -297,7 +297,8 @@ void Page::process_screenshot_requests()
                 continue;
             }
             auto bitmap = bitmap_or_error.release_value();
-            HTML::PaintConfig paint_config { .canvas_fill_rect = rect.to_type<int>() };
+            // A screenshot of a node shows it wherever it lies in the document, which the viewport need not show.
+            HTML::PaintConfig paint_config { .canvas_fill_rect = rect.to_type<int>(), .records_whole_document = true };
             navigable->render_screenshot(bitmap, paint_config, [bitmap, &client] {
                 client.page_did_take_screenshot(bitmap->to_shareable_bitmap());
             });
@@ -314,7 +315,7 @@ void Page::process_screenshot_requests()
                 continue;
             }
             auto bitmap = bitmap_or_error.release_value();
-            HTML::PaintConfig paint_config { .paint_overlay = true, .canvas_fill_rect = rect.to_type<int>() };
+            HTML::PaintConfig paint_config { .paint_overlay = true, .canvas_fill_rect = rect.to_type<int>(), .records_whole_document = true };
             navigable->render_screenshot(bitmap, paint_config, [bitmap, &client] {
                 client.page_did_take_screenshot(bitmap->to_shareable_bitmap());
             });

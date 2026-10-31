@@ -7,7 +7,7 @@
 use crate::css::css_pixels::{CssPixelPoint, CssPixelRect};
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::display_list::commands::UniqueNodeId;
-use crate::painting::ffi::FfiChromeMetrics;
+use crate::painting::ffi::{FfiChromeMetrics, FfiScrollNodeDestination};
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::host::{FfiFlexOverlayInput, FfiGridOverlayInput, RootBackgroundSource};
 use crate::painting::interest_refresh::{InterestRequest, take_newest_interest_request};
@@ -55,10 +55,20 @@ impl UnframedRecordingInputs {
     }
 
     /// Has the recording of a frame committed for the compositor context `context_id` take the context's newest request
-    /// to record around new rects, where it records around the scroll positions.
-    pub(crate) fn take_interest_request_of_context(&mut self, context_id: u64) {
-        if let InterestInput::AroundScrollPositions { requested } = &mut self.0.interest {
+    /// to record around new rects, and record around `smooth_scroll_destinations` too, where it records around the
+    /// scroll positions.
+    pub(crate) fn aim_around_requests_of_context(
+        &mut self,
+        context_id: u64,
+        smooth_scroll_destinations: &[FfiScrollNodeDestination],
+    ) {
+        if let InterestInput::AroundScrollPositions {
+            requested,
+            smooth_scroll_destinations: destinations,
+        } = &mut self.0.interest
+        {
             *requested = take_newest_interest_request(context_id);
+            *destinations = smooth_scroll_destinations.into();
         }
     }
 }
@@ -120,10 +130,12 @@ pub(crate) struct RecordingInputs {
 #[derive(Clone)]
 pub(crate) enum InterestInput {
     WholeDocument,
-    /// What lies around the part of each scroll node that its scroll position shows, or the rect the compositor's
-    /// `requested` names where that holds the part.
+    /// What lies around the part of each scroll node that its scroll position shows, and the part it shows at the
+    /// destination of a smooth scroll the main thread asked for, or the rect the compositor's `requested` names where
+    /// that holds the part.
     AroundScrollPositions {
         requested: Option<Arc<InterestRequest>>,
+        smooth_scroll_destinations: Arc<[FfiScrollNodeDestination]>,
     },
     /// Like `AroundScrollPositions`, but keeping only what an earlier testing recording aimed for, so that what a test
     /// records never depends on recordings made outside it.

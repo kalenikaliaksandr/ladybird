@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 60000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A burst of Page Down keys scrolls the page further than the viewport from one frame to the next, along a smooth
+// scroll the compositor runs, which tells where the page will be by the time a recording arrives. The compositor asks
+// for recordings around there, so hardly any frame of the scroll shows content the display list leaves out.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const before = internals.compositorInterestRefreshState();
+
+    await scrollSettled(document, () => {
+        for (let key = 0; key < 15; ++key) internals.sendKeyThroughUIProcess("PageDown");
+    });
+    println(`settled: ${await interestCoverageSettled()}`);
+    const after = internals.compositorInterestRefreshState();
+    println(`scrolled far: ${window.scrollY > 5000}`);
+    println(`at most one frame showed what the list leaves out: ${after.checkerboardedFrames - before.checkerboardedFrames <= 1}`);
+});
+</script>

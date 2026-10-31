@@ -12,7 +12,13 @@
 promiseTest(async () => {
     await animationFrame();
     await animationFrame();
-    await waitForCondition(() => internals.compositorScrollState().document === document);
+    internals.setRecordsAroundScrollPositions(false);
+    await waitForCondition(() => {
+        const scrollState = internals.compositorScrollState();
+        return scrollState.document === document && scrollState.recordedRect === null;
+    });
+    // The compositor counts the requests and frames of its context, which an earlier test may have presented to.
+    const before = internals.compositorInterestRefreshState();
 
     await scrollSettled(scroller, () => internals.wheelThroughUIProcess(100, 200, 0, 1500));
     await scrollSettled(document, () => internals.wheelThroughUIProcess(500, 400, 0, 3000));
@@ -20,9 +26,9 @@ promiseTest(async () => {
 
     const state = internals.compositorInterestRefreshState();
     println(`scrolled the page: ${window.scrollY > 0}, the scroller: ${scroller.scrollTop > 0}`);
-    println(`requests sent: ${state.requestsSent}`);
+    println(`requests sent: ${state.requestsSent - before.requestsSent}`);
     println(`request in flight: ${state.inFlightRequestId}`);
-    println(`checkerboarded frames: ${state.checkerboardedFrames}`);
+    println(`checkerboarded frames: ${state.checkerboardedFrames - before.checkerboardedFrames}`);
     println(`expects a refresh latency of at least a frame: ${state.latencyMilliseconds > 0}`);
 });
 </script>

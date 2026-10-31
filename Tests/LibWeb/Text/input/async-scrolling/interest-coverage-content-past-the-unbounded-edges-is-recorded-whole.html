@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 20000000px; }
+    #scroller { position: absolute; top: 100px; left: 0; width: 300px; height: 200px; overflow: auto; }
+    #scroller > div { height: 4000px; }
+</style>
+<div id="scroller"><div></div></div>
+<script>
+// Interest rects cannot tell apart content past their unbounded edges, so a page whose content reaches past them is
+// recorded whole, and the compositor asks for nothing of it wherever it scrolls. The scroller in it is still recorded
+// around its scroll position.
+promiseTest(async () => {
+    internals.setRecordsAroundScrollPositions(true);
+    await waitForCondition(() => internals.compositorScrollState(scroller).recordedRect !== null);
+    const requestsSentBefore = internals.compositorInterestRefreshState().requestsSent;
+
+    window.scrollTo(0, 17000000);
+    await waitForCondition(() => {
+        const visible = internals.compositorScrollState().visibleContentRect;
+        return visible !== null && Math.abs(visible.y - 17000000) < 2;
+    });
+    println(`settled: ${await interestCoverageSettled()}`);
+    const { recordedRect: recorded } = internals.compositorScrollState();
+    println(`the compositor's list records all of the page: ${recorded === null}`);
+    println(`what WebContent recorded names no rect of the page: ${internals.recordedInterestRect() === null}`);
+    println(`requests sent: ${internals.compositorInterestRefreshState().requestsSent - requestsSentBefore}`);
+});
+</script>

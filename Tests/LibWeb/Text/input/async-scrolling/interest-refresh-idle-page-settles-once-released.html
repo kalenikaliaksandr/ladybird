@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// The compositor scrolls an idle page past what its display list records and asks for a recording there, which waits
+// while held. Once released, it is serviced, and what the compositor holds comes to record what shows, though nothing
+// on the page asks for a frame.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+
+    internals.holdInterestRefreshes();
+    const serviced = internals.interestRefreshCount();
+    await scrollSettled(document, () => internals.wheelThroughUIProcess(400, 300, 0, 9000, true));
+    await waitForCondition(() => internals.compositorInterestRefreshState().inFlightRequestId !== null);
+    const requestInFlight = internals.compositorInterestRefreshState().inFlightRequestId;
+    const { visibleContentRect: visible, recordedRect: recorded } = internals.compositorScrollState();
+    println(`scrolled past what the list records: ${visible.y >= recorded.y + recorded.height}`);
+    println(`serviced while held: ${internals.interestRefreshCount() - serviced}`);
+
+    internals.releaseInterestRefreshes();
+    await interestCoverageSettled();
+    println(`the request was answered: ${internals.compositorInterestRefreshState().lastAnsweredRequestId >= requestInFlight}`);
+    const settled = internals.compositorScrollState();
+    println(`the list records what shows: ${settled.recordedRect.y <= settled.visibleContentRect.y}`);
+});
+</script>

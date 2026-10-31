@@ -329,6 +329,39 @@ pub fn desired_interest_rect(
     rect_from_axis_spans(|axis| extended(axis, share_of_lead))
 }
 
+/// What a recording aims around for a scroll node that a smooth scroll takes from `view` to `destination_view`, both
+/// from `view_to_record_around`: the two joined, while the default rect around them stays within the area the compositor
+/// may ask for of a moving node; else `view` alone, as the compositor's requests carry what is recorded to a destination
+/// further away while the scroll nears it.
+pub fn view_joined_with_destination(
+    view: IntRect,
+    destination_view: IntRect,
+    scrollport_size: IntSize,
+    range: ScrollRange,
+) -> IntRect {
+    if view.is_empty() || destination_view.is_empty() {
+        return view;
+    }
+    let joined = rect_from_axis_spans(|axis| axis.span_of(view).joined(axis.span_of(destination_view)));
+    let area_around = |view: IntRect| -> f64 {
+        let around = default_interest_rect(view, scrollport_size, range.axes);
+        Axis::BOTH
+            .into_iter()
+            .filter(|axis| axis.is_scrollable(range.axes))
+            .map(|axis| {
+                axis.span_of(around)
+                    .intersected(axis.span_of(range.content_area))
+                    .length() as f64
+            })
+            .product()
+    };
+    if area_around(joined) <= MOST_DESIRED_AREA_IN_STATIONARY_AREAS * area_around(view) {
+        joined
+    } else {
+        view
+    }
+}
+
 /// Whether the compositor needs a new recording of a scroll node: what the display list records of it, `recorded`, no
 /// longer holds `visible` with half a scrollport to spare on each side the node can scroll, plus how far `motion` carries
 /// the node toward that side before a new recording arrives. A side never needs more than `desired`, the rect the
@@ -608,6 +641,41 @@ mod tests {
             content_area,
             axes,
         ))
+    }
+
+    #[test]
+    fn a_smooth_scroll_s_destination_joins_the_view_while_the_rect_around_both_stays_within_the_cap() {
+        let scrollport = IntRect::new(0, 0, 1000, 800);
+        let scrollport_size = size(1000, 800);
+        let range = ScrollRange::new(scrollport, offset(0.0, 0.0), offset(0.0, 19200.0));
+        let view_at = |y: f32| view_to_record_around(scrollport, offset(0.0, y), None, VERTICAL);
+
+        // A page down joins; the default rect around both is 3200 of the 4800 the cap allows.
+        assert_eq!(
+            view_joined_with_destination(view_at(5000.0), view_at(5800.0), scrollport_size, range),
+            from_edges(-UNBOUNDED, 5000, UNBOUNDED, 6600)
+        );
+        // Three scrollports up still joins, exactly at the cap.
+        assert_eq!(
+            view_joined_with_destination(view_at(5000.0), view_at(2600.0), scrollport_size, range),
+            from_edges(-UNBOUNDED, 2600, UNBOUNDED, 5800)
+        );
+        // The end of the page, far away, does not: the compositor asks for it as the scroll nears it.
+        assert_eq!(
+            view_joined_with_destination(view_at(5000.0), view_at(19200.0), scrollport_size, range),
+            view_at(5000.0)
+        );
+        // At the top, the content starts where the rect around the view is cut, which leaves the cap smaller.
+        assert_eq!(
+            view_joined_with_destination(view_at(0.0), view_at(1600.0), scrollport_size, range),
+            from_edges(-UNBOUNDED, 0, UNBOUNDED, 2400)
+        );
+        assert_eq!(
+            view_joined_with_destination(view_at(0.0), view_at(1601.0), scrollport_size, range),
+            view_at(0.0)
+        );
+        // A node its parent cuts away shows nothing at either.
+        assert!(view_joined_with_destination(IntRect::default(), view_at(800.0), scrollport_size, range).is_empty());
     }
 
     #[test]

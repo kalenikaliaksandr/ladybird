@@ -68,6 +68,12 @@ impl InterestRequest {
         }
     }
 
+    /// A test's request, in an id space of its own, for the rects of the scroll nodes they name.
+    #[cfg(test)]
+    pub(crate) fn new_for_testing(rects: &[FfiScrollNodeContentRect]) -> Self {
+        Self::new(None, rects)
+    }
+
     /// The rect the request asks for of the scroll node `scroll_node` names, whatever its own rect.
     pub(crate) fn rect_requested_for(&self, scroll_node: &FfiScrollNodeContentRect) -> Option<IntRect> {
         self.rects_by_scroll_node.get(&ScrollNodeName::of(scroll_node)).copied()
@@ -174,6 +180,10 @@ impl InterestRefreshRegistry {
         self.context(context_id)?.newest_request.take()
     }
 
+    fn newest_request(&mut self, context_id: u64) -> Option<Arc<InterestRequest>> {
+        self.context(context_id)?.newest_request.clone()
+    }
+
     /// The host could not be asked for the frame `service` asked for.
     fn host_ask_failed(&mut self, context_id: u64) {
         if let Some(context) = self.context(context_id) {
@@ -242,6 +252,12 @@ fn ask_host(context_to_ask: Option<u64>) {
 /// around.
 pub(crate) fn take_newest_interest_request(context_id: u64) -> Option<Arc<InterestRequest>> {
     registry().take_newest_request(context_id)
+}
+
+/// The newest request of the compositor context `context_id` that no committed frame took yet, which the next one that
+/// records takes.
+pub(crate) fn newest_interest_request(context_id: u64) -> Option<Arc<InterestRequest>> {
+    registry().newest_request(context_id)
 }
 
 /// Has the compositor context `context_id`, which the process just made, take requests.

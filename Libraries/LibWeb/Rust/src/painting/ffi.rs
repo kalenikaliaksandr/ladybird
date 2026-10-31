@@ -479,6 +479,27 @@ pub struct FfiScrollNodeContentRect {
     pub rect: IntRect,
 }
 
+/// Where a smooth scroll the main thread asked for takes a scroll node the compositor scrolls, with the node named as
+/// `FfiScrollNodeContentRect` names it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FfiScrollNodeDestination {
+    pub scrollable_node_id: i64,
+    pub scroll_node_kind: CompositorScrollNodeKind,
+    pub pseudo_element_type: u8,
+    /// In device pixels.
+    pub destination_offset: libgfx_rust::FloatPoint,
+}
+
+impl FfiScrollNodeDestination {
+    /// Whether the destination is of the scroll node `scroll_node` names, whatever its rect.
+    pub(crate) fn is_of(&self, scroll_node: &FfiScrollNodeContentRect) -> bool {
+        self.scrollable_node_id == scroll_node.scrollable_node_id
+            && self.scroll_node_kind == scroll_node.scroll_node_kind
+            && self.pseudo_element_type == scroll_node.pseudo_element_type
+    }
+}
+
 /// What the host reads of a published recording, to build its display list from.
 #[repr(C)]
 pub struct FfiPresentedRecording {

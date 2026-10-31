@@ -1766,6 +1766,11 @@ WebIDL::UnsignedLong Internals::interest_refresh_count()
     return static_cast<WebIDL::UnsignedLong>(Layout::RustFFI::interest_refresh_serviced_count_for_testing());
 }
 
+void Internals::set_records_around_scroll_positions(bool records_around_scroll_positions)
+{
+    HTML::LocalNavigable::set_commits_record_around_scroll_positions_for_testing(records_around_scroll_positions);
+}
+
 void Internals::set_autoplay_policy(Utf16String const& policy)
 {
     if (auto parsed = HTML::autoplay_policy_from_string(policy.utf16_view()); parsed.has_value())

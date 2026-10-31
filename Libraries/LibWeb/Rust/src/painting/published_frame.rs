@@ -257,6 +257,11 @@ impl PublishedFrame {
     pub(crate) fn paintable_row_capacity(&self) -> usize {
         self.rows.rows.slot_capacity()
     }
+
+    /// The epoch of the geometry the frame was published with, which moves on with every write that moves a row.
+    pub(crate) fn geometry_epoch(&self) -> u64 {
+        self.rows.geometry_epoch
+    }
 }
 
 #[cfg(test)]

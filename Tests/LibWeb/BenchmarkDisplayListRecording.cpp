@@ -34,7 +34,7 @@
 // Compare cold, quiet and sparse recordings of flat and nested pages. Mutations and layout are
 // timed separately, and outline changes exercise fragments whose command counts grow or shrink.
 // A page fifty viewports tall compares recording the whole document with recording around the
-// scroll positions.
+// scroll positions, also with every card a scroll container the compositor scrolls.
 
 namespace {
 
@@ -52,13 +52,14 @@ enum class DocumentShape {
     SharedContextCards,
     TokenizedCards,
     TallCards,
+    TallScrollingCards,
 };
 
 size_t card_count_of(DocumentShape shape)
 {
     // A long diff has many paint occurrences sharing one stacking context. Keep
     // enough owners here to expose the cost of reconstructing the packed program.
-    if (shape == DocumentShape::SharedContextCards || shape == DocumentShape::TallCards)
+    if (shape == DocumentShape::SharedContextCards || shape == DocumentShape::TallCards || shape == DocumentShape::TallScrollingCards)
         return 20000;
     return shape == DocumentShape::FlatCardsFew ? 200 : 2000;
 }
@@ -69,6 +70,7 @@ size_t columns_of(DocumentShape shape)
     case DocumentShape::TokenizedCards:
         return 4;
     case DocumentShape::TallCards:
+    case DocumentShape::TallScrollingCards:
         return 8;
     default:
         return cards_per_row;
@@ -81,6 +83,7 @@ int card_width_of(DocumentShape shape)
     case DocumentShape::TokenizedCards:
         return 200;
     case DocumentShape::TallCards:
+    case DocumentShape::TallScrollingCards:
         return 100;
     default:
         return card_width;
@@ -195,6 +198,7 @@ OwnPtr<LoadedPage> s_nested_panels_page;
 OwnPtr<LoadedPage> s_shared_context_cards_page;
 OwnPtr<LoadedPage> s_tokenized_cards_page;
 OwnPtr<LoadedPage> s_tall_cards_page;
+OwnPtr<LoadedPage> s_tall_scrolling_cards_page;
 
 // The markup goes into the initial about:blank document's root element: navigations are driven by the browser
 // process's session history, which an in-process page has no access to.
@@ -313,6 +317,8 @@ LoadedPage& page_for(DocumentShape shape)
             return s_tokenized_cards_page;
         case DocumentShape::TallCards:
             return s_tall_cards_page;
+        case DocumentShape::TallScrollingCards:
+            return s_tall_scrolling_cards_page;
         }
         VERIFY_NOT_REACHED();
     }();
@@ -546,6 +552,21 @@ BENCHMARK_CASE(document_record_after_one_card_near_the_top_changes_tall_whole_do
 BENCHMARK_CASE(document_record_after_one_card_near_the_top_changes_tall_around_scroll_positions)
 {
     time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, one dirty near the top, around the scroll positions"sv, Mutation::OneCardNearTheTopBackground, CacheState::Warm, Web::Painting::RecordingCoverage::AroundScrollPositions);
+}
+
+BENCHMARK_CASE(document_record_unchanged_tall_around_scroll_positions)
+{
+    time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, nothing changed, around the scroll positions"sv, {}, CacheState::Warm, Web::Painting::RecordingCoverage::AroundScrollPositions);
+}
+
+BENCHMARK_CASE(document_record_unchanged_tall_scrolling_cards_around_scroll_positions)
+{
+    time_document_recordings(DocumentShape::TallScrollingCards, "document recording, tall scrolling cards, nothing changed, around the scroll positions"sv, {}, CacheState::Warm, Web::Painting::RecordingCoverage::AroundScrollPositions);
+}
+
+BENCHMARK_CASE(document_record_after_one_card_near_the_top_changes_tall_scrolling_cards_around_scroll_positions)
+{
+    time_document_recordings(DocumentShape::TallScrollingCards, "document recording, tall scrolling cards, one dirty near the top, around the scroll positions"sv, Mutation::OneCardNearTheTopBackground, CacheState::Warm, Web::Painting::RecordingCoverage::AroundScrollPositions);
 }
 
 BENCHMARK_CASE(document_record_after_viewport_scrolls_one_interest_grid_step_tall_around_scroll_positions)

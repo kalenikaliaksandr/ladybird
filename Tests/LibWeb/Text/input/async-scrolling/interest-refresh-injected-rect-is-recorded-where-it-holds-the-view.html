@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A frame records around the newest requested rect only where what it records for the rect holds what the frame shows.
+// A rect far from it is no rect to record around, so the frame records around what it shows; a rect around what shows
+// that reaches further is recorded, in device pixels of the content converted from the CSS pixels of the request.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    internals.holdInterestRefreshes();
+
+    const recordsWhatShowsAt = scrollY => () => {
+        const { visibleContentRect: visible, recordedRect: recorded } = internals.compositorScrollState();
+        return Math.abs(visible.y - scrollY) < 1 && recorded.y <= scrollY && recorded.y + recorded.height >= scrollY + window.innerHeight;
+    };
+    internals.injectInterestRefresh({ left: -Infinity, top: 20000, right: Infinity, bottom: 21000 });
+    window.scrollTo(0, 5000);
+    println(`the list records what shows: ${await waitForCondition(recordsWhatShowsAt(5000))}`);
+    println(`it left out the far rect: ${internals.compositorScrollState().recordedRect.y < 19000}`);
+
+    internals.injectInterestRefresh({ left: -Infinity, top: 3000, right: Infinity, bottom: 9000 });
+    internals.releaseInterestRefreshes();
+    const recordsTheRect = () => {
+        const recorded = internals.compositorScrollState().recordedRect;
+        return recorded.y <= 3000 && recorded.y + recorded.height >= 9000;
+    };
+    println(`the list records the rect around what shows: ${await waitForCondition(recordsTheRect)}`);
+    const recordedInterest = internals.recordedInterestRect();
+    println(`so does what WebContent recorded: ${recordedInterest.top <= 3000 && recordedInterest.bottom >= 9000}`);
+});
+</script>

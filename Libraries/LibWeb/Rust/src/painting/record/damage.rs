@@ -192,6 +192,16 @@ impl FrameDamage {
         self.scroll_metadata_everywhere
     }
 
+    /// Whether the scroll metadata of any row is to be recorded again: a scroll node it records may have changed.
+    pub(crate) fn changes_scroll_metadata(&self) -> bool {
+        self.all
+            || self.scroll_metadata_everywhere
+            || self
+                .rows
+                .iter()
+                .any(|(_, damage)| damage.intersects(PaintDamage::SCROLL_METADATA))
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         !self.all && !self.scroll_metadata_everywhere && self.rows.is_empty()
     }

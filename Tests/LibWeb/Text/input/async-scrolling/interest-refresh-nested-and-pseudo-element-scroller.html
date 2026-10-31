@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 12000px; }
+    #scroller { position: absolute; top: 0; left: 0; width: 300px; height: 200px; overflow: auto; }
+    #scroller > div { height: 8000px; background: linear-gradient(white, teal); }
+    #host { position: absolute; top: 300px; left: 0; width: 100px; height: 100px; }
+    #host::before {
+        content: "line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line\A line";
+        display: block;
+        width: 100px;
+        height: 100px;
+        overflow: scroll;
+        font: 16px / 20px sans-serif;
+        white-space: pre;
+    }
+    #far-scroller { position: absolute; top: 10000px; width: 200px; height: 200px; overflow: auto; }
+    #far-scroller > div { height: 1000px; }
+</style>
+<div id="scroller"><div></div></div>
+<div id="host"></div>
+<div id="far-scroller"><div></div></div>
+<script>
+// The compositor scrolls a nested scroller and a pseudo-element's scroller past what the display list records of them,
+// and asks for a recording around where each went. Until it arrives, it leaves wheels over them to the main thread.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    internals.holdInterestRefreshes();
+
+    await scrollSettled(scroller, () => internals.wheelThroughUIProcess(150, 100, 0, 5000, true));
+    await scrollSettled(host, () => internals.wheelThroughUIProcess(50, 350, 0, 1500, true));
+    await waitForCondition(() => internals.compositorInterestRefreshState().inFlightRequestId !== null);
+    println(`scrolled the scroller: ${scroller.scrollTop > 4000}`);
+    println(`while held, over the scroller: ${wheelTargetToString(internals.compositorWheelTargetAt(150, 100, 0, 100))}`);
+    println(`while held, over the pseudo-element's: ${wheelTargetToString(internals.compositorWheelTargetAt(50, 350, 0, 100))}`);
+
+    internals.releaseInterestRefreshes();
+    await interestCoverageSettled(scroller);
+    const { visibleContentRect: visible, recordedRect: recorded } = internals.compositorScrollState(scroller);
+    println(`the list records what shows of the scroller and leaves out its top: ${recorded.y <= visible.y && recorded.y > 0}`);
+    await waitForCondition(() => internals.compositorWheelTargetAt(50, 350, 0, 100).decision !== "not-recorded-at-position");
+    println(`once recorded, over the scroller: ${wheelTargetToString(internals.compositorWheelTargetAt(150, 100, 0, 100))}`);
+    println(`once recorded, over the pseudo-element's: ${wheelTargetToString(internals.compositorWheelTargetAt(50, 350, 0, 100))}`);
+});
+</script>

@@ -22,6 +22,7 @@
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/PaintConfig.h>
 #include <LibWeb/Painting/DisplayListRecording.h>
+#include <LibWebCommon/Page/AsyncScrollNodeStableID.h>
 #include <LibWebCommon/Page/CompositorContextId.h>
 
 namespace Web::Layout::RustFFI {
@@ -47,6 +48,12 @@ enum class PresentedBy : u8 {
     Clock,
 };
 
+// Where a smooth scroll that a navigable asked for takes a box the compositor scrolls, in device pixels.
+struct SmoothScrollDestination {
+    Web::AsyncScrollNodeStableID scroll_node;
+    Gfx::FloatPoint offset;
+};
+
 // What a frame is built from that its navigable and document held where the frame began, sealed there: the frame reaches
 // neither of them again before it is presented.
 struct SealedPresentation {
@@ -66,6 +73,9 @@ struct SealedPresentation {
     Vector<Compositing::ScrollRequest> scroll_requests;
     // What keyboard scrolling targets, for a top-level traversable.
     Optional<Compositing::KeyboardScrollState> keyboard_scroll_state;
+    // Where the smooth scrolls the navigable asked for, which are still under way, take their boxes: a recording around
+    // the scroll positions records around those destinations too.
+    Vector<SmoothScrollDestination> smooth_scroll_destinations;
     // The display list a recording copies paint commands from, and the resources it references, which stay live while
     // it does.
     RefPtr<Compositing::DisplayList> paint_command_cache_source;

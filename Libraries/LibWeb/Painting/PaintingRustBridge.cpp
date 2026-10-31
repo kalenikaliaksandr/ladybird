@@ -496,6 +496,32 @@ void commit_unrecorded_frame(Layout::BegunRead const& read, DOM::Document& docum
     Layout::RustFFI::render_state_commit_unrecorded_frame(document_host(document), &read, sends_visual_context_tree, rendering_update_timestamp(document), give_up(move(presentation)));
 }
 
+// A destination names its box as the compositor does. The visual viewport is never recorded around its scroll position,
+// so a smooth scroll of it heads nowhere a recording records around.
+static Vector<Layout::RustFFI::FfiScrollNodeDestination> ffi_smooth_scroll_destinations(ReadonlySpan<Compositor::SmoothScrollDestination> destinations)
+{
+    Vector<Layout::RustFFI::FfiScrollNodeDestination> ffi_destinations;
+    ffi_destinations.ensure_capacity(destinations.size());
+    for (auto const& destination : destinations) {
+        auto kind = Compositing::compositor_scroll_node_kind_for(destination.scroll_node.kind);
+        if (!kind.has_value())
+            continue;
+        ffi_destinations.unchecked_append({
+            .scrollable_node_id = destination.scroll_node.node_id.value(),
+            .scroll_node_kind = *kind,
+            .pseudo_element_type = destination.scroll_node.pseudo_element_type,
+            .destination_offset = destination.offset,
+        });
+    }
+    return ffi_destinations;
+}
+
+bool published_recording_misses_scroll_positions(Layout::BegunRead const& read, DOM::Document& document, Web::CompositorContextId context_id, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations)
+{
+    auto ffi_destinations = ffi_smooth_scroll_destinations(smooth_scroll_destinations);
+    return Layout::RustFFI::render_state_published_recording_misses_scroll_positions(document_host(document), &read, context_id.value(), ffi_destinations.data(), ffi_destinations.size());
+}
+
 static Layout::RustFFI::FfiRecordingCoverage ffi_recording_coverage(RecordingCoverage coverage)
 {
     switch (coverage) {
@@ -704,7 +730,8 @@ Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRe
         committed->sealed->recording = recording;
         recording.in_flight = true;
         auto compositor_context_id = committed->sealed->context_id.value();
-        Layout::RustFFI::render_state_commit_recorded_frame(host, &read, viewport, inputs, compositor_context_id, rendering_update_timestamp(document), give_up(committed.release_value()));
+        auto smooth_scroll_destinations = ffi_smooth_scroll_destinations(committed->sealed->smooth_scroll_destinations);
+        Layout::RustFFI::render_state_commit_recorded_frame(host, &read, viewport, inputs, compositor_context_id, smooth_scroll_destinations.data(), smooth_scroll_destinations.size(), rendering_update_timestamp(document), give_up(committed.release_value()));
         return recording;
     }
     if (Layout::RustFFI::render_state_record_display_list(host, &read, viewport, inputs) == Layout::RustFFI::FfiRecordingStart::NothingToRecord)

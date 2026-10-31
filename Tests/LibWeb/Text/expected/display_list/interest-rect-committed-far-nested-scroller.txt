@@ -1,0 +1,5 @@
+the page's list leaves out the scroller: true
+scroll nodes: 2, scroller listed: true
+scroller records none of its content: true
+snap containers: 1, snap areas: 3
+has blocking wheel event listeners: true

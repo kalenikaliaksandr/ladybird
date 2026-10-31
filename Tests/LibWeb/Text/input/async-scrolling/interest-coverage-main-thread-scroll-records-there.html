@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 40000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// A script's scroll moves the page past what the display list records, and the frame that carries the scroll to the
+// compositor records around where it goes, with the compositor's requests held. The frame of a smooth scroll that heads
+// a little past what the list records records around where it heads as well, so no frame of it shows content the list
+// leaves out.
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    internals.holdInterestRefreshes();
+
+    const recordsWhatShowsAt = scrollY => () => {
+        const { visibleContentRect: visible, recordedRect: recorded } = internals.compositorScrollState();
+        return Math.abs(visible.y - scrollY) < 1 && recorded.y <= scrollY && recorded.y + recorded.height >= scrollY + window.innerHeight;
+    };
+    window.scrollTo(0, 15000);
+    println(`the list records what shows after an instant scroll: ${await waitForCondition(recordsWhatShowsAt(15000))}`);
+    println(`it leaves out the top: ${internals.compositorScrollState().recordedRect.y > 0}`);
+
+    const checkerboardedFrames = internals.compositorInterestRefreshState().checkerboardedFrames;
+    await scrollSettled(document, () => window.scrollTo({ top: 16500, behavior: "smooth" }));
+    println(`the list records what shows after a smooth scroll: ${await waitForCondition(recordsWhatShowsAt(16500))}`);
+    println(`frames that showed what the list leaves out: ${internals.compositorInterestRefreshState().checkerboardedFrames - checkerboardedFrames}`);
+    internals.releaseInterestRefreshes();
+});
+</script>

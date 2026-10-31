@@ -1,0 +1,6 @@
+scrolled the scroller: true
+while held, over the scroller: not-recorded-at-position
+while held, over the pseudo-element's: not-recorded-at-position
+the list records what shows of the scroller and leaves out its top: true
+once recorded, over the scroller: latched scroller=#scroller
+once recorded, over the pseudo-element's: latched scroller=#host::before

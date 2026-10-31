@@ -666,18 +666,24 @@ unsafe fn commit_frame(
 
 /// Commits the frame of `host`'s document as a recording of its viewport with `inputs` (see [`commit_frame`]), for the
 /// compositor context `compositor_context_id`, whose newest request to record around new rects a recording around the
-/// scroll positions takes.
+/// scroll positions takes, as it records around the `smooth_scroll_destination_count` destinations at
+/// `smooth_scroll_destinations` too.
 ///
 /// # Safety
 ///
 /// As for [`render_state_record_display_list`]. `presentation` must name a presentation the host gives up.
+/// `smooth_scroll_destinations` must point to `smooth_scroll_destination_count` destinations, or be null with a count of
+/// zero.
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn render_state_commit_recorded_frame(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
     viewport: NodeSlotId,
     inputs: crate::painting::host::FfiRecordingInputs,
     compositor_context_id: u64,
+    smooth_scroll_destinations: *const crate::painting::ffi::FfiScrollNodeDestination,
+    smooth_scroll_destination_count: usize,
     timestamp: f64,
     presentation: crate::painting::ffi::FfiPresentation,
 ) {
@@ -685,11 +691,56 @@ pub unsafe extern "C" fn render_state_commit_recorded_frame(
     let frame_inputs = frame_inputs(host, viewport, &inputs, &recorder);
     // SAFETY: The host lends the input arrays and buffers for this call, and the inputs copy what they read of them.
     let mut inputs = unsafe { inputs.recording_inputs() };
-    inputs.take_interest_request_of_context(compositor_context_id);
+    // SAFETY: Guaranteed by the caller.
+    let smooth_scroll_destinations =
+        unsafe { ak::slice_from_raw_parts(smooth_scroll_destinations, smooth_scroll_destination_count) };
+    inputs.aim_around_requests_of_context(compositor_context_id, smooth_scroll_destinations);
     let content = crate::render_state::CommittedContent::Recording { frame_inputs, inputs };
     let held_for_testing = crate::painting::recording_slot::take_recording_hold_for_testing();
     // SAFETY: Guaranteed by the caller.
     unsafe { commit_frame(host, read, recorder, content, held_for_testing, timestamp, presentation) };
+}
+
+/// Whether the display list that `host`'s document published last leaves out part of what the document shows of a scroll
+/// node at the scroll positions the main thread moved it to, or would show where the smooth scrolls it asked for take
+/// the nodes, the `smooth_scroll_destination_count` destinations at `smooth_scroll_destinations`, and the newest request
+/// of the compositor context `compositor_context_id` does not ask for that part either: a frame that shows it records
+/// again.
+///
+/// # Safety
+///
+/// `host` must be a live document host, on its document's thread, with no recording in flight.
+/// `smooth_scroll_destinations` must point to `smooth_scroll_destination_count` destinations, or be null with a count of
+/// zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn render_state_published_recording_misses_scroll_positions(
+    host: &crate::render_state::DocumentHost,
+    read: &crate::render_state::BegunRead,
+    compositor_context_id: u64,
+    smooth_scroll_destinations: *const crate::painting::ffi::FfiScrollNodeDestination,
+    smooth_scroll_destination_count: usize,
+) -> bool {
+    // SAFETY: Guaranteed by the caller.
+    let smooth_scroll_destinations =
+        unsafe { ak::slice_from_raw_parts(smooth_scroll_destinations, smooth_scroll_destination_count) };
+    let Some(published) = host.recording().published_recording() else {
+        return false;
+    };
+    let requested = crate::painting::interest_refresh::newest_interest_request(compositor_context_id);
+    read_arena(
+        host,
+        read,
+        (&*published, requested.as_deref(), smooth_scroll_destinations),
+        |arena, (published, requested, smooth_scroll_destinations)| {
+            let visual_context = &arena.paint_state().visual_context;
+            published.misses_what_scroll_positions_show(
+                visual_context.structural_epoch(),
+                visual_context.scroll_state.own_offsets(),
+                requested,
+                smooth_scroll_destinations,
+            )
+        },
+    )
 }
 
 /// Commits the frame of `host`'s document as one that keeps the display list the compositor has, and sends the render

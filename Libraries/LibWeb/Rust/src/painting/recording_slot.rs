@@ -429,10 +429,13 @@ pub(crate) fn record_frame(
     let publishes_recording = inputs.publishes_recording;
     if publishes_recording {
         // Recordings made with these inputs later, such as clock lane frames, are no test's recordings, and answer no
-        // request: the recording that took a request answers it.
+        // request and head for no smooth scroll's destination: the recording that took them does.
         let interest = match inputs.interest {
             InterestInput::AroundScrollPositionsForTesting => InterestInput::WholeDocument,
-            InterestInput::AroundScrollPositions { .. } => InterestInput::AroundScrollPositions { requested: None },
+            InterestInput::AroundScrollPositions { .. } => InterestInput::AroundScrollPositions {
+                requested: None,
+                smooth_scroll_destinations: Arc::new([]),
+            },
             ref interest => interest.clone(),
         };
         *published_inputs = Some(RecordingInputs { interest, ..inputs });
@@ -668,6 +671,14 @@ impl RecordingSlot {
     /// Whether a recording of the document is in flight.
     pub(crate) fn has_recording_in_flight(&self) -> bool {
         matches!(self.recorder, Recorder::InFlight(_))
+    }
+
+    /// The last recording that published, unless a recording is in flight.
+    pub(crate) fn published_recording(&self) -> Option<Arc<RecordingOutput>> {
+        match &self.recorder {
+            Recorder::Here(recorder) => recorder.published_recording.clone(),
+            Recorder::InFlight(_) => None,
+        }
     }
 
     /// The hit-test list of the last recording published, if any was.

@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 16000px; font: 20px/30px sans-serif; }
+    #editor div { height: 30px; }
+    #far { position: absolute; top: 12000px; left: 0; width: 100px; height: 100px; background: orange; }
+</style>
+<body>
+<div id="editor" contenteditable></div>
+<div id="far"></div>
+<script>
+// Committed frames that record around the scroll positions leave the hit-test list whole: hit testing far below what
+// the list records finds what lies there, and the caret pages down past it.
+for (let i = 0; i < 300; ++i) {
+    const line = document.createElement("div");
+    line.textContent = `line ${i}`;
+    editor.appendChild(line);
+}
+promiseTest(async () => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+    const recorded = internals.compositorScrollState().recordedRect;
+    const recordedBottom = recorded.y + recorded.height;
+    println(`the list leaves out what lies far below: ${recordedBottom < far.offsetTop}`);
+
+    window.scrollTo(0, far.offsetTop);
+    println(`at the top left, before a frame records there: #${document.elementFromPoint(50, 50).id}`);
+    window.scrollTo(0, 0);
+    await interestCoverageSettled();
+
+    editor.focus();
+    getSelection().collapse(editor.firstChild.firstChild, 0);
+    for (let i = 0; i < 4; ++i)
+        internals.sendTextEditingCommand(editor, "PageDown");
+    println(`the caret paged down past what the list recorded: ${getSelection().focusNode.parentElement.offsetTop >= recordedBottom}`);
+});
+</script>

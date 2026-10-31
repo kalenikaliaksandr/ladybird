@@ -10,7 +10,13 @@
 //! the scrollport shows, so that scrolling a little records nothing new. A node culls by its aimed rect snapped to the
 //! interest grid and unbounded where it reaches the end of its scroll range, which is also what the display list tells
 //! the compositor it records. A committed frame aims for the rect the compositor requested instead, where what it
-//! records for that rect holds what the scrollport shows.
+//! records for that rect holds what the scrollport shows, and also holds what the scrollport shows where a smooth scroll
+//! the main thread asked for takes the node. A node whose content reaches past the unbounded edges records all of it.
+//!
+//! What a recording reads of its frame to work this out holds while the frame's visual context tree, geometry and scroll
+//! metadata do, so a later recording of such a frame works it out over the compositor's scroll nodes alone. The same
+//! keeps telling the host whether the scroll positions the main thread moved its scroll nodes to show what the published
+//! recording leaves out.
 
 use super::PaintRecorder;
 use super::assemble::AssemblyCulling;
@@ -18,20 +24,21 @@ use super::cull::CullSpaces;
 use super::inputs::InterestInput;
 use super::order_tree::{CullReach, ScrollNodeSet};
 use super::trace::Observer;
+use crate::css::css_pixels::CssPixelPoint;
 use crate::css::style::fast_hash::FastMap;
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::display_list::commands::{ClipNodeIndex, ContextRef, SpatialNodeIndex};
-use crate::painting::ffi::FfiScrollNodeContentRect;
+use crate::painting::ffi::{FfiScrollNodeContentRect, FfiScrollNodeDestination};
 use crate::painting::interest_refresh::InterestRequest;
 use crate::painting::paint_read::PaintRead;
 use crate::painting::visual_context::interest::{
     CullSpace, LeadPerSide, ScrollRange, default_interest_rect, interest_rect_covers, interest_rect_recorded_for,
-    view_to_record_around,
+    view_joined_with_destination, view_to_record_around,
 };
 use crate::painting::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
 use crate::painting::visual_context::{ScrollData, SpatialData, VisualContextTree};
 use libgfx_rust::{FloatPoint, IntRect, IntSize};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// What a recording records of its document.
 #[derive(Debug, Default)]
@@ -39,28 +46,55 @@ pub(crate) struct RecordedInterest {
     /// What the display list tells the compositor it records of each scroll node the compositor scrolls. Empty when it
     /// records the whole document.
     pub(crate) scroll_node_rects: Vec<FfiScrollNodeContentRect>,
-    // Beside each of `scroll_node_rects`, what a later recording reads of the node.
-    scroll_nodes: Vec<ScrollNodeInterest>,
+    // Beside each of `scroll_node_rects`, what the node aimed for, in its content space at scroll offset zero, before
+    // snapping and saturation. Empty when the node records none of its content.
+    aimed_rects: Vec<IntRect>,
     /// Whether the display list leaves out per-box wheel targets, wheel regions, scroll chaining barriers or nested
     /// context regions outside the rects.
     pub(crate) leaves_out_wheel_routing: bool,
     /// The compositor's request to record around new rects that the recording answers: it records every rect the
     /// request asks for.
     pub(crate) answered_request_id: Option<u64>,
-    // Where the recording's producers landed, for a later recording to tell whether they land there still. None when
-    // the recording left nothing out by interest.
-    cull_mapping: Option<CullMapping>,
+    // What the rects were worked out from, whose scroll nodes lie beside `scroll_node_rects`. None when the recording
+    // left nothing out by interest.
+    basis: Option<Arc<InterestBasis>>,
     // Whether a testing recording made it: later testing recordings keep only what such a recording aimed for.
     recorded_for_testing: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ScrollNodeInterest {
+/// What working out a recording's interest reads of its frame: which scroll nodes the compositor scrolls, where each lies
+/// and how far it scrolls, and where content lands among them. It holds while the frame's visual context tree,
+/// geometry and scroll metadata do, and the device pixel ratio and viewport size the recording records at.
+#[derive(Debug)]
+struct InterestBasis {
+    tree: Weak<VisualContextTree>,
+    geometry_epoch: u64,
+    device_pixels_per_css_pixel: f64,
+    device_viewport_size: IntSize,
+    cull_spaces: Arc<CullSpaces>,
+    cull_mapping: CullMapping,
+    spatial_node_count: usize,
+    // The scroll nodes the compositor scrolls, parents first, but for those recorded whole.
+    scroll_nodes: Vec<ScrollNodeBasis>,
+    // The scroll nodes the compositor scrolls whose content reaches past the unbounded edges, which a recording records
+    // whole and tells the compositor nothing of. A node in one cuts nothing by its rect.
+    scroll_nodes_recorded_whole: Vec<(SpatialNodeIndex, NodeSlotId)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScrollNodeBasis {
     scroll_node: SpatialNodeIndex,
     owner: NodeSlotId,
-    // In the node's content space at scroll offset zero, before snapping and saturation. Empty when the node records
-    // none of its content.
-    aimed: IntRect,
+    state_slot: usize,
+    // The node as the display list names it to the compositor. Its rect is unused.
+    named: FfiScrollNodeContentRect,
+    // In device pixels at scroll offset zero.
+    scrollport: IntRect,
+    range: ScrollRange,
+    // The position in the scroll nodes of the one the node is placed exactly in, whose recorded rect cuts what the node
+    // records. None for the root, and for a node that a transform, sticky offset, anchor shift or spreading filter moves
+    // in its parent.
+    placed_exactly_in: Option<usize>,
 }
 
 // What decides the cull space of content whose visual context did not change: which scroll nodes the compositor
@@ -72,6 +106,63 @@ struct CullMapping {
     effects_under_spreading_filters: Vec<usize>,
 }
 
+impl ScrollNodeBasis {
+    // What the node records around at `scroll_offset`, cut by `parent_recorded`, joined with what it shows where the
+    // smooth scrolls among `smooth_scroll_destinations` take it, those near enough.
+    fn view_heading_to_smooth_scroll_destinations(
+        &self,
+        scroll_offset: FloatPoint,
+        parent_recorded: Option<IntRect>,
+        smooth_scroll_destinations: &[FfiScrollNodeDestination],
+    ) -> IntRect {
+        let view_at =
+            |scroll_offset| view_to_record_around(self.scrollport, scroll_offset, parent_recorded, self.range.axes);
+        smooth_scroll_destinations
+            .iter()
+            .filter(|destination| destination.is_of(&self.named))
+            .fold(view_at(scroll_offset), |view, destination| {
+                view_joined_with_destination(
+                    view,
+                    view_at(destination.destination_offset),
+                    size_of(self.scrollport),
+                    self.range,
+                )
+            })
+    }
+}
+
+impl InterestBasis {
+    fn holds_for(
+        &self,
+        tree: &Arc<VisualContextTree>,
+        geometry_epoch: u64,
+        device_pixels_per_css_pixel: f64,
+        device_viewport_size: IntSize,
+    ) -> bool {
+        self.geometry_epoch == geometry_epoch
+            && self.device_pixels_per_css_pixel == device_pixels_per_css_pixel
+            && self.device_viewport_size == device_viewport_size
+            && self
+                .tree
+                .upgrade()
+                .is_some_and(|basis_tree| Arc::ptr_eq(&basis_tree, tree))
+    }
+
+    // Whether producers that `other`, the basis of the published recording, placed land in the same cull spaces.
+    fn maps_content_as(&self, other: &InterestBasis) -> bool {
+        std::ptr::eq(self, other) || self.cull_mapping == other.cull_mapping
+    }
+
+    // Whether working out interest from `other` decides what working it out from this basis does.
+    fn decides_like(&self, other: &InterestBasis) -> bool {
+        *self.cull_spaces == *other.cull_spaces
+            && self.cull_mapping == other.cull_mapping
+            && self.spatial_node_count == other.spatial_node_count
+            && self.scroll_nodes == other.scroll_nodes
+            && self.scroll_nodes_recorded_whole == other.scroll_nodes_recorded_whole
+    }
+}
+
 impl RecordedInterest {
     /// Whether a display list with this interest tells the compositor what one with `other` tells it. The request it
     /// answers does not count: the frame that presents the list tells the compositor apart from the list.
@@ -79,38 +170,148 @@ impl RecordedInterest {
         self.scroll_node_rects == other.scroll_node_rects
             && self.leaves_out_wheel_routing == other.leaves_out_wheel_routing
     }
+
+    // Whether a frame whose scroll state holds `own_offsets` shows part of a scroll node that neither this recording nor
+    // `requested` records, or would show it at one of `smooth_scroll_destinations`. A node is cut by what this recording
+    // records of the node it is placed exactly in, as a recording cuts it.
+    fn misses_what_scroll_positions_show(
+        &self,
+        own_offsets: &[CssPixelPoint],
+        requested: Option<&InterestRequest>,
+        smooth_scroll_destinations: &[FfiScrollNodeDestination],
+    ) -> bool {
+        let Some(basis) = &self.basis else {
+            return false;
+        };
+        basis.scroll_nodes.iter().enumerate().any(|(position, node)| {
+            let own_offset = if node.state_slot == NO_SCROLL_STATE_SLOT {
+                Some(CssPixelPoint::default())
+            } else {
+                own_offsets.get(node.state_slot).copied()
+            };
+            let Some(own_offset) = own_offset else {
+                return true;
+            };
+            let parent_recorded = node.placed_exactly_in.map(|parent| self.scroll_node_rects[parent].rect);
+            let view = node.view_heading_to_smooth_scroll_destinations(
+                device_scroll_offset(own_offset, basis.device_pixels_per_css_pixel),
+                parent_recorded,
+                smooth_scroll_destinations,
+            );
+            let records = |rect: IntRect| rect.contains_rect(view);
+            let requested = requested
+                .and_then(|requested| requested.rect_requested_for(&node.named))
+                .map(|requested| {
+                    interest_rect_recorded_for(
+                        requested_rect_joined_with_view_on_unscrollable_axes(requested, view, node.range),
+                        node.range,
+                    )
+                });
+            !(view.is_empty() || records(self.scroll_node_rects[position].rect) || requested.is_some_and(records))
+        })
+    }
 }
 
-// What a recording recorded of each scroll node, found by the node's owner.
-struct ScrollNodesByOwner<'a> {
-    interest: &'a RecordedInterest,
-    index_by_owner: FastMap<NodeSlotId, usize>,
+impl super::RecordingOutput {
+    /// Whether a frame whose visual context tree has `structural_epoch`, and whose scroll state holds `own_offsets`,
+    /// shows part of a scroll node that this recording leaves out and `requested`, the compositor's newest request, does
+    /// not ask for, or would show it at one of `smooth_scroll_destinations`, where smooth scrolls the main thread asked
+    /// for take the nodes. A recording of the whole document leaves nothing out; one of another tree may leave out
+    /// anything.
+    pub(crate) fn misses_what_scroll_positions_show(
+        &self,
+        structural_epoch: u64,
+        own_offsets: &[CssPixelPoint],
+        requested: Option<&InterestRequest>,
+        smooth_scroll_destinations: &[FfiScrollNodeDestination],
+    ) -> bool {
+        let interest = &self.recorded_interest;
+        if interest.basis.is_none() {
+            return false;
+        }
+        self.recorded_structural_epoch != structural_epoch
+            || interest.misses_what_scroll_positions_show(own_offsets, requested, smooth_scroll_destinations)
+    }
 }
 
-impl<'a> ScrollNodesByOwner<'a> {
-    fn new(interest: &'a RecordedInterest) -> Self {
-        let index_by_owner = interest
+// What the published recording recorded of each scroll node.
+enum PublishedScrollNodes<'a> {
+    // The published recording worked its interest out from the same basis, so its nodes lie at the same positions.
+    AtTheSamePositions(&'a RecordedInterest),
+    ByOwner {
+        interest: &'a RecordedInterest,
+        position_by_owner: FastMap<NodeSlotId, usize>,
+    },
+}
+
+impl<'a> PublishedScrollNodes<'a> {
+    fn new(interest: &'a RecordedInterest, basis: &InterestBasis) -> Self {
+        let Some(published_basis) = interest.basis.as_deref() else {
+            return Self::ByOwner {
+                interest,
+                position_by_owner: FastMap::default(),
+            };
+        };
+        if std::ptr::eq(published_basis, basis) {
+            return Self::AtTheSamePositions(interest);
+        }
+        let position_by_owner = published_basis
             .scroll_nodes
             .iter()
             .enumerate()
-            .map(|(index, node)| (node.owner, index))
+            .map(|(position, node)| (node.owner, position))
             .collect();
-        Self {
+        Self::ByOwner {
             interest,
-            index_by_owner,
+            position_by_owner,
         }
     }
 
-    fn aimed_rect_of(&self, owner: NodeSlotId) -> Option<IntRect> {
-        let index = *self.index_by_owner.get(&owner)?;
-        Some(self.interest.scroll_nodes[index].aimed)
+    fn interest(&self) -> &'a RecordedInterest {
+        match self {
+            Self::AtTheSamePositions(interest) | Self::ByOwner { interest, .. } => interest,
+        }
     }
 
-    // The rect the recording culled the scroll node by, if it was the scroll node of `owner` then too.
-    fn culled_by_rect_of(&self, scroll_node: SpatialNodeIndex, owner: NodeSlotId) -> Option<IntRect> {
-        let index = *self.index_by_owner.get(&owner)?;
-        (self.interest.scroll_nodes[index].scroll_node == scroll_node)
-            .then(|| self.interest.scroll_node_rects[index].rect)
+    // The position in the published recording of the node at `position` of the current basis, if it recorded the node
+    // of the same owner.
+    fn position_of(&self, position: usize, node: &ScrollNodeBasis) -> Option<usize> {
+        match self {
+            Self::AtTheSamePositions(_) => Some(position),
+            Self::ByOwner { position_by_owner, .. } => position_by_owner.get(&node.owner).copied(),
+        }
+    }
+
+    // The rect the published recording culled the node of `owner` by, if it was the scroll node `scroll_node` then too,
+    // for a node the current basis records whole.
+    fn culled_by_rect_of_node_recorded_whole(
+        &self,
+        owner: NodeSlotId,
+        scroll_node: SpatialNodeIndex,
+    ) -> Option<IntRect> {
+        let Self::ByOwner {
+            interest,
+            position_by_owner,
+        } = self
+        else {
+            return None;
+        };
+        let published_position = *position_by_owner.get(&owner)?;
+        let published_node = interest.basis.as_ref()?.scroll_nodes[published_position];
+        (published_node.scroll_node == scroll_node).then(|| interest.scroll_node_rects[published_position].rect)
+    }
+
+    fn aimed_rect_of(&self, position: usize, node: &ScrollNodeBasis) -> Option<IntRect> {
+        let published_position = self.position_of(position, node)?;
+        Some(self.interest().aimed_rects[published_position])
+    }
+
+    // The rect the published recording culled the node by, if the node was the scroll node of the same owner then too.
+    fn culled_by_rect_of(&self, position: usize, node: &ScrollNodeBasis) -> Option<IntRect> {
+        let published_position = self.position_of(position, node)?;
+        let interest = self.interest();
+        let published_node = interest.basis.as_ref()?.scroll_nodes[published_position];
+        (published_node.scroll_node == node.scroll_node).then(|| interest.scroll_node_rects[published_position].rect)
     }
 }
 
@@ -125,6 +326,42 @@ pub(crate) struct InterestRects {
 }
 
 impl InterestRects {
+    fn new(spatial_node_count: usize) -> Self {
+        Self {
+            by_spatial_node: vec![None; spatial_node_count],
+            published_rects_of_changed_scroll_nodes: FastMap::default(),
+        }
+    }
+
+    // Notes that the published recording culled `scroll_node` by `published_rect`, and that this one culls it by
+    // another rect or by none.
+    fn note_changed_scroll_node(
+        &mut self,
+        changed_scroll_nodes: &mut ScrollNodeSet,
+        scroll_node: SpatialNodeIndex,
+        published_rect: Option<IntRect>,
+    ) {
+        changed_scroll_nodes.insert(scroll_node);
+        self.published_rects_of_changed_scroll_nodes
+            .insert(scroll_node, published_rect);
+    }
+
+    // Of the nodes `basis` records whole, notes those the published recording culled by a rect as changed.
+    fn note_scroll_nodes_recorded_whole(
+        &mut self,
+        changed_scroll_nodes: &mut ScrollNodeSet,
+        basis: &InterestBasis,
+        published_nodes: Option<&PublishedScrollNodes>,
+    ) {
+        for &(scroll_node, owner) in &basis.scroll_nodes_recorded_whole {
+            let published_rect = published_nodes
+                .and_then(|published| published.culled_by_rect_of_node_recorded_whole(owner, scroll_node));
+            if published_rect.is_some() {
+                self.note_changed_scroll_node(changed_scroll_nodes, scroll_node, published_rect);
+            }
+        }
+    }
+
     fn rect_of(&self, scroll_node: SpatialNodeIndex) -> Option<IntRect> {
         self.by_spatial_node.get(scroll_node.0 as usize).copied().flatten()
     }
@@ -191,13 +428,6 @@ impl ResolvedInterest {
     }
 }
 
-// The geometry of a scroll node the compositor scrolls, in device pixels.
-struct ScrollNodeGeometry {
-    scrollport: IntRect,
-    scroll_offset: FloatPoint,
-    range: ScrollRange,
-}
-
 impl<O: Observer> PaintRecorder<'_, O> {
     /// What the recording records of its document, given `published`, what the recording published last records. A
     /// recording that may leave producers out by interest, or that verifies their placement, learns its cull spaces
@@ -206,7 +436,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
     pub(crate) fn resolve_interest(&mut self, published: Option<&Arc<RecordedInterest>>) -> ResolvedInterest {
         let inputs = self.inputs;
         let requested = match &inputs.interest {
-            InterestInput::AroundScrollPositions { requested } => requested.as_deref(),
+            InterestInput::AroundScrollPositions { requested, .. } => requested.as_deref(),
             _ => None,
         };
         let mut resolved = self.resolve_interest_around(published, requested);
@@ -224,62 +454,84 @@ impl<O: Observer> PaintRecorder<'_, O> {
         let inputs = self.inputs;
         let leaves_out_by_interest = match inputs.interest {
             InterestInput::WholeDocument => false,
-            InterestInput::AsSourceRecording => published.is_some_and(|published| published.cull_mapping.is_some()),
+            InterestInput::AsSourceRecording => published.is_some_and(|published| published.basis.is_some()),
             InterestInput::AroundScrollPositions { .. } | InterestInput::AroundScrollPositionsForTesting => true,
         };
-        if leaves_out_by_interest || super::cull::verifies_paint_producer_bounds() {
-            self.cull_spaces = self.cull_spaces_of_recording();
-        }
         if !leaves_out_by_interest {
+            if super::cull::verifies_paint_producer_bounds() {
+                self.cull_spaces = self.cull_spaces_of_recording().map(Arc::new);
+            }
             return ResolvedInterest::whole_document();
         }
         let paint_state = self.paint_state;
-        let Some(tree) = paint_state.visual_context_tree.as_deref() else {
+        let Some(tree) = paint_state.visual_context_tree.as_ref() else {
             return ResolvedInterest::whole_document();
         };
-        let Some(cull_spaces) = self.cull_spaces.take() else {
+        let Some(basis) = self.interest_basis(tree, published.map(Arc::as_ref)) else {
             return ResolvedInterest::whole_document();
         };
-        let resolved = match (&inputs.interest, published) {
+        self.cull_spaces = Some(Arc::clone(&basis.cull_spaces));
+        match (&inputs.interest, published) {
             (InterestInput::AsSourceRecording, Some(published)) => {
-                self.interest_of_source_recording(tree, &cull_spaces, published)
+                Self::interest_of_source_recording(&basis, published)
             }
-            (InterestInput::AroundScrollPositions { .. }, _) => {
-                self.interest_around_scroll_positions(tree, &cull_spaces, published.map(Arc::as_ref), false, requested)
-            }
+            (
+                InterestInput::AroundScrollPositions {
+                    smooth_scroll_destinations,
+                    ..
+                },
+                _,
+            ) => self.interest_around_scroll_positions(
+                &basis,
+                published.map(Arc::as_ref),
+                false,
+                requested,
+                smooth_scroll_destinations,
+            ),
             (InterestInput::AroundScrollPositionsForTesting, _) => {
-                self.interest_around_scroll_positions(tree, &cull_spaces, published.map(Arc::as_ref), true, None)
+                self.interest_around_scroll_positions(&basis, published.map(Arc::as_ref), true, None, &[])
             }
             (InterestInput::WholeDocument | InterestInput::AsSourceRecording, _) => ResolvedInterest::whole_document(),
-        };
-        self.cull_spaces = Some(cull_spaces);
-        resolved
+        }
     }
 
-    fn interest_around_scroll_positions(
+    // The basis of the published recording's interest while it still holds for the frame, else one worked out afresh.
+    fn interest_basis(
         &mut self,
-        tree: &VisualContextTree,
-        cull_spaces: &CullSpaces,
+        tree: &Arc<VisualContextTree>,
         published: Option<&RecordedInterest>,
-        for_testing: bool,
-        requested: Option<&InterestRequest>,
-    ) -> ResolvedInterest {
-        let published_nodes = published.map(ScrollNodesByOwner::new);
-        // A test never depends on what a recording outside it aimed for.
-        let kept_from = published_nodes.as_ref().filter(|published| {
-            published.interest.cull_mapping.is_some() && (!for_testing || published.interest.recorded_for_testing)
-        });
+    ) -> Option<Arc<InterestBasis>> {
+        let frame = self.source.frame();
+        let geometry_epoch = frame.geometry_epoch();
+        let device_pixels_per_css_pixel = self.inputs.device_pixels_per_css_pixel;
+        let device_viewport_size = self.inputs.uncaptured.device_viewport_size;
+        if let Some(basis) = published.and_then(|published| published.basis.as_ref())
+            && basis.holds_for(tree, geometry_epoch, device_pixels_per_css_pixel, device_viewport_size)
+            && !frame.damage().changes_scroll_metadata()
+        {
+            // Nothing the culling audit checks would catch a basis that no longer holds, as it places producers by it.
+            if super::cull::verifies_interest_culling() {
+                let afresh = self.work_out_interest_basis(tree);
+                assert!(
+                    afresh.as_ref().is_some_and(|afresh| afresh.decides_like(basis)),
+                    "The interest basis kept since geometry epoch {geometry_epoch} no longer holds: kept {basis:?}, worked out afresh {afresh:?}"
+                );
+            }
+            return Some(Arc::clone(basis));
+        }
+        self.work_out_interest_basis(tree).map(Arc::new)
+    }
+
+    fn work_out_interest_basis(&mut self, tree: &Arc<VisualContextTree>) -> Option<InterestBasis> {
+        let geometry_epoch = self.source.frame().geometry_epoch();
+        let device_pixels_per_css_pixel = self.inputs.device_pixels_per_css_pixel;
+        let device_viewport_size = self.inputs.uncaptured.device_viewport_size;
+        let cull_spaces = Arc::new(self.cull_spaces_of_recording()?);
+        let mut position_of_scroll_node = vec![None; tree.spatial_nodes.len()];
         let mut order = Vec::with_capacity(tree.spatial_nodes.len());
         tree.visit_spatial_nodes_parents_first(|index| order.push(index));
-        let mut rects = InterestRects {
-            by_spatial_node: vec![None; tree.spatial_nodes.len()],
-            published_rects_of_changed_scroll_nodes: FastMap::default(),
-        };
-        let mut recorded = RecordedInterest {
-            recorded_for_testing: for_testing,
-            ..RecordedInterest::default()
-        };
-        let mut changed_scroll_nodes = ScrollNodeSet::default();
+        let mut scroll_nodes = Vec::new();
+        let mut scroll_nodes_recorded_whole = Vec::new();
         for index in order {
             let scroll_node = SpatialNodeIndex(index as u32);
             let node = &tree.spatial_nodes[index];
@@ -294,7 +546,13 @@ impl<O: Observer> PaintRecorder<'_, O> {
             let Some(kind) = cull_spaces.compositor_scroll_node_kind(scroll_node) else {
                 continue;
             };
-            let geometry = self.scroll_node_geometry(owner, state_slot);
+            let scrollport = self.compositor_scrollport_rect(owner);
+            let (minimum_offset, maximum_offset) = self.device_scroll_offset_range(owner);
+            let range = ScrollRange::new(scrollport, minimum_offset, maximum_offset);
+            if range.reaches_past_unbounded_edges {
+                scroll_nodes_recorded_whole.push((scroll_node, owner));
+                continue;
+            }
             // Filters that spread the node's content move it beyond its scrollport, as transforms above it do.
             let placement_in_parent = cull_spaces.cull_space_of(
                 tree,
@@ -304,62 +562,100 @@ impl<O: Observer> PaintRecorder<'_, O> {
                     effect: self.data(owner).accumulated_visual_context_for_descendants.effect,
                 },
             );
-            // The parent culls by what it records, which reaches past what it aims for, so a nested node is cut by that.
-            let parent_recorded = match placement_in_parent {
+            let placed_exactly_in = match placement_in_parent {
                 CullSpace::ScrollNode {
                     scroll_node: parent,
                     placed_exactly: true,
-                } => rects.rect_of(parent),
+                } => position_of_scroll_node[parent.0 as usize],
                 _ => None,
             };
-            let view = view_to_record_around(
-                geometry.scrollport,
-                geometry.scroll_offset,
+            position_of_scroll_node[index] = Some(scroll_nodes.len());
+            scroll_nodes.push(ScrollNodeBasis {
+                scroll_node,
+                owner,
+                state_slot,
+                named: FfiScrollNodeContentRect {
+                    scrollable_node_id: self.data(owner).node_identity,
+                    scroll_node_kind: kind,
+                    pseudo_element_type: self.source.node_generated_for(owner).saturating_sub(1),
+                    rect: IntRect::default(),
+                },
+                scrollport,
+                range,
+                placed_exactly_in,
+            });
+        }
+        Some(InterestBasis {
+            tree: Arc::downgrade(tree),
+            geometry_epoch,
+            device_pixels_per_css_pixel,
+            device_viewport_size,
+            cull_mapping: cull_mapping_of(tree, &cull_spaces),
+            cull_spaces,
+            spatial_node_count: tree.spatial_nodes.len(),
+            scroll_nodes,
+            scroll_nodes_recorded_whole,
+        })
+    }
+
+    fn interest_around_scroll_positions(
+        &mut self,
+        basis: &Arc<InterestBasis>,
+        published: Option<&RecordedInterest>,
+        for_testing: bool,
+        requested: Option<&InterestRequest>,
+        smooth_scroll_destinations: &[FfiScrollNodeDestination],
+    ) -> ResolvedInterest {
+        let published_nodes = published.map(|published| PublishedScrollNodes::new(published, basis));
+        // A test never depends on what a recording outside it aimed for.
+        let kept_from = published_nodes.as_ref().filter(|published| {
+            published.interest().basis.is_some() && (!for_testing || published.interest().recorded_for_testing)
+        });
+        let mut rects = InterestRects::new(basis.spatial_node_count);
+        let mut recorded = RecordedInterest {
+            scroll_node_rects: Vec::with_capacity(basis.scroll_nodes.len()),
+            aimed_rects: Vec::with_capacity(basis.scroll_nodes.len()),
+            basis: Some(Arc::clone(basis)),
+            recorded_for_testing: for_testing,
+            ..RecordedInterest::default()
+        };
+        let mut changed_scroll_nodes = ScrollNodeSet::default();
+        for (position, node) in basis.scroll_nodes.iter().enumerate() {
+            let scroll_offset = self.device_scroll_offset_of(node.state_slot);
+            // The parent culls by what it records, which reaches past what it aims for, so a nested node is cut by that.
+            let parent_recorded = node
+                .placed_exactly_in
+                .map(|parent| recorded.scroll_node_rects[parent].rect);
+            let view = node.view_heading_to_smooth_scroll_destinations(
+                scroll_offset,
                 parent_recorded,
-                geometry.range.axes,
+                smooth_scroll_destinations,
             );
-            let scrollport_size = IntSize {
-                width: geometry.scrollport.width,
-                height: geometry.scrollport.height,
-            };
-            let named = FfiScrollNodeContentRect {
-                scrollable_node_id: self.data(owner).node_identity,
-                scroll_node_kind: kind,
-                pseudo_element_type: self.source.node_generated_for(owner).saturating_sub(1),
-                rect: IntRect::default(),
-            };
             let aimed = aimed_interest_rect(
                 view,
-                requested.and_then(|requested| requested.rect_requested_for(&named)),
-                kept_from.and_then(|published| published.aimed_rect_of(owner)),
-                scrollport_size,
-                geometry.range,
+                requested.and_then(|requested| requested.rect_requested_for(&node.named)),
+                kept_from.and_then(|published| published.aimed_rect_of(position, node)),
+                size_of(node.scrollport),
+                node.range,
             );
-            let culled_by = interest_rect_recorded_for(aimed, geometry.range);
-            rects.by_spatial_node[index] = Some(culled_by);
+            let culled_by = interest_rect_recorded_for(aimed, node.range);
+            rects.by_spatial_node[node.scroll_node.0 as usize] = Some(culled_by);
             let published_rect = published_nodes
                 .as_ref()
-                .and_then(|published| published.culled_by_rect_of(scroll_node, owner));
+                .and_then(|published| published.culled_by_rect_of(position, node));
             if published_rect != Some(culled_by) {
-                changed_scroll_nodes.insert(scroll_node);
-                rects
-                    .published_rects_of_changed_scroll_nodes
-                    .insert(scroll_node, published_rect);
+                rects.note_changed_scroll_node(&mut changed_scroll_nodes, node.scroll_node, published_rect);
             }
             recorded.scroll_node_rects.push(FfiScrollNodeContentRect {
                 rect: culled_by,
-                ..named
+                ..node.named
             });
-            recorded.scroll_nodes.push(ScrollNodeInterest {
-                scroll_node,
-                owner,
-                aimed,
-            });
+            recorded.aimed_rects.push(aimed);
         }
-        let cull_mapping = cull_mapping_of(tree, cull_spaces);
-        let places_every_producer_again =
-            published.and_then(|published| published.cull_mapping.as_ref()) != Some(&cull_mapping);
-        recorded.cull_mapping = Some(cull_mapping);
+        rects.note_scroll_nodes_recorded_whole(&mut changed_scroll_nodes, basis, published_nodes.as_ref());
+        let places_every_producer_again = published
+            .and_then(|published| published.basis.as_deref())
+            .is_none_or(|published_basis| !basis.maps_content_as(published_basis));
         ResolvedInterest {
             rects,
             culling: AssemblyCulling::ByInterest {
@@ -372,38 +668,21 @@ impl<O: Observer> PaintRecorder<'_, O> {
 
     // A recording that only rebuilds the hit-test list culls by what the recording it rebuilds culled by. A scroll node
     // that recording did not cull culls nothing.
-    fn interest_of_source_recording(
-        &self,
-        tree: &VisualContextTree,
-        cull_spaces: &CullSpaces,
-        published: &Arc<RecordedInterest>,
-    ) -> ResolvedInterest {
-        let published_nodes = ScrollNodesByOwner::new(published);
-        let mut rects = InterestRects {
-            by_spatial_node: vec![None; tree.spatial_nodes.len()],
-            published_rects_of_changed_scroll_nodes: FastMap::default(),
-        };
+    fn interest_of_source_recording(basis: &Arc<InterestBasis>, published: &Arc<RecordedInterest>) -> ResolvedInterest {
+        let published_nodes = PublishedScrollNodes::new(published, basis);
+        let mut rects = InterestRects::new(basis.spatial_node_count);
         let mut changed_scroll_nodes = ScrollNodeSet::default();
-        for (index, node) in tree.spatial_nodes.iter().enumerate() {
-            let scroll_node = SpatialNodeIndex(index as u32);
-            let SpatialData::Scroll(ScrollData {
-                owner_paintable: owner, ..
-            }) = node.data
-            else {
-                continue;
-            };
-            if !cull_spaces.is_scrolled_by_compositor(scroll_node) {
-                continue;
-            }
-            match published_nodes.culled_by_rect_of(scroll_node, owner) {
-                Some(rect) => rects.by_spatial_node[index] = Some(rect),
-                None => {
-                    changed_scroll_nodes.insert(scroll_node);
-                    rects.published_rects_of_changed_scroll_nodes.insert(scroll_node, None);
-                }
+        for (position, node) in basis.scroll_nodes.iter().enumerate() {
+            match published_nodes.culled_by_rect_of(position, node) {
+                Some(rect) => rects.by_spatial_node[node.scroll_node.0 as usize] = Some(rect),
+                None => rects.note_changed_scroll_node(&mut changed_scroll_nodes, node.scroll_node, None),
             }
         }
-        let places_every_producer_again = published.cull_mapping.as_ref() != Some(&cull_mapping_of(tree, cull_spaces));
+        rects.note_scroll_nodes_recorded_whole(&mut changed_scroll_nodes, basis, Some(&published_nodes));
+        let places_every_producer_again = published
+            .basis
+            .as_deref()
+            .is_none_or(|published_basis| !basis.maps_content_as(published_basis));
         ResolvedInterest {
             rects,
             culling: AssemblyCulling::ByInterest {
@@ -414,25 +693,30 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
-    fn scroll_node_geometry(&mut self, owner: NodeSlotId, state_slot: usize) -> ScrollNodeGeometry {
-        let scrollport = self.compositor_scrollport_rect(owner);
-        let (minimum_offset, maximum_offset) = self.device_scroll_offset_range(owner);
+    fn device_scroll_offset_of(&self, state_slot: usize) -> FloatPoint {
         let own_offset = if state_slot == NO_SCROLL_STATE_SLOT {
-            Default::default()
+            CssPixelPoint::default()
         } else {
             self.paint_state.scroll_own_offset(state_slot)
         };
-        // Own offsets are kept negated: a node scrolled down has a negative own offset.
-        let scale = self.inputs.device_pixels_per_css_pixel as f32;
-        let scroll_offset = FloatPoint {
-            x: -own_offset.x.to_float() * scale,
-            y: -own_offset.y.to_float() * scale,
-        };
-        ScrollNodeGeometry {
-            scrollport,
-            scroll_offset,
-            range: ScrollRange::new(scrollport, minimum_offset, maximum_offset),
-        }
+        device_scroll_offset(own_offset, self.inputs.device_pixels_per_css_pixel)
+    }
+}
+
+// A scroll node's scroll offset in device pixels, from its own offset in the scroll state, which is kept negated: a node
+// scrolled down has a negative own offset.
+fn device_scroll_offset(own_offset: CssPixelPoint, device_pixels_per_css_pixel: f64) -> FloatPoint {
+    let scale = device_pixels_per_css_pixel as f32;
+    FloatPoint {
+        x: -own_offset.x.to_float() * scale,
+        y: -own_offset.y.to_float() * scale,
+    }
+}
+
+fn size_of(rect: IntRect) -> IntSize {
+    IntSize {
+        width: rect.width,
+        height: rect.height,
     }
 }
 
@@ -515,6 +799,8 @@ fn cull_mapping_of(tree: &VisualContextTree, cull_spaces: &CullSpaces) -> CullMa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::css::css_pixels::CssPixels;
+    use crate::painting::display_list::commands::CompositorScrollNodeKind;
     use crate::painting::visual_context::interest::{ScrollableAxes, UNBOUNDED_INTEREST_EDGE};
 
     const UNBOUNDED: i32 = UNBOUNDED_INTEREST_EDGE;
@@ -619,6 +905,150 @@ mod tests {
         assert_eq!(
             aimed_interest_rect(cut_away, Some(requested), None, SCROLLPORT_SIZE, root_range()),
             requested
+        );
+    }
+
+    const ROOT: i64 = 1;
+    const NESTED: i64 = 2;
+
+    fn named(scrollable_node_id: i64) -> FfiScrollNodeContentRect {
+        FfiScrollNodeContentRect {
+            scrollable_node_id,
+            scroll_node_kind: CompositorScrollNodeKind::Element,
+            pseudo_element_type: 0,
+            rect: IntRect::default(),
+        }
+    }
+
+    fn own_offset_at(scroll_offset_y: i64) -> CssPixelPoint {
+        CssPixelPoint::new(CssPixels::from_integer(0), CssPixels::from_integer(-scroll_offset_y))
+    }
+
+    fn destination_of(scrollable_node_id: i64, scroll_offset_y: f32) -> FfiScrollNodeDestination {
+        FfiScrollNodeDestination {
+            scrollable_node_id,
+            scroll_node_kind: CompositorScrollNodeKind::Element,
+            pseudo_element_type: 0,
+            destination_offset: FloatPoint {
+                x: 0.0,
+                y: scroll_offset_y,
+            },
+        }
+    }
+
+    // What a recording around the top records of a root that scrolls 20000 px of content, and of a scroller placed
+    // exactly in it, 4000 px down, which the root's rect cuts away.
+    fn recorded_around_the_top() -> RecordedInterest {
+        let nested_scrollport = IntRect::new(0, 4000, 300, 200);
+        let basis = InterestBasis {
+            tree: Weak::new(),
+            geometry_epoch: 0,
+            device_pixels_per_css_pixel: 1.0,
+            device_viewport_size: SCROLLPORT_SIZE,
+            cull_spaces: Arc::new(CullSpaces::default()),
+            cull_mapping: CullMapping {
+                compositor_scroll_nodes: Vec::new(),
+                effects_under_spreading_filters: Vec::new(),
+            },
+            spatial_node_count: 3,
+            scroll_nodes_recorded_whole: Vec::new(),
+            scroll_nodes: vec![
+                ScrollNodeBasis {
+                    scroll_node: SpatialNodeIndex(1),
+                    owner: NodeSlotId::new(1, 1),
+                    state_slot: 0,
+                    named: named(ROOT),
+                    scrollport: SCROLLPORT,
+                    range: root_range(),
+                    placed_exactly_in: None,
+                },
+                ScrollNodeBasis {
+                    scroll_node: SpatialNodeIndex(2),
+                    owner: NodeSlotId::new(2, 1),
+                    state_slot: 1,
+                    named: named(NESTED),
+                    scrollport: nested_scrollport,
+                    range: ScrollRange::new(
+                        nested_scrollport,
+                        FloatPoint { x: 0.0, y: 0.0 },
+                        FloatPoint { x: 0.0, y: 1800.0 },
+                    ),
+                    placed_exactly_in: Some(0),
+                },
+            ],
+        };
+        RecordedInterest {
+            scroll_node_rects: vec![
+                FfiScrollNodeContentRect {
+                    rect: from_edges(-UNBOUNDED, -UNBOUNDED, UNBOUNDED, 2048),
+                    ..named(ROOT)
+                },
+                named(NESTED),
+            ],
+            aimed_rects: vec![from_edges(-UNBOUNDED, -800, UNBOUNDED, 1600), IntRect::default()],
+            basis: Some(Arc::new(basis)),
+            ..RecordedInterest::default()
+        }
+    }
+
+    #[test]
+    fn a_main_thread_scroll_needs_a_recording_once_what_shows_leaves_what_is_recorded() {
+        let recorded = recorded_around_the_top();
+        let misses_at = |root_scroll_offset_y: i64, requested: Option<&InterestRequest>| {
+            recorded.misses_what_scroll_positions_show(
+                &[own_offset_at(root_scroll_offset_y), own_offset_at(0)],
+                requested,
+                &[],
+            )
+        };
+        assert!(!misses_at(0, None));
+        // What shows needs no room to scroll beyond it: the compositor asks for a recording before it scrolls further.
+        assert!(!misses_at(1248, None));
+        assert!(misses_at(1249, None));
+        // A request whose recording would record what shows is serviced anyway.
+        let requested = InterestRequest::new_for_testing(&[FfiScrollNodeContentRect {
+            rect: from_edges(-UNBOUNDED, 1000, UNBOUNDED, 3000),
+            ..named(ROOT)
+        }]);
+        assert!(!misses_at(2200, Some(&requested)));
+        assert!(misses_at(2300, Some(&requested)));
+        // The scroller the root's rect cuts away shows nothing, wherever it is scrolled to.
+        assert!(!recorded.misses_what_scroll_positions_show(&[own_offset_at(0), own_offset_at(1800)], None, &[]));
+        // A scroll state that has no slot for a node is of another tree.
+        assert!(recorded.misses_what_scroll_positions_show(&[own_offset_at(0)], None, &[]));
+        assert!(!RecordedInterest::default().misses_what_scroll_positions_show(&[], None, &[]));
+    }
+
+    #[test]
+    fn a_smooth_scroll_s_destination_near_enough_is_recorded_before_the_scroll_gets_there() {
+        let recorded = recorded_around_the_top();
+        let at_the_top = [own_offset_at(0), own_offset_at(0)];
+        let misses_heading_to = |destination: FfiScrollNodeDestination| {
+            recorded.misses_what_scroll_positions_show(&at_the_top, None, &[destination])
+        };
+        assert!(misses_heading_to(destination_of(ROOT, 1600.0)));
+        assert!(!misses_heading_to(destination_of(ROOT, 1200.0)));
+        // The compositor asks for a recording around a destination this far as the scroll nears it.
+        assert!(!misses_heading_to(destination_of(ROOT, 19200.0)));
+        assert!(!misses_heading_to(destination_of(NESTED + 1, 1600.0)));
+
+        // A recording aims around both the view and the destination.
+        let root = recorded.basis.as_ref().unwrap().scroll_nodes[0];
+        let view = root.view_heading_to_smooth_scroll_destinations(
+            FloatPoint { x: 0.0, y: 5000.0 },
+            None,
+            &[destination_of(ROOT, 5800.0)],
+        );
+        assert_eq!(view, from_edges(-UNBOUNDED, 5000, UNBOUNDED, 6600));
+        assert_eq!(
+            aimed_interest_rect(
+                view,
+                None,
+                Some(from_edges(-UNBOUNDED, 4200, UNBOUNDED, 6600)),
+                SCROLLPORT_SIZE,
+                root_range()
+            ),
+            from_edges(-UNBOUNDED, 4200, UNBOUNDED, 7400)
         );
     }
 }

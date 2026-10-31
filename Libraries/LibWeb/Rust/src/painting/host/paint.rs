@@ -137,7 +137,10 @@ impl FfiRecordingInputs {
             css_viewport_rect: self.css_viewport_rect.into(),
             interest: match self.coverage {
                 FfiRecordingCoverage::WholeDocument => InterestInput::WholeDocument,
-                FfiRecordingCoverage::AroundScrollPositions => InterestInput::AroundScrollPositions { requested: None },
+                FfiRecordingCoverage::AroundScrollPositions => InterestInput::AroundScrollPositions {
+                    requested: None,
+                    smooth_scroll_destinations: std::sync::Arc::new([]),
+                },
                 FfiRecordingCoverage::AroundScrollPositionsForTesting => InterestInput::AroundScrollPositionsForTesting,
                 FfiRecordingCoverage::AsSourceRecording => InterestInput::AsSourceRecording,
             },

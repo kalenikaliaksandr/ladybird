@@ -1,0 +1,4 @@
+the list records what shows after an instant scroll: true
+it leaves out the top: true
+the list records what shows after a smooth scroll: true
+frames that showed what the list leaves out: 0

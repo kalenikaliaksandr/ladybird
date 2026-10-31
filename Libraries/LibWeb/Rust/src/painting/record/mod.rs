@@ -208,7 +208,7 @@ pub struct PaintRecorder<'a, O: Observer> {
     line_root_positions: Option<(NodeSlotId, crate::painting::paintable_geometry::LineRootPositions)>,
     // Present while the recording places its producers, which it does to leave them out by interest or to verify
     // their placement.
-    cull_spaces: Option<cull::CullSpaces>,
+    cull_spaces: Option<Arc<cull::CullSpaces>>,
     // The last producer placed, which assembly asks about right before it records it.
     last_placement: Option<(NodeSlotId, order_tree::ProducerKind, cull::ProducerPlacement)>,
     // The rects the recording leaves out what they miss by.

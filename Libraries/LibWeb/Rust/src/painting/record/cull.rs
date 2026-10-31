@@ -104,6 +104,8 @@ fn place(
 }
 
 /// What placing producers reads of the visual context tree, worked out once per recording.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(Default))]
 pub(crate) struct CullSpaces {
     under_spreading_filter: Vec<bool>,
     // Per spatial node: the kind of compositor scroll node the recording records for it, if it records one.

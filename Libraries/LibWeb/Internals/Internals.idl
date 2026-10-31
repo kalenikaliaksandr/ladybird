@@ -102,9 +102,10 @@ interface Internals {
     undefined clickAndHold(double x, double y, optional unsigned short clickCount = 1, optional unsigned short button = 0, optional unsigned short modifiers = 0);
     [CreatesPromise] Promise<undefined> wheel(double x, double y, double deltaX, double deltaY, optional boolean precise = false, optional ScrollGesturePhase scrollGesturePhase = "none", optional WheelTicks ticks = {});
     // The scrolling state the compositor has installed from the frames rendered so far, its wheel routing admission,
-    // how far, in CSS pixels, it presents the scroller past the edges of its scroll range, and what of the scroller's
+    // how far, in CSS pixels, it presents the scroller past the edges of its scroll range, what of the scroller's
     // content shows in the layout viewport (visibleContentRect, in CSS pixels of that content at scroll offset zero, or
-    // null when none of it shows). The scroller is the viewport if none is given.
+    // null when none of it shows), and what of it the display list records (recordedRect, in the same pixels, or null
+    // when it records all of it). The scroller is the viewport if none is given.
     object compositorScrollState(optional Element? scroller = null);
     // How the compositor's requests to record this document's display list around new rects went, from the frames
     // rendered so far: requestsSent, inFlightRequestId (null when none awaits an answer), lastAnsweredRequestId,
@@ -215,6 +216,9 @@ interface Internals {
     undefined releaseInterestRefreshes();
     // How many requests to record display lists around new rects were serviced since the test began.
     unsigned long interestRefreshCount();
+    // Whether committed frames record around the scroll positions rather than the whole document, until the next test
+    // begins. Every navigable records its next frame as it says.
+    undefined setRecordsAroundScrollPositions(boolean recordsAroundScrollPositions);
     undefined setAutoplayPolicy(DOMString policy);
 
     DOMString getComputedRole(Element element);

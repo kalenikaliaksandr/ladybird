@@ -1,0 +1,4 @@
+the list records what shows: true
+it left out the far rect: true
+the list records the rect around what shows: true
+so does what WebContent recorded: true

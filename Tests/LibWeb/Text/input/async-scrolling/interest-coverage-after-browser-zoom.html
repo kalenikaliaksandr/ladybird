@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 60000px; background: linear-gradient(white, teal); }
+</style>
+<script>
+// Once the browser zooms a scrolled page, the compositor shows the page where it is and asks for a recording around
+// what it shows, which WebContent records, however often the zoom changes.
+promiseTest(async () => {
+    try {
+        await startRecordingAroundScrollPositions();
+        const scale = internals.compositorScrollState().devicePixelsPerCssPixel;
+        for (const scrollY of [20000, 30000]) {
+            window.scrollTo(0, scrollY);
+            await interestCoverageSettled();
+
+            internals.setBrowserZoom(2);
+            await waitForCondition(() => internals.compositorScrollState().devicePixelsPerCssPixel === 2 * scale);
+            const settled = await interestCoverageSettled();
+            const { visibleContentRect: visible, recordedRect: recorded } = internals.compositorScrollState();
+            const shows = Math.abs(visible.y - window.scrollY) < 2;
+            const records = recorded.y <= visible.y && recorded.y + recorded.height >= visible.y + visible.height;
+            println(`${scrollY}: settled ${settled}, shows where the page is ${shows}, records what shows ${records}`);
+
+            internals.setBrowserZoom(1);
+            await waitForCondition(() => internals.compositorScrollState().devicePixelsPerCssPixel === scale);
+        }
+    } finally {
+        internals.setBrowserZoom(1);
+    }
+});
+</script>

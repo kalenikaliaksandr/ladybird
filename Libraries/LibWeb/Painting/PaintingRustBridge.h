@@ -66,6 +66,10 @@ struct InspectorOverlayInputs {
 // Records the document's viewport for the host to publish, or, given `committed`, the presentation of the navigable's
 // next frame, commits the frame to the render owner, which presents it beside the event loop.
 WEB_API Optional<DisplayListRecording> start_rust_display_list_recording(Layout::BegunRead const&, DOM::Document&, Compositing::AccumulatedVisualContextTree, Optional<Gfx::Color> surface_clear_color, PaintCommandCacheMode, RecordingCoverage, HTML::PaintConfig const&, InspectorOverlayInputs const&, Optional<Compositor::FlightPresentation> committed = {});
+// Whether the display list the document published last leaves out part of what the document shows of a box the
+// compositor scrolls at the scroll positions the main thread moved it to, or would show at `smooth_scroll_destinations`,
+// and the compositor context's newest request to record around new rects does not ask for it either.
+WEB_API bool published_recording_misses_scroll_positions(Layout::BegunRead const&, DOM::Document&, Web::CompositorContextId, ReadonlySpan<Compositor::SmoothScrollDestination> smooth_scroll_destinations);
 // Commits the navigable's next frame, which keeps the display list the compositor has, to the render owner, which
 // presents it with `presentation` beside the event loop.
 WEB_API void commit_unrecorded_frame(Layout::BegunRead const&, DOM::Document&, Compositor::FlightPresentation presentation);
