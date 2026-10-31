@@ -518,6 +518,19 @@ String CompositorConnection::scroll_state_for_testing(Web::CompositorContextId c
     return response->take_scroll_state();
 }
 
+String CompositorConnection::interest_refresh_state_for_testing(Web::CompositorContextId context_id)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::InterestRefreshStateForTesting>(context_id);
+    if (!response) {
+        did_lose_compositor();
+        return {};
+    }
+    return response->take_interest_refresh_state();
+}
+
 void CompositorConnection::synchronize_for_testing()
 {
     if (!can_send_message_to_compositor())

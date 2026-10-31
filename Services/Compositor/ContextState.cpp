@@ -79,6 +79,10 @@ ContextState::~ContextState()
         m_scrollbar_fade_out_timer->on_timeout = {};
         m_scrollbar_fade_out_timer->stop();
     }
+    if (m_interest_refresh_resend_timer) {
+        m_interest_refresh_resend_timer->on_timeout = {};
+        m_interest_refresh_resend_timer->stop();
+    }
 }
 
 bool ContextState::is_owned_by(CompositorStateWebContentClient const& web_content_client) const
@@ -163,7 +167,7 @@ void ContextState::install_display_list_update(
     // this context held name other places in the content, and those of the main thread's frame take over.
     if (async_scrolling_state.device_pixels_per_css_pixel != m_async_scroll_tree.device_pixels_per_css_pixel())
         scroll_offsets_of_known_nodes.clear();
-    note_answered_interest_refresh_request(async_scrolling_state.answered_refresh_request_id);
+    m_recording_refresh_controller.note_answered_by_display_list(async_scrolling_state.answered_refresh_request_id, MonotonicTime::now());
     m_wheel_gesture_routing.did_install_scrolling_state(async_scrolling_state);
     // The visual viewport of another document is where that document's visual context tree has it.
     if (m_scene.has_async_visual_viewport_transform() && async_scrolling_state.document_id != m_visual_viewport_document_id) {
@@ -1590,6 +1594,11 @@ Optional<Web::MouseEvent> ContextState::end_momentum_scrolling(Web::AsyncScrollN
 
 void ContextState::clear_per_test_input_state()
 {
+    // How the scroll nodes of an earlier test moved, and how fast its recordings arrived, would size what the next one
+    // asks WebContent to record.
+    m_recording_refresh_controller.reset_for_testing();
+    if (m_interest_refresh_resend_timer)
+        m_interest_refresh_resend_timer->stop();
     // A gesture held by fingers never ends by itself, so one a test left unended would take in the next test's steps.
     m_wheel_gesture_routing.forget_gesture();
     m_pointer_in_nested_contexts = {};
@@ -2517,6 +2526,97 @@ Optional<PendingFrame> ContextState::apply_scrollbar_drag(ScrollbarController::D
         return PendingFrame::repainting_changes(m_async_scrolling_viewport_rect);
     m_async_scrolling_viewport_rect.set_location(new_scroll_offset->to_type<int>());
     return PendingFrame::repainting_everything(m_async_scrolling_viewport_rect);
+}
+
+void ContextState::note_interest_refresh_answered_without_display_list(u64 request_id)
+{
+    m_recording_refresh_controller.note_answered_without_display_list(request_id);
+}
+
+void ContextState::ask_for_recording_refresh_if_needed()
+{
+    if (!m_has_async_scrolling_state || !m_scene.display_list() || !m_scene.visual_context_tree().has_value())
+        return;
+    if (!m_async_scroll_tree.records_part_of_some_scroll_node()) {
+        m_recording_refresh_controller.note_display_list_records_every_scroll_node_whole();
+        if (m_interest_refresh_resend_timer)
+            m_interest_refresh_resend_timer->stop();
+        return;
+    }
+    auto const& visual_context_tree = m_scene.visual_context_tree_for_compositing();
+    if (!m_async_scroll_tree.has_wheel_hit_test_targets_for(visual_context_tree))
+        return;
+
+    auto now = MonotonicTime::now();
+    auto frame_interval = display_frame_interval();
+    auto refresh_latency = m_recording_refresh_controller.refresh_latency(frame_interval);
+    Vector<RecordingRefreshController::SmoothScroll> smooth_scrolls;
+    smooth_scrolls.ensure_capacity(m_smooth_scroll_animations.size());
+    for (auto const& smooth_scroll : m_smooth_scroll_animations) {
+        smooth_scrolls.unchecked_append({
+            .stable_node_id = smooth_scroll.stable_node_id,
+            .offset_after_refresh_latency = smooth_scroll.animation.sample(now - smooth_scroll.started_at + refresh_latency).offset,
+        });
+    }
+    auto request = m_recording_refresh_controller.request_for_presented_frame({
+        .now = now,
+        .frame_interval = frame_interval,
+        .scroll_tree = m_async_scroll_tree,
+        .visual_context_tree = visual_context_tree,
+        .scroll_state_snapshot = m_scroll_state_snapshot,
+        .smooth_scrolls = smooth_scrolls,
+    });
+    if (request.has_value())
+        m_web_content_client.request_interest_refresh(m_context_id, request->id, request->scroll_node_rects);
+    schedule_interest_refresh_resend(now);
+}
+
+// A request that gets no answer goes out again, which needs no frame to present: a lost request would otherwise leave
+// what shows unrecorded until something else changed.
+void ContextState::schedule_interest_refresh_resend(MonotonicTime now)
+{
+    auto resend_due_at = m_recording_refresh_controller.resend_due_at(display_frame_interval());
+    if (!resend_due_at.has_value()) {
+        if (m_interest_refresh_resend_timer)
+            m_interest_refresh_resend_timer->stop();
+        return;
+    }
+    if (!m_interest_refresh_resend_timer)
+        m_interest_refresh_resend_timer = Core::Timer::create_single_shot(AK::Duration::zero(), [this] { resend_unanswered_interest_refresh_request(); });
+    m_interest_refresh_resend_timer->restart(max(AK::Duration::zero(), *resend_due_at - now));
+}
+
+void ContextState::resend_unanswered_interest_refresh_request()
+{
+    // A hidden context shows nothing, and a nested one shows nothing new until the context it is nested in composites
+    // it again, which it may have stopped doing.
+    if (m_visibility != Compositing::ContextVisibility::Visible)
+        return;
+    if (m_parent_context_id.has_value() && !m_recording_refresh_controller.presented_frame_since_request_in_flight_was_sent())
+        return;
+    auto now = MonotonicTime::now();
+    if (auto request = m_recording_refresh_controller.request_to_resend(now, display_frame_interval()); request.has_value())
+        m_web_content_client.request_interest_refresh(m_context_id, request->id, request->scroll_node_rects);
+    schedule_interest_refresh_resend(now);
+}
+
+void ContextState::forget_interest_refresh_request_in_flight()
+{
+    m_recording_refresh_controller.forget_request_in_flight();
+    if (m_interest_refresh_resend_timer)
+        m_interest_refresh_resend_timer->stop();
+}
+
+String ContextState::interest_refresh_state_for_testing() const
+{
+    return m_recording_refresh_controller.state_for_testing(display_frame_interval());
+}
+
+AK::Duration ContextState::display_frame_interval() const
+{
+    if (!(m_display_refresh_rate > 0))
+        return AK::Duration::from_seconds_f64(1.0 / 60.0);
+    return AK::Duration::from_seconds_f64(1.0 / m_display_refresh_rate);
 }
 
 void ContextState::rebuild_wheel_hit_test_targets()

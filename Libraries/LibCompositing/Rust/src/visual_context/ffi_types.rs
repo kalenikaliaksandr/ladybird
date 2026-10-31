@@ -7,11 +7,63 @@
 //! The plain FFI types the visual context tree hands across the C++ boundary on both sides of the
 //! compositor process boundary.
 
-use crate::display_list::commands::OptionalF32;
-use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, FloatSize};
+use crate::display_list::commands::{OptionalF32, SpatialNodeIndex};
+use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, IntRect};
 
 /// A side of an interest rect this far from the origin is unbounded: nothing beyond it is left out.
 pub const UNBOUNDED_INTEREST_EDGE: i32 = 1 << 24;
+
+/// A scroll node of the display list a compositor shows, as a frame it presents shows the node. Offsets and rects are in
+/// device pixels, rects of the node's content at scroll offset zero.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct FfiRecordingRefreshScrollNode {
+    /// The node as the compositor and WebContent name it.
+    pub scrollable_node_id: i64,
+    pub scroll_node_kind: u8,
+    pub pseudo_element_type: u8,
+    /// The node's own spatial node in the display list's visual context tree.
+    pub scroll_node_index: SpatialNodeIndex,
+    pub scrollport: IntRect,
+    pub scroll_offset: FloatPoint,
+    pub minimum_scroll_offset: FloatPoint,
+    pub maximum_scroll_offset: FloatPoint,
+    /// Whether any of the node shows, and what of its content does.
+    pub shows: bool,
+    pub visible_content_rect: IntRect,
+    /// Whether the display list records only part of the node's content, and which part.
+    pub records_part: bool,
+    pub recorded_content_rect: IntRect,
+    /// Whether a smooth scroll the compositor runs moves the node, and where it takes the node by the time a recording
+    /// asked for now could arrive.
+    pub has_smooth_scroll: bool,
+    pub smooth_scroll_offset_after_refresh_latency: FloatPoint,
+    /// Whether the request the compositor awaits an answer to names the node, and the rect it asks for.
+    pub in_flight_request_names_node: bool,
+    pub in_flight_rect: IntRect,
+}
+
+/// What the compositor asks WebContent to record of a scroll node, if any of the node shows.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct FfiDesiredInterestRect {
+    pub shows: bool,
+    pub rect: IntRect,
+}
+
+/// Whether the compositor needs to ask WebContent to record the display list again, as a frame it presents shows it.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct FfiRecordingRefreshPlan {
+    /// What the list records of a scroll node no longer holds what shows of it until a new recording could arrive.
+    pub some_node_needs_refresh: bool,
+    /// A scroll node that asked for the least it needs right after a jump waits to ask for its full rect.
+    pub some_node_owes_request_after_jump: bool,
+    /// What the request in flight asks for holds what shows of every node that needs a refresh.
+    pub in_flight_request_holds: bool,
+    /// How many device pixels of the content that shows lie outside what the list records, over every scroll node.
+    pub checkerboarded_area: u64,
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]

@@ -7,6 +7,7 @@
 pub mod ffi_types;
 pub mod interest;
 pub mod queries;
+pub mod recording_refresh;
 pub mod scroll_state;
 pub mod serialize;
 pub mod visual_animations;

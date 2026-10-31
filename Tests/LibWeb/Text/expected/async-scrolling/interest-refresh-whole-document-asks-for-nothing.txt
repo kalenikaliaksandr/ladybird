@@ -1,0 +1,5 @@
+scrolled the page: true, the scroller: true
+requests sent: 0
+request in flight: null
+checkerboarded frames: 0
+expects a refresh latency of at least a frame: true

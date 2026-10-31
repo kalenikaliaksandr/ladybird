@@ -1295,7 +1295,23 @@ void CompositorState::present_frame(Web::CompositorContextId context_id, Gfx::In
 void CompositorState::answer_interest_refresh_request(Web::CompositorContextId context_id, u64 request_id)
 {
     if (auto* context = context_if_present(context_id))
-        context->note_answered_interest_refresh_request(request_id);
+        context->note_interest_refresh_answered_without_display_list(request_id);
+}
+
+void CompositorState::forget_interest_refresh_requests_in_flight_of(CompositorStateWebContentClient& client)
+{
+    for (auto& context : m_contexts) {
+        if (context.value->is_owned_by(client))
+            context.value->forget_interest_refresh_request_in_flight();
+    }
+}
+
+String CompositorState::interest_refresh_state_for_testing(Web::CompositorContextId context_id) const
+{
+    auto const* context = context_if_present(context_id);
+    if (!context)
+        return {};
+    return context->interest_refresh_state_for_testing();
 }
 
 void CompositorState::present_frame(Web::CompositorContextId context_id, ContextState& context, PendingFrame pending_frame)
@@ -1304,6 +1320,7 @@ void CompositorState::present_frame(Web::CompositorContextId context_id, Context
     auto prepared_frame = context.prepare_frame(*m_display_list_player, pending_frame, &composited_context_resolver);
     if (!prepared_frame.has_value())
         return;
+    context.ask_for_recording_refresh_if_needed();
 
     m_pending_async_presents.append(context_id, pending_frame.viewport_rect, prepared_frame->damage_rect, prepared_frame->bitmap_id, prepared_frame->device_pixel_ratio);
     auto* pending_present = &m_pending_async_presents.last();
@@ -1683,7 +1700,8 @@ CompositedContextSurface CompositorState::resolve_composited_context(Web::Compos
     if (child_context->presenter().needs_rasterization()) {
         auto composited_context_resolver = resolver_for(child_context_id);
         DisplayListPlayerSkia display_list_player { m_skia_backend_context };
-        child_context->present_synchronously(display_list_player, &composited_context_resolver);
+        if (child_context->present_synchronously(display_list_player, &composited_context_resolver))
+            child_context->ask_for_recording_refresh_if_needed();
     }
 
     return child_context->presenter().composited_surface();

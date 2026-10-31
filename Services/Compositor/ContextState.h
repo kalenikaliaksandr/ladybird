@@ -24,6 +24,7 @@
 #include <Compositor/FramePacer.h>
 #include <Compositor/KeyboardScrollController.h>
 #include <Compositor/PaintingSurface.h>
+#include <Compositor/RecordingRefreshController.h>
 #include <Compositor/ScrollFlingController.h>
 #include <Compositor/ScrollSnapController.h>
 #include <Compositor/ScrollbarController.h>
@@ -156,9 +157,13 @@ public:
         Compositing::ScrollStateSnapshot&&);
     void update_visual_context_tree(Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&);
     void update_scroll_state(Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState);
-    // A display list WebContent sent, or WebContent on its own, answered the context's request to record around new
-    // rects.
-    void note_answered_interest_refresh_request(u64 request_id) { m_newest_answered_interest_refresh_request_id = max(m_newest_answered_interest_refresh_request_id, request_id); }
+    void note_interest_refresh_answered_without_display_list(u64 request_id);
+    // Asks WebContent to record the display list again around new rects once scrolling brings what shows close to the
+    // edges of what it records. Called for each frame the context presents.
+    void ask_for_recording_refresh_if_needed();
+    // The request to record around new rects that awaits an answer went to a render clock channel that is gone.
+    void forget_interest_refresh_request_in_flight();
+    String interest_refresh_state_for_testing() const;
     void set_video_sink(Compositing::VideoSinkResourceId, RefPtr<Media::DisplayingVideoSink>);
     HashMap<u64, Media::VideoSinkHandle> const& video_sink_handles() const { return m_scene.video_sink_handles(); }
 
@@ -395,6 +400,9 @@ private:
     // The smooth scroll that a press beside the thumb started, while it lasts.
     ActiveSmoothScrollAnimation* running_scrollbar_press_scroll();
     void rebuild_wheel_hit_test_targets();
+    AK::Duration display_frame_interval() const;
+    void schedule_interest_refresh_resend(MonotonicTime now);
+    void resend_unanswered_interest_refresh_request();
     ContextPresenter::FrameContent frame_content(Compositing::ScrollStateSnapshot const& presented_scroll_state_snapshot, CompositedContextResolver const*) const;
     Gfx::IntRect damage_rect_of_blinking_carets();
     void update_scrollbar_visibility();
@@ -448,8 +456,8 @@ private:
     ElasticOverscrollController m_elastic_overscroll_controller;
     Gfx::IntRect m_async_scrolling_viewport_rect;
     bool m_has_async_scrolling_state { false };
-    // The newest of the context's requests to record around new rects that WebContent answered.
-    u64 m_newest_answered_interest_refresh_request_id { 0 };
+    RecordingRefreshController m_recording_refresh_controller;
+    RefPtr<Core::Timer> m_interest_refresh_resend_timer;
 
     CaretBlinkTimer m_caret_blink_timer;
     Function<void()> m_request_animation_frames;

@@ -62,6 +62,7 @@ public:
     Compositing::AsyncScrollEnqueueResult async_scroll_by(UniqueNodeID expected_document_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_device_pixels,
         Gfx::IntRect viewport_rect, Web::WheelDeltaPrecision, Web::ScrollGesturePhase, u32 modifiers, Compositing::AsyncScrollOperationTracking, Compositing::WheelStepDispatch, u64 input_event_id);
     String scroll_state_for_testing(Web::AsyncScrollNodeStableID reported_scroller);
+    String interest_refresh_state_for_testing();
     void synchronize_for_testing();
     Optional<Compositing::FirstWheelStepRouteForTesting> route_first_wheel_step_for_testing(Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels);
     void begin_input_trace_for_testing();
@@ -124,6 +125,7 @@ public:
     Compositing::AsyncScrollEnqueueResult async_scroll_by(Web::CompositorContextId, UniqueNodeID expected_document_id, Gfx::FloatPoint position,
         Gfx::FloatPoint delta_in_device_pixels, Gfx::IntRect viewport_rect, Web::WheelDeltaPrecision, Web::ScrollGesturePhase, u32 modifiers, Compositing::AsyncScrollOperationTracking, Compositing::WheelStepDispatch, u64 input_event_id);
     String scroll_state_for_testing(Web::CompositorContextId, Web::AsyncScrollNodeStableID reported_scroller);
+    String interest_refresh_state_for_testing(Web::CompositorContextId);
     void synchronize_for_testing();
     Optional<Compositing::FirstWheelStepRouteForTesting> route_first_wheel_step_for_testing(Web::CompositorContextId, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels);
     void begin_input_trace_for_testing(Web::CompositorContextId);

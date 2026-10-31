@@ -25,8 +25,8 @@ use crate::painting::ffi::FfiScrollNodeContentRect;
 use crate::painting::interest_refresh::InterestRequest;
 use crate::painting::paint_read::PaintRead;
 use crate::painting::visual_context::interest::{
-    CullSpace, LeadPerSide, ScrollRange, default_interest_rect, interest_rect_covers, saturate_at_scroll_range,
-    snap_to_interest_grid, view_to_record_around,
+    CullSpace, LeadPerSide, ScrollRange, default_interest_rect, interest_rect_covers, interest_rect_recorded_for,
+    view_to_record_around,
 };
 use crate::painting::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
 use crate::painting::visual_context::{ScrollData, SpatialData, VisualContextTree};
@@ -434,15 +434,6 @@ impl<O: Observer> PaintRecorder<'_, O> {
             range: ScrollRange::new(scrollport, minimum_offset, maximum_offset),
         }
     }
-}
-
-// What a node records of its content where it aims for `aimed`: that snapped to the interest grid, and unbounded where it
-// reaches the end of the node's scroll range.
-fn interest_rect_recorded_for(aimed: IntRect, range: ScrollRange) -> IntRect {
-    if aimed.is_empty() {
-        return IntRect::default();
-    }
-    saturate_at_scroll_range(snap_to_interest_grid(aimed), range.content_area, range.axes)
 }
 
 // What a node aims to record around `view`: the rect the compositor requested while what the node records for it holds

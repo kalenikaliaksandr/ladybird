@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<style>
+    body { margin: 0; height: 20000px; }
+    #scroller { position: absolute; top: 100px; left: 0; width: 300px; height: 200px; overflow: auto; }
+    #scroller > div { height: 4000px; }
+</style>
+<div id="scroller"><div></div></div>
+<script>
+// A display list of the whole document holds whatever the compositor scrolls into view, so the compositor never asks
+// WebContent to record it again around new rects, and no frame shows content the list leaves out.
+promiseTest(async () => {
+    await animationFrame();
+    await animationFrame();
+    await waitForCondition(() => internals.compositorScrollState().document === document);
+
+    await scrollSettled(scroller, () => internals.wheelThroughUIProcess(100, 200, 0, 1500));
+    await scrollSettled(document, () => internals.wheelThroughUIProcess(500, 400, 0, 3000));
+    await animationFrame();
+
+    const state = internals.compositorInterestRefreshState();
+    println(`scrolled the page: ${window.scrollY > 0}, the scroller: ${scroller.scrollTop > 0}`);
+    println(`requests sent: ${state.requestsSent}`);
+    println(`request in flight: ${state.inFlightRequestId}`);
+    println(`checkerboarded frames: ${state.checkerboardedFrames}`);
+    println(`expects a refresh latency of at least a frame: ${state.latencyMilliseconds > 0}`);
+});
+</script>

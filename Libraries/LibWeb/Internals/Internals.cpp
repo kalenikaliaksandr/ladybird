@@ -1054,6 +1054,19 @@ GC::Ref<JS::Object> Internals::compositor_scroll_state(GC::Ptr<DOM::Element> scr
     return scrolling_state_report_to_object(window(), report.value().as_object());
 }
 
+GC::Ref<JS::Object> Internals::compositor_interest_refresh_state()
+{
+    let_compositor_take_in_every_rendered_frame(window());
+
+    String interest_refresh_state;
+    if (auto navigable = window().associated_document().navigable(); navigable && navigable->has_compositor_context())
+        interest_refresh_state = navigable->compositor_context().interest_refresh_state_for_testing();
+    auto report = JsonValue::from_string(interest_refresh_state);
+    if (report.is_error() || !report.value().is_object())
+        return JS::Object::create(window().principal_realm(), nullptr);
+    return json_value_to_js_value(window(), report.value()).as_object();
+}
+
 void Internals::pinch(double x, double y, double scale_delta, WebIDL::UnsignedShort modifiers)
 {
     auto& page = this->page();

@@ -106,6 +106,11 @@ interface Internals {
     // content shows in the layout viewport (visibleContentRect, in CSS pixels of that content at scroll offset zero, or
     // null when none of it shows). The scroller is the viewport if none is given.
     object compositorScrollState(optional Element? scroller = null);
+    // How the compositor's requests to record this document's display list around new rects went, from the frames
+    // rendered so far: requestsSent, inFlightRequestId (null when none awaits an answer), lastAnsweredRequestId,
+    // latencyMilliseconds (the refresh latency it expects), checkerboardedFrames (frames that showed content outside
+    // what the display list records) and lastCheckerboardedArea (in device pixels).
+    object compositorInterestRefreshState();
     undefined pinch(double x, double y, double scaleDelta, optional unsigned short modifiers = 0);
     // Sends a pinch through the UI process as it sends the user's, so that the compositor zooms for it if it can.
     undefined pinchThroughUIProcess(double x, double y, double scaleDelta);

@@ -54,6 +54,8 @@ void ConnectionFromWebContent::install_render_clock_channel(IPC::TransportHandle
     }
     // A new channel replaces the one before it, whose requests were for the contexts the process armed then.
     m_render_clock_connection = RenderClockConnection::construct(transport_or_error.release_value(), client_id());
+    // WebContent forgets the requests to record around new rects that went to the old channel.
+    m_compositor_state->forget_interest_refresh_requests_in_flight_of(*this);
     m_render_clock_connection->on_request_clock_tick = [this](Web::CompositorContextId context_id, double maximum_frames_per_second) {
         if (!context_is_owned_by_this_connection(context_id))
             return;
@@ -81,6 +83,13 @@ void ConnectionFromWebContent::pointer_left(Web::CompositorContextId context_id,
 {
     if (m_render_clock_connection)
         m_render_clock_connection->async_pointer_left(context_id, input_event_id);
+}
+
+void ConnectionFromWebContent::request_interest_refresh(Web::CompositorContextId context_id, u64 request_id, Vector<Web::ScrollNodeContentRect> const& scroll_node_rects)
+{
+    // Without a channel the request is lost, and goes out again once no answer came.
+    if (m_render_clock_connection)
+        m_render_clock_connection->async_request_interest_refresh(context_id, request_id, scroll_node_rects);
 }
 
 void ConnectionFromWebContent::add_video_sink(Media::VideoSinkHandle video_sink_handle, NonnullRefPtr<Compositing::VideoFramePresentationPage> presentation_page)
@@ -600,6 +609,13 @@ void ConnectionFromWebContent::answer_interest_refresh_request(Web::CompositorCo
     if (!context_is_owned_by_this_connection(context_id))
         return;
     m_compositor_state->answer_interest_refresh_request(context_id, request_id);
+}
+
+Messages::CompositorWebContentServer::InterestRefreshStateForTestingResponse ConnectionFromWebContent::interest_refresh_state_for_testing(Web::CompositorContextId context_id)
+{
+    if (!context_is_owned_by_this_connection(context_id))
+        return String {};
+    return m_compositor_state->interest_refresh_state_for_testing(context_id);
 }
 
 void ConnectionFromWebContent::request_screenshot(Web::CompositorContextId context_id, Compositing::ScreenshotRequestId request_id, Gfx::ShareableBitmap target_bitmap)

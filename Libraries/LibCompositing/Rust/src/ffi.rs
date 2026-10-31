@@ -10,6 +10,10 @@
 use crate::display_list::commands::{ClipNodeIndex, ContextRef, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::storage::storage_from_handle;
 use crate::node_slot_id::NodeSlotId;
+use crate::visual_context::ffi_types::{
+    FfiDesiredInterestRect, FfiRecordingRefreshPlan, FfiRecordingRefreshScrollNode,
+};
+use crate::visual_context::recording_refresh::RecordingRefreshPlanner;
 use std::ffi::c_void;
 
 /// # Safety
@@ -587,6 +591,69 @@ pub unsafe extern "C" fn visual_context_tree_for_each_effects_filter_image_frame
             filter.for_each_image_frame_id(&mut |id| unsafe { visit(context, id) });
         }
     }
+}
+
+/// Returns a planner handle that every `recording_refresh_planner_*` call takes until
+/// `recording_refresh_planner_destroy` consumes it.
+#[unsafe(no_mangle)]
+pub extern "C" fn recording_refresh_planner_create() -> *mut c_void {
+    Box::into_raw(Box::<RecordingRefreshPlanner>::default()).cast()
+}
+
+/// # Safety
+///
+/// `planner` must be a live handle from `recording_refresh_planner_create`, which this consumes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn recording_refresh_planner_destroy(planner: *mut c_void) {
+    drop(unsafe { Box::from_raw(planner.cast::<RecordingRefreshPlanner>()) });
+}
+
+/// # Safety
+///
+/// `planner` must be a live handle from `recording_refresh_planner_create`, `tree` a live retained tree handle, and
+/// `nodes` and `desired_rects` must each point to `node_count` elements, or be null when it is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn recording_refresh_planner_plan(
+    planner: *mut c_void,
+    tree: *const c_void,
+    time_in_seconds: f64,
+    frame_interval_in_seconds: f64,
+    nodes: *const FfiRecordingRefreshScrollNode,
+    desired_rects: *mut FfiDesiredInterestRect,
+    node_count: usize,
+) -> FfiRecordingRefreshPlan {
+    let planner = unsafe { &mut *planner.cast::<RecordingRefreshPlanner>() };
+    let tree = unsafe { tree_from_handle(tree) };
+    let nodes = unsafe { ak::slice_from_raw_parts(nodes, node_count) };
+    let desired_rects = unsafe { ak::slice_from_raw_parts_mut(desired_rects, node_count) };
+    planner.plan(tree, time_in_seconds, frame_interval_in_seconds, nodes, desired_rects)
+}
+
+/// # Safety
+///
+/// `planner` must be a live handle from `recording_refresh_planner_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn recording_refresh_planner_note_request_sent(planner: *mut c_void) {
+    unsafe { &mut *planner.cast::<RecordingRefreshPlanner>() }.note_request_sent();
+}
+
+/// # Safety
+///
+/// `planner` must be a live handle from `recording_refresh_planner_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn recording_refresh_planner_note_refresh_latency(planner: *mut c_void, seconds: f64) {
+    unsafe { &mut *planner.cast::<RecordingRefreshPlanner>() }.note_refresh_latency(seconds);
+}
+
+/// # Safety
+///
+/// `planner` must be a live handle from `recording_refresh_planner_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn recording_refresh_planner_refresh_latency(
+    planner: *const c_void,
+    frame_interval_in_seconds: f64,
+) -> f64 {
+    unsafe { &*planner.cast::<RecordingRefreshPlanner>() }.refresh_latency_in_seconds(frame_interval_in_seconds)
 }
 
 /// # Safety

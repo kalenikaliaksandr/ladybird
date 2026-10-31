@@ -36,30 +36,39 @@ pub struct ScrollableAxes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScrollRange {
     /// In device pixels of the node's content at scroll offset zero, enclosing what the scrollport shows from the least
-    /// scroll offset to the greatest.
+    /// scroll offset to the greatest, within the unbounded edges.
     pub content_area: IntRect,
     pub axes: ScrollableAxes,
+    /// Whether what the scrollport shows reaches past the unbounded edges, where an interest rect cannot tell content
+    /// apart from content at the edge. A recording records all of such a node, and tells the compositor nothing of it.
+    pub reaches_past_unbounded_edges: bool,
 }
 
 impl ScrollRange {
     /// `scrollport` at scroll offset zero, and the least and greatest scroll offsets, all in device pixels.
     pub fn new(scrollport: IntRect, minimum_scroll_offset: FloatPoint, maximum_scroll_offset: FloatPoint) -> Self {
+        let content_span_on = |axis: Axis| {
+            let span = axis.span_of(scrollport);
+            AxisSpan {
+                start: span
+                    .start
+                    .saturating_add(axis.coordinate_of(minimum_scroll_offset).floor() as i64),
+                end: span
+                    .end
+                    .saturating_add(axis.coordinate_of(maximum_scroll_offset).ceil() as i64),
+            }
+        };
+        let unbounded = i64::from(UNBOUNDED_INTEREST_EDGE);
         Self {
-            content_area: rect_from_axis_spans(|axis| {
-                let span = axis.span_of(scrollport);
-                AxisSpan {
-                    start: span
-                        .start
-                        .saturating_add(axis.coordinate_of(minimum_scroll_offset).floor() as i64),
-                    end: span
-                        .end
-                        .saturating_add(axis.coordinate_of(maximum_scroll_offset).ceil() as i64),
-                }
-            }),
+            content_area: rect_from_axis_spans(content_span_on),
             axes: ScrollableAxes {
                 horizontal: minimum_scroll_offset.x != maximum_scroll_offset.x,
                 vertical: minimum_scroll_offset.y != maximum_scroll_offset.y,
             },
+            reaches_past_unbounded_edges: Axis::BOTH.into_iter().any(|axis| {
+                let span = content_span_on(axis);
+                span.start < -unbounded || span.end > unbounded
+            }),
         }
     }
 }
@@ -227,6 +236,175 @@ pub fn saturate_at_scroll_range(rect: IntRect, content_area: IntRect, axes: Scro
     })
 }
 
+/// What a node records of its content where it aims for `aimed`: that snapped to the interest grid, and unbounded where
+/// it reaches the end of the node's scroll range. Nothing where it aims for nothing.
+pub fn interest_rect_recorded_for(aimed: IntRect, range: ScrollRange) -> IntRect {
+    if aimed.is_empty() {
+        return IntRect::default();
+    }
+    saturate_at_scroll_range(snap_to_interest_grid(aimed), range.content_area, range.axes)
+}
+
+/// How much more of a moving node's content the compositor may ask for than of the node standing still, by area over
+/// the axes the node can scroll, short of the ends of its content. Asking for ever more the faster a node scrolls would
+/// make each recording take longer, which makes the node scroll further before it arrives.
+const MOST_DESIRED_AREA_IN_STATIONARY_AREAS: f64 = 2.0;
+
+/// What the compositor asks WebContent to record of a scroll node: `view`, from `view_to_record_around` with what a
+/// recording of the rect the compositor asks of the parent records, joined with `visible`, what of the node shows. On
+/// each axis the node can scroll it reaches a scrollport past both sides, and further toward where `motion`, how far
+/// the node is expected to scroll before a new recording arrives, carries it, as far as the area cap allows. Right
+/// after a jump it reaches only half a scrollport past each side, the least a recording must hold, so that WebContent
+/// records what shows sooner. Empty when neither shows anything.
+pub fn desired_interest_rect(
+    view: IntRect,
+    visible: IntRect,
+    scrollport_size: IntSize,
+    range: ScrollRange,
+    motion: FloatPoint,
+    after_jump: bool,
+) -> IntRect {
+    let base = match (view.is_empty(), visible.is_empty()) {
+        (true, true) => return IntRect::default(),
+        (false, true) => view,
+        (true, false) => visible,
+        (false, false) => rect_from_axis_spans(|axis| axis.span_of(view).joined(axis.span_of(visible))),
+    };
+    let lead = if after_jump {
+        LeadPerSide::default()
+    } else {
+        lead_toward_sides(motion)
+    };
+    let stationary = |axis: Axis| {
+        let span = axis.span_of(base);
+        if !axis.is_scrollable(range.axes) {
+            return span;
+        }
+        let scrollport_extent = axis.extent_of(scrollport_size);
+        span.inflated(if after_jump {
+            (scrollport_extent + 1) / 2
+        } else {
+            scrollport_extent
+        })
+    };
+    let extended = |axis: Axis, share_of_lead: f64| {
+        let span = stationary(axis);
+        if !axis.is_scrollable(range.axes) {
+            return span;
+        }
+        let (lead_toward_start, lead_toward_end) = axis.leads(lead);
+        let shared = |lead: i64| (lead as f64 * share_of_lead).floor() as i64;
+        AxisSpan {
+            start: span.start - shared(lead_toward_start),
+            end: span.end + shared(lead_toward_end),
+        }
+    };
+    let area_with = |share_of_lead: f64| -> f64 {
+        Axis::BOTH
+            .into_iter()
+            .filter(|axis| axis.is_scrollable(range.axes))
+            .map(|axis| {
+                extended(axis, share_of_lead)
+                    .intersected(axis.span_of(range.content_area))
+                    .length() as f64
+            })
+            .product()
+    };
+    let most_area = MOST_DESIRED_AREA_IN_STATIONARY_AREAS * area_with(0.0);
+    let share_of_lead = if area_with(1.0) <= most_area {
+        1.0
+    } else {
+        // The area only grows with the share of the lead, so the largest share within the cap is found by halving.
+        let (mut within, mut beyond) = (0.0, 1.0);
+        for _ in 0..32 {
+            let middle = (within + beyond) / 2.0;
+            if area_with(middle) <= most_area {
+                within = middle;
+            } else {
+                beyond = middle;
+            }
+        }
+        within
+    };
+    rect_from_axis_spans(|axis| extended(axis, share_of_lead))
+}
+
+/// Whether the compositor needs a new recording of a scroll node: what the display list records of it, `recorded`, no
+/// longer holds `visible` with half a scrollport to spare on each side the node can scroll, plus how far `motion` carries
+/// the node toward that side before a new recording arrives. A side never needs more than `desired`, the rect the
+/// compositor asks for, leaves there, so that a recording of that rect holds until the node scrolls on.
+pub fn interest_refresh_needed(
+    recorded: IntRect,
+    visible: IntRect,
+    desired: IntRect,
+    scrollport_size: IntSize,
+    axes: ScrollableAxes,
+    motion: FloatPoint,
+) -> bool {
+    let lead = lead_toward_sides(motion);
+    // A margin of m holds a lead of l when 2m >= scrollport + 2l.
+    let lead_desired_holds = |axis: Axis, desired_margin: i64, lead: i64| -> i32 {
+        let most = (2 * desired_margin - axis.extent_of(scrollport_size)).div_euclid(2);
+        lead.min(most).clamp(0, i64::from(i32::MAX)) as i32
+    };
+    let desired_horizontally = Axis::Horizontal.span_of(desired);
+    let desired_vertically = Axis::Vertical.span_of(desired);
+    let visible_horizontally = Axis::Horizontal.span_of(visible);
+    let visible_vertically = Axis::Vertical.span_of(visible);
+    let lead = LeadPerSide {
+        top: lead_desired_holds(
+            Axis::Vertical,
+            visible_vertically.start - desired_vertically.start,
+            i64::from(lead.top),
+        ),
+        right: lead_desired_holds(
+            Axis::Horizontal,
+            desired_horizontally.end - visible_horizontally.end,
+            i64::from(lead.right),
+        ),
+        bottom: lead_desired_holds(
+            Axis::Vertical,
+            desired_vertically.end - visible_vertically.end,
+            i64::from(lead.bottom),
+        ),
+        left: lead_desired_holds(
+            Axis::Horizontal,
+            visible_horizontally.start - desired_horizontally.start,
+            i64::from(lead.left),
+        ),
+    };
+    !interest_rect_covers(recorded, visible, scrollport_size, lead, axes)
+}
+
+/// How many device pixels of `visible` lie outside `recorded`.
+pub fn area_outside(visible: IntRect, recorded: IntRect) -> u64 {
+    let area = |rect: IntRect| -> u64 {
+        Axis::BOTH
+            .into_iter()
+            .map(|axis| axis.span_of(rect).length() as u64)
+            .product()
+    };
+    let inside = rect_from_axis_spans(|axis| axis.span_of(visible).intersected(axis.span_of(recorded)));
+    area(visible).saturating_sub(area(inside))
+}
+
+// How far `motion` carries content toward each side, in whole device pixels.
+fn lead_toward_sides(motion: FloatPoint) -> LeadPerSide {
+    let toward = |distance: f32| -> i32 {
+        if distance.is_finite() && distance > 0.0 {
+            f64::from(distance).ceil().min(f64::from(UNBOUNDED_INTEREST_EDGE)) as i32
+        } else {
+            0
+        }
+    };
+    LeadPerSide {
+        top: toward(-motion.y),
+        right: toward(motion.x),
+        bottom: toward(motion.y),
+        left: toward(-motion.x),
+    }
+}
+
 /// `rect`, as another process sent it, with a negative extent made empty and its edges clamped to the unbounded edges,
 /// so that arithmetic on its edges cannot overflow.
 pub fn interest_rect_within_unbounded_edges(rect: IntRect) -> IntRect {
@@ -341,6 +519,17 @@ impl AxisSpan {
 
     fn contains(self, other: Self) -> bool {
         self.start <= other.start && self.end >= other.end
+    }
+
+    fn joined(self, other: Self) -> Self {
+        Self {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
+    }
+
+    fn length(self) -> i64 {
+        (self.end - self.start).max(0)
     }
 
     // An empty span stays empty.
@@ -500,10 +689,19 @@ mod tests {
         let tall = ScrollRange::new(scrollport, offset(0.0, 0.0), offset(0.0, 2400.25));
         assert_eq!(tall.content_area, from_edges(100, 50, 900, 3051));
         assert_eq!(tall.axes, VERTICAL);
+        assert!(!tall.reaches_past_unbounded_edges);
+
+        // Content 20000000 px tall reaches past the unbounded edges, where interest rects cannot tell it apart.
+        let past_the_edges = ScrollRange::new(scrollport, offset(0.0, 0.0), offset(0.0, 20_000_000.0));
+        assert_eq!(past_the_edges.content_area, from_edges(100, 50, 900, UNBOUNDED));
+        assert!(past_the_edges.reaches_past_unbounded_edges);
+        let up_to_the_edge = ScrollRange::new(scrollport, offset(0.0, 0.0), offset(0.0, (UNBOUNDED - 650) as f32));
+        assert!(!up_to_the_edge.reaches_past_unbounded_edges);
 
         // Offsets from another process cannot overflow the content area.
         let huge = ScrollRange::new(scrollport, offset(0.0, f32::MIN), offset(0.0, f32::MAX));
         assert_eq!(huge.content_area, from_edges(100, -UNBOUNDED, 900, UNBOUNDED));
+        assert!(huge.reaches_past_unbounded_edges);
     }
 
     #[test]

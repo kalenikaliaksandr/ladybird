@@ -27,6 +27,7 @@ set(SOURCES
     PausedDebuggerOverlay.cpp
     PictureInPictureControls.cpp
     RasterizeDisplayList.cpp
+    RecordingRefreshController.cpp
     RenderClockConnection.cpp
     ScrollFlingController.cpp
     ScrollSnapController.cpp

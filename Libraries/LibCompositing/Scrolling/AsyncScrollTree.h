@@ -155,6 +155,10 @@ public:
     // Nothing when none of the node shows, as of the last rebuild of the wheel hit test targets, worked out afresh as
     // only a display list that records part of some node keeps it.
     Optional<ScrollNodeVisibility> visibility_of_scroll_node_for_testing(AsyncScrollNodeID, Compositing::AccumulatedVisualContextTree const&, Gfx::IntSize layout_viewport_size) const;
+    // The same for every scroll node, beside scroll_nodes(); none at all until a rebuild with a display list that
+    // records part of some node.
+    ReadonlySpan<Optional<ScrollNodeVisibility>> scroll_node_visibilities() const { return m_scroll_node_visibilities; }
+    bool records_part_of_some_scroll_node() const { return m_records_part_of_some_scroll_node; }
 
     Optional<Gfx::FloatPoint> scroll_offset_for_node(AsyncScrollNodeID, Compositing::ScrollStateSnapshot const&) const;
     Optional<Web::UniqueNodeID> document_id() const;

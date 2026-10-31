@@ -73,6 +73,11 @@ String CompositorContextHandle::scroll_state_for_testing(Web::AsyncScrollNodeSta
     return m_host.scroll_state_for_testing(m_context_id, reported_scroller);
 }
 
+String CompositorContextHandle::interest_refresh_state_for_testing()
+{
+    return m_host.interest_refresh_state_for_testing(m_context_id);
+}
+
 void CompositorContextHandle::synchronize_for_testing()
 {
     m_host.synchronize_for_testing();
@@ -478,6 +483,13 @@ String CompositorHost::scroll_state_for_testing(Web::CompositorContextId context
 {
     if (auto* connection = compositor_connection())
         return connection->scroll_state_for_testing(context_id, reported_scroller);
+    return {};
+}
+
+String CompositorHost::interest_refresh_state_for_testing(Web::CompositorContextId context_id)
+{
+    if (auto* connection = compositor_connection())
+        return connection->interest_refresh_state_for_testing(context_id);
     return {};
 }
 
