@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 2000px; font: 16px/1.2 sans-serif; }
+    #scroller { width: 300px; height: 100px; overflow-x: auto; overflow-y: hidden; }
+    #content { width: 4000px; background: linear-gradient(to right, red, blue); }
+    #spacer { display: inline-block; width: 3900px; height: 10px; }
+    #t { backdrop-filter: blur(4px); }
+</style>
+<body>
+<div id="scroller"><div id="content"><span id="spacer"></span><span id="t">word1 word2word2word2word2word2word2word2word2word2word2</span></div></div>
+<script>
+// An inline with a backdrop filter wraps onto two lines, at the right end of the first and the left end of the second.
+// Each of its pieces records the backdrop filter region of the whole inline, which spans the scroller's content between
+// them, so scrolling to the middle of the content still records them.
+interestRectTest(output => {
+    scroller.scrollLeft = 1800;
+    const trace = recordAroundScrollPositions();
+    const rect = internals.recordedInterestRect(scroller);
+    output(`rect reaches what is visible: ${rect.left <= 1800 && rect.right >= 2100}`);
+    output(`rect misses both pieces: ${rect.left > 471 && rect.right < 3900}`);
+    output(`#t piece: ${producerAction(trace, "t", "inline-piece")}`);
+});
+</script>

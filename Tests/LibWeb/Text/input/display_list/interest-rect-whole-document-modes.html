@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 6000px; }
+    #far { position: absolute; top: 4000px; left: 0; width: 200px; height: 100px; background: rgb(1, 2, 3); }
+</style>
+<body>
+<div id="far"></div>
+<script>
+// Recordings of the whole document record what a recording around the scroll positions left out, and say they record
+// all of it.
+interestRectTest(output => {
+    let trace = recordAroundScrollPositions();
+    output(`around the scroll positions: far ${producerAction(trace, "far", "background")}, rect ${internals.recordedInterestRect() !== null}`);
+    trace = recordWholeDocument();
+    output(`whole document: far ${producerAction(trace, "far", "background")}, rect ${internals.recordedInterestRect()}`);
+    trace = recordAroundScrollPositions();
+    output(`around the scroll positions again: far ${producerAction(trace, "far", "background")}`);
+    output(`dump draws far: ${internals.dumpDisplayList().includes("color=rgb(1, 2, 3)")}`);
+});
+</script>

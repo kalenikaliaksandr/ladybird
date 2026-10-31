@@ -11,13 +11,22 @@
 //!
 //! A frame that rewrites the tree installs the cull summary of every scope it walks or records
 //! with its child list, and a scope it copies keeps the one it has.
+//!
+//! A frame recorded around the scroll positions leaves out every producer whose commands the
+//! interest rect of their scroll node misses, as an entry without bytes that keeps its hit-test
+//! items and blocking wheel regions. A clean scope is walked only where an interest rect it reaches
+//! changed across what it draws, and a producer left out records once it is not left out any more.
 
 use super::PaintPhase;
-use super::order_tree::{ChildEntry, ChildKey, CullReach, OutputSize, PaintOrderTree, ProducerKind, ScopeId};
+use super::order_tree::{
+    ChildEntry, ChildKey, CullReach, OutputSize, PaintOrderTree, ProducerKind, ScopeId, ScrollNodeSet,
+};
 use crate::css::style::fast_hash::FastMap;
 use crate::layout::node_data::NodeSlotId;
+use crate::painting::display_list::commands::SpatialNodeIndex;
 use crate::painting::paint_order_plan::{PaintOrderItem, PaintProducer, PaintScope, PaintScopeKind};
 use crate::painting::record::damage::PaintDamage;
+use libgfx_rust::IntRect;
 use smallvec::SmallVec;
 use std::ops::Range;
 
@@ -110,6 +119,36 @@ pub(crate) enum AssemblyEvent {
     ScopeEnd(PaintScope),
     ScopeCopied(PaintScope),
     ProducerCopied(NodeSlotId, ProducerKind),
+    // Left out without recording anything.
+    ProducerCulled(NodeSlotId, ProducerKind),
+}
+
+/// What a frame leaves out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AssemblyCulling {
+    /// Nothing: producers the published recording left out record again.
+    LeavesNothingOut,
+    /// Every producer whose commands the interest rect of their scroll node misses, as the host tells.
+    ByInterest {
+        /// The scroll nodes whose interest rect differs from the published recording's.
+        changed_scroll_nodes: ScrollNodeSet,
+        /// Set when the published recording placed its producers in other scroll nodes, or left out nothing by
+        /// interest: every producer is placed again.
+        places_every_producer_again: bool,
+    },
+}
+
+impl AssemblyCulling {
+    // Whether the frame leaves out what the published recording, whose root has `root_output`, left out.
+    fn keeps_published_cull_state(self, root_output: OutputSize) -> bool {
+        match self {
+            Self::LeavesNothingOut => !root_output.culled,
+            Self::ByInterest {
+                changed_scroll_nodes,
+                places_every_producer_again,
+            } => changed_scroll_nodes.is_empty() && !places_every_producer_again,
+        }
+    }
 }
 
 /// The end of the output being assembled: command bytes, hit-test items and blocking wheel
@@ -127,6 +166,24 @@ pub(crate) trait AssemblyHost {
 
     /// Records one producer of `owner` under the contexts it needs.
     fn record_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> ProducerOutcome;
+
+    /// Where the commands of a producer about to be assembled land, if a frame recorded around the scroll positions may
+    /// leave them out.
+    fn producer_cull_reach(&mut self, owner: NodeSlotId, kind: ProducerKind) -> CullReach;
+
+    /// Whether the interest rect of the scroll node that commands landing where `reach` says land in misses them.
+    fn interest_misses(&self, reach: CullReach) -> bool;
+
+    /// The interest rect the published recording left out by in `scroll_node` and the one this frame leaves out by,
+    /// unless one of them leaves out nothing there by a rect.
+    fn published_and_current_interest_rects_of(&self, scroll_node: SpatialNodeIndex) -> Option<(IntRect, IntRect)>;
+
+    /// Leaves a producer out: records the hit-test items and counts the blocking wheel regions it would record, without
+    /// its commands, and tells whether those would have routed wheels.
+    fn record_producer_leaving_out_commands(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool;
+
+    /// Whether the published commands of a producer in `bytes` route wheels.
+    fn published_output_routes_wheels(&mut self, owner: NodeSlotId, kind: ProducerKind, bytes: Range<u32>) -> bool;
 
     fn output_position(&self) -> OutputPosition;
 
@@ -166,10 +223,27 @@ struct PendingCopy {
 }
 
 /// Whether the published recording can be returned as it is: nothing was pushed, nothing in it is
-/// recorded every frame or read a window focus that changed, and there is a published tree at all.
-pub(crate) fn frame_is_unchanged(tree: &PaintOrderTree, has_damage: bool, window_focus_changed: bool) -> bool {
+/// recorded every frame or read a window focus that changed, nothing is left out differently, and
+/// there is a published tree at all.
+pub(crate) fn frame_is_unchanged(
+    tree: &PaintOrderTree,
+    has_damage: bool,
+    window_focus_changed: bool,
+    culling: AssemblyCulling,
+) -> bool {
     let root = tree.root_entry();
-    !tree.root().is_none() && !has_damage && !root.is_live() && !(window_focus_changed && root.reads_window_focus())
+    !tree.root().is_none()
+        && !has_damage
+        && !root.is_live()
+        && !(window_focus_changed && root.reads_window_focus())
+        && culling.keeps_published_cull_state(root.output())
+}
+
+// The published output of a clean producer: its entry, and where its output starts in the published recording.
+#[derive(Clone, Copy)]
+struct PublishedProducer {
+    entry: ChildEntry,
+    cursor: SourceCursor,
 }
 
 pub(crate) struct Assembler<'a, H: AssemblyHost> {
@@ -182,6 +256,7 @@ pub(crate) struct Assembler<'a, H: AssemblyHost> {
     rewrites_tree: bool,
     // The published recording was made in the other window focus state.
     window_focus_changed: bool,
+    culling: AssemblyCulling,
     pending_copy: Option<PendingCopy>,
 }
 
@@ -192,6 +267,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         source_prologue_bytes: Option<u32>,
         rewrites_tree: bool,
         window_focus_changed: bool,
+        culling: AssemblyCulling,
     ) -> Self {
         Self {
             host,
@@ -199,6 +275,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             source_prologue_bytes,
             rewrites_tree,
             window_focus_changed,
+            culling,
             pending_copy: None,
         }
     }
@@ -249,6 +326,9 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             _ => self.record_scope_outside_tree(root_scope),
         };
         debug_assert!(self.pending_copy.is_none());
+        if self.rewrites_tree && super::cull::verifies_interest_culling() {
+            self.audit_culling(output);
+        }
         output
     }
 
@@ -267,6 +347,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         self.host
             .observe(AssemblyEvent::ScopeBegin(scope, ScopeAction::Assembled));
         let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).iter().copied().collect();
+        let published_own_producers = self.tree.cull_summary(id).own_producers;
         let mut entries: SmallVec<[ChildEntry; 16]> = SmallVec::with_capacity(published.len());
         let mut total = OutputSize::default();
         let mut own_producers = OwnProducersReach::default();
@@ -274,24 +355,14 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         for entry in published {
             let published_output = entry.output();
             let assembled = match entry.key() {
-                ChildKey::Scope(child) => {
-                    if self.tree.is_on_damaged_path(child) || self.records_again(&entry) {
-                        self.assemble_scope(child, child_cursor)
-                    } else {
-                        self.copy(child_cursor, published_output);
-                        let child_scope = self.tree.scope_of(child);
-                        self.host.observe(AssemblyEvent::ScopeCopied(child_scope));
-                        entry
-                    }
-                }
+                ChildKey::Scope(child) => self.assemble_or_copy_child_scope(child, entry, child_cursor),
                 ChildKey::Producer(kind) => {
-                    if self.producer_is_damaged(scope.owner, kind, damage, &entry) {
-                        own_producers.note_recorded(self.record_producer(scope.owner, kind))
-                    } else {
-                        self.copy(child_cursor, published_output);
-                        self.host.observe(AssemblyEvent::ProducerCopied(scope.owner, kind));
-                        own_producers.note_copied(entry)
-                    }
+                    let clean =
+                        (!self.producer_is_damaged(scope.owner, kind, damage, &entry)).then_some(PublishedProducer {
+                            entry,
+                            cursor: child_cursor,
+                        });
+                    self.assemble_producer(scope.owner, kind, clean, published_own_producers, &mut own_producers)
                 }
             };
             child_cursor.advance(published_output);
@@ -299,11 +370,54 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             entries.push(assembled);
         }
         if self.rewrites_tree {
-            let own_producers = own_producers.finish(self.tree.cull_summary(id).own_producers);
+            let own_producers = own_producers.finish(published_own_producers);
             self.tree.set_children(id, &entries, own_producers);
         }
         self.host.observe(AssemblyEvent::ScopeEnd(scope));
         ChildEntry::scope(id, total)
+    }
+
+    /// Whether a published entry with `output`, whose commands land where `reach` says, may be left out differently
+    /// now.
+    fn may_cull_differently(&self, reach: CullReach, output: OutputSize) -> bool {
+        match self.culling {
+            AssemblyCulling::LeavesNothingOut => output.culled,
+            AssemblyCulling::ByInterest {
+                changed_scroll_nodes,
+                places_every_producer_again,
+            } => {
+                places_every_producer_again
+                    || (output.has_cullable_output
+                        && reach.touches(changed_scroll_nodes)
+                        && !self.rect_changes_cut_alike(reach, changed_scroll_nodes))
+            }
+        }
+    }
+
+    // Whether, of the scroll nodes whose interest rect changed, the commands landing where `reach` says land in one
+    // alone, within bounds that its published and current rect cut alike: those leave out every command they left out
+    // and nothing more.
+    fn rect_changes_cut_alike(&self, reach: CullReach, changed_scroll_nodes: ScrollNodeSet) -> bool {
+        let Some((scroll_node, bounds)) = reach.bounds_in_only_one_of(changed_scroll_nodes) else {
+            return false;
+        };
+        self.host
+            .published_and_current_interest_rects_of(scroll_node)
+            .is_some_and(|(published, current)| bounds.intersected(published) == bounds.intersected(current))
+    }
+
+    // A clean child scope is copied unless something in it records again or is left out differently.
+    fn assemble_or_copy_child_scope(&mut self, child: ScopeId, entry: ChildEntry, cursor: SourceCursor) -> ChildEntry {
+        let walks_child = self.tree.is_on_damaged_path(child)
+            || self.records_again(&entry)
+            || self.may_cull_differently(self.tree.cull_summary(child).subtree, entry.output());
+        if walks_child {
+            return self.assemble_scope(child, cursor);
+        }
+        self.copy(cursor, entry.output());
+        let child_scope = self.tree.scope_of(child);
+        self.host.observe(AssemblyEvent::ScopeCopied(child_scope));
+        entry
     }
 
     fn producer_is_damaged(
@@ -324,6 +438,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         let scope = self.tree.scope_of(id);
         let plan = self.host.plan_scope(scope);
         let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).iter().copied().collect();
+        let published_own_producers = self.tree.cull_summary(id).own_producers;
         let mut published_cursors: SmallVec<[SourceCursor; 16]> = SmallVec::with_capacity(published.len());
         let mut child_cursor = cursor;
         for entry in &published {
@@ -360,19 +475,23 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             match item {
                 PaintOrderItem::Producer(producer) => {
                     for kind in producer_kinds(producer) {
-                        let assembled = match published_index_of(ChildKey::Producer(kind)) {
-                            Some(index) if !self.producer_is_damaged(scope.owner, kind, damage, &published[index]) => {
-                                matched[index] = true;
-                                self.copy(published_cursors[index], published[index].output());
-                                self.host.observe(AssemblyEvent::ProducerCopied(scope.owner, kind));
-                                own_producers.note_copied(published[index])
-                            }
-                            Some(index) => {
-                                matched[index] = true;
-                                own_producers.note_recorded(self.record_producer(scope.owner, kind))
-                            }
-                            None => own_producers.note_recorded(self.record_producer(scope.owner, kind)),
-                        };
+                        let published_index = published_index_of(ChildKey::Producer(kind));
+                        if let Some(index) = published_index {
+                            matched[index] = true;
+                        }
+                        let clean = published_index
+                            .filter(|index| !self.producer_is_damaged(scope.owner, kind, damage, &published[*index]))
+                            .map(|index| PublishedProducer {
+                                entry: published[index],
+                                cursor: published_cursors[index],
+                            });
+                        let assembled = self.assemble_producer(
+                            scope.owner,
+                            kind,
+                            clean,
+                            published_own_producers,
+                            &mut own_producers,
+                        );
                         total.add(assembled.output());
                         entries.push(assembled);
                     }
@@ -385,13 +504,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                     let assembled = match found {
                         Some((child, index)) => {
                             matched[index] = true;
-                            if self.tree.is_on_damaged_path(child) || self.records_again(&published[index]) {
-                                self.assemble_scope(child, published_cursors[index])
-                            } else {
-                                self.copy(published_cursors[index], published[index].output());
-                                self.host.observe(AssemblyEvent::ScopeCopied(child_scope));
-                                published[index]
-                            }
+                            self.assemble_or_copy_child_scope(child, published[index], published_cursors[index])
                         }
                         None if self.rewrites_tree => {
                             let child = self.tree.allocate_scope(child_scope, id);
@@ -407,7 +520,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 }
             }
         }
-        let own_producers = own_producers.finish(self.tree.cull_summary(id).own_producers);
+        let own_producers = own_producers.finish(published_own_producers);
         self.install_replanned_children(id, &published, &matched, &entries, own_producers);
         self.host.observe(AssemblyEvent::ScopeEnd(scope));
         ChildEntry::scope(id, total)
@@ -452,7 +565,8 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             match item {
                 PaintOrderItem::Producer(producer) => {
                     for kind in producer_kinds(producer) {
-                        let recorded = own_producers.note_recorded(self.record_producer(scope.owner, kind));
+                        let recorded =
+                            self.assemble_producer(scope.owner, kind, None, CullReach::NOTHING, &mut own_producers);
                         total.add(recorded.output());
                         entries.push(recorded);
                     }
@@ -485,7 +599,14 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             match item {
                 PaintOrderItem::Producer(producer) => {
                     for kind in producer_kinds(producer) {
-                        total.add(self.record_producer(scope.owner, kind).0.output());
+                        let assembled = self.assemble_producer(
+                            scope.owner,
+                            kind,
+                            None,
+                            CullReach::NOTHING,
+                            &mut OwnProducersReach::default(),
+                        );
+                        total.add(assembled.output());
                     }
                 }
                 PaintOrderItem::Scope(child_scope) => total.add(self.record_scope_outside_tree(child_scope)),
@@ -493,6 +614,106 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         }
         self.host.observe(AssemblyEvent::ScopeEnd(scope));
         total
+    }
+
+    /// Assembles one producer of `owner`, given its published output while that is `clean`: copies the output while
+    /// the producer is left out as it was, leaves the producer out where the interest rect of its scroll node misses
+    /// it, and otherwise copies clean output or records. Output the published recording left out is never copied as
+    /// it is once the producer is not left out any more. `published_own_producers` is the published reach of the
+    /// scope's own producers.
+    fn assemble_producer(
+        &mut self,
+        owner: NodeSlotId,
+        kind: ProducerKind,
+        clean: Option<PublishedProducer>,
+        published_own_producers: CullReach,
+        own_producers: &mut OwnProducersReach,
+    ) -> ChildEntry {
+        let Some(PublishedProducer { entry, cursor }) = clean else {
+            let reach = self.cull_reach(owner, kind);
+            if self.interest_misses(reach) {
+                return own_producers.note_recorded(self.leave_out_without_published_output(owner, kind, reach));
+            }
+            return own_producers.note_recorded(self.record_producer(owner, kind));
+        };
+        let output = entry.output();
+        if !self.may_cull_differently(published_own_producers, output) {
+            self.copy(cursor, output);
+            self.observe_copied_producer(owner, kind, output);
+            return own_producers.note_copied(entry);
+        }
+        // Without commands there is nothing to leave out, wherever the producer would draw.
+        if !output.culled && output.bytes == 0 {
+            self.copy(cursor, output);
+            self.observe_copied_producer(owner, kind, output);
+            return own_producers.note_recorded((entry, CullReach::NOTHING));
+        }
+        let reach = self.cull_reach(owner, kind);
+        if self.interest_misses(reach) {
+            let culled = if output.culled {
+                output
+            } else {
+                let published_bytes = cursor.bytes..cursor.bytes + output.bytes;
+                let routes_wheels = self.host.published_output_routes_wheels(owner, kind, published_bytes);
+                culled_output(output.hits, output.blocking_wheel_event_regions, routes_wheels)
+            };
+            if culled.hits != 0 || culled.blocking_wheel_event_regions != 0 {
+                self.copy(cursor, culled);
+            }
+            self.host.observe(AssemblyEvent::ProducerCulled(owner, kind));
+            return own_producers.note_recorded((ChildEntry::producer(kind, culled), reach));
+        }
+        if output.culled {
+            return own_producers.note_recorded(self.record_producer(owner, kind));
+        }
+        self.copy(cursor, output);
+        self.observe_copied_producer(owner, kind, output);
+        let copied = OutputSize {
+            has_cullable_output: !reach.is_nothing(),
+            ..output
+        };
+        own_producers.note_recorded((ChildEntry::producer(kind, copied), reach))
+    }
+
+    fn observe_copied_producer(&mut self, owner: NodeSlotId, kind: ProducerKind, output: OutputSize) {
+        self.host.observe(if output.culled {
+            AssemblyEvent::ProducerCulled(owner, kind)
+        } else {
+            AssemblyEvent::ProducerCopied(owner, kind)
+        });
+    }
+
+    fn cull_reach(&mut self, owner: NodeSlotId, kind: ProducerKind) -> CullReach {
+        match self.culling {
+            AssemblyCulling::LeavesNothingOut => CullReach::NOTHING,
+            AssemblyCulling::ByInterest { .. } => self.host.producer_cull_reach(owner, kind),
+        }
+    }
+
+    fn interest_misses(&self, reach: CullReach) -> bool {
+        matches!(self.culling, AssemblyCulling::ByInterest { .. })
+            && !reach.is_nothing()
+            && self.host.interest_misses(reach)
+    }
+
+    // Leaves out a producer that has no published output to take its hit-test items and blocking wheel regions from.
+    fn leave_out_without_published_output(
+        &mut self,
+        owner: NodeSlotId,
+        kind: ProducerKind,
+        reach: CullReach,
+    ) -> (ChildEntry, CullReach) {
+        self.flush_pending_copy();
+        let before = self.host.output_position();
+        let routes_wheels = self.host.record_producer_leaving_out_commands(owner, kind);
+        let after = self.host.output_position();
+        debug_assert_eq!(before.bytes, after.bytes, "a producer left out recorded commands");
+        let culled = culled_output(
+            after.hits - before.hits,
+            after.blocking_wheel_event_regions - before.blocking_wheel_event_regions,
+            routes_wheels,
+        );
+        (ChildEntry::producer(kind, culled), reach)
     }
 
     // Returns the producer's entry with the reach of its output that a recording around the scroll
@@ -520,6 +741,78 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             culled_wheel_routing: false,
         };
         (ChildEntry::producer(kind, output), cull_reach)
+    }
+
+    /// Panics unless the tree lists every scope and producer the plans list, its root counts the hit-test items the
+    /// frame holds, and every producer is left out exactly where the interest rect of its scroll node misses it, placed
+    /// afresh rather than through the scope summaries. A producer recorded without commands has nothing to leave out.
+    fn audit_culling(&mut self, root_output: OutputSize) {
+        assert_eq!(
+            root_output.hits,
+            self.host.output_position().hits,
+            "the frame holds other hit-test items than its tree counts"
+        );
+        if self.culling == AssemblyCulling::LeavesNothingOut {
+            assert!(
+                !root_output.culled,
+                "a frame that leaves nothing out left producers out"
+            );
+            return;
+        }
+        #[derive(Debug, PartialEq)]
+        enum Listed {
+            Producer(ProducerKind),
+            Scope(PaintScope),
+        }
+        let mut stack = vec![self.tree.root()];
+        while let Some(id) = stack.pop() {
+            let scope = self.tree.scope_of(id);
+            let plan = self.host.plan_scope(scope);
+            // A stacking context that does not paint lists nothing.
+            let planned_items = if plan.active { plan.items } else { SmallVec::new() };
+            let planned: Vec<Listed> = planned_items
+                .into_iter()
+                .flat_map(|item| -> SmallVec<[Listed; 5]> {
+                    match item {
+                        PaintOrderItem::Producer(producer) => {
+                            producer_kinds(producer).into_iter().map(Listed::Producer).collect()
+                        }
+                        PaintOrderItem::Scope(child_scope) => smallvec::smallvec![Listed::Scope(child_scope)],
+                    }
+                })
+                .collect();
+            let children = self.tree.children(id).to_vec();
+            let listed: Vec<Listed> = children
+                .iter()
+                .map(|entry| match entry.key() {
+                    ChildKey::Scope(child) => Listed::Scope(self.tree.scope_of(child)),
+                    ChildKey::Producer(kind) => Listed::Producer(kind),
+                })
+                .collect();
+            assert_eq!(
+                listed, planned,
+                "the tree lists other children of {scope:?} than its plan"
+            );
+            for entry in children {
+                let kind = match entry.key() {
+                    ChildKey::Scope(child) => {
+                        stack.push(child);
+                        continue;
+                    }
+                    ChildKey::Producer(kind) => kind,
+                };
+                let reach = self.host.producer_cull_reach(scope.owner, kind);
+                let missed = !reach.is_nothing() && self.host.interest_misses(reach);
+                let output = entry.output();
+                assert!(
+                    output.culled == missed || (!output.culled && output.bytes == 0),
+                    "{kind:?} of {:?} is {} while the interest rect of {reach:?} {} it",
+                    scope.owner,
+                    if output.culled { "left out" } else { "recorded" },
+                    if missed { "misses" } else { "reaches" }
+                );
+            }
+        }
     }
 
     fn copy(&mut self, cursor: SourceCursor, output: OutputSize) {
@@ -554,6 +847,21 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             pending.start.hits..pending.end.hits,
             pending.blocking_wheel_event_regions,
         );
+    }
+}
+
+// What a producer left out contributes: no bytes, but the hit-test items and blocking wheel regions it records still
+// count, since hit testing and the tree stay whole-document.
+fn culled_output(hits: u32, blocking_wheel_event_regions: u32, routes_wheels: bool) -> OutputSize {
+    OutputSize {
+        bytes: 0,
+        hits,
+        blocking_wheel_event_regions,
+        live: false,
+        reads_window_focus: false,
+        culled: true,
+        has_cullable_output: true,
+        culled_wheel_routing: routes_wheels,
     }
 }
 
@@ -608,6 +916,7 @@ mod tests {
         live: bool,
         blocking: u32,
         cull_reach: CullReach,
+        routes_wheels: bool,
     }
 
     fn content(rects: u32, hits: u32) -> Content {
@@ -618,6 +927,7 @@ mod tests {
             live: false,
             blocking: 0,
             cull_reach: CullReach::NOTHING,
+            routes_wheels: false,
         }
     }
 
@@ -652,9 +962,15 @@ mod tests {
         moved_subtrees: HashSet<NodeSlotId>,
         descendant_readers: HashSet<(NodeSlotId, ProducerKind)>,
         recorded: Vec<(NodeSlotId, ProducerKind)>,
+        left_out: Vec<(NodeSlotId, ProducerKind)>,
         events: Vec<AssemblyEvent>,
         output: Output,
         source: Option<Frame>,
+        culling: AssemblyCulling,
+        // The interest rect of each scroll node that has one.
+        interest_rects: HashMap<SpatialNodeIndex, IntRect>,
+        // The interest rects the published recording left out by.
+        published_interest_rects: HashMap<SpatialNodeIndex, IntRect>,
     }
 
     impl Default for TestHost {
@@ -666,9 +982,13 @@ mod tests {
                 moved_subtrees: HashSet::new(),
                 descendant_readers: HashSet::new(),
                 recorded: Vec::new(),
+                left_out: Vec::new(),
                 events: Vec::new(),
                 output: new_output(None),
                 source: None,
+                culling: AssemblyCulling::LeavesNothingOut,
+                interest_rects: HashMap::new(),
+                published_interest_rects: HashMap::new(),
             }
         }
     }
@@ -696,41 +1016,12 @@ mod tests {
             self.damage.clear();
             self.moved_subtrees.clear();
             self.recorded.clear();
+            self.left_out.clear();
             self.events.clear();
         }
 
-        fn recorded_kinds_of(&self, owner: NodeSlotId) -> Vec<ProducerKind> {
-            self.recorded
-                .iter()
-                .filter(|(recorded_owner, _)| *recorded_owner == owner)
-                .map(|(_, kind)| *kind)
-                .collect()
-        }
-    }
-
-    impl AssemblyHost for TestHost {
-        fn plan_scope(&mut self, scope: PaintScope) -> ScopePlan {
-            self.plans.get(&scope).cloned().unwrap_or_default()
-        }
-
-        fn record_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> ProducerOutcome {
-            let Some(content) = self.contents.get(&(owner, kind)).copied() else {
-                return ProducerOutcome::default();
-            };
-            self.recorded.push((owner, kind));
+        fn record_hits_and_blocking_regions(&mut self, owner: NodeSlotId, content: Content) {
             let output = &mut self.output;
-            for index in 0..content.rects {
-                output.recorder.fill_rect(
-                    IntRect {
-                        x: owner.slot_index() as i32,
-                        y: kind.code() as i32 * 100 + index as i32,
-                        width: 10,
-                        height: i32::from(content.version),
-                    },
-                    Color::from_rgb(content.version, kind.code() as u8, 7),
-                    ForceDarkRole::Background,
-                );
-            }
             for index in 0..content.hits {
                 output.hit_test_items.append(HitTestItem {
                     kind: HitTestItemKind::Box,
@@ -758,11 +1049,81 @@ mod tests {
                 });
             }
             output.blocking_wheel_event_region_count += content.blocking;
+        }
+
+        fn recorded_kinds_of(&self, owner: NodeSlotId) -> Vec<ProducerKind> {
+            self.recorded
+                .iter()
+                .filter(|(recorded_owner, _)| *recorded_owner == owner)
+                .map(|(_, kind)| *kind)
+                .collect()
+        }
+    }
+
+    impl AssemblyHost for TestHost {
+        fn plan_scope(&mut self, scope: PaintScope) -> ScopePlan {
+            self.plans.get(&scope).cloned().unwrap_or_default()
+        }
+
+        fn record_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> ProducerOutcome {
+            let Some(content) = self.contents.get(&(owner, kind)).copied() else {
+                return ProducerOutcome::default();
+            };
+            self.recorded.push((owner, kind));
+            for index in 0..content.rects {
+                self.output.recorder.fill_rect(
+                    IntRect {
+                        x: owner.slot_index() as i32,
+                        y: kind.code() as i32 * 100 + index as i32,
+                        width: 10,
+                        height: i32::from(content.version),
+                    },
+                    Color::from_rgb(content.version, kind.code() as u8, 7),
+                    ForceDarkRole::Background,
+                );
+            }
+            self.record_hits_and_blocking_regions(owner, content);
             ProducerOutcome {
                 live: content.live,
                 cull_reach: content.cull_reach,
                 ..Default::default()
             }
+        }
+
+        fn producer_cull_reach(&mut self, owner: NodeSlotId, kind: ProducerKind) -> CullReach {
+            self.contents
+                .get(&(owner, kind))
+                .map_or(CullReach::NOTHING, |content| content.cull_reach)
+        }
+
+        fn interest_misses(&self, reach: CullReach) -> bool {
+            reach
+                .bounds_in_only_scroll_node()
+                .and_then(|(scroll_node, bounds)| {
+                    let interest_rect = self.interest_rects.get(&scroll_node)?;
+                    Some(interest_rect.intersected(bounds).is_empty())
+                })
+                .unwrap_or(false)
+        }
+
+        fn published_and_current_interest_rects_of(&self, scroll_node: SpatialNodeIndex) -> Option<(IntRect, IntRect)> {
+            Some((
+                *self.published_interest_rects.get(&scroll_node)?,
+                *self.interest_rects.get(&scroll_node)?,
+            ))
+        }
+
+        fn record_producer_leaving_out_commands(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
+            let Some(content) = self.contents.get(&(owner, kind)).copied() else {
+                return false;
+            };
+            self.left_out.push((owner, kind));
+            self.record_hits_and_blocking_regions(owner, content);
+            content.routes_wheels && content.rects != 0
+        }
+
+        fn published_output_routes_wheels(&mut self, owner: NodeSlotId, kind: ProducerKind, bytes: Range<u32>) -> bool {
+            !bytes.is_empty() && self.contents[&(owner, kind)].routes_wheels
         }
 
         fn output_position(&self) -> OutputPosition {
@@ -827,8 +1188,9 @@ mod tests {
         );
         let prologue_bytes = host.output.recorder.byte_size() as u32;
         let source_prologue_bytes = host.source.as_ref().map(|frame| frame.prologue_bytes);
-        let root_output =
-            Assembler::new(host, tree, source_prologue_bytes, rewrites_tree, false).assemble_root(context(row(0)));
+        let culling = host.culling;
+        let root_output = Assembler::new(host, tree, source_prologue_bytes, rewrites_tree, false, culling)
+            .assemble_root(context(row(0)));
         let output = std::mem::replace(&mut host.output, new_output(None));
         Frame {
             display_list: output.recorder.into_builder().finish(),
@@ -854,12 +1216,14 @@ mod tests {
     // Returns the tree of the recording from scratch.
     fn assert_matches_from_scratch(host: &mut TestHost, assembled: &Frame) -> PaintOrderTree {
         let recorded = std::mem::take(&mut host.recorded);
+        let left_out = std::mem::take(&mut host.left_out);
         let events = std::mem::take(&mut host.events);
         let source = host.source.take();
         let mut fresh_tree = PaintOrderTree::default();
         let fresh = record_frame(host, &mut fresh_tree);
         host.source = source;
         host.recorded = recorded;
+        host.left_out = left_out;
         host.events = events;
         assert_eq!(
             assembled.display_list.bytes, fresh.display_list.bytes,
@@ -877,7 +1241,16 @@ mod tests {
             item_identities(&assembled.hit_test_items),
             item_identities(&fresh.hit_test_items)
         );
-        assert_eq!(assembled.root_output, fresh.root_output);
+        // A producer without commands may be left out or recorded empty, as the frame assembled it.
+        let comparable = |output: OutputSize| match host.culling {
+            AssemblyCulling::LeavesNothingOut => output,
+            AssemblyCulling::ByInterest { .. } => OutputSize {
+                culled: false,
+                has_cullable_output: false,
+                ..output
+            },
+        };
+        assert_eq!(comparable(assembled.root_output), comparable(fresh.root_output));
         fresh_tree
     }
 
@@ -969,7 +1342,12 @@ mod tests {
     fn a_quiet_frame_is_unchanged_and_a_fresh_frame_records_everything() {
         let mut host = cards_host();
         let mut tree = PaintOrderTree::default();
-        assert!(!frame_is_unchanged(&tree, false, false));
+        assert!(!frame_is_unchanged(
+            &tree,
+            false,
+            false,
+            AssemblyCulling::LeavesNothingOut
+        ));
 
         let frame = record_frame(&mut host, &mut tree);
 
@@ -980,8 +1358,18 @@ mod tests {
             frame.root_output.bytes as usize,
             frame.display_list.bytes.len() - frame.prologue_bytes as usize
         );
-        assert!(frame_is_unchanged(&tree, false, false));
-        assert!(!frame_is_unchanged(&tree, true, false));
+        assert!(frame_is_unchanged(
+            &tree,
+            false,
+            false,
+            AssemblyCulling::LeavesNothingOut
+        ));
+        assert!(!frame_is_unchanged(
+            &tree,
+            true,
+            false,
+            AssemblyCulling::LeavesNothingOut
+        ));
     }
 
     #[test]
@@ -1360,7 +1748,12 @@ mod tests {
         let first = record_frame(&mut host, &mut tree);
         host.source = Some(first);
         host.clear_damage();
-        assert!(!frame_is_unchanged(&tree, false, false));
+        assert!(!frame_is_unchanged(
+            &tree,
+            false,
+            false,
+            AssemblyCulling::LeavesNothingOut
+        ));
 
         let second = record_next_frame(&mut host, &mut tree);
 
@@ -1736,6 +2129,89 @@ mod tests {
         }
     }
 
+    // Which cards the viewport foreground lists, which it no longer lists, and which do not paint.
+    struct RandomCards {
+        listed: Vec<u32>,
+        removed: Vec<u32>,
+        inactive: HashSet<u32>,
+    }
+
+    impl RandomCards {
+        fn new() -> Self {
+            Self {
+                listed: CARD_ROWS.to_vec(),
+                removed: Vec::new(),
+                inactive: HashSet::new(),
+            }
+        }
+    }
+
+    // Changes content, order, eligibility and positions at random, and pushes the damage that says so.
+    fn damage_at_random(host: &mut TestHost, random: &mut Lcg, cards: &mut RandomCards) {
+        let rows_with_content = [1, 2, 3, 4, 5, 6, 12, 13, 15];
+        let RandomCards {
+            listed,
+            removed,
+            inactive,
+        } = cards;
+        for _ in 0..=random.next(3) {
+            match random.next(7) {
+                0 | 1 => {
+                    let row_index = rows_with_content[random.next(rows_with_content.len() as u32) as usize];
+                    change_content(host, random, row_index);
+                }
+                2 => {
+                    for index in (1..listed.len()).rev() {
+                        listed.swap(index, random.next(index as u32 + 1) as usize);
+                    }
+                    let items: Vec<PaintOrderItem> = listed.iter().map(|card| child(context(row(*card)))).collect();
+                    host.plan(foreground(row(0)), true, &items);
+                    host.push(row(0), PaintDamage::ORDER);
+                }
+                3 if listed.len() > 1 => {
+                    let card = listed.remove(random.next(listed.len() as u32) as usize);
+                    removed.push(card);
+                    let items: Vec<PaintOrderItem> = listed.iter().map(|card| child(context(row(*card)))).collect();
+                    host.plan(foreground(row(0)), true, &items);
+                    host.push(row(0), PaintDamage::ORDER);
+                }
+                4 if !removed.is_empty() => {
+                    let card = removed.remove(random.next(removed.len() as u32) as usize);
+                    listed.insert(random.next(listed.len() as u32 + 1) as usize, card);
+                    let items: Vec<PaintOrderItem> = listed.iter().map(|card| child(context(row(*card)))).collect();
+                    host.plan(foreground(row(0)), true, &items);
+                    push_with_hints(host, card, PaintDamage::ORDER | PaintDamage::ALL_PRODUCERS);
+                    if let Some(nested) = nested_row(card) {
+                        push_with_hints(host, nested, PaintDamage::ORDER | PaintDamage::ALL_PRODUCERS);
+                    }
+                    host.push(row(0), PaintDamage::ORDER);
+                }
+                5 => {
+                    let card = listed[random.next(listed.len() as u32) as usize];
+                    if !inactive.remove(&card) {
+                        inactive.insert(card);
+                    }
+                    host.plans.get_mut(&context(row(card))).unwrap().active = !inactive.contains(&card);
+                    push_with_hints(host, card, PaintDamage::ELIGIBILITY);
+                }
+                6 => {
+                    let card = listed[random.next(listed.len() as u32) as usize];
+                    let mut subtree = vec![card];
+                    subtree.extend(nested_row(card));
+                    for row_index in subtree {
+                        for kind in producer_kinds_of(host, row_index) {
+                            bump_version(host, row_index, kind);
+                        }
+                        host.moved_subtrees.insert(row(row_index));
+                    }
+                    push_with_hints(host, card, PaintDamage::MOVED);
+                }
+                _ => {}
+            }
+        }
+        update_synthetic_cull_reaches(host);
+    }
+
     #[test]
     fn random_damage_over_a_synthetic_tree_always_matches_from_scratch() {
         let mut random = Lcg(0x2545_f491);
@@ -1744,69 +2220,10 @@ mod tests {
         let first = record_frame(&mut host, &mut tree);
         host.source = Some(first);
         host.clear_damage();
-        let mut listed: Vec<u32> = CARD_ROWS.to_vec();
-        let mut removed: Vec<u32> = Vec::new();
-        let mut inactive: HashSet<u32> = HashSet::new();
-        let rows_with_content = [1, 2, 3, 4, 5, 6, 12, 13, 15];
+        let mut cards = RandomCards::new();
 
         for step in 0..400 {
-            for _ in 0..=random.next(3) {
-                match random.next(7) {
-                    0 | 1 => {
-                        let row_index = rows_with_content[random.next(rows_with_content.len() as u32) as usize];
-                        change_content(&mut host, &mut random, row_index);
-                    }
-                    2 => {
-                        for index in (1..listed.len()).rev() {
-                            listed.swap(index, random.next(index as u32 + 1) as usize);
-                        }
-                        let items: Vec<PaintOrderItem> = listed.iter().map(|card| child(context(row(*card)))).collect();
-                        host.plan(foreground(row(0)), true, &items);
-                        host.push(row(0), PaintDamage::ORDER);
-                    }
-                    3 if listed.len() > 1 => {
-                        let card = listed.remove(random.next(listed.len() as u32) as usize);
-                        removed.push(card);
-                        let items: Vec<PaintOrderItem> = listed.iter().map(|card| child(context(row(*card)))).collect();
-                        host.plan(foreground(row(0)), true, &items);
-                        host.push(row(0), PaintDamage::ORDER);
-                    }
-                    4 if !removed.is_empty() => {
-                        let card = removed.remove(random.next(removed.len() as u32) as usize);
-                        listed.insert(random.next(listed.len() as u32 + 1) as usize, card);
-                        let items: Vec<PaintOrderItem> = listed.iter().map(|card| child(context(row(*card)))).collect();
-                        host.plan(foreground(row(0)), true, &items);
-                        push_with_hints(&mut host, card, PaintDamage::ORDER | PaintDamage::ALL_PRODUCERS);
-                        if let Some(nested) = nested_row(card) {
-                            push_with_hints(&mut host, nested, PaintDamage::ORDER | PaintDamage::ALL_PRODUCERS);
-                        }
-                        host.push(row(0), PaintDamage::ORDER);
-                    }
-                    5 => {
-                        let card = listed[random.next(listed.len() as u32) as usize];
-                        if !inactive.remove(&card) {
-                            inactive.insert(card);
-                        }
-                        host.plans.get_mut(&context(row(card))).unwrap().active = !inactive.contains(&card);
-                        push_with_hints(&mut host, card, PaintDamage::ELIGIBILITY);
-                    }
-                    6 => {
-                        let card = listed[random.next(listed.len() as u32) as usize];
-                        let mut subtree = vec![card];
-                        subtree.extend(nested_row(card));
-                        for row_index in subtree {
-                            for kind in producer_kinds_of(&host, row_index) {
-                                bump_version(&mut host, row_index, kind);
-                            }
-                            host.moved_subtrees.insert(row(row_index));
-                        }
-                        push_with_hints(&mut host, card, PaintDamage::MOVED);
-                    }
-                    _ => {}
-                }
-            }
-
-            update_synthetic_cull_reaches(&mut host);
+            damage_at_random(&mut host, &mut random, &mut cards);
 
             // Hit tests between two published frames record frames that publish nothing.
             let published_structure = tree.structure();
@@ -1821,5 +2238,289 @@ mod tests {
             host.clear_damage();
             assert!(tree.scope_count() <= 32, "retired scopes are freed at once");
         }
+    }
+
+    // Every scope's summary reaches wherever the producers it lists that may be left out land, and wherever its child
+    // scopes reach.
+    fn assert_cull_summaries_reach_their_producers(tree: &PaintOrderTree, host: &TestHost) {
+        for (id, scope, children, summary) in tree.structure() {
+            for entry in children {
+                match entry.key() {
+                    ChildKey::Producer(kind) if entry.has_cullable_output() => {
+                        let reach = host.contents[&(scope.owner, kind)].cull_reach;
+                        assert!(
+                            summary.own_producers.covers(reach),
+                            "{id:?} keeps {summary:?}, which misses {kind:?} at {reach:?}"
+                        );
+                    }
+                    ChildKey::Producer(_) => {}
+                    ChildKey::Scope(child) => assert!(summary.subtree.covers(tree.cull_summary(child).subtree)),
+                }
+            }
+            assert!(summary.subtree.covers(summary.own_producers));
+        }
+    }
+
+    // Sets the interest rects of the next frame and leaves out by them, with the scroll nodes whose rect changed.
+    fn aim(host: &mut TestHost, interest_rects: &[(SpatialNodeIndex, IntRect)]) {
+        host.published_interest_rects = host.interest_rects.clone();
+        let mut changed_scroll_nodes = ScrollNodeSet::default();
+        for (scroll_node, rect) in interest_rects {
+            if host.interest_rects.insert(*scroll_node, *rect) != Some(*rect) {
+                changed_scroll_nodes.insert(*scroll_node);
+            }
+        }
+        let places_every_producer_again = host.culling == AssemblyCulling::LeavesNothingOut;
+        host.culling = AssemblyCulling::ByInterest {
+            changed_scroll_nodes,
+            places_every_producer_again,
+        };
+    }
+
+    #[test]
+    fn random_damage_and_interest_rects_left_out_exactly_what_they_miss() {
+        let mut random = Lcg(0x6d2b_79f5);
+        let mut host = random_tree_host();
+        let mut tree = PaintOrderTree::default();
+        let first = record_frame(&mut host, &mut tree);
+        host.source = Some(first);
+        host.clear_damage();
+        let mut cards = RandomCards::new();
+
+        for step in 0..400 {
+            damage_at_random(&mut host, &mut random, &mut cards);
+            // The synthetic reaches lie between 10 and 2600 px down, so these rects reach some of them, all or none.
+            let random_rect =
+                |random: &mut Lcg| IntRect::new(0, random.next(300) as i32 * 10, 2000, random.next(120) as i32 * 10);
+            match random.next(4) {
+                0 => {
+                    let rect = random_rect(&mut random);
+                    aim(&mut host, &[(ROOT_SCROLL_NODE, rect)]);
+                }
+                1 => {
+                    let rect = random_rect(&mut random);
+                    aim(&mut host, &[(NESTED_SCROLL_NODE, rect)]);
+                }
+                2 => aim(&mut host, &[]),
+                _ => {
+                    host.culling = AssemblyCulling::LeavesNothingOut;
+                    host.interest_rects.clear();
+                }
+            }
+
+            let published_structure = tree.structure();
+            for _ in 0..step % 3 {
+                let unpublished = record_frame_rewriting_tree(&mut host, &mut tree, false);
+                assert_matches_from_scratch(&mut host, &unpublished);
+                assert_eq!(tree.structure(), published_structure);
+            }
+
+            let frame = record_next_frame(&mut host, &mut tree);
+            assert_matches_from_scratch(&mut host, &frame);
+            assert_cull_summaries_reach_their_producers(&tree, &host);
+            host.clear_damage();
+        }
+    }
+
+    // Cards 2 and 3 draw where an interest rect around card 1 misses them, and card 3's background routes wheels over
+    // a blocking region.
+    fn cards_host_with_wheel_routing_in_card_3() -> TestHost {
+        let mut host = cards_host();
+        let background = host.contents.get_mut(&(row(3), ProducerKind::DrawBackground)).unwrap();
+        background.blocking = 1;
+        background.routes_wheels = true;
+        host
+    }
+
+    fn culled_kinds(host: &TestHost) -> Vec<(NodeSlotId, ProducerKind)> {
+        host.events
+            .iter()
+            .filter_map(|event| match event {
+                AssemblyEvent::ProducerCulled(owner, kind) => Some((*owner, *kind)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn draws_of(cards: &[u32]) -> Vec<(NodeSlotId, ProducerKind)> {
+        cards
+            .iter()
+            .flat_map(|card| {
+                [
+                    (row(*card), ProducerKind::DrawBackground),
+                    (row(*card), ProducerKind::DrawForeground),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn producers_an_interest_rect_misses_are_left_out_and_record_once_it_reaches_them() {
+        let mut host = cards_host_with_wheel_routing_in_card_3();
+        let mut tree = PaintOrderTree::default();
+        let whole = record_frame(&mut host, &mut tree);
+        let whole_bytes = whole.display_list.bytes.len();
+        host.source = Some(whole);
+        host.clear_damage();
+
+        // Around card 1, from a recording of the whole document: every producer is placed again, nothing records, and
+        // the producers left out keep their hit-test items and blocking region.
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 900, 800, 400))]);
+        let around_card_1 = record_next_frame(&mut host, &mut tree);
+        assert!(host.recorded.is_empty() && host.left_out.is_empty());
+        assert_eq!(culled_kinds(&host), draws_of(&[2, 3]));
+        assert_eq!(around_card_1.hit_test_items.len(), 6);
+        let root_output = around_card_1.root_output;
+        assert!(root_output.culled && root_output.culled_wheel_routing);
+        assert_eq!(root_output.blocking_wheel_event_regions, 1);
+        assert!(around_card_1.display_list.bytes.len() < whole_bytes);
+        assert_matches_from_scratch(&mut host, &around_card_1);
+        assert_cull_summaries_reach_their_producers(&tree, &host);
+        assert!(!frame_is_unchanged(
+            &tree,
+            false,
+            false,
+            AssemblyCulling::LeavesNothingOut
+        ));
+        host.clear_damage();
+
+        // Around card 3: its producers record, card 1's are left out, and card 2, which neither rect reaches, is copied
+        // with its producers left out.
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 2900, 800, 400))]);
+        let around_card_3 = record_next_frame(&mut host, &mut tree);
+        assert_eq!(host.recorded, draws_of(&[3]));
+        assert_eq!(culled_kinds(&host), draws_of(&[1]));
+        assert_eq!(copied_scopes(&host), vec![foreground(row(2))]);
+        assert!(!around_card_3.root_output.culled_wheel_routing);
+        assert_eq!(around_card_3.root_output.blocking_wheel_event_regions, 1);
+        assert_matches_from_scratch(&mut host, &around_card_3);
+        host.clear_damage();
+
+        // Nothing changed, so the published recording is the frame.
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 2900, 800, 400))]);
+        assert!(frame_is_unchanged(&tree, false, false, host.culling));
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 2800, 800, 400))]);
+        assert!(!frame_is_unchanged(&tree, false, false, host.culling));
+
+        // A damaged producer left out records nothing.
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 2900, 800, 400))]);
+        moves_card(&mut host, 1, ProducerKind::DrawForeground, 50);
+        host.push(row(1), PaintDamage::DRAW_FOREGROUND);
+        host.push(row(0), PaintDamage::DESCENDANT_READERS);
+        let damaged_card_left_out = record_next_frame(&mut host, &mut tree);
+        assert!(host.recorded.is_empty());
+        assert_eq!(host.left_out, vec![(row(1), ProducerKind::DrawForeground)]);
+        assert_matches_from_scratch(&mut host, &damaged_card_left_out);
+        host.clear_damage();
+
+        // A frame that leaves nothing out records everything left out.
+        host.culling = AssemblyCulling::LeavesNothingOut;
+        let whole_again = record_next_frame(&mut host, &mut tree);
+        assert_eq!(host.recorded, draws_of(&[1, 2]));
+        assert!(!whole_again.root_output.culled);
+        assert_matches_from_scratch(&mut host, &whole_again);
+    }
+
+    #[test]
+    fn only_scopes_that_reach_a_scroll_node_whose_interest_rect_changed_are_walked() {
+        let mut host = cards_host();
+        for kind in [ProducerKind::DrawBackground, ProducerKind::DrawForeground] {
+            host.contents.get_mut(&(row(3), kind)).unwrap().cull_reach =
+                CullReach::in_scroll_node(NESTED_SCROLL_NODE, IntRect::new(0, 0, 800, 100));
+        }
+        let mut tree = PaintOrderTree::default();
+        host.source = Some(record_frame(&mut host, &mut tree));
+        aim(
+            &mut host,
+            &[
+                (ROOT_SCROLL_NODE, IntRect::new(0, 0, 800, 1500)),
+                (NESTED_SCROLL_NODE, IntRect::new(0, 0, 800, 50)),
+            ],
+        );
+        record_next_frame(&mut host, &mut tree);
+        host.clear_damage();
+
+        aim(
+            &mut host,
+            &[
+                (ROOT_SCROLL_NODE, IntRect::new(0, 0, 800, 1500)),
+                (NESTED_SCROLL_NODE, IntRect::new(0, 500, 800, 50)),
+            ],
+        );
+        let frame = record_next_frame(&mut host, &mut tree);
+        assert_eq!(copied_scopes(&host), vec![foreground(row(1)), foreground(row(2))]);
+        assert_eq!(culled_kinds(&host), draws_of(&[3]));
+        assert_matches_from_scratch(&mut host, &frame);
+    }
+
+    fn copied_scopes(host: &TestHost) -> Vec<PaintScope> {
+        host.events
+            .iter()
+            .filter_map(|event| match event {
+                AssemblyEvent::ScopeCopied(scope) => Some(*scope),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_clean_scope_is_copied_while_a_changed_interest_rect_cuts_what_it_draws_alike() {
+        let mut host = cards_host();
+        let mut tree = PaintOrderTree::default();
+        host.source = Some(record_frame(&mut host, &mut tree));
+        host.clear_damage();
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 900, 800, 400))]);
+        record_next_frame(&mut host, &mut tree);
+        host.clear_damage();
+
+        // Grown around card 1 without reaching card 2, the rect still holds all of card 1 and none of cards 2 and 3.
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 800, 800, 600))]);
+        let grown = record_next_frame(&mut host, &mut tree);
+        assert_eq!(
+            copied_scopes(&host),
+            vec![foreground(row(1)), foreground(row(2)), foreground(row(3))]
+        );
+        assert!(host.recorded.is_empty());
+        assert_matches_from_scratch(&mut host, &grown);
+        host.clear_damage();
+
+        // Reaching into card 2, the rect makes it record, while cards 1 and 3 stay as they were.
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 800, 800, 1250))]);
+        let reaching_card_2 = record_next_frame(&mut host, &mut tree);
+        assert_eq!(copied_scopes(&host), vec![foreground(row(1)), foreground(row(3))]);
+        assert_eq!(host.recorded, draws_of(&[2]));
+        assert_matches_from_scratch(&mut host, &reaching_card_2);
+    }
+
+    #[test]
+    fn a_damaged_producer_left_out_keeps_the_hit_test_items_it_records() {
+        let mut host = cards_host();
+        host.plan(foreground(row(3)), true, &[svg()]);
+        host.produce(
+            row(3),
+            ProducerKind::Svg,
+            Content {
+                cull_reach: card_reach(3, ProducerKind::DrawBackground, 0),
+                ..content(2, 3)
+            },
+        );
+        let mut tree = PaintOrderTree::default();
+        host.source = Some(record_frame(&mut host, &mut tree));
+        aim(&mut host, &[(ROOT_SCROLL_NODE, IntRect::new(0, 900, 800, 400))]);
+        bump_version(&mut host, 3, ProducerKind::Svg);
+        host.push(row(3), PaintDamage::SVG);
+        host.push(row(0), PaintDamage::DESCENDANT_READERS);
+        let frame = record_next_frame(&mut host, &mut tree);
+        assert_eq!(host.left_out, vec![(row(3), ProducerKind::Svg)]);
+        assert_eq!(frame.hit_test_items.len(), 2 + 2 + 3);
+        assert_eq!(
+            frame
+                .hit_test_items
+                .iter()
+                .filter(|item| item.paintable == row(3))
+                .count(),
+            3
+        );
+        assert_matches_from_scratch(&mut host, &frame);
     }
 }

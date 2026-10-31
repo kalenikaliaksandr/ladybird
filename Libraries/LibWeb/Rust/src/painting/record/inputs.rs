@@ -10,10 +10,8 @@ use crate::painting::display_list::commands::UniqueNodeId;
 use crate::painting::ffi::FfiChromeMetrics;
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::host::{FfiFlexOverlayInput, FfiGridOverlayInput, RootBackgroundSource};
-use crate::painting::record::{RecordedInterest, RecordingOutput};
 use libgfx_rust::font::FontHandle;
 use libgfx_rust::{Color, IntRect, IntSize};
-use std::sync::Arc;
 
 /// The inputs read by content that is recorded outside per-box captures: scroll metadata,
 /// viewport scrollbars, the wheel-target facts of hit-test items. Reusing a subtree capture from
@@ -114,20 +112,11 @@ pub(crate) enum InterestInput {
     WholeDocument,
     /// What lies around the part of each scroll node that its scroll position shows.
     AroundScrollPositions,
+    /// Like `AroundScrollPositions`, but keeping only what an earlier testing recording aimed for, so that what a test
+    /// records never depends on recordings made outside it.
+    AroundScrollPositionsForTesting,
     /// What the recording published last records: a recording that only rebuilds the hit-test list records no more.
     AsSourceRecording,
-}
-
-impl InterestInput {
-    /// What a recording with this interest records of its document, where `published` is the recording published last.
-    pub(crate) fn recorded_interest(&self, published: Option<&RecordingOutput>) -> Arc<RecordedInterest> {
-        match self {
-            Self::WholeDocument | Self::AroundScrollPositions => Arc::default(),
-            Self::AsSourceRecording => {
-                published.map_or_else(Arc::default, |published| Arc::clone(&published.recorded_interest))
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

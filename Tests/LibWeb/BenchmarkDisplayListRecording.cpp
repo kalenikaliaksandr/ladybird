@@ -33,6 +33,8 @@
 
 // Compare cold, quiet and sparse recordings of flat and nested pages. Mutations and layout are
 // timed separately, and outline changes exercise fragments whose command counts grow or shrink.
+// A page fifty viewports tall compares recording the whole document with recording around the
+// scroll positions.
 
 namespace {
 
@@ -49,15 +51,40 @@ enum class DocumentShape {
     NestedPanels,
     SharedContextCards,
     TokenizedCards,
+    TallCards,
 };
 
 size_t card_count_of(DocumentShape shape)
 {
     // A long diff has many paint occurrences sharing one stacking context. Keep
     // enough owners here to expose the cost of reconstructing the packed program.
-    if (shape == DocumentShape::SharedContextCards)
+    if (shape == DocumentShape::SharedContextCards || shape == DocumentShape::TallCards)
         return 20000;
     return shape == DocumentShape::FlatCardsFew ? 200 : 2000;
+}
+
+size_t columns_of(DocumentShape shape)
+{
+    switch (shape) {
+    case DocumentShape::TokenizedCards:
+        return 4;
+    case DocumentShape::TallCards:
+        return 8;
+    default:
+        return cards_per_row;
+    }
+}
+
+int card_width_of(DocumentShape shape)
+{
+    switch (shape) {
+    case DocumentShape::TokenizedCards:
+        return 200;
+    case DocumentShape::TallCards:
+        return 100;
+    default:
+        return card_width;
+    }
 }
 
 // What one timed iteration changes before recording. Each variant dirties a different set of stacking
@@ -75,6 +102,11 @@ enum class Mutation {
     OneInTwentyCardsBackground,
     // Every fifth card: four hundred dirty contexts under one ancestor among 2000.
     OneInFiveCardsBackground,
+    // One card in the first row, which a recording around the scroll positions at the top records.
+    OneCardNearTheTopBackground,
+    // The viewport moves between the top and 512 px below it, which moves what a recording around the scroll positions
+    // records by one step of the interest grid.
+    ViewportScrollByOneInterestGridStep,
 };
 
 // Whether the paint caches are dropped before each timed recording, so the recording starts from scratch and
@@ -162,6 +194,7 @@ OwnPtr<LoadedPage> s_flat_cards_few_page;
 OwnPtr<LoadedPage> s_nested_panels_page;
 OwnPtr<LoadedPage> s_shared_context_cards_page;
 OwnPtr<LoadedPage> s_tokenized_cards_page;
+OwnPtr<LoadedPage> s_tall_cards_page;
 
 // The markup goes into the initial about:blank document's root element: navigations are driven by the browser
 // process's session history, which an in-process page has no access to.
@@ -173,6 +206,10 @@ Utf16String build_document_markup(DocumentShape shape)
     builder.append(".card{position:absolute;z-index:1;box-sizing:border-box;border:1px solid #446;background:#dde;color:#113;overflow:hidden}"sv);
     if (shape == DocumentShape::SharedContextCards)
         builder.append(".card{z-index:auto}"sv);
+    // Text a little taller than a card would make every card a scroll container the compositor scrolls; a tall page
+    // scrolls its viewport alone.
+    if (shape == DocumentShape::TallCards)
+        builder.append(".card{overflow:visible}"sv);
     builder.append(".token:nth-child(2n){color:#c40}.token:nth-child(2n+1){color:#048}"sv);
     builder.append(".panel{position:relative;z-index:0;width:800px;height:600px}"sv);
     builder.append("#negative{position:absolute;z-index:-1;left:0;top:0;width:800px;height:600px;background:#eef}"sv);
@@ -184,8 +221,8 @@ Utf16String build_document_markup(DocumentShape shape)
     }
     builder.append("<div id=negative></div>"sv);
     for (size_t i = 0; i < card_count_of(shape); ++i) {
-        auto columns = shape == DocumentShape::TokenizedCards ? 4 : cards_per_row;
-        auto width = shape == DocumentShape::TokenizedCards ? 200 : card_width;
+        auto columns = columns_of(shape);
+        auto width = card_width_of(shape);
         auto left = static_cast<int>(i % columns) * width;
         auto top = static_cast<int>(i / columns) * card_height;
         builder.appendff("<div class=card id=card-{} style=\"left:{}px;top:{}px;width:{}px;height:{}px\">", i, left, top, width, card_height);
@@ -274,6 +311,8 @@ LoadedPage& page_for(DocumentShape shape)
             return s_shared_context_cards_page;
         case DocumentShape::TokenizedCards:
             return s_tokenized_cards_page;
+        case DocumentShape::TallCards:
+            return s_tall_cards_page;
         }
         VERIFY_NOT_REACHED();
     }();
@@ -286,9 +325,11 @@ void set_card_style(LoadedPage& loaded_page, size_t card_index, StringView backg
 {
     auto card = loaded_page.document().get_element_by_id(Utf16String::formatted("card-{}", card_index));
     VERIFY(card);
-    auto left = static_cast<int>(card_index % cards_per_row) * card_width;
-    auto top = static_cast<int>(card_index / cards_per_row) * card_height;
-    card->set_attribute_value(Web::HTML::AttributeNames::style, Utf16String::formatted("left:{}px;top:{}px;width:{}px;height:{}px;background:{}{}", left, top, card_width, card_height, background, framed ? ";outline:2px solid #800"sv : ""sv));
+    auto columns = columns_of(loaded_page.shape);
+    auto width = card_width_of(loaded_page.shape);
+    auto left = static_cast<int>(card_index % columns) * width;
+    auto top = static_cast<int>(card_index / columns) * card_height;
+    card->set_attribute_value(Web::HTML::AttributeNames::style, Utf16String::formatted("left:{}px;top:{}px;width:{}px;height:{}px;background:{}{}", left, top, width, card_height, background, framed ? ";outline:2px solid #800"sv : ""sv));
 }
 
 void apply_mutation(LoadedPage& loaded_page, Mutation mutation)
@@ -321,6 +362,12 @@ void apply_mutation(LoadedPage& loaded_page, Mutation mutation)
         for (size_t index = 2; index < count; index += 5)
             set_card_style(loaded_page, index, alternate ? "#fdd"sv : "#dfd"sv, false);
         break;
+    case Mutation::OneCardNearTheTopBackground:
+        set_card_style(loaded_page, 3, alternate ? "#fdd"sv : "#dfd"sv, false);
+        break;
+    case Mutation::ViewportScrollByOneInterestGridStep:
+        loaded_page.page->local_traversable()->perform_scroll_of_viewport_scrolling_box({ 0, alternate ? 512 : 0 });
+        break;
     }
 }
 
@@ -339,10 +386,16 @@ struct Samples {
 
 // The style change and its layout update are timed separately from the recording, so the invalidation and
 // relayout cost of each mutation is visible next to the recording it triggers.
-void time_document_recordings(DocumentShape shape, StringView label, Optional<Mutation> mutation, CacheState cache_state = CacheState::Warm)
+void time_document_recordings(DocumentShape shape, StringView label, Optional<Mutation> mutation, CacheState cache_state = CacheState::Warm, Web::Painting::RecordingCoverage coverage = Web::Painting::RecordingCoverage::WholeDocument)
 {
     auto& loaded_page = page_for(shape);
     auto& document = loaded_page.document();
+    // The pages are warmed up recording the whole document; a recording around the scroll positions that follows one
+    // places every producer once.
+    if (coverage != Web::Painting::RecordingCoverage::WholeDocument) {
+        Web::Layout::ForcedReadScope read { document };
+        VERIFY(document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, coverage));
+    }
     Samples layout_samples;
     Samples samples;
     size_t recorded_byte_count = 0;
@@ -359,7 +412,7 @@ void time_document_recordings(DocumentShape shape, StringView label, Optional<Mu
         }
         Web::Layout::ForcedReadScope read { document };
         auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-        auto display_list = document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, Web::Painting::RecordingCoverage::WholeDocument);
+        auto display_list = document.record_display_list(read, benchmark_paint_config(), loaded_page.display_list_resource_storage, Web::Painting::PaintCommandCacheMode::ReadWrite, coverage);
         samples.microseconds.append(timer.elapsed_time().to_microseconds());
         VERIFY(display_list);
         recorded_byte_count = display_list->tape_size();
@@ -473,6 +526,32 @@ BENCHMARK_CASE(document_record_cold_among_2000_flat)
 BENCHMARK_CASE(document_record_cold_among_2000_nested)
 {
     time_document_recordings(DocumentShape::NestedPanels, "document recording, nested panels, cold"sv, Mutation::OneCardBackground, CacheState::Cold);
+}
+
+BENCHMARK_CASE(document_record_cold_tall_whole_document)
+{
+    time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, cold, whole document"sv, Mutation::OneCardNearTheTopBackground, CacheState::Cold);
+}
+
+BENCHMARK_CASE(document_record_cold_tall_around_scroll_positions)
+{
+    time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, cold, around the scroll positions"sv, Mutation::OneCardNearTheTopBackground, CacheState::Cold, Web::Painting::RecordingCoverage::AroundScrollPositions);
+}
+
+BENCHMARK_CASE(document_record_after_one_card_near_the_top_changes_tall_whole_document)
+{
+    time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, one dirty near the top, whole document"sv, Mutation::OneCardNearTheTopBackground);
+}
+
+BENCHMARK_CASE(document_record_after_one_card_near_the_top_changes_tall_around_scroll_positions)
+{
+    time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, one dirty near the top, around the scroll positions"sv, Mutation::OneCardNearTheTopBackground, CacheState::Warm, Web::Painting::RecordingCoverage::AroundScrollPositions);
+}
+
+BENCHMARK_CASE(document_record_after_viewport_scrolls_one_interest_grid_step_tall_around_scroll_positions)
+{
+    time_document_recordings(DocumentShape::TallCards, "document recording, tall cards, viewport scrolled one interest grid step, around the scroll positions"sv, Mutation::ViewportScrollByOneInterestGridStep, CacheState::Warm, Web::Painting::RecordingCoverage::AroundScrollPositions);
+    page_for(DocumentShape::TallCards).page->local_traversable()->perform_scroll_of_viewport_scrolling_box({ 0, 0 });
 }
 
 BENCHMARK_CASE(rust_record_after_one_card_style_change_among_2000_flat)

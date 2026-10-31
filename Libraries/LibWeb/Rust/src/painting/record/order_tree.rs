@@ -231,6 +231,24 @@ impl CullReach {
         self.scroll_node_bits == 0
     }
 
+    /// The one scroll node the commands land in and what they cover in its content, unless they may land in more.
+    pub(crate) fn bounds_in_only_scroll_node(self) -> Option<(SpatialNodeIndex, IntRect)> {
+        self.bounds_in_scroll_node
+            .filter(|(scroll_node, _)| self.scroll_node_bits == scroll_node_bit(*scroll_node))
+    }
+
+    /// Whether the commands may land in any of `scroll_nodes`.
+    pub(crate) fn touches(self, scroll_nodes: ScrollNodeSet) -> bool {
+        self.scroll_node_bits & scroll_nodes.0 != 0
+    }
+
+    /// The one scroll node among `scroll_nodes` that the commands may land in, with what they cover there, unless they
+    /// may land in more of them or the bounds of that one are unknown.
+    pub(crate) fn bounds_in_only_one_of(self, scroll_nodes: ScrollNodeSet) -> Option<(SpatialNodeIndex, IntRect)> {
+        self.bounds_in_scroll_node
+            .filter(|(scroll_node, _)| self.scroll_node_bits & scroll_nodes.0 == scroll_node_bit(*scroll_node))
+    }
+
     pub(crate) fn united(self, other: Self) -> Self {
         if self.is_nothing() {
             return other;
@@ -276,6 +294,21 @@ impl CullReach {
             }
             _ => other.scroll_node_bits & scroll_node_bit(scroll_node) == 0,
         }
+    }
+}
+
+/// Scroll nodes, kept like the scroll nodes of a `CullReach`, so that whether some content may land in one is a single
+/// test. A set holds more than it was given where spatial node indices share a bit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScrollNodeSet(u64);
+
+impl ScrollNodeSet {
+    pub(crate) fn insert(&mut self, scroll_node: SpatialNodeIndex) {
+        self.0 |= scroll_node_bit(scroll_node);
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
     }
 }
 

@@ -1,0 +1,5 @@
+fixed: COPY
+sticky: COPY
+transformed: COPY
+filtered: COPY
+plain: CULL

@@ -19,12 +19,13 @@ use super::{PaintPhase, PaintRecorder};
 use crate::css::computed_value_types::ComputedShadow;
 use crate::css::css_pixels::{CssPixelRect, CssPixels};
 use crate::layout::node_data::{NodeKind, NodeSlotId};
-use crate::painting::chrome_geometry::ChromeGeometry;
+use crate::painting::chrome_geometry::{ChromeGeometry, maximum_scroll_offset, minimum_scroll_offset};
 use crate::painting::display_list::builder::{for_each_command, read_command};
 use crate::painting::display_list::commands::{
     CompositorBlockingWheelEventRegion, CompositorMainThreadWheelEventRegion, CompositorNestedContextWheelRegion,
-    CompositorScrollChainingBarrier, CompositorWheelHitTestTarget, CompositorWheelHitTestTargetWithCornerRadii,
-    ContextRef, DisplayListCommandHeader, DisplayListCommandRun, DisplayListCommandType, SpatialNodeIndex,
+    CompositorScrollChainingBarrier, CompositorScrollNodeKind, CompositorWheelHitTestTarget,
+    CompositorWheelHitTestTargetWithCornerRadii, ContextRef, DisplayListCommandHeader, DisplayListCommandRun,
+    DisplayListCommandType, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
 };
 use crate::painting::display_list::device_pixels::DevicePixelConverter;
 use crate::painting::ffi::ScrollDirection;
@@ -105,8 +106,12 @@ fn place(
 /// What placing producers reads of the visual context tree, worked out once per recording.
 pub(crate) struct CullSpaces {
     under_spreading_filter: Vec<bool>,
-    // One flag per spatial node: whether it is a scroll node the recording records a compositor scroll node for.
-    scrolled_by_compositor: Vec<bool>,
+    // Per spatial node: the kind of compositor scroll node the recording records for it, if it records one.
+    compositor_scroll_node_kinds: Vec<Option<CompositorScrollNodeKind>>,
+    // One flag per spatial node: whether a scroll node the compositor does not scroll, but whose scroll range is not
+    // empty, lies between the node and the nearest one the compositor scrolls. Its scroll offset moves content where the
+    // bounds of that content do not say.
+    moved_by_scroll_node_without_compositor: Vec<bool>,
 }
 
 /// The scroll nodes that content is culled in.
@@ -119,25 +124,60 @@ enum CullingScrollNodes {
 }
 
 impl CullSpaces {
-    fn cull_space_of(
+    /// Where content recorded under `context` lands in the scroll nodes the compositor scrolls.
+    pub(crate) fn cull_space_of(&self, tree: &VisualContextTree, context: ContextRef) -> CullSpace {
+        self.cull_space_in(tree, context, CullingScrollNodes::ScrolledByCompositor)
+    }
+
+    pub(crate) fn is_scrolled_by_compositor(&self, scroll_node: SpatialNodeIndex) -> bool {
+        self.compositor_scroll_node_kind(scroll_node).is_some()
+    }
+
+    pub(crate) fn compositor_scroll_node_kind(
+        &self,
+        scroll_node: SpatialNodeIndex,
+    ) -> Option<CompositorScrollNodeKind> {
+        self.compositor_scroll_node_kinds
+            .get(scroll_node.0 as usize)
+            .copied()
+            .flatten()
+    }
+
+    /// One flag per effect node: whether a filter may spread content under it beyond its bounds.
+    pub(crate) fn effects_under_spreading_filters(&self) -> &[bool] {
+        &self.under_spreading_filter
+    }
+
+    fn cull_space_in(
         &self,
         tree: &VisualContextTree,
         context: ContextRef,
         culling_scroll_nodes: CullingScrollNodes,
     ) -> CullSpace {
-        cull_space_of(
+        let cull_space = cull_space_of(
             tree,
             context,
-            |index| {
-                culling_scroll_nodes == CullingScrollNodes::Every
-                    || self
-                        .scrolled_by_compositor
-                        .get(index.0 as usize)
-                        .copied()
-                        .unwrap_or(false)
-            },
+            |index| culling_scroll_nodes == CullingScrollNodes::Every || self.is_scrolled_by_compositor(index),
             &self.under_spreading_filter,
-        )
+        );
+        match cull_space {
+            CullSpace::ScrollNode {
+                scroll_node,
+                placed_exactly: true,
+            } if culling_scroll_nodes == CullingScrollNodes::ScrolledByCompositor
+                && self
+                    .moved_by_scroll_node_without_compositor
+                    .get(context.spatial.0 as usize)
+                    .copied()
+                    .unwrap_or(false) =>
+            {
+                CullSpace::ScrollNode {
+                    scroll_node,
+                    placed_exactly: false,
+                }
+            }
+            _ => cull_space,
+        }
     }
 }
 
@@ -149,33 +189,117 @@ pub(crate) fn verifies_paint_producer_bounds() -> bool {
         || *REQUESTED.get_or_init(|| std::env::var_os("LIBWEB_VERIFY_PAINT_PRODUCER_BOUNDS").is_some())
 }
 
+/// Whether every frame that leaves producers out by interest is audited after it is assembled: always under debug
+/// assertions, and with LIBWEB_VERIFY_INTEREST_CULLING set.
+pub(crate) fn verifies_interest_culling() -> bool {
+    static REQUESTED: OnceLock<bool> = OnceLock::new();
+    cfg!(debug_assertions) || *REQUESTED.get_or_init(|| std::env::var_os("LIBWEB_VERIFY_INTEREST_CULLING").is_some())
+}
+
 impl<O: Observer> PaintRecorder<'_, O> {
     pub(crate) fn cull_spaces_of_recording(&mut self) -> Option<CullSpaces> {
         let paint_state = self.paint_state;
         let tree = paint_state.visual_context_tree.as_deref()?;
-        let scrolled_by_compositor = tree
+        let compositor_scroll_node_kinds: Vec<Option<CompositorScrollNodeKind>> = tree
             .spatial_nodes
             .iter()
             .map(|node| match &node.data {
                 SpatialData::Scroll(scroll) => {
                     let owner = scroll.owner_paintable;
-                    !owner.is_invalid()
-                        && self.source.paintable_row_is_populated(owner)
-                        && self.kind_of_compositor_scroll_node_recorded_for(owner).is_some()
+                    if owner.is_invalid() || !self.source.paintable_row_is_populated(owner) {
+                        return None;
+                    }
+                    self.kind_of_compositor_scroll_node_recorded_for(owner)
                 }
-                _ => false,
+                _ => None,
             })
             .collect();
+        let mut moved_by_scroll_node_without_compositor = vec![false; tree.spatial_nodes.len()];
+        tree.visit_spatial_nodes_parents_first(|index| {
+            if compositor_scroll_node_kinds[index].is_some() {
+                return;
+            }
+            let node = &tree.spatial_nodes[index];
+            let moved_here = match &node.data {
+                SpatialData::Scroll(scroll) => self.scroll_range_is_not_empty(scroll.owner_paintable),
+                _ => false,
+            };
+            moved_by_scroll_node_without_compositor[index] = moved_here
+                || (index != VISUAL_VIEWPORT_NODE_INDEX.0 as usize
+                    && moved_by_scroll_node_without_compositor[node.parent.0 as usize]);
+        });
         Some(CullSpaces {
             under_spreading_filter: effects_under_spreading_filters(tree),
-            scrolled_by_compositor,
+            compositor_scroll_node_kinds,
+            moved_by_scroll_node_without_compositor,
         })
     }
 
-    /// Where a producer about to record can draw, when the recording knows its cull spaces.
+    fn scroll_range_is_not_empty(&self, owner: NodeSlotId) -> bool {
+        !owner.is_invalid()
+            && self.source.paintable_row_is_populated(owner)
+            && minimum_scroll_offset(self.source, owner) != maximum_scroll_offset(self.source, owner)
+    }
+
+    /// Where a producer about to record can draw, when the recording knows its cull spaces. Assembly asks whether to
+    /// leave a producer out right before it records it, so the last placement is kept.
     pub(crate) fn placement_of_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> Option<ProducerPlacement> {
         self.cull_spaces.as_ref()?;
-        Some(self.producer_placement(owner, kind, CullingScrollNodes::ScrolledByCompositor))
+        if let Some((placed_owner, placed_kind, placement)) = self.last_placement
+            && placed_owner == owner
+            && placed_kind == kind
+        {
+            return Some(placement);
+        }
+        let placement = self.producer_placement(owner, kind, CullingScrollNodes::ScrolledByCompositor);
+        self.last_placement = Some((owner, kind, placement));
+        Some(placement)
+    }
+
+    /// Where the commands of a producer land, if a recording around the scroll positions may leave them out. A producer
+    /// whose phase does not paint has none.
+    pub(crate) fn cull_reach_of_producer(&mut self, owner: NodeSlotId, kind: ProducerKind) -> CullReach {
+        if self.producer_is_skipped(owner, kind) {
+            return CullReach::NOTHING;
+        }
+        self.placement_of_producer(owner, kind)
+            .map_or(CullReach::UNPLACED, ProducerPlacement::cull_reach)
+    }
+
+    /// Whether output of a producer can hold hit-test items, blocking wheel regions or wheel routing, which the
+    /// producer keeps or tells of while it is left out: SVG content, the scroll metadata of a box, and the region where
+    /// wheels over a box showing a nested context go to that context.
+    pub(crate) fn output_may_hold_hit_test_items_or_wheel_routing(
+        &self,
+        owner: NodeSlotId,
+        kind: ProducerKind,
+    ) -> bool {
+        match kind {
+            ProducerKind::Svg | ProducerKind::ScrollMetadata => true,
+            ProducerKind::DrawForeground => self
+                .source
+                .replaced_paint_facts(owner)
+                .and_then(|facts| facts.navigable_container())
+                .is_some_and(|facts| facts.has_composited_context),
+            _ => false,
+        }
+    }
+
+    /// Whether the commands of a producer in `bytes` of the published recording route wheels.
+    pub(crate) fn published_commands_route_wheels(
+        &self,
+        owner: NodeSlotId,
+        kind: ProducerKind,
+        bytes: Range<u32>,
+    ) -> bool {
+        if !self.output_may_hold_hit_test_items_or_wheel_routing(owner, kind) {
+            return false;
+        }
+        let source = self
+            .source_recording
+            .as_ref()
+            .expect("clean output is copied from a published recording");
+        routes_wheels(&source.display_list.bytes[bytes.start as usize..bytes.end as usize])
     }
 
     fn producer_placement(
@@ -222,7 +346,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
         self.cull_spaces
             .as_ref()
             .expect("a recording that places its producers knows their cull spaces")
-            .cull_space_of(tree, context, culling_scroll_nodes)
+            .cull_space_in(tree, context, culling_scroll_nodes)
     }
 
     // The scroll metadata of a box the compositor scrolls holds its scroll node and snap geometry, and its overlay
@@ -787,6 +911,23 @@ fn first_misplaced_command(
     None
 }
 
+/// Whether `bytes` hold per-box wheel targets, wheel regions, scroll chaining barriers or nested context regions.
+pub(crate) fn routes_wheels(bytes: &[u8]) -> bool {
+    let mut routes_wheels = false;
+    for_each_command(bytes, |header, _, _| {
+        routes_wheels |= matches!(
+            header.command_type,
+            DisplayListCommandType::CompositorWheelHitTestTarget
+                | DisplayListCommandType::CompositorWheelHitTestTargetWithCornerRadii
+                | DisplayListCommandType::CompositorMainThreadWheelEventRegion
+                | DisplayListCommandType::CompositorBlockingWheelEventRegion
+                | DisplayListCommandType::CompositorScrollChainingBarrier
+                | DisplayListCommandType::CompositorNestedContextWheelRegion
+        );
+    });
+    routes_wheels
+}
+
 fn is_document_wide_metadata(command_type: DisplayListCommandType) -> bool {
     matches!(
         command_type,
@@ -874,12 +1015,13 @@ mod tests {
         let nested = tree.append_spatial(scroll(), root);
         let transformed = tree.append_spatial(SpatialData::Transform(identity_transform()), root);
         let fixed = tree.append_spatial(SpatialData::Transform(identity_transform()), VISUAL_VIEWPORT_NODE_INDEX);
-        let mut scrolled_by_compositor = vec![false; tree.spatial_nodes.len()];
-        scrolled_by_compositor[root.0 as usize] = true;
-        scrolled_by_compositor[nested.0 as usize] = true;
+        let mut compositor_scroll_node_kinds = vec![None; tree.spatial_nodes.len()];
+        compositor_scroll_node_kinds[root.0 as usize] = Some(CompositorScrollNodeKind::Viewport);
+        compositor_scroll_node_kinds[nested.0 as usize] = Some(CompositorScrollNodeKind::Element);
         let cull_spaces = CullSpaces {
             under_spreading_filter: effects_under_spreading_filters(&tree),
-            scrolled_by_compositor,
+            compositor_scroll_node_kinds,
+            moved_by_scroll_node_without_compositor: vec![false; tree.spatial_nodes.len()],
         };
         Spaces {
             tree,
@@ -924,11 +1066,7 @@ mod tests {
             builder.command_runs(),
             recorded_bytes,
             placement,
-            |context| {
-                spaces
-                    .cull_spaces
-                    .cull_space_of(&spaces.tree, context, CullingScrollNodes::ScrolledByCompositor)
-            },
+            |context| spaces.cull_spaces.cull_space_of(&spaces.tree, context),
             |outer, inner| spaces.tree.spatial_is_ancestor_or_self(outer, inner),
             exempts_commands_outside_every_scroll_node,
         )
@@ -1088,6 +1226,41 @@ mod tests {
                 false
             ),
             Some(Misplacement::InAnotherScrollNode)
+        );
+    }
+
+    #[test]
+    fn content_that_a_scroll_node_the_compositor_does_not_scroll_can_move_is_placed_inexactly() {
+        let mut spaces = spaces();
+        let moving = spaces.tree.append_spatial(scroll(), spaces.root);
+        let still = spaces.tree.append_spatial(scroll(), spaces.root);
+        let moved = &mut spaces.cull_spaces.moved_by_scroll_node_without_compositor;
+        moved.resize(spaces.tree.spatial_nodes.len(), false);
+        moved[moving.0 as usize] = true;
+        let roughly_in_root = CullSpace::ScrollNode {
+            scroll_node: spaces.root,
+            placed_exactly: false,
+        };
+        assert_eq!(
+            spaces.cull_spaces.cull_space_of(&spaces.tree, context(moving)),
+            roughly_in_root
+        );
+        assert_eq!(
+            spaces.cull_spaces.cull_space_of(&spaces.tree, context(still)),
+            CullSpace::ScrollNode {
+                scroll_node: spaces.root,
+                placed_exactly: true,
+            }
+        );
+        // Checking estimates against every scroll node places the content in the moving one itself.
+        assert_eq!(
+            spaces
+                .cull_spaces
+                .cull_space_in(&spaces.tree, context(moving), CullingScrollNodes::Every),
+            CullSpace::ScrollNode {
+                scroll_node: moving,
+                placed_exactly: true,
+            }
         );
     }
 

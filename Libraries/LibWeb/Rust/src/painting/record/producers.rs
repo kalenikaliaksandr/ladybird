@@ -16,7 +16,7 @@ use super::trace::{Action, Observer, Operation};
 use super::{PaintPhase, PaintRecorder};
 use crate::css::css_pixels::CssPixelRect;
 use crate::layout::node_data::{NodeFlag, NodeSlotId};
-use crate::painting::display_list::commands::ContextRef;
+use crate::painting::display_list::commands::{ContextRef, SpatialNodeIndex};
 use crate::painting::force_dark::ForceDarkRole;
 use crate::painting::paint_order_plan::{PaintScope, PaintScopePlan};
 use crate::painting::paint_read::{GeometryRead, PaintRead};
@@ -24,6 +24,7 @@ use crate::painting::paintable_data::PaintableFlag;
 use crate::painting::record::damage::PaintDamage;
 use crate::painting::record::svg_resources::MaskLayerSet;
 use crate::painting::scroll_snap;
+use libgfx_rust::IntRect;
 use smallvec::SmallVec;
 use std::ops::Range;
 
@@ -154,8 +155,35 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
-    fn producer_is_skipped(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
+    pub(super) fn producer_is_skipped(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
         draw_phase(kind).is_some_and(|phase| self.base_paint_facts(owner).paint_phase_mask & phase.bit() == 0)
+    }
+
+    // What a producer records, beside the bookkeeping around it.
+    fn record_producer_output(&mut self, owner: NodeSlotId, kind: ProducerKind) {
+        match kind {
+            ProducerKind::ScopePreamble => self.record_scope_preamble(owner),
+            ProducerKind::ScrollMetadata => self.record_scroll_metadata(owner),
+            ProducerKind::Svg => self.record_svg_box_foreground(owner),
+            ProducerKind::InlinePiece(index) | ProducerKind::TextFragment(index) => {
+                let root = self.line_root_of_inline_producer(owner);
+                if matches!(kind, ProducerKind::InlinePiece(_)) {
+                    super::paint::inline_box::paint_piece(self, root, index);
+                } else {
+                    let context = self.context_for_phase(owner, PaintPhase::Foreground);
+                    self.recorder.set_accumulated_visual_context(context);
+                    super::paint::text::paint_fragments(self, root, &[index]);
+                    self.recorder.set_accumulated_visual_context(ContextRef::default());
+                }
+            }
+            _ => {
+                if let Some(phase) = hit_phase(kind) {
+                    self.record_hit_test_phase(owner, phase);
+                } else if let Some(phase) = draw_phase(kind) {
+                    self.record_box_commands(owner, phase);
+                }
+            }
+        }
     }
 
     /// The commands of a box phase inside a resource walk, which records into the referencing
@@ -200,29 +228,7 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
         let start = self.output_position();
         self.observer
             .observe(|log| log.begin(Operation::Producer(owner, kind), Action::Record));
-        match kind {
-            ProducerKind::ScopePreamble => self.record_scope_preamble(owner),
-            ProducerKind::ScrollMetadata => self.record_scroll_metadata(owner),
-            ProducerKind::Svg => self.record_svg_box_foreground(owner),
-            ProducerKind::InlinePiece(index) | ProducerKind::TextFragment(index) => {
-                let root = self.line_root_of_inline_producer(owner);
-                if matches!(kind, ProducerKind::InlinePiece(_)) {
-                    super::paint::inline_box::paint_piece(self, root, index);
-                } else {
-                    let context = self.context_for_phase(owner, PaintPhase::Foreground);
-                    self.recorder.set_accumulated_visual_context(context);
-                    super::paint::text::paint_fragments(self, root, &[index]);
-                    self.recorder.set_accumulated_visual_context(ContextRef::default());
-                }
-            }
-            _ => {
-                if let Some(phase) = hit_phase(kind) {
-                    self.record_hit_test_phase(owner, phase);
-                } else if let Some(phase) = draw_phase(kind) {
-                    self.record_box_commands(owner, phase);
-                }
-            }
-        }
+        self.record_producer_output(owner, kind);
         let end = self.output_position();
         self.observer
             .observe(|log| log.end(end.bytes == start.bytes && end.hits == start.hits));
@@ -235,10 +241,52 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
             reads_window_focus: self.producer_reads_window_focus.get(),
             cull_reach: placement.map_or(CullReach::UNPLACED, ProducerPlacement::cull_reach),
         };
-        if let Some(placement) = placement {
+        if let Some(placement) = placement
+            && super::cull::verifies_paint_producer_bounds()
+        {
             self.verify_recorded_producer_placement(owner, kind, placement, start.bytes as usize..end.bytes as usize);
         }
         outcome
+    }
+
+    fn producer_cull_reach(&mut self, owner: NodeSlotId, kind: ProducerKind) -> CullReach {
+        self.cull_reach_of_producer(owner, kind)
+    }
+
+    fn interest_misses(&self, reach: CullReach) -> bool {
+        self.interest_rects.miss(reach)
+    }
+
+    fn published_and_current_interest_rects_of(&self, scroll_node: SpatialNodeIndex) -> Option<(IntRect, IntRect)> {
+        self.interest_rects.published_and_current_rects_of(scroll_node)
+    }
+
+    // The commands go to records of their own, which are dropped. So do the resources they register, which the manifest
+    // would otherwise hand on although the list never draws them (the host renders every SVG image it asks for), and
+    // the pattern tiles they record, whose cached records name those resources.
+    fn record_producer_leaving_out_commands(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
+        debug_assert!(
+            self.recorder.is_producer_boundary(),
+            "a producer starts at a closed group boundary without ambient state"
+        );
+        self.observer
+            .observe(|log| log.begin(Operation::Producer(owner, kind), Action::Cull));
+        let routes_wheels = self.output_may_hold_hit_test_items_or_wheel_routing(owner, kind) && {
+            let resources = std::mem::take(&mut self.resources);
+            let pattern_tile_records = std::mem::take(&mut self.scratch.pattern_tile_records);
+            let detached = self.recorder.begin_detached_records();
+            self.record_producer_output(owner, kind);
+            let records = self.recorder.finish_detached_records(detached);
+            self.scratch.pattern_tile_records = pattern_tile_records;
+            self.resources = resources;
+            super::cull::routes_wheels(&records)
+        };
+        self.observer.observe(|log| log.end(false));
+        routes_wheels
+    }
+
+    fn published_output_routes_wheels(&mut self, owner: NodeSlotId, kind: ProducerKind, bytes: Range<u32>) -> bool {
+        self.published_commands_route_wheels(owner, kind, bytes)
     }
 
     fn output_position(&self) -> OutputPosition {
@@ -330,6 +378,9 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
             AssemblyEvent::ScopeCopied(scope) => log.leaf(Operation::Scope(scope), Action::Copy, false),
             AssemblyEvent::ProducerCopied(owner, kind) => {
                 log.leaf(Operation::Producer(owner, kind), Action::Copy, false);
+            }
+            AssemblyEvent::ProducerCulled(owner, kind) => {
+                log.leaf(Operation::Producer(owner, kind), Action::Cull, false);
             }
         });
     }

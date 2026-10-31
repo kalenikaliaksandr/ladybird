@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 6000px; }
+    #box { position: absolute; top: 900px; left: 0; width: 400px; height: 3000px; overflow-x: auto; overflow-y: hidden; }
+    #wide { position: relative; width: 2000px; height: 3000px; }
+    #wide > div { position: absolute; width: 100px; height: 100px; }
+    #top-child { top: 0; left: 0; background: green; }
+    #bottom-child { top: 2800px; left: 0; background: red; }
+    #right-child { top: 0; left: 1800px; background: blue; }
+</style>
+<body>
+<div id="box"><div id="wide"><div id="top-child"></div><div id="bottom-child"></div><div id="right-child"></div></div></div>
+<script>
+// A box that scrolls only sideways, taller than the viewport and starting below it, records what the root records of
+// it, and a scrollport to each side of what it shows.
+interestRectTest(output => {
+    const trace = recordAroundScrollPositions();
+    for (const id of ["top-child", "bottom-child", "right-child"])
+        output(`${id}: ${producerAction(trace, id, "background")}`);
+    const root = internals.recordedInterestRect();
+    const rect = internals.recordedInterestRect(box);
+    output(`box starts below the viewport: ${box.offsetTop >= innerHeight}`);
+    output(`box records from where the root records: ${rect.top === root.top || (rect.top <= box.offsetTop && rect.top >= root.top)}`);
+    output(`box stops where the root stops: ${rect.bottom === root.bottom}`);
+    output(`box records from its start: ${rect.left === -Infinity}, stops before its right child: ${rect.right <= 1800}`);
+});
+</script>

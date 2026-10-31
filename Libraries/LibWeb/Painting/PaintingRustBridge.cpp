@@ -9,6 +9,7 @@
 #include <LibCompositing/DisplayList/AccumulatedVisualContext.h>
 #include <LibCompositing/DisplayList/DisplayList.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
+#include <LibCompositing/Scrolling/AsyncScrollingState.h>
 #include <LibCore/ElapsedTimer.h>
 #include <LibCore/Environment.h>
 #include <LibGfx/CornerRadii.h>
@@ -502,6 +503,8 @@ static Layout::RustFFI::FfiRecordingCoverage ffi_recording_coverage(RecordingCov
         return Layout::RustFFI::FfiRecordingCoverage::WholeDocument;
     case RecordingCoverage::AroundScrollPositions:
         return Layout::RustFFI::FfiRecordingCoverage::AroundScrollPositions;
+    case RecordingCoverage::AroundScrollPositionsForTesting:
+        return Layout::RustFFI::FfiRecordingCoverage::AroundScrollPositionsForTesting;
     case RecordingCoverage::AsSourceRecording:
         return Layout::RustFFI::FfiRecordingCoverage::AsSourceRecording;
     }
@@ -749,6 +752,21 @@ NonnullRefPtr<Compositing::DisplayList> display_list_of_published_recording(Disp
     if (recording.surface_clear_color.has_value())
         display_list->set_surface_clear_color(*recording.surface_clear_color);
     stamp_async_scrolling_metadata(*display_list);
+    if (presented.recorded_scroll_node_rect_count != 0) {
+        Compositing::DisplayList::RecordedInterest recorded_interest;
+        recorded_interest.leaves_out_wheel_routing_outside_recorded_rects = presented.leaves_out_wheel_routing_outside_recorded_rects;
+        for (auto const& recorded_rect : ReadonlySpan<Layout::RustFFI::FfiScrollNodeContentRect> { presented.recorded_scroll_node_rects, presented.recorded_scroll_node_rect_count }) {
+            recorded_interest.scroll_node_rects.append({
+                .scroll_node = {
+                    .node_id = UniqueNodeID { recorded_rect.scrollable_node_id },
+                    .kind = Compositing::async_scroll_node_kind_for(recorded_rect.scroll_node_kind),
+                    .pseudo_element_type = recorded_rect.pseudo_element_type,
+                },
+                .rect = recorded_rect.rect,
+            });
+        }
+        display_list->set_recorded_interest(move(recorded_interest));
+    }
     return display_list;
 }
 

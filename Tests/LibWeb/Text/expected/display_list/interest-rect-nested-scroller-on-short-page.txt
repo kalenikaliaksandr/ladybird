@@ -1,0 +1,4 @@
+root records the whole page: true
+scroller lies past twice the viewport height: true
+scroller records what it shows: true
+item: COPY

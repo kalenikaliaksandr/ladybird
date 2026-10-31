@@ -1,0 +1,4 @@
+around the scroll positions: far CULL, rect true
+whole document: far RECORD, rect null
+around the scroll positions again: far CULL
+dump draws far: true

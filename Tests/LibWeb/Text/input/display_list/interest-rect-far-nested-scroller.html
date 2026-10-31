@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 6000px; }
+    #scroller { position: absolute; top: 4000px; left: 0; width: 300px; height: 200px; overflow: auto; scroll-snap-type: y mandatory; }
+    .item { height: 200px; scroll-snap-align: start; background: orange; }
+    #turned { transform: rotate(10deg); background: teal; }
+</style>
+<body>
+<div id="scroller"><div class="item" id="first"></div><div class="item" id="turned"></div><div class="item"></div></div>
+<script>
+// A nested scroller far below what the root records records none of its content, transformed or not, while the
+// compositor still learns its scroll node and snap geometry, and the wheel listener inside it still blocks wheels.
+document.getElementById("first").addEventListener("wheel", () => {}, { passive: false });
+interestRectTest(output => {
+    const trace = recordAroundScrollPositions();
+    output(`first item: background ${producerAction(trace, "first", "background")}, scroll metadata ${producerAction(trace, "first", "scroll-metadata")}`);
+    output(`transformed item: ${producerAction(trace, "turned", "background")}`);
+    output(`scroller: scroll metadata ${producerAction(trace, "scroller", "scroll-metadata")}`);
+    const rect = internals.recordedInterestRect(scroller);
+    output(`scroller records nothing: ${rect.left === rect.right || rect.top === rect.bottom}`);
+
+    const state = internals.recordedAsyncScrollingState();
+    const scrollerNode = state.scrollNodes.find(node => !node.isViewport);
+    output(`scroll nodes: ${state.scrollNodeCount}, scroller listed: ${scrollerNode !== undefined}`);
+    output(`scroller recorded rect has no area: ${scrollerNode.recordedRect.width * scrollerNode.recordedRect.height === 0}`);
+    output(`snap containers: ${state.snapContainers.length}, snap areas: ${state.snapContainers[0]?.areas.length}`);
+    output(`has blocking wheel event listeners: ${state.hasBlockingWheelEventListeners}`);
+
+    window.scrollTo(0, 3900);
+    const scrolledTrace = recordAroundScrollPositions();
+    output(`scrolled to it: first item ${producerAction(scrolledTrace, "first", "background")}, transformed item ${producerAction(scrolledTrace, "turned", "background")}`);
+    const scrolledRect = internals.recordedInterestRect(scroller);
+    output(`scroller records its first item: ${scrolledRect.top <= first.offsetTop + scroller.offsetTop && scrolledRect.bottom > first.offsetTop + scroller.offsetTop}`);
+});
+</script>

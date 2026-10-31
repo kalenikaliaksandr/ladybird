@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 8000px; }
+    .far { position: absolute; top: 4000px; width: 100px; height: 100px; }
+    #fixed { position: fixed; top: 5000px; left: 0; width: 100px; height: 100px; background: purple; }
+    #sticky-holder { left: 0; height: 1000px; }
+    #sticky { position: sticky; top: 0; height: 100px; background: olive; }
+    #transformed { left: 200px; transform: rotate(5deg); background: navy; }
+    #filtered { left: 400px; filter: blur(2px); background: maroon; }
+    #plain { left: 600px; background: gray; }
+</style>
+<body>
+<div id="fixed"></div>
+<div class="far" id="sticky-holder"><div id="sticky"></div></div>
+<div class="far" id="transformed"></div>
+<div class="far" id="filtered"></div>
+<div class="far" id="plain"></div>
+<script>
+// Content that a fixed position, a sticky offset, a transform or a filter can move away from its box is recorded
+// wherever it is while its scroll node records anything; content that nothing moves is left out far away.
+interestRectTest(output => {
+    const trace = recordAroundScrollPositions();
+    for (const id of ["fixed", "sticky", "transformed", "filtered", "plain"])
+        output(`${id}: ${producerAction(trace, id, "background")}`);
+});
+</script>

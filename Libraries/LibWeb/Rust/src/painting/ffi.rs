@@ -12,6 +12,7 @@ use crate::layout::svg_formatting_context;
 use crate::layout::used_values::FfiCssPixelPoint;
 use crate::layout::used_values::FfiCssPixelRect;
 use crate::layout::used_values::FfiCssPixelSize;
+use crate::painting::display_list::commands::CompositorScrollNodeKind;
 use crate::painting::force_dark::ForceDarkRole;
 use crate::painting::host::visual_context::FfiSvgFilterPrimitive;
 use crate::painting::paint_changes::{PaintChange, queue};
@@ -23,6 +24,7 @@ use crate::painting::svg_filter::SvgFilterPrimitive;
 use crate::painting::visual_animation_builder::CompositorAnimationEffectState;
 use crate::render_state::{DocumentHost, RenderWait};
 use libcompositing_rust::ffi::tree_from_handle;
+use libgfx_rust::IntRect;
 use std::ffi::c_void;
 
 mod main_thread_entries;
@@ -464,6 +466,19 @@ impl Default for FfiPresentation {
     }
 }
 
+/// What a display list records of the content of a scroll node the compositor scrolls, with the node named as the
+/// compositor names it (`Web::ScrollNodeContentRect`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FfiScrollNodeContentRect {
+    pub scrollable_node_id: i64,
+    pub scroll_node_kind: CompositorScrollNodeKind,
+    pub pseudo_element_type: u8,
+    /// In device pixels of the node's content at scroll offset zero. A side 1 << 24 away from the origin is unbounded,
+    /// and an empty rect records none of the content.
+    pub rect: IntRect,
+}
+
 /// What the host reads of a published recording, to build its display list from.
 #[repr(C)]
 pub struct FfiPresentedRecording {
@@ -472,31 +487,41 @@ pub struct FfiPresentedRecording {
     /// The recorded display list, which the document's last recording holds until the next
     /// recording replaces it. The host takes a reference of its own to keep it longer.
     pub display_list: *const c_void,
+    /// What the display list records of each scroll node the compositor scrolls, held as long as the display list.
+    /// None when it records the whole document.
+    pub recorded_scroll_node_rects: *const FfiScrollNodeContentRect,
+    pub recorded_scroll_node_rect_count: usize,
+    pub leaves_out_wheel_routing_outside_recorded_rects: bool,
 }
 
 impl FfiPresentedRecording {
     /// What the host reads of a recording published with `output`, whose display list `output` holds for as long as
     /// the host reads it.
     pub(crate) fn of_output(output: &crate::painting::record::RecordingOutput) -> Self {
+        let recorded_interest = &output.recorded_interest;
         Self {
             is_identical_to_published_recording: output.is_identical_to_published_recording,
             has_blocking_wheel_event_listeners: output.has_blocking_wheel_event_listeners,
             display_list: std::sync::Arc::as_ptr(&output.display_list).cast(),
+            recorded_scroll_node_rects: recorded_interest.scroll_node_rects.as_ptr(),
+            recorded_scroll_node_rect_count: recorded_interest.scroll_node_rects.len(),
+            leaves_out_wheel_routing_outside_recorded_rects: recorded_interest.leaves_out_wheel_routing,
         }
     }
 
     /// What the host reads of the last recording the document took in.
     pub(crate) fn of_last_recording(arena: &LayoutNodeArena) -> Self {
         let paint_state = arena.paint_state();
-        let recording = paint_state.last_recording.as_deref();
-        Self {
-            is_identical_to_published_recording: recording
-                .is_some_and(|recording| recording.is_identical_to_published_recording),
-            has_blocking_wheel_event_listeners: recording
-                .is_some_and(|recording| recording.has_blocking_wheel_event_listeners),
-            display_list: recording.map_or(std::ptr::null(), |recording| {
-                std::sync::Arc::as_ptr(&recording.display_list).cast()
-            }),
+        match paint_state.last_recording.as_deref() {
+            Some(recording) => Self::of_output(recording),
+            None => Self {
+                is_identical_to_published_recording: false,
+                has_blocking_wheel_event_listeners: false,
+                display_list: std::ptr::null(),
+                recorded_scroll_node_rects: std::ptr::null(),
+                recorded_scroll_node_rect_count: 0,
+                leaves_out_wheel_routing_outside_recorded_rects: false,
+            },
         }
     }
 }

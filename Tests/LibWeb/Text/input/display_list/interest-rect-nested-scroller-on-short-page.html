@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 1500px; }
+    #scroller { position: absolute; top: 1300px; left: 0; width: 300px; height: 150px; overflow: auto; }
+    #item { height: 400px; background: orange; }
+</style>
+<body>
+<div id="scroller"><div id="item"></div></div>
+<script>
+// The root of a page this short records all of it, as scrolling to the end of the page shows. A scroller near the end
+// of the page, below what the root aims for around the top, records what the root records of it too.
+interestRectTest(output => {
+    const trace = recordAroundScrollPositions();
+    const root = internals.recordedInterestRect();
+    output(`root records the whole page: ${root.top === -Infinity && root.bottom === Infinity}`);
+    output(`scroller lies past twice the viewport height: ${scroller.offsetTop >= 2 * innerHeight}`);
+    const rect = internals.recordedInterestRect(scroller);
+    output(`scroller records what it shows: ${rect.top <= scroller.offsetTop && rect.bottom >= scroller.offsetTop + scroller.clientHeight}`);
+    output(`item: ${producerAction(trace, "item", "background")}`);
+});
+</script>

@@ -1,0 +1,10 @@
+first item: background CULL, scroll metadata CULL
+transformed item: CULL
+scroller: scroll metadata COPY
+scroller records nothing: true
+scroll nodes: 2, scroller listed: true
+scroller recorded rect has no area: true
+snap containers: 1, snap areas: 3
+has blocking wheel event listeners: true
+scrolled to it: first item RECORD, transformed item RECORD
+scroller records its first item: true

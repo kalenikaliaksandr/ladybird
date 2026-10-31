@@ -291,6 +291,9 @@ fn publish_resources(
                 && output.recorded_structural_epoch == source.recorded_structural_epoch
                 && output.wheel_event_listener_state_generation == source.wheel_event_listener_state_generation
                 && output.has_blocking_wheel_event_listeners == source.has_blocking_wheel_event_listeners
+                && output
+                    .recorded_interest
+                    .tells_the_compositor_the_same_as(&source.recorded_interest)
         });
     output
 }

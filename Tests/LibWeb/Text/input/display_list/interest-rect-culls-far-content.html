@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 6000px; }
+    .box { position: absolute; left: 0; width: 200px; height: 100px; }
+    #near { top: 100px; background: green; }
+    #far { top: 4000px; background: blue; }
+</style>
+<body>
+<div class="box" id="near"></div><div class="box" id="far"></div>
+<script>
+// A recording around the scroll positions leaves out what lies more than about a viewport past what is visible, records
+// it once scrolling brings it close, and leaves out what scrolling took away.
+interestRectTest(output => {
+    const report = (when, trace) => {
+        const rect = internals.recordedInterestRect();
+        output(`${when}: near ${producerAction(trace, "near", "background")}, far ${producerAction(trace, "far", "background")}`);
+        output(`  records near: ${rect.top < near.offsetTop + near.offsetHeight && rect.bottom > near.offsetTop}`);
+        output(`  records far: ${rect.top < far.offsetTop + far.offsetHeight && rect.bottom > far.offsetTop}`);
+        output(`  records every column: ${rect.left === -Infinity && rect.right === Infinity}`);
+        output(`  records what is visible: ${rect.top <= scrollY && rect.bottom >= scrollY + innerHeight}`);
+    };
+    report("at the top", recordAroundScrollPositions());
+    output(`  records from the start: ${internals.recordedInterestRect().top === -Infinity}`);
+    window.scrollTo(0, 3800);
+    report("scrolled to far", recordAroundScrollPositions());
+    report("scrolled to far again", recordAroundScrollPositions());
+    window.scrollTo(0, 0);
+    report("back at the top", recordAroundScrollPositions());
+});
+</script>

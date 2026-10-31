@@ -1,0 +1,3 @@
+rect reaches what is visible: true
+rect misses both pieces: true
+#t piece: COPY

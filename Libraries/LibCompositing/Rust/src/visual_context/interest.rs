@@ -16,11 +16,10 @@ use crate::display_list::effect_geometry::nearest_spreading_effects;
 use crate::host::FfiVisualAnimationTargetKind;
 use libgfx_rust::{FloatPoint, IntRect, IntSize};
 
+pub use super::ffi_types::UNBOUNDED_INTEREST_EDGE;
+
 /// Interest rects snap outward to multiples of this, so that they cover whole raster tiles.
 pub const RASTER_TILE_SIZE: i32 = 512;
-
-/// A side of an interest rect this far from the origin is unbounded: nothing beyond it is left out.
-pub const UNBOUNDED_INTEREST_EDGE: i32 = 1 << 24;
 
 const _: () = assert!(UNBOUNDED_INTEREST_EDGE % RASTER_TILE_SIZE == 0);
 
@@ -31,6 +30,38 @@ const _: () = assert!(UNBOUNDED_INTEREST_EDGE % RASTER_TILE_SIZE == 0);
 pub struct ScrollableAxes {
     pub horizontal: bool,
     pub vertical: bool,
+}
+
+/// What a scroll node's scrollport shows over its whole scroll range, and the axes along which that range is not empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScrollRange {
+    /// In device pixels of the node's content at scroll offset zero, enclosing what the scrollport shows from the least
+    /// scroll offset to the greatest.
+    pub content_area: IntRect,
+    pub axes: ScrollableAxes,
+}
+
+impl ScrollRange {
+    /// `scrollport` at scroll offset zero, and the least and greatest scroll offsets, all in device pixels.
+    pub fn new(scrollport: IntRect, minimum_scroll_offset: FloatPoint, maximum_scroll_offset: FloatPoint) -> Self {
+        Self {
+            content_area: rect_from_axis_spans(|axis| {
+                let span = axis.span_of(scrollport);
+                AxisSpan {
+                    start: span
+                        .start
+                        .saturating_add(axis.coordinate_of(minimum_scroll_offset).floor() as i64),
+                    end: span
+                        .end
+                        .saturating_add(axis.coordinate_of(maximum_scroll_offset).ceil() as i64),
+                }
+            }),
+            axes: ScrollableAxes {
+                horizontal: minimum_scroll_offset.x != maximum_scroll_offset.x,
+                vertical: minimum_scroll_offset.y != maximum_scroll_offset.y,
+            },
+        }
+    }
 }
 
 /// How far scrolling is expected to carry what is visible toward each side before a new recording
@@ -445,6 +476,22 @@ mod tests {
             scrollport_size,
             HORIZONTAL
         ));
+    }
+
+    #[test]
+    fn a_scroll_range_encloses_fractional_offsets_and_tells_the_axes_it_spans() {
+        let scrollport = IntRect::new(100, 50, 800, 600);
+        let right_to_left = ScrollRange::new(scrollport, offset(-1000.5, 0.0), offset(0.0, 0.0));
+        assert_eq!(right_to_left.content_area, from_edges(-901, 50, 900, 650));
+        assert_eq!(right_to_left.axes, HORIZONTAL);
+
+        let tall = ScrollRange::new(scrollport, offset(0.0, 0.0), offset(0.0, 2400.25));
+        assert_eq!(tall.content_area, from_edges(100, 50, 900, 3051));
+        assert_eq!(tall.axes, VERTICAL);
+
+        // Offsets from another process cannot overflow the content area.
+        let huge = ScrollRange::new(scrollport, offset(0.0, f32::MIN), offset(0.0, f32::MAX));
+        assert_eq!(huge.content_area, from_edges(100, -UNBOUNDED, 900, UNBOUNDED));
     }
 
     #[test]

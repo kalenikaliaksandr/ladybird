@@ -1,0 +1,21 @@
+at the top: near COPY, far CULL
+  records near: true
+  records far: false
+  records every column: true
+  records what is visible: true
+  records from the start: true
+scrolled to far: near CULL, far RECORD
+  records near: false
+  records far: true
+  records every column: true
+  records what is visible: true
+scrolled to far again: near untouched, far untouched
+  records near: false
+  records far: true
+  records every column: true
+  records what is visible: true
+back at the top: near RECORD, far CULL
+  records near: true
+  records far: false
+  records every column: true
+  records what is visible: true

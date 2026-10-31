@@ -1,0 +1,7 @@
+top-child: COPY
+bottom-child: CULL
+right-child: CULL
+box starts below the viewport: true
+box records from where the root records: true
+box stops where the root stops: true
+box records from its start: true, stops before its right child: true

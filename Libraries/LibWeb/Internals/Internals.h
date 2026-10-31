@@ -190,7 +190,8 @@ public:
     GC::Ref<JS::Object> recorded_display_list_wheel_target_at(double x, double y, double delta_x, double delta_y);
     bool recorded_display_list_blocks_wheel_event_at(double x, double y);
     GC::Ref<JS::Object> recorded_async_scrolling_state_object();
-    void record_display_list_for_testing(bool paint_overlay, bool cold);
+    void record_display_list_for_testing(bool paint_overlay, bool cold, Bindings::DisplayListRecordingCoverage);
+    GC::Ptr<JS::Object> recorded_interest_rect(GC::Ptr<DOM::Element> scroller);
     void set_autoplay_policy(Utf16String const& policy);
 
     Utf16String get_computed_role(DOM::Element& element);

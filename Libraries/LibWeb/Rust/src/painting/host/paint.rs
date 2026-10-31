@@ -138,6 +138,7 @@ impl FfiRecordingInputs {
             interest: match self.coverage {
                 FfiRecordingCoverage::WholeDocument => InterestInput::WholeDocument,
                 FfiRecordingCoverage::AroundScrollPositions => InterestInput::AroundScrollPositions,
+                FfiRecordingCoverage::AroundScrollPositionsForTesting => InterestInput::AroundScrollPositionsForTesting,
                 FfiRecordingCoverage::AsSourceRecording => InterestInput::AsSourceRecording,
             },
             should_show_line_box_borders: self.should_show_line_box_borders,
@@ -225,6 +226,7 @@ impl FfiRecordingInputs {
 pub enum FfiRecordingCoverage {
     WholeDocument,
     AroundScrollPositions,
+    AroundScrollPositionsForTesting,
     AsSourceRecording,
 }
 

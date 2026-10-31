@@ -105,6 +105,7 @@ public:
     Optional<Gfx::Color> surface_clear_color() const { return m_surface_clear_color; }
     void set_async_scrolling_metadata(AsyncScrollingMetadata metadata) { m_async_scrolling_metadata = metadata; }
     Optional<AsyncScrollingMetadata> const& async_scrolling_metadata() const { return m_async_scrolling_metadata; }
+    void set_recorded_interest(Optional<RecordedInterest> recorded_interest) { m_recorded_interest = move(recorded_interest); }
     Optional<RecordedInterest> const& recorded_interest() const { return m_recorded_interest; }
 
     // The ids of the resources the list's commands reference, including the commands nested in others, each once.

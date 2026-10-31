@@ -1,0 +1,2 @@
+rect reaches the shadow of the first fragment: true
+#t background: COPY

@@ -256,6 +256,26 @@ impl<O: Observer> PaintRecorder<'_, O> {
         }
     }
 
+    /// The scrollport of a box the compositor scrolls, in device pixels at scroll offset zero: the viewport's sits at the
+    /// origin, and any other box's is its padding box.
+    pub(super) fn compositor_scrollport_rect(&self, paintable: NodeSlotId) -> IntRect {
+        if self.source.node_kind_if_live(paintable) == Some(NodeKind::Viewport) {
+            let size = self.inputs.uncaptured.device_viewport_size;
+            return IntRect::new(0, 0, size.width, size.height);
+        }
+        self.converter
+            .rounded_device_rect(paintable_geometry::absolute_padding_box_rect(self.source, paintable))
+    }
+
+    /// The least and greatest scroll offsets of a scroll container, in device pixels.
+    pub(super) fn device_scroll_offset_range(&self, paintable: NodeSlotId) -> (FloatPoint, FloatPoint) {
+        let scale = self.inputs.device_pixels_per_css_pixel;
+        (
+            css_point_to_device_point(minimum_scroll_offset(self.source, paintable), scale),
+            css_point_to_device_point(maximum_scroll_offset(self.source, paintable), scale),
+        )
+    }
+
     fn record_scroll_node(&mut self, paintable: NodeSlotId, scroll_node_kind: CompositorScrollNodeKind) {
         let generated_for = self.source.node_generated_for(paintable);
         let node_identity = self.data(paintable).node_identity;
@@ -268,18 +288,8 @@ impl<O: Observer> PaintRecorder<'_, O> {
             None => VISUAL_VIEWPORT_NODE_INDEX,
         };
         let is_viewport = self.source.node_kind_if_live(paintable) == Some(NodeKind::Viewport);
-        let scrollport_rect = if is_viewport {
-            IntRect::new(
-                0,
-                0,
-                self.inputs.uncaptured.device_viewport_size.width,
-                self.inputs.uncaptured.device_viewport_size.height,
-            )
-        } else {
-            self.converter
-                .rounded_device_rect(paintable_geometry::absolute_padding_box_rect(self.source, paintable))
-        };
-        let scale = self.inputs.device_pixels_per_css_pixel;
+        let scrollport_rect = self.compositor_scrollport_rect(paintable);
+        let (min_scroll_offset, max_scroll_offset) = self.device_scroll_offset_range(paintable);
         let hit_test_facts = self.hit_test_facts(paintable);
         let scroll_boundary_behavior =
             crate::painting::chrome_geometry::scroll_boundary_behavior(self.source, paintable);
@@ -289,8 +299,8 @@ impl<O: Observer> PaintRecorder<'_, O> {
             scroll_node_index: self.data(paintable).own_scroll_node_index,
             parent_scroll_node_index,
             scrollport_rect,
-            min_scroll_offset: css_point_to_device_point(minimum_scroll_offset(self.source, paintable), scale),
-            max_scroll_offset: css_point_to_device_point(maximum_scroll_offset(self.source, paintable), scale),
+            min_scroll_offset,
+            max_scroll_offset,
             scroll_node_kind,
             pseudo_element_type: generated_for.saturating_sub(1),
             is_viewport,

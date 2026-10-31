@@ -58,8 +58,9 @@ impl Observer for Trace {
 
 /// What a recording did with a scope or producer. A scope is assembled when its published child
 /// list is walked, replanned when its plan is rebuilt, recorded when it has no published
-/// counterpart and copied when it is clean. A producer is recorded, copied, or skipped when its
-/// phase is masked off; an inactive stacking context is skipped as a whole.
+/// counterpart and copied when it is clean. A producer is recorded, copied, skipped when its
+/// phase is masked off, or culled when the interest rect of its scroll node misses it; an inactive
+/// stacking context is skipped as a whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Assemble,
@@ -67,6 +68,7 @@ pub(crate) enum Action {
     Record,
     Copy,
     Skip,
+    Cull,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -172,6 +174,7 @@ impl CaptureLog {
                 Action::Record => "RECORD",
                 Action::Copy => "COPY",
                 Action::Skip => "SKIP",
+                Action::Cull => "CULL",
             };
             let empty = if event.empty && event.action == Action::Record {
                 " (empty)"

@@ -14,6 +14,7 @@
 #include <AK/Utf16StringBuilder.h>
 #include <LibAudio/ClientConnection.h>
 #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
+#include <LibCompositing/RustFFI.h>
 #include <LibCompositing/Scrolling/AsyncScrollTree.h>
 #include <LibCompositing/Scrolling/AsyncScrollingState.h>
 #include <LibCore/EventLoop.h>
@@ -1650,7 +1651,7 @@ bool Internals::recorded_display_list_blocks_wheel_event_at(double x, double y)
     return recorded->scroll_tree.blocks_wheel_event_at_position(recorded->visual_context_tree, position);
 }
 
-void Internals::record_display_list_for_testing(bool paint_overlay, bool cold)
+void Internals::record_display_list_for_testing(bool paint_overlay, bool cold, Bindings::DisplayListRecordingCoverage coverage)
 {
     auto& document = window().associated_document();
     Layout::ForcedReadScope read { document };
@@ -1660,7 +1661,49 @@ void Internals::record_display_list_for_testing(bool paint_overlay, bool cold)
     // A recording against a visual context tree built fresh copies nothing from the published one.
     if (cold)
         document.schedule_full_accumulated_visual_context_rebuild(Layout::RustFFI::VisualContextUpdateScope::FreshTree);
-    (void)document.record_display_list(read, HTML::PaintConfig { .paint_overlay = paint_overlay }, document.navigable()->display_list_resource_storage(), Painting::PaintCommandCacheMode::ReadWrite, Painting::RecordingCoverage::WholeDocument);
+    auto recording_coverage = coverage == Bindings::DisplayListRecordingCoverage::AroundScrollPositions
+        ? Painting::RecordingCoverage::AroundScrollPositionsForTesting
+        : Painting::RecordingCoverage::WholeDocument;
+    (void)document.record_display_list(read, HTML::PaintConfig { .paint_overlay = paint_overlay }, document.navigable()->display_list_resource_storage(), Painting::PaintCommandCacheMode::ReadWrite, recording_coverage);
+}
+
+GC::Ptr<JS::Object> Internals::recorded_interest_rect(GC::Ptr<DOM::Element> scroller)
+{
+    auto& document = window().associated_document();
+    Web::AsyncScrollNodeStableID scroll_node { .node_id = document.unique_id(), .kind = Web::AsyncScrollNodeKind::Viewport };
+    if (scroller) {
+        Layout::ForcedReadScope read { document };
+        document.update_layout(DOM::UpdateLayoutReason::InternalsHitTest);
+        auto const* scrolling_box = scroller->layout_node(read);
+        auto scroller_stable_node_id = scrolling_box ? Painting::async_scroll_node_stable_id(*scrolling_box) : Optional<Web::AsyncScrollNodeStableID> {};
+        if (!scroller_stable_node_id.has_value())
+            return nullptr;
+        scroll_node = *scroller_stable_node_id;
+    }
+    auto* display_list = document.paint_state().display_list_used_as_paint_command_cache_source();
+    if (!display_list || !display_list->recorded_interest().has_value())
+        return nullptr;
+    auto const& scroll_node_rects = display_list->recorded_interest()->scroll_node_rects;
+    auto recorded_rect = scroll_node_rects.find_if([&](auto const& recorded_rect) { return recorded_rect.scroll_node == scroll_node; });
+    if (recorded_rect == scroll_node_rects.end())
+        return nullptr;
+
+    constexpr auto unbounded_rect_edge = Compositing::RustFFI::UNBOUNDED_INTEREST_EDGE;
+    auto device_pixels_per_css_pixel = page().client().device_pixels_per_css_pixel();
+    auto edge_in_css_pixels = [&](int device_edge) {
+        if (device_edge <= -unbounded_rect_edge)
+            return -AK::Infinity<double>;
+        if (device_edge >= unbounded_rect_edge)
+            return AK::Infinity<double>;
+        return device_edge / device_pixels_per_css_pixel;
+    };
+    auto const& rect = recorded_rect->rect;
+    auto object = JS::Object::create(HTML::relevant_realm(window()), nullptr);
+    object->define_direct_property("left"_utf16_fly_string, JS::Value(edge_in_css_pixels(rect.left())), JS::default_attributes);
+    object->define_direct_property("top"_utf16_fly_string, JS::Value(edge_in_css_pixels(rect.top())), JS::default_attributes);
+    object->define_direct_property("right"_utf16_fly_string, JS::Value(edge_in_css_pixels(rect.right())), JS::default_attributes);
+    object->define_direct_property("bottom"_utf16_fly_string, JS::Value(edge_in_css_pixels(rect.bottom())), JS::default_attributes);
+    return object;
 }
 
 void Internals::set_autoplay_policy(Utf16String const& policy)

@@ -10,6 +10,9 @@
 use crate::display_list::commands::OptionalF32;
 use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, FloatSize};
 
+/// A side of an interest rect this far from the origin is unbounded: nothing beyond it is left out.
+pub const UNBOUNDED_INTEREST_EDGE: i32 = 1 << 24;
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct FfiVisualContextTreeInputs {

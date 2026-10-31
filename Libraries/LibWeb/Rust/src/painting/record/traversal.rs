@@ -75,7 +75,10 @@ fn record_display_list_impl<O: Observer>(
     let paint_state = source.frame().paint_state();
     let structural_epoch = paint_state.structural_epoch();
     let frame_inputs = FrameInputs::from_recording_inputs(inputs, paint_state);
-    let recorded_interest = inputs.interest.recorded_interest(source_recording.as_deref());
+    // What the published recording records steers what this one aims for, even where its output cannot be copied.
+    let published_interest = source_recording
+        .as_ref()
+        .map(|frame| Arc::clone(&frame.recorded_interest));
     let root_background_canvas_rect = root_background_canvas_rect(
         source,
         inputs.uncaptured.root_background_source.root_layout_node,
@@ -121,10 +124,11 @@ fn record_display_list_impl<O: Observer>(
         scratch,
         resources: RecordingResourceManifest::default(),
         cull_spaces: None,
+        last_placement: None,
+        interest_rects: Default::default(),
     };
-    if super::cull::verifies_paint_producer_bounds() {
-        recorder.cull_spaces = recorder.cull_spaces_of_recording();
-    }
+    let mut interest = recorder.resolve_interest(published_interest.as_ref());
+    recorder.interest_rects = std::mem::take(&mut interest.rects);
     recorder
         .observer
         .observe(|log| log.damage = Some(source.frame().damage().summary()));
@@ -141,29 +145,35 @@ fn record_display_list_impl<O: Observer>(
         .source_recording
         .as_ref()
         .filter(|frame| {
-            frame_is_unchanged(tree, !source.frame().damage().is_empty(), window_focus_changed)
-                && !has_inspector_overlays
+            frame_is_unchanged(
+                tree,
+                !source.frame().damage().is_empty(),
+                window_focus_changed,
+                interest.culling,
+            ) && !has_inspector_overlays
                 && frame.prologue_bytes == prologue_bytes
                 && recorder.recorder.bytes() == &frame.display_list.bytes[..prologue_bytes as usize]
         })
         .map(|frame| frame.display_list.clone());
-    let display_list = match unchanged_frame {
+    let (display_list, root_output) = match unchanged_frame {
         Some(display_list) => {
             recorder
                 .observer
                 .observe(|log| log.leaf(Operation::Scope(root_scope), Action::Copy, false));
             recorder.list.append_every_published_item();
-            recorder.blocking_wheel_event_region_count = tree.root_entry().output().blocking_wheel_event_regions;
-            display_list
+            let root_output = tree.root_entry().output();
+            recorder.blocking_wheel_event_region_count = root_output.blocking_wheel_event_regions;
+            (display_list, root_output)
         }
         None => {
             let source_prologue_bytes = recorder.source_recording.as_ref().map(|frame| frame.prologue_bytes);
-            Assembler::new(
+            let root_output = Assembler::new(
                 &mut recorder,
                 tree,
                 source_prologue_bytes,
                 inputs.publishes_recording,
                 window_focus_changed,
+                interest.culling,
             )
             .assemble_root(root_scope);
             if has_inspector_overlays {
@@ -172,7 +182,7 @@ fn record_display_list_impl<O: Observer>(
                     crate::painting::record::paint::inspector_overlay::record_inspector_overlays,
                 );
             }
-            Arc::new(recorder.recorder.into_builder().finish())
+            (Arc::new(recorder.recorder.into_builder().finish()), root_output)
         }
     };
     let mut hit_test_list = recorder.list.finish();
@@ -190,7 +200,7 @@ fn record_display_list_impl<O: Observer>(
         window_is_focused: inputs.window_is_focused,
         capture_log: recorder.observer.finish(),
         vector_image_display_lists: Vec::new(),
-        recorded_interest,
+        recorded_interest: interest.into_recorded_interest(root_output.culled_wheel_routing),
     };
     RecordingResult {
         output,

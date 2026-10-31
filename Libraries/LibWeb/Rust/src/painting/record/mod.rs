@@ -14,6 +14,7 @@ pub(crate) mod damage;
 pub(crate) mod frame_inputs;
 pub mod hit_test_items;
 pub(crate) mod inputs;
+pub(crate) mod interest;
 pub(crate) mod order_tree;
 pub mod paint;
 pub(crate) mod producers;
@@ -45,6 +46,7 @@ use crate::painting::selection::HighlightPseudoElement;
 use std::sync::Arc;
 
 pub(crate) use inputs::RecordingInputs;
+pub(crate) use interest::RecordedInterest;
 
 #[derive(Default)]
 pub struct RecordingOutput {
@@ -67,10 +69,6 @@ pub struct RecordingOutput {
     pub(crate) vector_image_display_lists: Vec<(vector_images::VectorImageRenderRequest, u64)>,
     pub(crate) recorded_interest: Arc<RecordedInterest>,
 }
-
-/// What a recording records of its document: all of it.
-#[derive(Default)]
-pub(crate) struct RecordedInterest {}
 
 pub(crate) struct RecordingResult {
     pub(crate) output: RecordingOutput,
@@ -208,8 +206,13 @@ pub struct PaintRecorder<'a, O: Observer> {
     pub(crate) scratch: &'a mut scratch::RecordingScratch,
     pub(crate) resources: resources::RecordingResourceManifest,
     line_root_positions: Option<(NodeSlotId, crate::painting::paintable_geometry::LineRootPositions)>,
-    // Present while the recording places its producers, which it does to verify their placement.
+    // Present while the recording places its producers, which it does to leave them out by interest or to verify
+    // their placement.
     cull_spaces: Option<cull::CullSpaces>,
+    // The last producer placed, which assembly asks about right before it records it.
+    last_placement: Option<(NodeSlotId, order_tree::ProducerKind, cull::ProducerPlacement)>,
+    // The rects the recording leaves out what they miss by.
+    interest_rects: interest::InterestRects,
 }
 
 #[derive(Clone, Copy, Default)]

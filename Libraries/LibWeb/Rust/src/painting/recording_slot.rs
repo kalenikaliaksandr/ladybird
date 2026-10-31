@@ -26,6 +26,7 @@ use crate::painting::paint_state::{PendingRecording, PendingRecordingTrace};
 use crate::painting::presentation::Presentation;
 use crate::painting::presentation::VectorImageResources;
 use crate::painting::published_frame::PublishedFrame;
+use crate::painting::record::inputs::InterestInput;
 use crate::painting::record::publish::PresentedOutput;
 use crate::painting::record::recorder_state::RecorderState;
 use crate::painting::record::vector_images::VectorImageRenderRequest;
@@ -427,7 +428,12 @@ pub(crate) fn record_frame(
     drop(frame);
     let publishes_recording = inputs.publishes_recording;
     if publishes_recording {
-        *published_inputs = Some(inputs);
+        // Recordings made with these inputs later, such as clock lane frames, are no test's recordings.
+        let interest = match inputs.interest {
+            InterestInput::AroundScrollPositionsForTesting => InterestInput::WholeDocument,
+            ref interest => interest.clone(),
+        };
+        *published_inputs = Some(RecordingInputs { interest, ..inputs });
     }
     (
         PendingRecording {

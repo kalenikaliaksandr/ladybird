@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<script src="../include.js"></script>
+<script src="interest-rect-test.js"></script>
+<style>
+    body { margin: 0; height: 8000px; }
+    #multicol { position: absolute; top: 1500px; left: 0; width: 400px; height: 1000px; columns: 2; column-gap: 0; }
+    #filler { height: 1000px; }
+    #t { width: 0; box-shadow: 0 0 0 26px black; }
+    #t > div { height: 1010px; width: 10px; }
+</style>
+<body>
+<div id="multicol"><div id="filler"></div><div id="t"><div></div></div></div>
+<script>
+// A box split across columns casts a shadow around each of its fragments, also around a fragment without width: the
+// first fragment of #t is 0 px wide and 1000 px tall, and its shadow reaches 26 px past it on every side.
+interestRectTest(output => {
+    window.scrollTo(0, 3000);
+    const trace = recordAroundScrollPositions();
+    const rect = internals.recordedInterestRect();
+    const shadowBottom = multicol.offsetTop + 1000 + 26;
+    output(`rect reaches the shadow of the first fragment: ${rect.top < shadowBottom}`);
+    output(`#t background: ${producerAction(trace, "t", "background")}`);
+});
+</script>
