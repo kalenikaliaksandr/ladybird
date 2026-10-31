@@ -5,6 +5,7 @@
  */
 
 pub mod ffi_types;
+pub mod interest;
 pub mod queries;
 pub mod scroll_state;
 pub mod serialize;
