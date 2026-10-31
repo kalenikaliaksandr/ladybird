@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Function.h>
+#include <AK/GenericShorthands.h>
 #include <AK/Optional.h>
 #include <AK/RefPtr.h>
 #include <AK/Vector.h>
@@ -27,6 +28,9 @@ enum class WheelHitTestOutcome : u8 {
     NoScrollTarget,
     BlockedByMainThreadRegion,
     BlockedByWheelEventRegion,
+    // The display list leaves out the wheel routing of the content shown at the position, which only the main thread,
+    // hit testing the whole document, knows.
+    ContentNotRecordedAtPosition,
     HitTestTargetsOfAnotherVisualContextTree,
 };
 
@@ -41,9 +45,9 @@ struct WheelHitTestResult {
     // reason rather than because no scroller is left to offer it to.
     Optional<AsyncScrollNodeID> node_keeping_the_scroll {};
 
-    bool is_blocked_by_a_region() const
+    bool is_blocked_at_position() const
     {
-        return outcome == WheelHitTestOutcome::BlockedByMainThreadRegion || outcome == WheelHitTestOutcome::BlockedByWheelEventRegion;
+        return first_is_one_of(outcome, WheelHitTestOutcome::BlockedByMainThreadRegion, WheelHitTestOutcome::BlockedByWheelEventRegion, WheelHitTestOutcome::ContentNotRecordedAtPosition);
     }
 };
 
@@ -167,6 +171,9 @@ public:
     Gfx::FloatPoint device_offset_from_css_pixels(Web::CSSPixelPoint) const;
     Optional<Web::CSSPixelPoint> css_scroll_offset_for_node(AsyncScrollNodeID, Compositing::ScrollStateSnapshot const&) const;
     bool blocks_wheel_event_at_position(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
+    // Whether the display list records the wheel routing of what shows at the position. It leaves out only that of
+    // content outside the recorded content rects of the scroll nodes.
+    bool content_is_recorded_at_position(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
     WheelHitTestResult hit_test_scroll_node_for_wheel(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position, Gfx::FloatPoint delta, Function<Optional<Gfx::FloatPoint>(Web::AsyncScrollNodeStableID)> const& in_flight_destination_for = {}, WheelStepDispatch = WheelStepDispatch::NotYetDispatched, NestedContextRegions = NestedContextRegions::LeaveToMainThread) const;
     // The nested context whose content is the topmost thing taking pointer input at the position, if any.
     Optional<NestedContextHit> nested_context_at(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
@@ -204,6 +211,8 @@ private:
 
     WheelHitTestResult hit_test_result_for_scroll_node(AsyncScrollNodeID, Gfx::FloatPoint delta, Function<Optional<Gfx::FloatPoint>(Web::AsyncScrollNodeStableID)> const& in_flight_destination_for, ReadonlySpan<AsyncScrollNodeID> scroll_nodes_behind_scroll_chaining_barriers) const;
     AsyncScrollNode const* scroll_node_for_stable_id(Web::AsyncScrollNodeStableID) const;
+    CachedWheelHitTestTarget const* topmost_wheel_hit_test_target_at(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
+    bool blocking_wheel_event_region_contains(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
     bool main_thread_wheel_event_region_contains(Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
     struct NestedContextWheelRegionHit {
         NestedContextWheelRegion const& region;
@@ -233,6 +242,7 @@ private:
     Optional<u64> m_visual_context_tree_structural_epoch;
     Compositing::ScrollStateSnapshot m_scroll_state_snapshot;
     bool m_has_blocking_wheel_event_region_covering_viewport { false };
+    bool m_leaves_out_wheel_routing_outside_recorded_rects { false };
     bool m_viewport_keeps_horizontal_scrolls { false };
     bool m_viewport_keeps_vertical_scrolls { false };
     bool m_records_part_of_some_scroll_node { false };

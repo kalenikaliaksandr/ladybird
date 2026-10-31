@@ -1,0 +1,7 @@
+recorded at the top, over the modal: latched scroller=#modal
+scrolled to the scroller, over it: not-recorded-at-position
+scrolled to the scroller, blocks wheels over it: true
+scrolled to the scroller, over the modal: not-recorded-at-position
+recorded there, over the scroller: latched scroller=#scroller
+recorded there, blocks wheels over it: false
+recorded the whole document at the top, then scrolled to the scroller, over it: latched scroller=#scroller

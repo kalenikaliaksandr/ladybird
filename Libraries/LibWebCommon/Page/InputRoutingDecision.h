@@ -25,6 +25,7 @@ namespace Web {
     X(HitTestTargetsOfAnotherVisualContextTree, "hit-test-targets-of-another-visual-context-tree")      \
     X(BlockedByMainThreadRegion, "blocked-by-main-thread-region")                                       \
     X(BlockedByWheelEventRegion, "blocked-by-wheel-event-region")                                       \
+    X(NotRecordedAtPosition, "not-recorded-at-position")                                                \
     X(NoScrollTarget, "no-scroll-target")                                                               \
     X(ScrollerInOtherDocument, "scroller-in-other-document")                                            \
     X(StepWithoutDelta, "step-without-delta")                                                           \

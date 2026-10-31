@@ -62,6 +62,7 @@ bool WheelGestureRouting::note_wheel_event(u64 input_event_id, Web::ScrollGestur
     if (starts_gesture) {
         m_gesture = Compositing::WheelGestureIdentity::started_by(position, phase, modifiers, now);
         m_gesture_had_wheel_event_with_delta = false;
+        m_gesture_is_left_to_main_thread = false;
         m_latch.clear();
     } else {
         m_gesture->advance_to(phase, now);
@@ -77,6 +78,7 @@ void WheelGestureRouting::forget_gesture()
 {
     m_gesture.clear();
     m_gesture_had_wheel_event_with_delta = false;
+    m_gesture_is_left_to_main_thread = false;
     m_id_of_first_wheel_event_with_delta = 0;
     m_latch.clear();
 }

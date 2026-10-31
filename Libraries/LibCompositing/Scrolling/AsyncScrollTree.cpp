@@ -5,6 +5,7 @@
  */
 
 #include <LibCompositing/DisplayList/DisplayList.h>
+#include <LibCompositing/RustFFI.h>
 #include <LibCompositing/Scrolling/AsyncScrollTree.h>
 #include <LibGfx/AffineTransform.h>
 #include <LibGfx/Matrix4x4.h>
@@ -16,8 +17,29 @@
 
 namespace Compositing {
 
+// Recorded content rects come from WebContent. A side at or past the unbounded edge leaves nothing out beyond it, so it
+// is kept there, where the extent of the rect cannot overflow; a rect without area records nothing.
+static Gfx::IntRect recorded_content_rect_within_unbounded_edges(Gfx::IntRect const& rect)
+{
+    if (rect.width() <= 0 || rect.height() <= 0)
+        return { rect.location(), {} };
+    auto edge_within_unbounded_edges = [](i64 edge) {
+        constexpr i64 unbounded_edge = Compositing::RustFFI::UNBOUNDED_INTEREST_EDGE;
+        return static_cast<int>(clamp(edge, -unbounded_edge, unbounded_edge));
+    };
+    auto left = edge_within_unbounded_edges(rect.x());
+    auto top = edge_within_unbounded_edges(rect.y());
+    auto right = edge_within_unbounded_edges(static_cast<i64>(rect.x()) + rect.width());
+    auto bottom = edge_within_unbounded_edges(static_cast<i64>(rect.y()) + rect.height());
+    return { left, top, right - left, bottom - top };
+}
+
 void AsyncScrollTree::set_state(AsyncScrollingState&& state)
 {
+    for (auto& node : state.scroll_nodes) {
+        if (node.recorded_content_rect.has_value())
+            node.recorded_content_rect = recorded_content_rect_within_unbounded_edges(*node.recorded_content_rect);
+    }
     m_document_id = state.document_id;
     m_scroll_nodes = move(state.scroll_nodes);
     m_snap_containers = move(state.snap_containers);
@@ -28,6 +50,7 @@ void AsyncScrollTree::set_state(AsyncScrollingState&& state)
     m_blocking_wheel_event_regions = move(state.blocking_wheel_event_regions);
     m_scroll_chaining_barriers = move(state.scroll_chaining_barriers);
     m_has_blocking_wheel_event_region_covering_viewport = state.has_blocking_wheel_event_region_covering_viewport;
+    m_leaves_out_wheel_routing_outside_recorded_rects = state.leaves_out_wheel_routing_outside_recorded_rects;
     m_viewport_keeps_horizontal_scrolls = state.viewport_keeps_horizontal_scrolls;
     m_viewport_keeps_vertical_scrolls = state.viewport_keeps_vertical_scrolls;
     m_cached_wheel_hit_test_targets.clear();
@@ -51,6 +74,8 @@ Web::InputRoutingDecision input_routing_decision_for_first_wheel_step(WheelHitTe
         return Web::InputRoutingDecision::BlockedByMainThreadRegion;
     case WheelHitTestOutcome::BlockedByWheelEventRegion:
         return Web::InputRoutingDecision::BlockedByWheelEventRegion;
+    case WheelHitTestOutcome::ContentNotRecordedAtPosition:
+        return Web::InputRoutingDecision::NotRecordedAtPosition;
     case WheelHitTestOutcome::HitTestTargetsOfAnotherVisualContextTree:
         return Web::InputRoutingDecision::HitTestTargetsOfAnotherVisualContextTree;
     }
@@ -546,7 +571,12 @@ bool AsyncScrollTree::blocks_wheel_event_at_position(Compositing::AccumulatedVis
 {
     if (m_has_blocking_wheel_event_region_covering_viewport || !has_wheel_hit_test_targets_for(visual_context_tree))
         return true;
+    // Content the display list leaves out may have blocking wheel event listeners.
+    return !content_is_recorded_at_position(visual_context_tree, position) || blocking_wheel_event_region_contains(visual_context_tree, position);
+}
 
+bool AsyncScrollTree::blocking_wheel_event_region_contains(Compositing::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position) const
+{
     for (auto const& target : m_cached_blocking_wheel_event_targets) {
         if (!visual_context_tree.context_is_valid(target.context))
             return true;
@@ -557,6 +587,47 @@ bool AsyncScrollTree::blocks_wheel_event_at_position(Compositing::AccumulatedVis
             return true;
     }
     return false;
+}
+
+CachedWheelHitTestTarget const* AsyncScrollTree::topmost_wheel_hit_test_target_at(Compositing::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position) const
+{
+    for (auto const& target : m_cached_wheel_hit_test_targets.in_reverse()) {
+        if (target.viewport_rect.has_value() && !target.viewport_rect->contains(position))
+            continue;
+        if (!visual_context_tree.context_is_valid(target.context))
+            continue;
+        auto position_in_context = visual_context_tree.transform_point_for_hit_test(target.context, position, m_scroll_state_snapshot);
+        if (position_in_context.has_value() && wheel_hit_test_target_contains_point(target, *position_in_context))
+            return &target;
+    }
+    return nullptr;
+}
+
+bool AsyncScrollTree::content_is_recorded_at_position(Compositing::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position) const
+{
+    if (!m_leaves_out_wheel_routing_outside_recorded_rects)
+        return true;
+
+    // Content left out of any scroll node that shows at the position may be painted above whatever the display list
+    // records there, a fixed-position scroller included, since only its z-order, which the list leaves out too, says.
+    auto position_in_layout_viewport = visual_context_tree.transform_point_for_hit_test({}, position, m_scroll_state_snapshot, Compositing::AccumulatedVisualContextTree::ClipBehavior::Ignore);
+    if (!position_in_layout_viewport.has_value())
+        return false;
+    for (size_t position_of_node = 0; position_of_node < m_scroll_nodes.size() && position_of_node < m_scroll_node_visibilities.size(); ++position_of_node) {
+        auto const& node = m_scroll_nodes[position_of_node];
+        auto const& visibility = m_scroll_node_visibilities[position_of_node];
+        if (!node.recorded_content_rect.has_value() || !visibility.has_value() || !visibility->in_viewport.contains(*position_in_layout_viewport))
+            continue;
+        Compositing::ContextRef content_of_node { .spatial = node.node_id.scroll_node_index };
+        if (!visual_context_tree.context_is_valid(content_of_node))
+            return false;
+        auto position_in_content = visual_context_tree.transform_point_for_hit_test(content_of_node, position, m_scroll_state_snapshot, Compositing::AccumulatedVisualContextTree::ClipBehavior::Ignore);
+        if (!position_in_content.has_value())
+            continue;
+        if (visibility->in_content.to_type<float>().contains(*position_in_content) && !node.recorded_content_rect->to_type<float>().contains(*position_in_content))
+            return false;
+    }
+    return true;
 }
 
 bool AsyncScrollTree::main_thread_wheel_event_region_contains(Compositing::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position) const
@@ -604,6 +675,9 @@ Optional<NestedContextHit> AsyncScrollTree::nested_context_at(Compositing::Accum
         return {};
     auto hit = topmost_nested_context_wheel_region_at(visual_context_tree, position);
     if (!hit.has_value() || is_covered_by_hit_test_target_painted_after(hit->region.paint_order_index, visual_context_tree, position))
+        return {};
+    // Content the display list leaves out may cover the nested context there.
+    if (!content_is_recorded_at_position(visual_context_tree, position))
         return {};
     return nested_context_hit_in_region(hit->region, hit->position_in_context);
 }
@@ -653,7 +727,11 @@ WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Compositing::
     if (nested_context_regions == NestedContextRegions::LeaveToMainThread && topmost_nested_context_wheel_region_at(visual_context_tree, position).has_value())
         return { .outcome = WheelHitTestOutcome::BlockedByMainThreadRegion };
 
-    if (blocking_wheel_event_listeners_hold_the_step_back && blocks_wheel_event_at_position(visual_context_tree, position))
+    // Whatever the page did with the step, what the display list leaves out there may route it elsewhere.
+    if (!content_is_recorded_at_position(visual_context_tree, position))
+        return { .outcome = WheelHitTestOutcome::ContentNotRecordedAtPosition };
+
+    if (blocking_wheel_event_listeners_hold_the_step_back && blocking_wheel_event_region_contains(visual_context_tree, position))
         return { .outcome = WheelHitTestOutcome::BlockedByWheelEventRegion };
 
     // https://drafts.csswg.org/css-overscroll-1/#scroll-chaining-and-boundary-default-actions
@@ -674,17 +752,10 @@ WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Compositing::
             scroll_nodes_behind_scroll_chaining_barriers.append(barrier.scroll_node_id_above_barrier);
     }
 
-    for (auto const& target : m_cached_wheel_hit_test_targets.in_reverse()) {
-        if (target.viewport_rect.has_value() && !target.viewport_rect->contains(position))
-            continue;
-        if (!context_is_valid(target.context))
-            continue;
-        auto position_in_context = visual_context_tree.transform_point_for_hit_test(target.context, position, m_scroll_state_snapshot);
-        if (!position_in_context.has_value() || !wheel_hit_test_target_contains_point(target, *position_in_context))
-            continue;
-        if (!target.target_node_id.has_value())
+    if (auto const* target = topmost_wheel_hit_test_target_at(visual_context_tree, position)) {
+        if (!target->target_node_id.has_value())
             return { .outcome = WheelHitTestOutcome::NoScrollTarget };
-        return hit_test_result_for_scroll_node(*target.target_node_id, delta, in_flight_destination_for, scroll_nodes_behind_scroll_chaining_barriers);
+        return hit_test_result_for_scroll_node(*target->target_node_id, delta, in_flight_destination_for, scroll_nodes_behind_scroll_chaining_barriers);
     }
 
     auto viewport_node_id = viewport_scroll_node_id();

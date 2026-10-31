@@ -1043,6 +1043,8 @@ ContextState::AsyncScrollResult ContextState::async_scroll_by(
     bool is_first_step_of_gesture = !latched_node_id.has_value();
     auto routing_decision = Web::InputRoutingDecision::ContinuedLatch;
     if (is_first_step_of_gesture) {
+        if (m_wheel_gesture_routing.gesture_is_left_to_main_thread())
+            return AsyncScrollResult::declined(Web::InputRoutingDecision::NotRecordedAtPosition);
         auto wheel_step_dispatch_for_hit_test = page_let_touchpad_step_through ? Compositing::WheelStepDispatch::DispatchedAndNotCanceled : Compositing::WheelStepDispatch::NotYetDispatched;
         auto latch_attempt = hit_test_and_latch_wheel_gesture(position, delta, wheel_delta_precision, scroll_gesture_phase, expected_document_id, wheel_step_dispatch_for_hit_test, Compositing::NestedContextRegions::LeaveToMainThread);
         if (!latch_attempt.latched_node_id.has_value())
@@ -1686,9 +1688,14 @@ ContextState::ContextUpdateResult ContextState::scroll_for_wheel_event_in_this_c
     // gesture are not held back by regions the cursor moves over later.
     bool is_first_step_of_gesture = !latched_node_id.has_value();
     if (is_first_step_of_gesture) {
+        if (m_wheel_gesture_routing.gesture_is_left_to_main_thread())
+            return ContextUpdateResult::declined(Web::InputRoutingDecision::NotRecordedAtPosition);
         auto initial_scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(m_scene.visual_context_tree_for_compositing(), position, delta, {}, Compositing::WheelStepDispatch::NotYetDispatched, nested_context_regions);
-        if (initial_scroll_target.is_blocked_by_a_region())
+        if (initial_scroll_target.is_blocked_at_position()) {
+            if (initial_scroll_target.outcome == Compositing::WheelHitTestOutcome::ContentNotRecordedAtPosition)
+                m_wheel_gesture_routing.leave_gesture_to_main_thread();
             return ContextUpdateResult::declined(Compositing::input_routing_decision_for_first_wheel_step(initial_scroll_target.outcome));
+        }
     }
 
     if (delta.is_zero()) {
@@ -2253,8 +2260,11 @@ ContextState::WheelGestureLatchAttempt ContextState::hit_test_and_latch_wheel_ge
     if (wheel_delta_precision == Web::WheelDeltaPrecision::Discrete)
         in_flight_destination_for = [this](auto stable_node_id) { return in_flight_wheel_destination(stable_node_id); };
     auto scroll_target = m_async_scroll_tree.hit_test_scroll_node_for_wheel(m_scene.visual_context_tree_for_compositing(), position, delta, in_flight_destination_for, wheel_step_dispatch, nested_context_regions);
-    if (scroll_target.is_blocked_by_a_region())
+    if (scroll_target.is_blocked_at_position()) {
+        if (scroll_target.outcome == Compositing::WheelHitTestOutcome::ContentNotRecordedAtPosition)
+            m_wheel_gesture_routing.leave_gesture_to_main_thread();
         return { Compositing::input_routing_decision_for_first_wheel_step(scroll_target.outcome) };
+    }
 
     auto node_id_to_latch = scroll_target.node_id;
     auto decision = Web::InputRoutingDecision::Latched;

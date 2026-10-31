@@ -67,6 +67,11 @@ public:
     void clear_latch() { m_latch.clear(); }
     void forget_gesture();
     void relatch_to(Web::AsyncScrollNodeStableID);
+    // The display list left out the wheel routing of what showed under the first step of the gesture, so the main
+    // thread, which hit tests the whole document, took the step and latched the gesture to what it found. The rest of
+    // the gesture goes there too, however much the display lists installed since record.
+    void leave_gesture_to_main_thread() { m_gesture_is_left_to_main_thread = true; }
+    bool gesture_is_left_to_main_thread() const { return m_gesture_is_left_to_main_thread; }
     void note_page_let_latched_gesture_through();
     bool page_let_latched_touchpad_gesture_through(Web::WheelDeltaPrecision, Web::ScrollGesturePhase) const;
     bool momentum_of_latched_gesture_can_spring_scroller_back() const;
@@ -105,6 +110,7 @@ private:
     NewestWheelEventIdsFromUI m_newest_wheel_event_ids_from_ui;
     u64 m_id_of_first_wheel_event_with_delta { 0 };
     bool m_gesture_had_wheel_event_with_delta { false };
+    bool m_gesture_is_left_to_main_thread { false };
     Optional<Latch> m_latch;
     Compositing::TouchpadGestureEnd m_touchpad_gesture_end { Compositing::TouchpadGestureEnd::AfterIdleDelay };
 };
