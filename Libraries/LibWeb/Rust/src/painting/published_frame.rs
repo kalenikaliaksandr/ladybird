@@ -205,8 +205,8 @@ impl PublishedPaintState {
 
 /// What a document published for one recording to read: its rows, its paint damage and the paint
 /// state the recording reads, with a lease on the style records its rows name. [`LayoutNodeArena::freeze_frame`] is
-/// its only constructor and it has no `Clone`: a recording takes a frame and drops it before it returns, and nothing
-/// keeps one past the next write to the arena.
+/// its only constructor and it has no `Clone`: a recording borrows a frame from the job it runs in, which drops it
+/// before it answers, and nothing keeps one past the next write to the arena.
 pub(crate) struct PublishedFrame {
     pub(super) rows: PublishedRows,
     damage: FrameDamage,

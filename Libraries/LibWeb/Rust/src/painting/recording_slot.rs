@@ -12,7 +12,8 @@
 //! them names the layout arena, and the job runs on the Paint thread: the host either waits for it,
 //! or commits a rendering update, whose frame the render owner samples and hands the Paint thread
 //! beside the event loop, and takes its answer in once it has finished. The recording of a
-//! committed frame owns its navigable's presenter, and presents the frame it recorded itself. The slot is
+//! committed frame owns its navigable's presenter, presents the frame it recorded itself, and hands
+//! the frame back to the commit's Paint job, which lets go of it before its answer lands. The slot is
 //! the document host's, on the host's thread: only the recording entries, the publication and the
 //! trace reach it, through [`crate::render_state::DocumentHost::recording`].
 
@@ -37,9 +38,10 @@ use crate::stage_thread::InFlight;
 use crate::stage_thread::{ParkedJob, StopWord};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-/// A display list recording: the frame it records, which it drops before it returns, the rows
-/// version that frame was frozen at, the recorder state it records with, which it returns in its
-/// answer, and for the recording of a committed frame, what presents the frame it recorded.
+/// A display list recording: the frame it records, which it drops before it returns unless it
+/// presented what it recorded of it, the rows version that frame was frozen at, the recorder state
+/// it records with, which it returns in its answer, and for the recording of a committed frame,
+/// what presents the frame it recorded.
 pub(crate) struct RecordingJob {
     frame: PublishedFrame,
     rows_version: RowsVersion,
@@ -264,21 +266,30 @@ impl RecordingJob {
     /// Records the frame with `inputs` on the Paint thread, and waits for what it recorded.
     pub(crate) fn run_on_paint_thread(self, inputs: RecordingInputs) -> RecordingAnswer {
         if cfg!(test) {
-            return self.run(inputs, None);
+            return self.run(inputs, None).0;
         }
         release_held_recording_for_testing();
-        crate::paint_stage::paint_thread().run(|| self.run(inputs, None))
+        crate::paint_stage::paint_thread().run(|| self.run(inputs, None).0)
     }
 
     /// Records the frame with `inputs` on the Paint thread beside the host, and presents it with the job's
-    /// presentation, if any.
-    pub(crate) fn run_beside_host(self, inputs: RecordingInputs, presenting: &mut Presenting) -> RecordingAnswer {
+    /// presentation, if any. Answers the frame as well, where it presented what it recorded of it.
+    pub(crate) fn run_beside_host(
+        self,
+        inputs: RecordingInputs,
+        presenting: &mut Presenting,
+    ) -> (RecordingAnswer, Option<PublishedFrame>) {
         self.run(inputs, Some(presenting))
     }
 
     /// Records the frame with `inputs`, and presents it where the job has a presentation and runs beside the host
-    /// with `presenting`. It takes no main thread token, so nothing it calls can reach the host.
-    fn run(self, inputs: RecordingInputs, presenting: Option<&mut Presenting>) -> RecordingAnswer {
+    /// with `presenting`, in which case it answers the frame as well. It takes no main thread token, so nothing it
+    /// calls can reach the host.
+    fn run(
+        self,
+        inputs: RecordingInputs,
+        presenting: Option<&mut Presenting>,
+    ) -> (RecordingAnswer, Option<PublishedFrame>) {
         let Self {
             frame,
             rows_version,
@@ -287,7 +298,7 @@ impl RecordingJob {
             trace_recordings,
             mut presentation,
         } = self;
-        let (pending, trace) = record_frame(frame, &mut recorder, viewport, trace_recordings, inputs);
+        let (pending, trace) = record_frame(&frame, &mut recorder, viewport, trace_recordings, inputs);
         // A recording that renders an SVG image the recording published last did not draw leaves its frame for the host
         // to present, which renders it.
         let vector_image_display_lists = match crate::painting::record::publish::renders_vector_images(&pending) {
@@ -296,7 +307,7 @@ impl RecordingJob {
                 crate::painting::record::publish::published_vector_image_display_lists(&pending, &recorder).map(Some)
             }
         };
-        let recorded = match (presentation.as_mut(), presenting, vector_image_display_lists) {
+        let (recorded, presented_frame) = match (presentation.as_mut(), presenting, vector_image_display_lists) {
             (Some(presentation), Some(presenting), Some(vector_image_display_lists)) => {
                 let publishes_recording = pending.publishes_recording;
                 let output = match vector_image_display_lists {
@@ -305,20 +316,25 @@ impl RecordingJob {
                     }
                     None => present(presentation, pending, &recorder, presenting),
                 };
-                Recorded::Presented {
+                let recorded = Recorded::Presented {
                     output: PresentedOutput::of(output),
                     publishes_recording,
-                }
+                };
+                (recorded, Some(frame))
             }
-            _ => Recorded::Pending(pending),
+            _ => {
+                drop(frame);
+                (Recorded::Pending(pending), None)
+            }
         };
-        RecordingAnswer {
+        let answer = RecordingAnswer {
             recorder,
             recorded,
             rows_version,
             trace,
             presentation,
-        }
+        };
+        (answer, presented_frame)
     }
 }
 
@@ -393,9 +409,10 @@ pub(crate) fn release_held_recording_for_testing() {
 }
 
 /// Records `frame` of the document's `viewport` with `inputs` and `recorder`, which keeps the inputs of a recording that
-/// publishes, and answers what it recorded, with the trace it left where `trace_recordings` asks for one.
+/// publishes, and answers what it recorded, with the trace it left where `trace_recordings` asks for one. What it
+/// answers reads nothing more of the frame, which the caller may drop at once.
 pub(crate) fn record_frame(
-    frame: PublishedFrame,
+    frame: &PublishedFrame,
     recorder: &mut RecorderState,
     viewport: NodeSlotId,
     trace_recordings: bool,
@@ -409,7 +426,7 @@ pub(crate) fn record_frame(
         absolute_rects,
         published_inputs,
     } = recorder;
-    let source = PaintSource::new(&frame, absolute_rects);
+    let source = PaintSource::new(frame, absolute_rects);
     let recording = crate::painting::record::traversal::record_display_list(
         &source,
         scratch,
@@ -425,7 +442,6 @@ pub(crate) fn record_frame(
         should_paint_overlay: inputs.should_paint_overlay,
     });
     let svg_paint_resources = frame.svg_paint_resources().clone();
-    drop(frame);
     let publishes_recording = inputs.publishes_recording;
     if publishes_recording {
         // Recordings made with these inputs later, such as clock lane frames, are no test's recordings, and answer no

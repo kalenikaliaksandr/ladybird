@@ -393,9 +393,12 @@ impl SampledFrame<CommittedSample> {
                 viewport,
                 inputs,
                 visual_contexts: _,
-            }) => RecordingJob::new(frozen, recorder, viewport, Some(presentation))
-                .run_beside_host(inputs, presenting)
-                .hold_vector_images(SampledFrame),
+            }) => {
+                let (answer, presented_frame) = RecordingJob::new(frozen, recorder, viewport, Some(presentation))
+                    .run_beside_host(inputs, presenting);
+                drop(presented_frame);
+                answer.hold_vector_images(SampledFrame)
+            }
             CommittedSample::Unrecorded { visual_context_tree } => {
                 presentation.present_unrecorded(visual_context_tree, presenting);
                 RecordingAnswer::presented_unrecorded(recorder, presentation)
@@ -1555,7 +1558,8 @@ impl ClockRecorder {
             inputs,
             visual_contexts,
         }) = frame;
-        let (pending, _) = record_frame(frozen.frame, recorder, viewport, false, inputs);
+        let (pending, _) = record_frame(&frozen.frame, recorder, viewport, false, inputs);
+        drop(frozen);
         let vector_image_display_lists = match renders_vector_images(&pending) {
             true => match published_vector_image_display_lists(&pending, recorder) {
                 Some(display_list_ids) => Some(display_list_ids),
