@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; background: linear-gradient(white, teal); }
+    #box { position: fixed; top: 0; left: 0; width: 100px; height: 0px; background: green; }
+</style>
+<div id="box"></div>
+<script>
+// While a clock lane ticks an animation beside a task, the compositor scrolls past what its display list records and
+// asks for a recording there, which waits while held. Once released, the lane's next frame records the rects asked for
+// and answers the request, though no rendering update runs meanwhile, and the lane's frames after it go on recording
+// what shows, though the frame the lane started from shows the top of the page.
+asyncTest(async done => {
+    await startRecordingAroundScrollPositions();
+    await interestCoverageSettled();
+
+    const recordsWhatShows = ({ recordedRect: recorded, visibleContentRect: visible }) =>
+        recorded.y <= visible.y && recorded.y + recorded.height >= visible.y + visible.height;
+    const result = await whileLaneAnimates(() => {
+        return box.animate([{ height: "0px" }, { height: "100px" }], { duration: 10000, easing: "linear" });
+    }, async frameTime => {
+        // The lane forks the render state before the scroll reaches the main thread.
+        internals.injectClockTick(frameTime + 1000);
+        internals.holdInterestRefreshes();
+        // Wheel steps reach the main thread in a rendering update, and none runs meanwhile, so the wheel's promise
+        // settles only after the test: the compositor's request tells that it scrolled.
+        internals.wheelThroughUIProcess(400, 300, 0, 9000, true);
+        await waitForCondition(() => internals.compositorInterestRefreshState().inFlightRequestId !== null);
+        const requestInFlight = internals.compositorInterestRefreshState().inFlightRequestId;
+        const scrolled = internals.compositorScrollState();
+        const paints = internals.getRenderingSchedulerCounters().paints;
+
+        internals.releaseInterestRefreshes();
+        const answeredBeforeTheTick = internals.compositorInterestRefreshState().lastAnsweredRequestId >= requestInFlight;
+        internals.injectClockTick(frameTime + 2000);
+        const presentedBy = internals.lastFramePresentedBy(document);
+        const answered = await waitForCondition(
+            () => internals.compositorInterestRefreshState().lastAnsweredRequestId >= requestInFlight
+        );
+        const answeredBy = internals.compositorScrollState();
+
+        const contentGeneration = internals.compositorInterestRefreshState().contentGeneration;
+        internals.injectClockTick(frameTime + 3000);
+        const nextFrameArrived = await waitForCondition(
+            () => internals.compositorInterestRefreshState().contentGeneration > contentGeneration
+        );
+        return {
+            scrolledPastTheList: scrolled.visibleContentRect.y >= scrolled.recordedRect.y + scrolled.recordedRect.height,
+            answeredBeforeTheTick,
+            presentedBy,
+            answered,
+            answerRecordsWhatShows: recordsWhatShows(answeredBy),
+            nextFrameRecordsWhatShows: nextFrameArrived && recordsWhatShows(internals.compositorScrollState()),
+            paintsMeanwhile: internals.getRenderingSchedulerCounters().paints - paints,
+        };
+    });
+    println(`scrolled past what the list records: ${result.scrolledPastTheList}`);
+    println(`answered before the lane's next tick: ${result.answeredBeforeTheTick}`);
+    println(`last frame presented by: ${result.presentedBy}`);
+    println(`the lane's frame answered the request: ${result.answered}`);
+    println(`the list that answered records what shows: ${result.answerRecordsWhatShows}`);
+    println(`the lane's next frame records what shows: ${result.nextFrameRecordsWhatShows}`);
+    println(`rendering updates that painted meanwhile: ${result.paintsMeanwhile}`);
+    done();
+});
+</script>

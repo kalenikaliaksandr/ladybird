@@ -302,6 +302,11 @@ extern "C" WEB_API void web_sealed_presentation_destroy(void* sealed)
     delete static_cast<Web::Compositor::SealedPresentation*>(sealed);
 }
 
+extern "C" WEB_API u64 web_sealed_presentation_context_id(void const* sealed)
+{
+    return static_cast<Web::Compositor::SealedPresentation const*>(sealed)->context_id.value();
+}
+
 extern "C" WEB_API void web_sealed_presentation_take_visual_context_tree(void* sealed_pointer, void const* tree, Gfx::FloatPoint const* restructured_scroll_offsets, size_t scroll_offset_count)
 {
     auto& sealed = *static_cast<Web::Compositor::SealedPresentation*>(sealed_pointer);

@@ -227,6 +227,7 @@ extern "C" {
 WEB_API void web_navigable_presenter_unref(void* presenter);
 WEB_API void* web_navigable_presenter_seal_for_clock_lane(void* presenter, void const* committed);
 WEB_API void web_sealed_presentation_destroy(void* sealed);
+WEB_API u64 web_sealed_presentation_context_id(void const* sealed);
 WEB_API void web_sealed_presentation_take_visual_context_tree(void* sealed, void const* tree, Gfx::FloatPoint const* restructured_scroll_offsets, size_t scroll_offset_count);
 WEB_API void web_navigable_presenter_add_font(void* presenter, void const* font);
 WEB_API void web_navigable_presenter_add_image_frame(void* presenter, void const* frame);

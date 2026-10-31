@@ -1,0 +1,7 @@
+scrolled past what the list records: true
+answered before the lane's next tick: false
+last frame presented by: clock
+the lane's frame answered the request: true
+the list that answered records what shows: true
+the lane's next frame records what shows: true
+rendering updates that painted meanwhile: 0

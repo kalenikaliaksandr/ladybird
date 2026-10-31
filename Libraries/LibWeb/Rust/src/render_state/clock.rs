@@ -14,7 +14,9 @@
 //! A lane's ticks write a fork of the render state as the frame left it (see [`crate::fork`]), which the host's state
 //! never sees, and record with a fork of the recorder state the frame recorded with: nothing on the host's thread
 //! begins, waits for or ends a lane. What a tick presents starts from the lane's frame, and the presenter drops it once
-//! the host presented a later frame.
+//! the host presented a later frame. The compositor may have scrolled on from the frame's scroll positions, so where
+//! the frame recorded around them, a tick records the rects the compositor asked for last instead, and the frame that
+//! presents them answers the request (see [`crate::painting::interest_refresh`]).
 //!
 //! The lane's pieces come together on the render owner (see [`lane`]): the fork, before the host first writes the state
 //! after the frame or at the first tick that needs it, the recorder state and the seal its frames are presented with,
@@ -39,6 +41,7 @@ use crate::layout::tree_update_marks::{FfiLayoutTreeUpdateMark, layout_tree_upda
 use crate::layout::used_values::FfiCssPixelRect;
 use crate::layout::{ClockRound, ClockRoundDeclined, HostStyle, LayoutNodeArena, build_keeps_box};
 use crate::paint_stage::Presenting;
+use crate::painting::interest_refresh::forget_interest_request_answered_by_clock_lane;
 use crate::painting::paint_passes::{ClockTickVisualContexts, VisualContextsNeedHost, prepare_for_clock_tick};
 use crate::painting::paintable_geometry::absolute_border_box_rect;
 use crate::painting::presentation::Presentation;
@@ -1393,9 +1396,10 @@ impl Lane {
     }
 
     /// Takes in the frame the last tick presented, and has the Paint thread record the document's frame again, with the
-    /// inputs of the last recording that published, and present it beside the event loop and the next tick. A frame
-    /// whose visual contexts only the host settles, or whose trace the host reads, is the host's to present, and so is
-    /// any frame after one that renders an SVG image.
+    /// inputs of the last recording that published, around the rects the compositor asked for last where those record
+    /// around the scroll positions, and present it beside the event loop and the next tick. A frame whose visual
+    /// contexts only the host settles, or whose trace the host reads, is the host's to present, and so is any frame
+    /// after one that renders an SVG image.
     fn present(&mut self, state: &mut RenderState, turn: &SamplingTurn) -> Result<(), Park> {
         let mut clock_recorder = self.recording.0.take(WaitsForTickRecording(()));
         let arena = state.arena.arena_mut();
@@ -1494,14 +1498,17 @@ impl Lane {
     }
 }
 
-/// Takes the frame the last tick presented in as the document's last recording, and prepares and freezes the
-/// document's frame for the next recording, with the inputs of the last recording that published.
+/// Takes the frame the last tick presented in as the document's last recording, and prepares and freezes the document's
+/// frame for the next recording, with the inputs of the last recording that published, but around the rects of the
+/// compositor's newest request where those inputs record around the scroll positions.
 fn freeze_tick_frame(
     arena: &mut LayoutNodeArena,
     clock_recorder: &mut ClockRecorder,
 ) -> Result<(FrozenFrame, RecordingInputs, Option<ClockTickVisualContexts>), Park> {
     let ClockRecorder {
-        recorder, presented, ..
+        recorder,
+        presentation,
+        presented,
     } = clock_recorder;
     match std::mem::replace(presented, TickPresented::Nothing) {
         TickPresented::Nothing => {}
@@ -1539,13 +1546,16 @@ fn freeze_tick_frame(
         recorder.published_inputs = Some(inputs);
         return Err(Park("the frame does not freeze"));
     };
+    let inputs = inputs.for_clock_lane_of_context(presentation.compositor_context_id());
     Ok((frozen, inputs, visual_contexts))
 }
 
 impl ClockRecorder {
     /// Records `frame`, which a tick sampled, and presents it with the visual contexts the tick prepared for it, on the
     /// Paint thread. Only the host renders an SVG image: the frame draws those the recording published last drew, as the
-    /// host rendered them for it, and leaves the frame to the host where it draws another.
+    /// host rendered them for it, and leaves the frame to the host where it draws another. A frame presented with every
+    /// rect of the compositor's request it recorded around answers the request, which no host frame needs to take any
+    /// more.
     fn record(mut self, frame: SampledFrame<RecordedFrame>, presenting: &mut Presenting) -> Self {
         let Self {
             recorder,
@@ -1558,6 +1568,7 @@ impl ClockRecorder {
             inputs,
             visual_contexts,
         }) = frame;
+        let interest_request = inputs.interest_request().cloned();
         let (pending, _) = record_frame(&frozen.frame, recorder, viewport, false, inputs);
         drop(frozen);
         let vector_image_display_lists = match renders_vector_images(&pending) {
@@ -1581,6 +1592,11 @@ impl ClockRecorder {
             }
             None => present(presentation, pending, recorder, presenting),
         };
+        if let Some(interest_request) = interest_request
+            && interest_request.is_recorded_by(&output.recorded_interest.scroll_node_rects)
+        {
+            forget_interest_request_answered_by_clock_lane(presentation.compositor_context_id(), &interest_request);
+        }
         take_in_published_output(recorder, &mut None, output, true, |output, hit_test_list_changed| {
             *presented = TickPresented::Frame {
                 output,

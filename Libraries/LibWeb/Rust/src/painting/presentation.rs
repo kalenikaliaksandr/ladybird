@@ -25,6 +25,7 @@ unsafe extern "C" {
     fn web_navigable_presenter_unref(presenter: *mut c_void);
     fn web_navigable_presenter_seal_for_clock_lane(presenter: *mut c_void, committed: *const c_void) -> *mut c_void;
     fn web_sealed_presentation_destroy(sealed: *mut c_void);
+    fn web_sealed_presentation_context_id(sealed: *const c_void) -> u64;
     fn web_sealed_presentation_take_visual_context_tree(
         sealed: *mut c_void,
         tree: *const c_void,
@@ -163,6 +164,11 @@ impl Presentation {
         })
     }
 
+    pub(crate) fn compositor_context_id(&self) -> u64 {
+        // SAFETY: The presentation owns the seal.
+        unsafe { web_sealed_presentation_context_id(self.sealed.0.as_ptr()) }
+    }
+
     /// Gives the presenter and the seal back to the host, which takes them over.
     pub(crate) fn into_ffi(self) -> FfiPresentation {
         let this = std::mem::ManuallyDrop::new(self);
@@ -244,6 +250,11 @@ mod ffi_test_stubs {
 
     #[unsafe(no_mangle)]
     extern "C" fn web_sealed_presentation_destroy(_: *mut c_void) {}
+
+    #[unsafe(no_mangle)]
+    extern "C" fn web_sealed_presentation_context_id(_: *const c_void) -> u64 {
+        0
+    }
 
     #[unsafe(no_mangle)]
     extern "C" fn web_sealed_presentation_take_visual_context_tree(

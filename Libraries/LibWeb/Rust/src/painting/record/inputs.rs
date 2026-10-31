@@ -10,7 +10,7 @@ use crate::painting::display_list::commands::UniqueNodeId;
 use crate::painting::ffi::{FfiChromeMetrics, FfiScrollNodeDestination};
 use crate::painting::force_dark::ForceDarkSettings;
 use crate::painting::host::{FfiFlexOverlayInput, FfiGridOverlayInput, RootBackgroundSource};
-use crate::painting::interest_refresh::{InterestRequest, take_newest_interest_request};
+use crate::painting::interest_refresh::{InterestRequest, newest_interest_request, take_newest_interest_request};
 use libgfx_rust::font::FontHandle;
 use libgfx_rust::{Color, IntRect, IntSize};
 use std::sync::Arc;
@@ -126,6 +126,32 @@ pub(crate) struct RecordingInputs {
     pub mark_text_color: Color,
 }
 
+impl RecordingInputs {
+    /// These inputs, which a recording that published recorded with, for a clock lane's frame of the compositor context
+    /// `context_id`: where they record around the scroll positions, the frame records the rects of the context's newest
+    /// request to record around new rects, as `InterestInput::AsRequested` says.
+    pub(crate) fn for_clock_lane_of_context(mut self, context_id: u64) -> Self {
+        if let InterestInput::AroundScrollPositions { .. } | InterestInput::AsRequested { .. } = self.interest {
+            self.interest = InterestInput::AsRequested {
+                requested: newest_interest_request(context_id),
+            };
+        }
+        self
+    }
+
+    /// The compositor's request to record around new rects that the recording records around, if any.
+    pub(crate) fn interest_request(&self) -> Option<&Arc<InterestRequest>> {
+        match &self.interest {
+            InterestInput::AroundScrollPositions { requested, .. } | InterestInput::AsRequested { requested } => {
+                requested.as_ref()
+            }
+            InterestInput::WholeDocument
+            | InterestInput::AroundScrollPositionsForTesting
+            | InterestInput::AsSourceRecording => None,
+        }
+    }
+}
+
 /// Which part of its document a recording records.
 #[derive(Clone)]
 pub(crate) enum InterestInput {
@@ -140,6 +166,12 @@ pub(crate) enum InterestInput {
     /// Like `AroundScrollPositions`, but keeping only what an earlier testing recording aimed for, so that what a test
     /// records never depends on recordings made outside it.
     AroundScrollPositionsForTesting,
+    /// The rect the compositor's `requested` names of each scroll node, as it names it, whatever the scroll positions
+    /// show, and what the recording published last aimed for of the other nodes: a clock lane's frame shows the scroll
+    /// positions of the committed frame it starts from, which the compositor may have scrolled on from since.
+    AsRequested {
+        requested: Option<Arc<InterestRequest>>,
+    },
     /// What the recording published last records: a recording that only rebuilds the hit-test list records no more.
     AsSourceRecording,
 }

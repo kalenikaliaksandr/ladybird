@@ -444,14 +444,16 @@ pub(crate) fn record_frame(
     let svg_paint_resources = frame.svg_paint_resources().clone();
     let publishes_recording = inputs.publishes_recording;
     if publishes_recording {
-        // Recordings made with these inputs later, such as clock lane frames, are no test's recordings, and answer no
-        // request and head for no smooth scroll's destination: the recording that took them does.
+        // Recordings made with these inputs later, such as clock lane frames, are no test's recordings, and head for no
+        // smooth scroll's destination: the recording that took them does. A clock lane's frame records around the
+        // newest request it reads itself.
         let interest = match inputs.interest {
             InterestInput::AroundScrollPositionsForTesting => InterestInput::WholeDocument,
             InterestInput::AroundScrollPositions { .. } => InterestInput::AroundScrollPositions {
                 requested: None,
                 smooth_scroll_destinations: Arc::new([]),
             },
+            InterestInput::AsRequested { .. } => InterestInput::AsRequested { requested: None },
             ref interest => interest.clone(),
         };
         *published_inputs = Some(RecordingInputs { interest, ..inputs });

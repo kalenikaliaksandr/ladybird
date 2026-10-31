@@ -9,8 +9,10 @@
 //! the newest: a later request replaces one that no frame took yet. Only a context the process made takes requests.
 //!
 //! Servicing a request asks the host for a frame of the context, whose commit takes the context's newest request and
-//! records around its rects where they hold what the commit shows. A test may hold the requests, which then wait until
-//! it releases them.
+//! records around its rects where they hold what the commit shows. Meanwhile, the frames a clock lane of the context
+//! records around the scroll positions beside the event loop record the newest request's rects as they are, and once
+//! one that records every rect the request asks for presented, the request waits for the host's frame no more. A test
+//! may hold the requests, which then wait until it releases them.
 
 use crate::css::style::fast_hash::FastMap;
 use crate::painting::ffi::FfiScrollNodeContentRect;
@@ -79,15 +81,20 @@ impl InterestRequest {
         self.rects_by_scroll_node.get(&ScrollNodeName::of(scroll_node)).copied()
     }
 
-    /// The compositor's id for the request, where a display list that records `recorded` of the scroll nodes it records
-    /// only part of answers it: of each scroll node the request names, it records the whole rect asked for. A scroll
-    /// node the list records whole holds any rect.
-    pub(crate) fn compositor_request_answered_by(&self, recorded: &[FfiScrollNodeContentRect]) -> Option<u64> {
-        let records_every_requested_rect = recorded.iter().all(|recorded| {
+    /// Whether a display list that records `recorded` of the scroll nodes it records only part of records every rect
+    /// the request asks for: of each scroll node the request names, the whole rect asked for. A scroll node the list
+    /// records whole holds any rect.
+    pub(crate) fn is_recorded_by(&self, recorded: &[FfiScrollNodeContentRect]) -> bool {
+        recorded.iter().all(|recorded| {
             self.rect_requested_for(recorded)
                 .is_none_or(|requested| requested.is_empty() || recorded.rect.contains_rect(requested))
-        });
-        self.compositor_request_id.filter(|_| records_every_requested_rect)
+        })
+    }
+
+    /// The compositor's id for the request, where a display list that records `recorded` answers it (see
+    /// [`Self::is_recorded_by`]).
+    pub(crate) fn compositor_request_answered_by(&self, recorded: &[FfiScrollNodeContentRect]) -> Option<u64> {
+        self.compositor_request_id.filter(|_| self.is_recorded_by(recorded))
     }
 
     fn is_for_testing(&self) -> bool {
@@ -98,7 +105,7 @@ impl InterestRequest {
 #[derive(Default)]
 struct ContextInterestRequests {
     context_id: u64,
-    // The newest request no committed frame took yet.
+    // The newest request no committed frame took, and no clock lane's frame answered, yet.
     newest_request: Option<Arc<InterestRequest>>,
     // The newest id the compositor sent: a request it sent before arrives too late.
     newest_compositor_request_id: u64,
@@ -184,6 +191,18 @@ impl InterestRefreshRegistry {
         self.context(context_id)?.newest_request.clone()
     }
 
+    // A later request the frame that answered `request` did not see still waits.
+    fn forget_answered_request(&mut self, context_id: u64, request: &Arc<InterestRequest>) {
+        if let Some(context) = self.context(context_id)
+            && context
+                .newest_request
+                .as_ref()
+                .is_some_and(|newest| Arc::ptr_eq(newest, request))
+        {
+            context.newest_request = None;
+        }
+    }
+
     /// The host could not be asked for the frame `service` asked for.
     fn host_ask_failed(&mut self, context_id: u64) {
         if let Some(context) = self.context(context_id) {
@@ -255,9 +274,15 @@ pub(crate) fn take_newest_interest_request(context_id: u64) -> Option<Arc<Intere
 }
 
 /// The newest request of the compositor context `context_id` that no committed frame took yet, which the next one that
-/// records takes.
+/// records takes, and which the frames of a clock lane of the context record until it is answered.
 pub(crate) fn newest_interest_request(context_id: u64) -> Option<Arc<InterestRequest>> {
     registry().newest_request(context_id)
+}
+
+/// Forgets `request`, where it is still the newest request of the compositor context `context_id`: a clock lane's frame
+/// that records every rect it asks for presented, so no frame of the host's needs to take it any more.
+pub(crate) fn forget_interest_request_answered_by_clock_lane(context_id: u64, request: &Arc<InterestRequest>) {
+    registry().forget_answered_request(context_id, request);
 }
 
 /// Has the compositor context `context_id`, which the process just made, take requests.
@@ -409,6 +434,21 @@ mod tests {
     }
 
     #[test]
+    fn a_request_a_clock_lane_answered_waits_no_more() {
+        let mut registry = registry_with_context();
+        registry.receive(CONTEXT, compositor_request(1, 0));
+        let answered = registry.newest_request(CONTEXT).expect("a request waits");
+        registry.receive(CONTEXT, compositor_request(2, 600));
+        // The lane's frame recorded around the request it read, which a later one replaced.
+        registry.forget_answered_request(CONTEXT, &answered);
+        let newest = registry.newest_request(CONTEXT).expect("the later request waits");
+        assert_eq!(newest.compositor_request_id, Some(2));
+        registry.forget_answered_request(CONTEXT, &newest);
+        assert!(registry.newest_request(CONTEXT).is_none());
+        assert!(!registry.host_task_runs(CONTEXT));
+    }
+
+    #[test]
     fn only_a_context_the_process_made_takes_requests() {
         let mut registry = registry_with_context();
         assert_eq!(registry.receive(CONTEXT + 1, compositor_request(1, 0)), None);
@@ -481,8 +521,12 @@ mod tests {
             None
         );
         assert_eq!(request.compositor_request_answered_by(&[]), Some(9));
+        // A test's request is recorded alike, but the compositor never hears of it.
+        let test_request = InterestRequest::new(None, &[rect_of_element(1, IntRect::new(0, 1000, 800, 2000))]);
+        assert!(test_request.is_recorded_by(&recorded_around(IntRect::new(0, 512, 1024, 2560))));
+        assert!(!test_request.is_recorded_by(&recorded_around(IntRect::new(0, 1024, 1024, 2048))));
         assert_eq!(
-            InterestRequest::new(None, &[]).compositor_request_answered_by(&[]),
+            test_request.compositor_request_answered_by(&recorded_around(IntRect::new(0, 512, 1024, 2560))),
             None
         );
     }
