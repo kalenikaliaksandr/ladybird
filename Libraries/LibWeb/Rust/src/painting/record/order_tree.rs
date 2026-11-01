@@ -13,7 +13,11 @@
 //! The tree also says what a recording around the scroll positions may leave out: every entry tells
 //! whether it, or anything in it, may be left out or was, and every scope keeps where the output
 //! that may be left out lands, so a later recording can keep or leave out a whole scope at once.
+//!
+//! Its tables are copy-on-write columns, so a fork of the recorder state shares the tree whatever
+//! its size, and each side copies only the chunks it writes after the fork.
 
+use crate::cow_column::CowColumn;
 use crate::css::style::fast_hash::FastMap;
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::display_list::commands::SpatialNodeIndex;
@@ -433,8 +437,19 @@ impl Default for ChildEntry {
 
 const NODE_OCCUPIED: u8 = 1;
 
+/// The rows of a table of the tree that one chunk holds: the most, in a power of two, that fit in 16 KiB, a few pages. A
+/// fork shares one chunk for every 16 KiB of the tree, and a write after a fork copies at most that much.
+const fn rows_per_chunk<T>() -> usize {
+    1 << ((16 * 1024) / std::mem::size_of::<T>()).ilog2()
+}
+
+const NODES_PER_CHUNK: usize = rows_per_chunk::<ScopeNode>();
+const CHILD_ENTRIES_PER_CHUNK: usize = rows_per_chunk::<ChildEntry>();
+const SCOPE_ROWS_PER_CHUNK: usize = rows_per_chunk::<[ScopeId; SCOPE_KIND_COUNT as usize]>();
+const CULL_SUMMARIES_PER_CHUNK: usize = rows_per_chunk::<ScopeCullSummary>();
+
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct ScopeNode {
     owner: NodeSlotId,
     parent: ScopeId,
@@ -471,19 +486,56 @@ fn scope_kind_from_code(code: u8) -> PaintScopeKind {
 
 pub(crate) const SCOPE_KIND_COUNT: u8 = 1 + StackingContextPaintPhase::COUNT as u8;
 
+/// The child list of a scope: consecutive entries of the tree's arena, which may span its chunks.
+#[derive(Clone, Copy)]
+pub(crate) struct ChildList<'a> {
+    arena: &'a CowColumn<ChildEntry, CHILD_ENTRIES_PER_CHUNK>,
+    start: usize,
+    entry_count: usize,
+}
+
+impl<'a> ChildList<'a> {
+    #[cfg(test)]
+    pub(crate) fn entry_count(self) -> usize {
+        self.entry_count
+    }
+
+    /// The entries, in one run for each chunk the list spans.
+    pub(crate) fn runs(self) -> impl Iterator<Item = &'a [ChildEntry]> {
+        self.arena.runs(self.start..self.start + self.entry_count)
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = ChildEntry> {
+        self.runs().flat_map(|run| run.iter().copied())
+    }
+
+    pub(crate) fn to_small_vec<const N: usize>(self) -> SmallVec<[ChildEntry; N]> {
+        let mut entries = SmallVec::with_capacity(self.entry_count);
+        for run in self.runs() {
+            entries.extend(run.iter().copied());
+        }
+        entries
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct PaintOrderTree {
-    nodes: Vec<ScopeNode>,
+    nodes: CowColumn<ScopeNode, NODES_PER_CHUNK>,
+    // The nodes handed out so far, freed ones included.
+    node_count: u32,
     free_nodes: Vec<u32>,
-    children: Vec<ChildEntry>,
+    // Each child list takes consecutive entries, which may span chunks.
+    children: CowColumn<ChildEntry, CHILD_ENTRIES_PER_CHUNK>,
+    // The child entries handed out so far, garbage included.
+    child_entry_count: u32,
     live_child_entries: u32,
     // The scope of each kind a row owns, indexed by the row's slot. A second scope with the
     // same owner and kind, which the planner produces only for unusual inline-level
     // configurations, lives in the overflow map.
-    scopes_by_row: Vec<[ScopeId; SCOPE_KIND_COUNT as usize]>,
+    scopes_by_row: CowColumn<[ScopeId; SCOPE_KIND_COUNT as usize], SCOPE_ROWS_PER_CHUNK>,
     duplicate_scopes: FastMap<(NodeSlotId, u8), SmallVec<[ScopeId; 2]>>,
     // Indexed like the nodes, so a node stays small.
-    cull_summaries: Vec<ScopeCullSummary>,
+    cull_summaries: CowColumn<ScopeCullSummary, CULL_SUMMARIES_PER_CHUNK>,
     root: ScopeId,
     root_entry: ChildEntry,
     assembly_stamp: u32,
@@ -507,25 +559,27 @@ impl PaintOrderTree {
             if id.is_none() {
                 continue;
             }
-            for entry in self.children(id) {
-                let kind = match entry.key() {
-                    ChildKey::Scope(child) => {
-                        stack.push(child);
+            for run in self.children(id).runs() {
+                for entry in run {
+                    let kind = match entry.key() {
+                        ChildKey::Scope(child) => {
+                            stack.push(child);
+                            continue;
+                        }
+                        ChildKey::Producer(kind) => kind,
+                    };
+                    if !entry.output().culled {
                         continue;
                     }
-                    ChildKey::Producer(kind) => kind,
-                };
-                if !entry.output().culled {
-                    continue;
+                    let count = match kind {
+                        ProducerKind::HitBackground | ProducerKind::HitForeground | ProducerKind::HitOverlay => {
+                            &mut counts.hit_test
+                        }
+                        ProducerKind::ScrollMetadata | ProducerKind::ScopePreamble => &mut counts.metadata,
+                        _ => &mut counts.draw,
+                    };
+                    *count += 1;
                 }
-                let count = match kind {
-                    ProducerKind::HitBackground | ProducerKind::HitForeground | ProducerKind::HitOverlay => {
-                        &mut counts.hit_test
-                    }
-                    ProducerKind::ScrollMetadata | ProducerKind::ScopePreamble => &mut counts.metadata,
-                    _ => &mut counts.draw,
-                };
-                *count += 1;
             }
         }
         counts
@@ -533,12 +587,16 @@ impl PaintOrderTree {
 
     #[cfg(test)]
     pub(crate) fn scope_count(&self) -> usize {
-        self.nodes.iter().filter(|node| node.flags & NODE_OCCUPIED != 0).count()
+        self.nodes
+            .runs(0..self.node_count as usize)
+            .flatten()
+            .filter(|node| node.flags & NODE_OCCUPIED != 0)
+            .count()
     }
 
     #[cfg(test)]
     pub(crate) fn child_entry_capacity(&self) -> usize {
-        self.children.len()
+        self.child_entry_count as usize
     }
 
     /// Every scope reachable from the root, in tree order, with its child list and cull summary.
@@ -550,7 +608,7 @@ impl PaintOrderTree {
             if id.is_none() {
                 continue;
             }
-            let children = self.children(id).to_vec();
+            let children: Vec<ChildEntry> = self.children(id).iter().collect();
             for entry in children.iter().rev() {
                 if let ChildKey::Scope(child) = entry.key() {
                     stack.push(child);
@@ -561,20 +619,32 @@ impl PaintOrderTree {
         structure
     }
 
+    #[inline]
+    fn node_in_slot(&self, index: usize) -> &ScopeNode {
+        self.nodes.get(index).expect("paint scope slot out of range")
+    }
+
+    #[inline]
+    fn set_node_in_slot(&mut self, index: usize, node: ScopeNode) {
+        self.nodes.set(index, node).expect("paint scope slot out of range");
+    }
+
     fn node(&self, id: ScopeId) -> &ScopeNode {
-        let node = &self.nodes[id.index()];
+        let node = self.node_in_slot(id.index());
         assert_eq!(node.generation, id.generation(), "stale paint scope id {id:?}");
         debug_assert!(node.flags & NODE_OCCUPIED != 0, "freed paint scope id {id:?}");
         node
     }
 
-    fn node_mut(&mut self, id: ScopeId) -> &mut ScopeNode {
-        let node = &mut self.nodes[id.index()];
-        assert_eq!(node.generation, id.generation(), "stale paint scope id {id:?}");
-        debug_assert!(node.flags & NODE_OCCUPIED != 0, "freed paint scope id {id:?}");
-        node
+    fn child_list(&self, node: ScopeNode) -> ChildList<'_> {
+        ChildList {
+            arena: &self.children,
+            start: node.children_start as usize,
+            entry_count: node.children_len as usize,
+        }
     }
 
+    #[inline]
     pub(crate) fn scope_of(&self, id: ScopeId) -> PaintScope {
         let node = self.node(id);
         PaintScope {
@@ -588,15 +658,17 @@ impl PaintOrderTree {
         self.node(id).parent
     }
 
-    pub(crate) fn children(&self, id: ScopeId) -> &[ChildEntry] {
-        let node = self.node(id);
-        let start = node.children_start as usize;
-        &self.children[start..start + node.children_len as usize]
+    pub(crate) fn children(&self, id: ScopeId) -> ChildList<'_> {
+        self.child_list(*self.node(id))
     }
 
+    #[inline]
     pub(crate) fn cull_summary(&self, id: ScopeId) -> ScopeCullSummary {
         self.node(id);
-        self.cull_summaries[id.index()]
+        *self
+            .cull_summaries
+            .get(id.index())
+            .expect("every paint scope has a cull summary")
     }
 
     fn scope_in_slot(&self, owner: NodeSlotId, kind_code: u8) -> Option<ScopeId> {
@@ -604,7 +676,7 @@ impl PaintOrderTree {
         if id.is_none() {
             return None;
         }
-        let node = &self.nodes[id.index()];
+        let node = self.node_in_slot(id.index());
         (node.generation == id.generation() && node.flags & NODE_OCCUPIED != 0 && node.owner == owner).then_some(id)
     }
 
@@ -638,28 +710,40 @@ impl PaintOrderTree {
         scopes
     }
 
-    fn register_scope(&mut self, id: ScopeId) {
-        let node = self.nodes[id.index()];
+    #[inline]
+    fn set_scope_of_row(&mut self, index: usize, kind_code: u8, id: ScopeId) {
+        let mut scopes = *self
+            .scopes_by_row
+            .get(index)
+            .expect("the row's scopes are in the table");
+        scopes[kind_code as usize] = id;
+        self.scopes_by_row
+            .set(index, scopes)
+            .expect("the row's scopes are in the table");
+    }
+
+    fn register_scope(&mut self, id: ScopeId, node: ScopeNode) {
         let index = node.owner.slot_index() as usize;
-        if self.scopes_by_row.len() <= index {
-            self.scopes_by_row
-                .resize(index + 1, [ScopeId::NONE; SCOPE_KIND_COUNT as usize]);
-        }
+        self.scopes_by_row.grow_to(index + 1);
         if self.scope_in_slot(node.owner, node.kind).is_some() {
             self.duplicate_scopes
                 .entry((node.owner, node.kind))
                 .or_default()
                 .push(id);
         } else {
-            self.scopes_by_row[index][node.kind as usize] = id;
+            self.set_scope_of_row(index, node.kind, id);
         }
     }
 
-    fn unregister_scope(&mut self, id: ScopeId) {
-        let node = self.nodes[id.index()];
+    fn unregister_scope(&mut self, id: ScopeId, node: ScopeNode) {
         let index = node.owner.slot_index() as usize;
         let key = (node.owner, node.kind);
-        if self.scopes_by_row[index][node.kind as usize] == id {
+        if self
+            .scopes_by_row
+            .get(index)
+            .expect("a registered scope's row is in the table")[node.kind as usize]
+            == id
+        {
             // A duplicate of the same owner and kind, such as the replacement a scope gets when
             // it moves to another parent, takes over the slot.
             let promoted = self
@@ -667,7 +751,7 @@ impl PaintOrderTree {
                 .get_mut(&key)
                 .and_then(|ids| ids.pop())
                 .unwrap_or(ScopeId::NONE);
-            self.scopes_by_row[index][node.kind as usize] = promoted;
+            self.set_scope_of_row(index, node.kind, promoted);
         } else if let Some(ids) = self.duplicate_scopes.get_mut(&key) {
             ids.retain(|candidate| *candidate != id);
         }
@@ -681,8 +765,15 @@ impl PaintOrderTree {
     pub(crate) fn begin_recording(&mut self) -> u32 {
         self.assembly_stamp = self.assembly_stamp.wrapping_add(1);
         if self.assembly_stamp == 0 {
-            for node in &mut self.nodes {
-                node.recursion_stamp = 0;
+            for index in 0..self.node_count as usize {
+                let node = *self.node_in_slot(index);
+                self.set_node_in_slot(
+                    index,
+                    ScopeNode {
+                        recursion_stamp: 0,
+                        ..node
+                    },
+                );
             }
             self.assembly_stamp = 1;
         }
@@ -695,15 +786,22 @@ impl PaintOrderTree {
         let stamp = self.assembly_stamp;
         let mut current = id;
         while !current.is_none() {
-            let node = self.node_mut(current);
+            let node = *self.node(current);
             if node.recursion_stamp == stamp {
                 break;
             }
-            node.recursion_stamp = stamp;
+            self.set_node_in_slot(
+                current.index(),
+                ScopeNode {
+                    recursion_stamp: stamp,
+                    ..node
+                },
+            );
             current = node.parent;
         }
     }
 
+    #[inline]
     pub(crate) fn is_on_damaged_path(&self, id: ScopeId) -> bool {
         self.node(id).recursion_stamp == self.assembly_stamp
     }
@@ -721,19 +819,30 @@ impl PaintOrderTree {
             generation: 1,
             _padding: 0,
         };
-        let id = if let Some(index) = self.free_nodes.pop() {
-            let slot = &mut self.nodes[index as usize];
+        let (id, node) = if let Some(index) = self.free_nodes.pop() {
+            let index = index as usize;
+            let slot = *self.node_in_slot(index);
             debug_assert_eq!(slot.flags & NODE_OCCUPIED, 0);
-            let generation = slot.generation;
-            *slot = ScopeNode { generation, ..node };
-            self.cull_summaries[index as usize] = ScopeCullSummary::default();
-            ScopeId::new(index as usize, generation)
+            let node = ScopeNode {
+                generation: slot.generation,
+                ..node
+            };
+            self.set_node_in_slot(index, node);
+            self.cull_summaries
+                .set(index, ScopeCullSummary::default())
+                .expect("every node slot has a cull summary");
+            (ScopeId::new(index, node.generation), node)
         } else {
-            self.nodes.push(node);
-            self.cull_summaries.push(ScopeCullSummary::default());
-            ScopeId::new(self.nodes.len() - 1, 1)
+            let index = self.node_count as usize;
+            let id = ScopeId::new(index, 1);
+            self.node_count += 1;
+            self.nodes.grow_to(index + 1);
+            self.set_node_in_slot(index, node);
+            // A slot never handed out has the default summary already.
+            self.cull_summaries.grow_to(index + 1);
+            (id, node)
         };
-        self.register_scope(id);
+        self.register_scope(id, node);
         id
     }
 
@@ -762,19 +871,31 @@ impl PaintOrderTree {
             !own_producers.is_nothing(),
             "the producer entries of {id:?} disagree with the reach of its own producers"
         );
-        self.cull_summaries[id.index()] = ScopeCullSummary { own_producers, subtree };
+        self.cull_summaries
+            .set(id.index(), ScopeCullSummary { own_producers, subtree })
+            .expect("every paint scope has a cull summary");
         let node = *self.node(id);
         let len = u32::try_from(entries.len()).expect("paint-order tree exceeds u32 entries");
         if node.children_len == len {
-            let start = node.children_start as usize;
-            self.children[start..start + entries.len()].copy_from_slice(entries);
+            self.children
+                .set_rows(node.children_start as usize, entries)
+                .expect("a child list is in the arena");
         } else {
-            let start = u32::try_from(self.children.len()).expect("paint-order tree exceeds u32 entries");
-            self.children.extend_from_slice(entries);
+            let start = self.child_entry_count;
+            self.child_entry_count = start.checked_add(len).expect("paint-order tree exceeds u32 entries");
+            self.children.grow_to(self.child_entry_count as usize);
+            self.children
+                .set_rows(start as usize, entries)
+                .expect("the arena was grown");
             self.live_child_entries = self.live_child_entries - node.children_len + len;
-            let node = self.node_mut(id);
-            node.children_start = start;
-            node.children_len = len;
+            self.set_node_in_slot(
+                id.index(),
+                ScopeNode {
+                    children_start: start,
+                    children_len: len,
+                    ..node
+                },
+            );
         }
     }
 
@@ -784,22 +905,26 @@ impl PaintOrderTree {
         let mut stack = vec![id];
         while let Some(id) = stack.pop() {
             let node = *self.node(id);
-            let start = node.children_start as usize;
-            for entry in &self.children[start..start + node.children_len as usize] {
-                if let ChildKey::Scope(child) = entry.key() {
-                    stack.push(child);
+            for run in self.child_list(node).runs() {
+                for entry in run {
+                    if let ChildKey::Scope(child) = entry.key() {
+                        stack.push(child);
+                    }
                 }
             }
             self.live_child_entries -= node.children_len;
-            self.unregister_scope(id);
-            let slot = &mut self.nodes[id.index()];
-            slot.flags = 0;
-            slot.children_len = 0;
+            self.unregister_scope(id, node);
+            let mut slot = ScopeNode {
+                flags: 0,
+                children_len: 0,
+                ..node
+            };
             // A retired id never matches again; slots whose generation ran out stay unused.
             if slot.generation < SCOPE_GENERATION_LIMIT {
                 slot.generation += 1;
                 self.free_nodes.push(id.index() as u32);
             }
+            self.set_node_in_slot(id.index(), slot);
         }
     }
 
@@ -808,31 +933,44 @@ impl PaintOrderTree {
     pub(crate) fn finish_recording(&mut self, root: ScopeId, entry: ChildEntry) {
         self.root = root;
         self.root_entry = entry;
-        if self.children.len() as u32 - self.live_child_entries > self.live_child_entries {
+        if self.child_entry_count - self.live_child_entries > self.live_child_entries {
             self.compact_child_entries();
         }
     }
 
     // Rebuilds the child arena from the live lists in tree order; nodes keep their ids.
     fn compact_child_entries(&mut self) {
-        let mut compacted = Vec::with_capacity(self.live_child_entries as usize);
+        let mut compacted = CowColumn::default();
+        compacted.grow_to(self.live_child_entries as usize);
+        let mut compacted_count = 0;
         let mut stack = vec![self.root];
         while let Some(id) = stack.pop() {
             if id.is_none() {
                 continue;
             }
             let node = *self.node(id);
-            let start = node.children_start as usize;
-            let new_start = compacted.len() as u32;
-            compacted.extend_from_slice(&self.children[start..start + node.children_len as usize]);
-            self.nodes[id.index()].children_start = new_start;
-            for entry in compacted[new_start as usize..].iter().rev() {
-                if let ChildKey::Scope(child) = entry.key() {
-                    stack.push(child);
-                }
+            let first_child_scope = stack.len();
+            for run in self.child_list(node).runs() {
+                compacted
+                    .set_rows(compacted_count as usize, run)
+                    .expect("the compacted arena holds every live entry");
+                compacted_count += run.len() as u32;
+                stack.extend(run.iter().filter_map(|entry| match entry.key() {
+                    ChildKey::Scope(child) => Some(child),
+                    ChildKey::Producer(_) => None,
+                }));
             }
+            stack[first_child_scope..].reverse();
+            self.set_node_in_slot(
+                id.index(),
+                ScopeNode {
+                    children_start: compacted_count - node.children_len,
+                    ..node
+                },
+            );
         }
         self.children = compacted;
+        self.child_entry_count = compacted_count;
     }
 }
 
@@ -913,7 +1051,7 @@ mod tests {
         );
         assert_eq!(tree.published_scope(foreground_scope(row(2)), root), None);
         assert_eq!(tree.scopes_owned_by(row(0)).as_slice(), &[root, foreground]);
-        assert_eq!(tree.children(foreground).len(), 3);
+        assert_eq!(tree.children(foreground).entry_count(), 3);
         assert_eq!(tree.scope_of(leaves[0]), foreground_scope(row(1)));
         assert_eq!(tree.parent(leaves[0]), foreground);
         assert_eq!(tree.scope_count(), 5);
@@ -958,7 +1096,7 @@ mod tests {
         assert_eq!(tree.scope_count(), 4);
         tree.finish_recording(root, ChildEntry::scope(root, output(32 + 16 + 8, 1)));
 
-        assert_eq!(tree.children(foreground), &children);
+        assert_eq!(tree.children(foreground).iter().collect::<Vec<_>>(), children);
         assert_eq!(tree.root_entry().output(), output(56, 1));
         assert_eq!(tree.published_scope(foreground_scope(row(9)), foreground), Some(added));
 
@@ -996,7 +1134,7 @@ mod tests {
         let (root, foreground, _) = record_first_frame(&mut tree, 1);
         for round in 0..300u32 {
             tree.begin_recording();
-            for child in tree.children(foreground).to_vec() {
+            for child in tree.children(foreground).iter().collect::<Vec<_>>() {
                 if let ChildKey::Scope(previous) = child.key() {
                     tree.detach_scope(previous);
                 }
@@ -1039,7 +1177,7 @@ mod tests {
         tree.set_children(foreground, &children, CullReach::NOTHING);
         tree.finish_recording(root, ChildEntry::scope(root, output(32 + 24 + 16, 2)));
 
-        assert_eq!(tree.children(foreground), &children);
+        assert_eq!(tree.children(foreground).iter().collect::<Vec<_>>(), children);
         assert_eq!(tree.child_entry_capacity(), capacity);
     }
 
@@ -1067,7 +1205,7 @@ mod tests {
                 .iter()
                 .map(|entry| match entry.key() {
                     ChildKey::Scope(id) if id == leaf => ChildEntry::scope(leaf, leaf_output),
-                    _ => *entry,
+                    _ => entry,
                 })
                 .collect();
             tree.set_children(foreground, &children, CullReach::NOTHING);
@@ -1085,6 +1223,102 @@ mod tests {
             "child arena grew to {peak} entries for {live} live ones"
         );
         assert_eq!(tree.scope_count(), 10);
+    }
+
+    // Whether `column` shares each chunk holding its first `rows` rows with `other`.
+    fn shared_chunks<T: Clone + Default, const CHUNK: usize>(
+        column: &CowColumn<T, CHUNK>,
+        other: &CowColumn<T, CHUNK>,
+        rows: usize,
+    ) -> Vec<bool> {
+        (0..rows.div_ceil(CHUNK))
+            .map(|chunk| column.shares_chunk_with(other, chunk))
+            .collect()
+    }
+
+    #[test]
+    fn a_fork_shares_every_chunk_and_a_write_copies_only_the_chunk_it_changes() {
+        let mut tree = PaintOrderTree::default();
+        let (_, _, leaves) = record_first_frame(&mut tree, 2 * CHILD_ENTRIES_PER_CHUNK as u32);
+        let fork = tree.clone();
+        let node_count = tree.node_count as usize;
+        let child_entry_count = tree.child_entry_count as usize;
+        assert!(
+            shared_chunks(&tree.children, &fork.children, child_entry_count)
+                .iter()
+                .all(|shared| *shared)
+        );
+        assert!(
+            shared_chunks(&tree.nodes, &fork.nodes, node_count)
+                .iter()
+                .all(|shared| *shared)
+        );
+
+        tree.begin_recording();
+        // A list set as it was copies nothing; one that grows its output copies the chunk holding it.
+        let unchanged_leaf = leaves[10];
+        let unchanged: Vec<ChildEntry> = tree.children(unchanged_leaf).iter().collect();
+        tree.set_children(unchanged_leaf, &unchanged, CullReach::NOTHING);
+        let grown_leaf = leaves[CHILD_ENTRIES_PER_CHUNK + 10];
+        let grown = [ChildEntry::producer(ProducerKind::DrawForeground, output(24, 1))];
+        tree.set_children(grown_leaf, &grown, CullReach::NOTHING);
+
+        let grown_chunk = tree.node(grown_leaf).children_start as usize / CHILD_ENTRIES_PER_CHUNK;
+        let children_shared = shared_chunks(&tree.children, &fork.children, child_entry_count);
+        for (chunk, shared) in children_shared.into_iter().enumerate() {
+            assert_eq!(shared, chunk != grown_chunk, "child entry chunk {chunk}");
+        }
+        assert!(
+            shared_chunks(&tree.nodes, &fork.nodes, node_count)
+                .iter()
+                .all(|shared| *shared)
+        );
+        assert!(
+            shared_chunks(&tree.cull_summaries, &fork.cull_summaries, node_count)
+                .iter()
+                .all(|shared| *shared)
+        );
+        assert_eq!(tree.children(grown_leaf).iter().collect::<Vec<_>>(), grown);
+        assert_eq!(
+            fork.children(grown_leaf).iter().collect::<Vec<_>>(),
+            [ChildEntry::producer(ProducerKind::DrawForeground, output(16, 1))]
+        );
+    }
+
+    #[test]
+    fn a_recording_in_a_fork_leaves_the_tree_it_was_forked_from_as_it_was() {
+        let mut tree = PaintOrderTree::default();
+        let (root, foreground, leaves) = record_first_frame(&mut tree, 2 * NODES_PER_CHUNK as u32);
+        let published_structure = tree.structure();
+        let mut fork = tree.clone();
+
+        fork.begin_recording();
+        fork.mark_path_to_root_damaged(leaves[0]);
+        fork.detach_scope(leaves[1]);
+        let added = fork.allocate_scope(foreground_scope(row(9000)), foreground);
+        fork.set_children(
+            added,
+            &[ChildEntry::producer(ProducerKind::DrawForeground, output(8, 0))],
+            CullReach::NOTHING,
+        );
+        let children: Vec<ChildEntry> = fork
+            .children(foreground)
+            .iter()
+            .filter(|entry| entry.key() != ChildKey::Scope(leaves[1]))
+            .chain([ChildEntry::scope(added, output(8, 0))])
+            .collect();
+        fork.set_children(foreground, &children, CullReach::NOTHING);
+        fork.finish_recording(root, ChildEntry::scope(root, output(32, 0)));
+        assert_eq!(fork.published_scope(foreground_scope(row(2)), foreground), None);
+        assert_eq!(fork.children(foreground).entry_count(), leaves.len());
+
+        assert_eq!(tree.structure(), published_structure);
+        assert_eq!(
+            tree.published_scope(foreground_scope(row(2)), foreground),
+            Some(leaves[1])
+        );
+        assert_eq!(tree.published_scope(foreground_scope(row(9000)), foreground), None);
+        assert_eq!(tree.scope_count(), leaves.len() + 2);
     }
 
     fn cullable_output(bytes: u32) -> OutputSize {

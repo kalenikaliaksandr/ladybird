@@ -35,7 +35,8 @@ pub(crate) struct RecorderState {
 
 impl RecorderState {
     /// A fork of the recorder state, for a fork of the document's render state to record with: it copies clean output
-    /// from the same recording, and keeps no scratch or memo of its own.
+    /// from the same recording, shares the paint-order tree until either side writes it, and keeps no scratch or memo
+    /// of its own.
     pub(crate) fn fork(&self) -> Self {
         Self {
             published_recording: self.published_recording.clone(),

@@ -346,7 +346,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         }
         self.host
             .observe(AssemblyEvent::ScopeBegin(scope, ScopeAction::Assembled));
-        let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).iter().copied().collect();
+        let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).to_small_vec();
         let published_own_producers = self.tree.cull_summary(id).own_producers;
         let mut entries: SmallVec<[ChildEntry; 16]> = SmallVec::with_capacity(published.len());
         let mut total = OutputSize::default();
@@ -378,8 +378,8 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
     }
 
     /// Whether a published entry with `output`, whose commands land where `reach` says, may be left out differently
-    /// now.
-    fn may_cull_differently(&self, reach: CullReach, output: OutputSize) -> bool {
+    /// now. The reach is read only where it decides.
+    fn may_cull_differently(&self, reach: impl FnOnce() -> CullReach, output: OutputSize) -> bool {
         match self.culling {
             AssemblyCulling::LeavesNothingOut => output.culled,
             AssemblyCulling::ByInterest {
@@ -387,9 +387,10 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 places_every_producer_again,
             } => {
                 places_every_producer_again
-                    || (output.has_cullable_output
-                        && reach.touches(changed_scroll_nodes)
-                        && !self.rect_changes_cut_alike(reach, changed_scroll_nodes))
+                    || (output.has_cullable_output && !changed_scroll_nodes.is_empty() && {
+                        let reach = reach();
+                        reach.touches(changed_scroll_nodes) && !self.rect_changes_cut_alike(reach, changed_scroll_nodes)
+                    })
             }
         }
     }
@@ -410,12 +411,12 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
     fn assemble_or_copy_child_scope(&mut self, child: ScopeId, entry: ChildEntry, cursor: SourceCursor) -> ChildEntry {
         let walks_child = self.tree.is_on_damaged_path(child)
             || self.records_again(&entry)
-            || self.may_cull_differently(self.tree.cull_summary(child).subtree, entry.output());
+            || self.may_cull_differently(|| self.tree.cull_summary(child).subtree, entry.output());
         if walks_child {
             return self.assemble_scope(child, cursor);
         }
-        self.copy(cursor, entry.output());
         let child_scope = self.tree.scope_of(child);
+        self.copy(cursor, entry.output());
         self.host.observe(AssemblyEvent::ScopeCopied(child_scope));
         entry
     }
@@ -437,7 +438,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
     fn rebuild_scope(&mut self, id: ScopeId, cursor: SourceCursor, damage: PaintDamage) -> ChildEntry {
         let scope = self.tree.scope_of(id);
         let plan = self.host.plan_scope(scope);
-        let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).iter().copied().collect();
+        let published: SmallVec<[ChildEntry; 16]> = self.tree.children(id).to_small_vec();
         let published_own_producers = self.tree.cull_summary(id).own_producers;
         let mut published_cursors: SmallVec<[SourceCursor; 16]> = SmallVec::with_capacity(published.len());
         let mut child_cursor = cursor;
@@ -637,7 +638,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             return own_producers.note_recorded(self.record_producer(owner, kind));
         };
         let output = entry.output();
-        if !self.may_cull_differently(published_own_producers, output) {
+        if !self.may_cull_differently(|| published_own_producers, output) {
             self.copy(cursor, output);
             self.observe_copied_producer(owner, kind, output);
             return own_producers.note_copied(entry);
@@ -781,7 +782,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                     }
                 })
                 .collect();
-            let children = self.tree.children(id).to_vec();
+            let children: Vec<ChildEntry> = self.tree.children(id).iter().collect();
             let listed: Vec<Listed> = children
                 .iter()
                 .map(|entry| match entry.key() {
@@ -815,6 +816,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         }
     }
 
+    #[inline]
     fn copy(&mut self, cursor: SourceCursor, output: OutputSize) {
         debug_assert!(
             self.source_prologue_bytes.is_some(),
@@ -1280,8 +1282,7 @@ mod tests {
     }
 
     fn producer_entry(tree: &PaintOrderTree, scope: ScopeId, kind: ProducerKind) -> ChildEntry {
-        *tree
-            .children(scope)
+        tree.children(scope)
             .iter()
             .find(|entry| entry.key() == ChildKey::Producer(kind))
             .unwrap()
@@ -1501,7 +1502,7 @@ mod tests {
         assert_matches_from_scratch(&mut host, &second);
         assert_eq!(second.hit_test_items.len(), 4);
         let parent = tree.published_scope(foreground(row(0)), tree.root()).unwrap();
-        assert_eq!(tree.children(parent).len(), 2);
+        assert_eq!(tree.children(parent).entry_count(), 2);
         assert_eq!(tree.published_scope(foreground(row(2)), parent), None);
         assert_eq!(tree.scope_count(), 4);
         assert_ne!(tree.published_scope(foreground(row(3)), parent), Some(removed));
