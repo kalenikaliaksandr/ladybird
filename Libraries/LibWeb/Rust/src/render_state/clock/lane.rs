@@ -19,7 +19,7 @@
 use super::super::owner::{self, DocumentId};
 use super::{
     ClockPlan, ClockRecorder, ClockTicks, FfiClockLaneState, Lane, LaneMove, LanePublication, LaneReport, LaneState,
-    PendingPointer, TickPresented,
+    PendingPointer, RetainedCommits, TickPresented,
 };
 use crate::painting::recording_slot::RecordingAnswer;
 use std::sync::Arc;
@@ -154,9 +154,10 @@ pub(crate) struct LaneDelivery {
 
 impl LaneDelivery {
     /// Hands the lane the recorder state and the seal its ticks present with, from what the recording of its frame
-    /// answered. On the Paint thread, once the frame is presented.
-    pub(crate) fn deliver(&self, answer: &RecordingAnswer) {
-        let Some((recorder, presentation, output)) = answer.clock_lane_recorder() else {
+    /// answered, or from the refreshes of `retained_commits` where the frame keeps a display list one presented. On the
+    /// Paint thread, once the frame is presented.
+    pub(crate) fn deliver(&self, answer: &RecordingAnswer, retained_commits: &RetainedCommits) {
+        let Some((recorder, presentation, output)) = answer.clock_lane_recorder(retained_commits) else {
             // No lane starts from the frame, and the presenter takes no frame of the lane of an earlier one after it:
             // the moves and the animations are the host's.
             let (ticks, frame) = (Arc::clone(&self.ticks), self.frame);

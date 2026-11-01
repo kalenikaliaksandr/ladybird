@@ -27,6 +27,11 @@ use std::sync::Arc;
 unsafe extern "C" {
     fn web_navigable_presenter_unref(presenter: *mut c_void);
     fn web_navigable_presenter_seal_for_clock_lane(presenter: *mut c_void, committed: *const c_void) -> *mut c_void;
+    fn web_navigable_presenter_seal_for_clock_lane_of_refresh_chain(
+        presenter: *mut c_void,
+        committed: *const c_void,
+        refreshed: *const c_void,
+    ) -> *mut c_void;
     fn web_navigable_presenter_seal_for_refresh(presenter: *mut c_void, retained: *const c_void) -> *mut c_void;
     fn web_navigable_presenter_keep_presented_seal(presenter: *mut c_void, presented: *const c_void) -> *mut c_void;
     fn web_navigable_presenter_shows_clock_frame(presenter: *const c_void) -> bool;
@@ -143,6 +148,7 @@ impl PresenterBox {
 pub(crate) struct Presentation {
     pub(crate) presenter: PresenterBox,
     sealed: SealedPresentationBox,
+    copies_paint_commands_from_refresh: bool,
 }
 
 impl Presentation {
@@ -154,6 +160,7 @@ impl Presentation {
         Some(Self {
             presenter: PresenterBox(NonNull::new(ffi.presenter)?),
             sealed: SealedPresentationBox(NonNull::new(ffi.sealed)?),
+            copies_paint_commands_from_refresh: false,
         })
     }
 
@@ -168,6 +175,27 @@ impl Presentation {
         Some(Self {
             presenter: PresenterBox(self.presenter.0),
             sealed: SealedPresentationBox(sealed),
+            copies_paint_commands_from_refresh: false,
+        })
+    }
+
+    /// What the clock lane of the frame this presented, which keeps the display list the compositor has, presents its
+    /// frames with where that display list is the one `refreshed` presented, the last refresh of the frame a rendering
+    /// update committed before: the presenter, and a seal of frames that start from this one, or none where the
+    /// compositor shows another display list. On the Paint thread, once this presented.
+    pub(crate) fn for_clock_lane_of_refresh_chain(&self, refreshed: &Presentation) -> Option<Self> {
+        // SAFETY: Each presentation owns its objects. A seal the call answers comes with a reference to the presenter.
+        let sealed = NonNull::new(unsafe {
+            web_navigable_presenter_seal_for_clock_lane_of_refresh_chain(
+                self.presenter.0.as_ptr(),
+                self.sealed.0.as_ptr(),
+                refreshed.sealed.0.as_ptr(),
+            )
+        })?;
+        Some(Self {
+            presenter: PresenterBox(self.presenter.0),
+            sealed: SealedPresentationBox(sealed),
+            copies_paint_commands_from_refresh: true,
         })
     }
 
@@ -180,6 +208,7 @@ impl Presentation {
         Self {
             presenter: PresenterBox(self.presenter.0),
             sealed: SealedPresentationBox(NonNull::new(sealed).expect("a copy of a seal")),
+            copies_paint_commands_from_refresh: false,
         }
     }
 
@@ -193,6 +222,7 @@ impl Presentation {
         Some(Self {
             presenter: PresenterBox(self.presenter.0),
             sealed: SealedPresentationBox(sealed),
+            copies_paint_commands_from_refresh: false,
         })
     }
 
@@ -208,6 +238,12 @@ impl Presentation {
     pub(crate) fn take_generation_of(&mut self, committed: &Presentation) {
         // SAFETY: Each presentation owns its seal.
         unsafe { web_sealed_presentation_take_generation(self.sealed.0.as_ptr(), committed.sealed.0.as_ptr()) };
+    }
+
+    /// Whether frames presented from the seal copy paint commands from a refresh's display list, which leaves them unable
+    /// to present once the compositor shows another display list.
+    pub(crate) fn copies_paint_commands_from_refresh(&self) -> bool {
+        self.copies_paint_commands_from_refresh
     }
 
     pub(crate) fn compositor_context_id(&self) -> u64 {
@@ -296,6 +332,15 @@ mod ffi_test_stubs {
 
     #[unsafe(no_mangle)]
     extern "C" fn web_navigable_presenter_seal_for_clock_lane(_: *mut c_void, _: *const c_void) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn web_navigable_presenter_seal_for_clock_lane_of_refresh_chain(
+        _: *mut c_void,
+        _: *const c_void,
+        _: *const c_void,
+    ) -> *mut c_void {
         std::ptr::null_mut()
     }
 

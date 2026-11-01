@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="../HTML/frame-in-flight/frame-in-flight.js"></script>
+<style>
+    body { margin: 0; height: 30000px; }
+    #target { position: absolute; top: 10300px; left: 0; width: 200px; height: 50px; background: rgb(0, 0, 255); }
+    #target:hover { background: rgb(0, 128, 0); }
+    #far { position: absolute; top: 5000px; left: 0; }
+</style>
+<div id="target"></div>
+<img id="far" src="../../../Assets/120.png">
+<script>
+// A refresh records an image no other display list draws, and an unrecorded commit then starts a clock lane that copies
+// paint commands from that refresh's display list. A later refresh around other rects lets the image go before the lane
+// presents anything. The lane's frame, which would name the image, is then left to the host instead of being presented.
+// Every refresh records what shows, so that the compositor asks for nothing of its own meanwhile.
+promiseTest(async () => {
+    await far.decode();
+    await startRecordingAroundScrollPositions();
+    window.scrollTo(0, 10000);
+    await interestCoverageSettled();
+    internals.mouseMove(100, 100);
+    await nextFrame();
+
+    const recorded = () => internals.compositorScrollState().recordedRect;
+    const recordsFrom = (top, bottom) => recorded().y <= top && recorded().y + recorded().height >= bottom;
+    internals.injectInterestRefresh({ left: -Infinity, top: 4000, right: Infinity, bottom: 12000 });
+    const firstRefreshRecordedTheImage = conditionHoldsWithinTask(
+        () => internals.lastFramePresentedBy(document) === "refresh" && recordsFrom(4000, 12000)
+    );
+
+    internals.setManualRenderingOpportunities(true);
+    let result;
+    try {
+        window.scrollTo(0, 10100);
+        await nextTask();
+        const frameTime = performance.now();
+        internals.injectRenderingOpportunity(frameTime);
+        do await nextTask();
+        while (internals.frameSchedulerState() !== "idle" || internals.clockLaneIsComing(document));
+        const scrollFramePresentedBy = internals.lastFramePresentedBy(document);
+        const laneState = internals.clockLaneState(document);
+
+        internals.injectInterestRefresh({ left: -Infinity, top: 9000, right: Infinity, bottom: 20000 });
+        const secondRefreshLeftTheImageOut = conditionHoldsWithinTask(
+            () =>
+                internals.lastFramePresentedBy(document) === "refresh" &&
+                recordsFrom(9000, 20000) &&
+                recorded().y > 5120
+        );
+
+        internals.holdInterestRefreshes();
+        internals.injectInterestRefresh({ left: -Infinity, top: 4000, right: Infinity, bottom: 10700 });
+        internals.injectHoverPointer(100, 225, frameTime + 16);
+        await nextTask();
+        internals.injectHoverPointer(100, 226, frameTime + 32);
+        await nextTask();
+        result = {
+            scrollFramePresentedBy,
+            laneState,
+            secondRefreshLeftTheImageOut,
+            presentedByAfterTheHover: internals.lastFramePresentedBy(document),
+        };
+    } finally {
+        internals.releaseInterestRefreshes();
+        internals.setManualRenderingOpportunities(false);
+    }
+    println(`the first refresh recorded the image: ${firstRefreshRecordedTheImage}`);
+    println(`the scroll's frame presented by: ${result.scrollFramePresentedBy}`);
+    println(`the scroll's frame's lane: ${result.laneState}`);
+    println(`the second refresh left the image out: ${result.secondRefreshLeftTheImageOut}`);
+    println(`presented by after the hover: ${result.presentedByAfterTheHover}`);
+    println(`the list records what shows: ${await interestCoverageSettled()}`);
+});
+</script>

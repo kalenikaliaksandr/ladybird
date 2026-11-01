@@ -15,12 +15,15 @@ struct PresenterFFI {
     // A clock lane's frame or a refresh that starts from an older frame than the last one a rendering update committed
     // shows what the screen no longer shows, and so does a refresh once the compositor shows another display list than
     // the one it copies paint commands from, or a clock lane's frame: it is not presented, and the compositor hears
-    // nothing of it.
+    // nothing of it. So does a clock lane's frame that copies paint commands from a refresh's display list the compositor
+    // no longer shows, whose resources a later refresh may have let go.
     static bool is_stale(NavigablePresenter const& presenter, SealedPresentation const& sealed)
     {
         if (sealed.presented_by == PresentedBy::Commit)
             return false;
         if (sealed.generation < presenter.m_last_committed_generation)
+            return true;
+        if (sealed.copies_paint_commands_from_refresh && sealed.paint_command_cache_source != presenter.m_compositor_display_list)
             return true;
         return sealed.presented_by == PresentedBy::Refresh
             && (sealed.paint_command_cache_source != presenter.m_compositor_display_list || presenter.m_last_frame_presented_by == PresentedBy::Clock);
@@ -234,6 +237,21 @@ OwnPtr<SealedPresentation> NavigablePresenter::seal_for_clock_lane(SealedPresent
         source = committed.published->display_list;
     if (!source || source != m_compositor_display_list || !m_compositor_visual_context_tree.has_value())
         return nullptr;
+    return clock_lane_seal_from_compositor_display_list(committed);
+}
+
+OwnPtr<SealedPresentation> NavigablePresenter::seal_for_clock_lane_of_refresh_chain(SealedPresentation const& committed, SealedPresentation const& refreshed) const
+{
+    MutexLocker locker(m_mutex);
+    if (!refreshed.published.has_value() || refreshed.published->display_list != m_compositor_display_list || !m_compositor_visual_context_tree.has_value())
+        return nullptr;
+    auto sealed = clock_lane_seal_from_compositor_display_list(committed);
+    sealed->copies_paint_commands_from_refresh = true;
+    return sealed;
+}
+
+NonnullOwnPtr<SealedPresentation> NavigablePresenter::clock_lane_seal_from_compositor_display_list(SealedPresentation const& committed) const
+{
     auto sealed = make<SealedPresentation>();
     sealed->paint_config = committed.paint_config;
     sealed->visual_context_tree = *m_compositor_visual_context_tree;
@@ -298,6 +316,18 @@ extern "C" WEB_API void* web_navigable_presenter_seal_for_clock_lane(void* prese
 {
     auto const& navigable_presenter = *static_cast<Web::Compositor::NavigablePresenter const*>(presenter);
     auto sealed = navigable_presenter.seal_for_clock_lane(*static_cast<Web::Compositor::SealedPresentation const*>(committed));
+    if (!sealed)
+        return nullptr;
+    navigable_presenter.ref();
+    return sealed.leak_ptr();
+}
+
+extern "C" WEB_API void* web_navigable_presenter_seal_for_clock_lane_of_refresh_chain(void* presenter, void const* committed, void const* refreshed)
+{
+    auto const& navigable_presenter = *static_cast<Web::Compositor::NavigablePresenter const*>(presenter);
+    auto sealed = navigable_presenter.seal_for_clock_lane_of_refresh_chain(
+        *static_cast<Web::Compositor::SealedPresentation const*>(committed),
+        *static_cast<Web::Compositor::SealedPresentation const*>(refreshed));
     if (!sealed)
         return nullptr;
     navigable_presenter.ref();

@@ -93,6 +93,9 @@ struct SealedPresentation {
     Optional<PublishedDisplayList> published;
     // Whether the frame sends a visual context tree the compositor's display list was not recorded against, for a test.
     bool visual_context_tree_mismatches_for_testing { false };
+    // Whether a clock lane's frames copy paint commands from a refresh's display list, whose resources the presenter
+    // keeps only while the compositor shows it.
+    bool copies_paint_commands_from_refresh { false };
     // The frame a rendering update committed, counted per navigable, or the one a clock lane's frames or a refresh start
     // from: a lane's frame or a refresh of an older one than the presenter presented last shows what the screen no
     // longer shows.
@@ -156,6 +159,12 @@ public:
     // commands from it. On the Paint thread.
     OwnPtr<SealedPresentation> seal_for_clock_lane(SealedPresentation const& committed) const;
 
+    // The seal a clock lane presents its frames with, which start from `committed`, a frame that keeps the display list
+    // the compositor has, where that display list is the one `refreshed`, the last refresh of the frame a rendering update
+    // committed before, presented, or none where the compositor shows another: the lane's recordings copy paint commands
+    // from it. On the Paint thread.
+    OwnPtr<SealedPresentation> seal_for_clock_lane_of_refresh_chain(SealedPresentation const& committed, SealedPresentation const& refreshed) const;
+
     // A clock lane's frame shows samples the frame a rendering update committed last lacks, which a refresh of that frame
     // would take off the screen.
     bool shows_clock_frame() const;
@@ -184,6 +193,10 @@ private:
     // A recording beside the event loop that copies paint commands from the compositor's display list, against the tree
     // the compositor has. With `m_mutex` held, while the compositor has both.
     Painting::DisplayListRecording recording_from_compositor_display_list() const;
+
+    // The seal of a clock lane's frames that start from `committed` and copy paint commands from the compositor's display
+    // list. With `m_mutex` held, while the compositor has a display list and its tree.
+    NonnullOwnPtr<SealedPresentation> clock_lane_seal_from_compositor_display_list(SealedPresentation const& committed) const;
 
     NavigablePresenter() = default;
 
@@ -230,6 +243,7 @@ struct FlightPresentation {
 extern "C" {
 WEB_API void web_navigable_presenter_unref(void* presenter);
 WEB_API void* web_navigable_presenter_seal_for_clock_lane(void* presenter, void const* committed);
+WEB_API void* web_navigable_presenter_seal_for_clock_lane_of_refresh_chain(void* presenter, void const* committed, void const* refreshed);
 WEB_API void* web_navigable_presenter_seal_for_refresh(void* presenter, void const* retained);
 WEB_API void* web_navigable_presenter_keep_presented_seal(void* presenter, void const* presented);
 WEB_API bool web_navigable_presenter_shows_clock_frame(void const* presenter);

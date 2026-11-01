@@ -1,0 +1,8 @@
+the refresh recorded the rect: true
+presented by: refresh
+the scroll's frame presented by: commit
+the scroll's frame kept the list: true
+the scroll's frame's lane: hovering
+the hover presented by the clock: true
+the hover's frame records the rect: true
+the list records what shows: true

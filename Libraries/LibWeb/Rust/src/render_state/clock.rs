@@ -546,7 +546,7 @@ impl CommittedFrame {
                 wait_while_recording_is_held_for_testing();
             }
             let mut answer = frame.present_committed(recorder, presentation, presenting, &ticks);
-            answer.start_clock_lane(lane);
+            answer.start_clock_lane(lane, presenting.retained_commits());
             answer.hold_commit_on_paint_queue(commit_on_paint_queue);
             answer
         });
@@ -1715,6 +1715,13 @@ impl ClockRecorder {
             }
             None => present(presentation, pending, recorder, presenting),
         };
+        if !presented_frame && presentation.copies_paint_commands_from_refresh() {
+            // The display list the recording copied paint commands from left the screen, and with it the resources only
+            // that display list named, which the recording may name too.
+            recorder.forget_published_recording();
+            *presented = TickPresented::LeftToHost;
+            return self;
+        }
         if presented_frame
             && let Some(interest_request) = interest_request
             && interest_request.is_recorded_by(&output.recorded_interest.scroll_node_rects)

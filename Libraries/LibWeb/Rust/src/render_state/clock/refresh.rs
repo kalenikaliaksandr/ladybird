@@ -17,11 +17,13 @@
 //!
 //! Only the Paint thread reaches what it keeps, through [`Presenting`], in the order of its jobs: the job of a
 //! navigable's next committed frame replaces it once it presented that frame, or drops it where that frame cannot be
-//! refreshed, and the job of a committed frame that keeps the display list the compositor has keeps it. A committed
-//! frame that waits for the host to render its SVG images replaces it in its own job, and is refreshed only from the
-//! job that presents it once the host rendered them. A refresh that recorded but did not present drops it, as its
-//! recorder state no longer describes what the compositor shows, and so does one that no longer can present. It goes
-//! before its document's render state does, with its compositor context, and with the connection to the compositor.
+//! refreshed, and the job of a committed frame that keeps the display list the compositor has keeps it, and starts that
+//! frame's clock lane from a fork of the refreshes' recorder state where a refresh presented that display list. A
+//! committed frame that waits for the host to render its SVG images replaces it in its own job, and is refreshed only
+//! from the job that presents it once the host rendered them. A refresh that recorded but did not present drops it, as
+//! its recorder state no longer describes what the compositor shows, and so does one that no longer can present. It
+//! goes before its document's render state does, with its compositor context, and with the connection to the
+//! compositor.
 
 use super::super::owner::DocumentId;
 use super::ClockTicks;
@@ -154,6 +156,30 @@ impl RetainedCommits {
         {
             commit.presentation.take_generation_of(committed);
         }
+    }
+
+    /// What the clock lane of the frame `committed` presented, a committed frame that keeps the display list the
+    /// compositor has, records and presents with where a refresh of the frame kept of its compositor context presented
+    /// that display list: a fork of the recorder state of the refreshes, which copies clean output from it, with the
+    /// inputs of `host`, the recorder state of the frame's own recordings, and a seal of frames that start from
+    /// `committed`. None where the compositor shows another display list.
+    pub(crate) fn clock_lane_of_refresh_chain(
+        &self,
+        committed: &Presentation,
+        host: &RecorderState,
+    ) -> Option<(RecorderState, Presentation)> {
+        let context_id = committed.compositor_context_id();
+        let commit = self
+            .commits
+            .iter()
+            .find(|commit| commit.kept.context_id == context_id)?;
+        let presentation = committed.for_clock_lane_of_refresh_chain(&commit.presentation)?;
+        let recorder = RecorderState {
+            // The refreshes keep inputs for refreshes, which share the hit-test list they copy; lanes record frames.
+            published_inputs: host.published_inputs.clone(),
+            ..commit.recorder.fork()
+        };
+        Some((recorder, presentation))
     }
 
     fn forget_document(&mut self, document: DocumentId) {

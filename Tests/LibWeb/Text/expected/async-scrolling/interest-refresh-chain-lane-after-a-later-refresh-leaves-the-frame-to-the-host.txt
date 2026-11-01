@@ -1,0 +1,6 @@
+the first refresh recorded the image: true
+the scroll's frame presented by: commit
+the scroll's frame's lane: hovering
+the second refresh left the image out: true
+presented by after the hover: refresh
+the list records what shows: true

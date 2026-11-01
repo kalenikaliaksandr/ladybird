@@ -142,7 +142,7 @@ impl VectorImageFrame {
             .retained_commits()
             .note_vector_image_frame_presented(context_id, &answer);
         if let Some(lane) = lane {
-            lane.deliver(&answer);
+            lane.deliver(&answer, presenting.retained_commits());
         }
         drop(commit_on_paint_queue);
         answer
@@ -215,11 +215,15 @@ impl RecordingAnswer {
     }
 
     /// Hands `lane` the pieces of the clock lane of the committed frame this answers, once it presented: at once, or
-    /// once the frame that waits for its SVG images is.
-    pub(crate) fn start_clock_lane(&mut self, lane: crate::render_state::LaneDelivery) {
+    /// once the frame that waits for its SVG images is. `retained_commits` are what the Paint thread keeps to refresh.
+    pub(crate) fn start_clock_lane(
+        &mut self,
+        lane: crate::render_state::LaneDelivery,
+        retained_commits: &crate::render_state::RetainedCommits,
+    ) {
         match &mut self.recorded {
             Recorded::NeedsVectorImages(frame) => frame.get_mut().lane = Some(lane),
-            _ => lane.deliver(self),
+            _ => lane.deliver(self, retained_commits),
         }
     }
 
@@ -233,18 +237,34 @@ impl RecordingAnswer {
 
     /// What the clock lane of the committed frame this answers records and presents with, once the frame presented: a
     /// fork of the recorder state as the recording left it, with what it published, a seal of frames that start from
-    /// the frame, and the recording the lane's fork of the render state takes in, if one published. None where the
-    /// frame presented nothing a lane starts from.
-    pub(crate) fn clock_lane_recorder(&self) -> Option<(RecorderState, Presentation, Option<Arc<RecordingOutput>>)> {
-        let (recorder, output) = match &self.recorded {
-            Recorded::PresentedUnrecorded => (self.recorder.fork(), None),
+    /// the frame, and the recording the lane's fork of the render state takes in, if one published. A frame that keeps
+    /// the display list a refresh of the frame kept in `retained_commits` presented starts its lane from the refreshes'
+    /// recorder state instead. None where the frame presented nothing a lane starts from.
+    pub(crate) fn clock_lane_recorder(
+        &self,
+        retained_commits: &crate::render_state::RetainedCommits,
+    ) -> Option<(RecorderState, Presentation, Option<Arc<RecordingOutput>>)> {
+        let presentation = self.presentation.as_ref()?;
+        let (recorder, lane_presentation, output) = match &self.recorded {
+            Recorded::PresentedUnrecorded => match presentation.for_clock_lane() {
+                Some(lane_presentation) => (self.recorder.fork(), lane_presentation, None),
+                None => {
+                    let (recorder, lane_presentation) =
+                        retained_commits.clock_lane_of_refresh_chain(presentation, &self.recorder)?;
+                    (recorder, lane_presentation, None)
+                }
+            },
             Recorded::Presented {
                 output,
                 publishes_recording: true,
-            } => (fork_after(self.recorder.fork(), output), Some(output.output.clone())),
+            } => (
+                fork_after(self.recorder.fork(), output),
+                presentation.for_clock_lane()?,
+                Some(output.output.clone()),
+            ),
             _ => return None,
         };
-        Some((recorder, self.presentation.as_ref()?.for_clock_lane()?, output))
+        Some((recorder, lane_presentation, output))
     }
 
     /// What refreshes of the committed frame this answers record and present with, once the frame presented a recording
