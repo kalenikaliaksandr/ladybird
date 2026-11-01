@@ -19,7 +19,9 @@
     // A recording in flight reads the animated style its frame was published with. Moving the animation beside it
     // replaces that style for the next frame, and the replaced style stays readable until the recording is done.
     // Once the recording lands, the replaced style is freed though nothing styles.
+    // Committed frames record the whole document here, so that nothing but the recording keeps its frame.
     asyncTest(async done => {
+        internals.setRecordsAroundScrollPositions(false);
         const animation = box.getAnimations()[0];
         const retiredOverlays = () => internals.styleEngineCounters().retiredAnimationOverlayRecords;
         const keptBeside = await whileRecordingInFlight(() => {

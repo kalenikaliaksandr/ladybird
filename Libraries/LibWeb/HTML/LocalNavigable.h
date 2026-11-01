@@ -355,9 +355,9 @@ public:
     // The compositor asked to record the display list of the context again around new rects: the navigable presenting
     // to the context records its next frame, which takes the newest request, unless a frame took it since.
     static void schedule_frame_for_interest_refresh(Web::CompositorContextId);
-    // Whether committed frames record around the scroll positions rather than the whole document. The
-    // LADYBIRD_INTEREST_RECORDING environment variable turns it on, and a test may turn it on or off for itself until the
-    // next test begins, which the empty value stands for. Every navigable records its next frame as the switch says.
+    // Whether committed frames record around the scroll positions rather than the whole document. They do unless the
+    // LADYBIRD_INTEREST_RECORDING environment variable is 0. A test may turn it on or off for itself until the next test
+    // begins, which passes an empty value to the setter. Every navigable records its next frame as the switch says.
     static bool commits_record_around_scroll_positions();
     static void set_commits_record_around_scroll_positions_for_testing(Optional<bool>);
 

@@ -6707,10 +6707,7 @@ void LocalNavigable::schedule_frame_for_interest_refresh(Web::CompositorContextI
 
 static bool commits_record_around_scroll_positions_by_environment()
 {
-    static bool const enabled = [] {
-        auto value = Core::Environment::get("LADYBIRD_INTEREST_RECORDING"sv);
-        return value.has_value() && !value->is_empty() && *value != "0"sv;
-    }();
+    static bool const enabled = Core::Environment::get("LADYBIRD_INTEREST_RECORDING"sv) != "0"sv;
     return enabled;
 }
 
