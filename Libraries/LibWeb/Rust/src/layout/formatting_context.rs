@@ -128,16 +128,18 @@ pub(crate) fn run_root_without_parent_fragments(
         laid_out_box,
         fragment_arrival,
     } = callbacks.keep_host_findings_of(run_formatting_context(
-        false,
-        root_cells,
-        node,
-        root_containing_block,
-        None,
-        fc_type,
-        false,
         callbacks,
-        input,
-        None,
+        ChildRunRequest::of_shape(
+            ChildRunShape {
+                node,
+                fc_type,
+                input,
+                root_cells,
+                root_containing_block,
+            },
+            false,
+            false,
+        ),
     ))
     else {
         unreachable!("a run creates its root's result");
@@ -1946,20 +1948,26 @@ fn body_input_with_inner_available_space(root: &impl BoxMetricCells, input: &Lay
     body_input
 }
 
-#[expect(clippy::too_many_arguments)]
-/// Runs the formatting context of `box_` with the input cells `root_cells` its parent sized it in.
+/// Runs the formatting context `request` describes, with the input cells its parent sized its root in.
 pub(super) fn run_formatting_context(
-    parent_collects_fragments: bool,
-    root_cells: used_values::RootInputCells,
-    box_: Node,
-    root_containing_block: Node,
-    subgrid_parent: Option<&grid_formatting_context::SubgridParent>,
-    fc_type: FormattingContextType,
-    should_collect_devtools_layout_data: bool,
     callbacks: LayoutPass<'_>,
-    input: LayoutInput,
-    table_inline_layout: Option<table_formatting_context::TableInlineLayout>,
+    request: ChildRunRequest<'_>,
 ) -> WithHostFindings<ChildLayout> {
+    let ChildRunRequest {
+        shape:
+            ChildRunShape {
+                node: box_,
+                fc_type,
+                input,
+                root_cells,
+                root_containing_block,
+            },
+        parent_collects_fragments,
+        should_collect_devtools_layout_data,
+        subgrid_parent,
+        table_inline_layout,
+    } = request;
+    let subgrid_parent = subgrid_parent.as_ref();
     let builds_fragments = run_builds_fragments(&input, parent_collects_fragments);
     assert!(
         !parent_collects_fragments || builds_fragments,
@@ -2924,10 +2932,78 @@ pub(crate) fn layout_inside_child_with_input_cells(
     parent_grid: Option<&grid_formatting_context::GridFormattingContext>,
     child: Node,
     input: LayoutInput,
-    mut child_input_cells: used_values::RootInputCells,
+    child_input_cells: used_values::RootInputCells,
     force_independent_context_run: bool,
     percentage_block_insets_of_containing_block_have_definite_basis: bool,
 ) -> ChildLayout {
+    match prepare_child_layout(
+        run,
+        parent_block,
+        parent_grid,
+        child,
+        input,
+        child_input_cells,
+        force_independent_context_run,
+        percentage_block_insets_of_containing_block_have_definite_basis,
+    ) {
+        PreparedChildLayout::SizedInParentRun(layout) => layout,
+        PreparedChildLayout::Run(request) => run
+            .callbacks
+            .keep_host_findings_of(run_formatting_context(run.callbacks, request)),
+    }
+}
+
+/// What a child's run is handed, which its parent prepares before the run starts.
+pub(crate) struct ChildRunRequest<'pass> {
+    pub(crate) shape: ChildRunShape,
+    pub(crate) parent_collects_fragments: bool,
+    pub(crate) should_collect_devtools_layout_data: bool,
+    pub(crate) subgrid_parent: Option<grid_formatting_context::SubgridParent<'pass>>,
+    pub(crate) table_inline_layout: Option<table_formatting_context::TableInlineLayout>,
+}
+
+impl ChildRunRequest<'_> {
+    /// The request for the run of `shape`, which is handed no subgrid parent and no table inline layout.
+    pub(crate) fn of_shape(
+        shape: ChildRunShape,
+        parent_collects_fragments: bool,
+        should_collect_devtools_layout_data: bool,
+    ) -> Self {
+        Self {
+            shape,
+            parent_collects_fragments,
+            should_collect_devtools_layout_data,
+            subgrid_parent: None,
+            table_inline_layout: None,
+        }
+    }
+}
+
+/// How a child is laid out with the input cells its parent sized it to.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "matched right where it is prepared, where boxing would allocate for every child run"
+)]
+enum PreparedChildLayout<'pass> {
+    /// The parent's run sized the child, which needs no run of its own.
+    SizedInParentRun(ChildLayout),
+    /// The child is laid out by the run of this request.
+    Run(ChildRunRequest<'pass>),
+}
+
+/// Prepares the layout of `child` in the run of its parent: sizes the child there where it needs no run of its own, or
+/// takes what the parent hands the child's run.
+#[allow(clippy::too_many_arguments)]
+fn prepare_child_layout<'pass>(
+    run: &FormattingContextRun,
+    parent_block: Option<&block_formatting_context::BlockFormattingContext>,
+    parent_grid: Option<&grid_formatting_context::GridFormattingContext<'pass>>,
+    child: Node,
+    input: LayoutInput,
+    mut child_input_cells: used_values::RootInputCells,
+    force_independent_context_run: bool,
+    percentage_block_insets_of_containing_block_have_definite_basis: bool,
+) -> PreparedChildLayout<'pass> {
     let facts = NodeFacts::new(&run.callbacks, child);
     let child_run_builds_fragments = run_builds_fragments(&input, run.fragments.is_some());
     if let Some((padding_top, padding_bottom)) = input.sizing.table_cell_intrinsic_block_padding {
@@ -2961,7 +3037,10 @@ pub(crate) fn layout_inside_child_with_input_cells(
             input.containing_block_constraints,
             child_run_builds_fragments,
         );
-        return ChildLayout::of_child_sized_in_parent_run(skipped(None), cells_of_this_layout.get());
+        return PreparedChildLayout::SizedInParentRun(ChildLayout::of_child_sized_in_parent_run(
+            skipped(None),
+            cells_of_this_layout.get(),
+        ));
     }
     let creates_replaced_context = matches!(
         formatting_context_type_created_by_box(facts),
@@ -2971,10 +3050,10 @@ pub(crate) fn layout_inside_child_with_input_cells(
         let cells_of_this_layout = Cell::new(child_input_cells);
         let out_of_flow_root_used_insets =
             size_skipped_independent_root(run, parent_block, child, &cells_of_this_layout, &input);
-        return ChildLayout::of_child_sized_in_parent_run(
+        return PreparedChildLayout::SizedInParentRun(ChildLayout::of_child_sized_in_parent_run(
             skipped(out_of_flow_root_used_insets),
             cells_of_this_layout.get(),
-        );
+        ));
     }
 
     let ChildRunPlan {
@@ -2988,23 +3067,23 @@ pub(crate) fn layout_inside_child_with_input_cells(
         force_independent_context_run,
         percentage_block_insets_of_containing_block_have_definite_basis,
     );
-    let subgrid_parent = parent_grid
-        .filter(|_| fc_type == FormattingContextType::Grid)
-        .and_then(|grid| grid.subgrid_parent_of(child));
-    run.callbacks.keep_host_findings_of(run_formatting_context(
-        run.fragments.is_some(),
-        child_input_cells,
-        child,
-        root_containing_block,
-        subgrid_parent.as_ref(),
-        fc_type,
-        run.should_collect_devtools_layout_data,
-        run.callbacks,
-        input,
-        parent_block
+    PreparedChildLayout::Run(ChildRunRequest {
+        shape: ChildRunShape {
+            node: child,
+            fc_type,
+            input,
+            root_cells: child_input_cells,
+            root_containing_block,
+        },
+        parent_collects_fragments: run.fragments.is_some(),
+        should_collect_devtools_layout_data: run.should_collect_devtools_layout_data,
+        subgrid_parent: parent_grid
+            .filter(|_| fc_type == FormattingContextType::Grid)
+            .and_then(|grid| grid.subgrid_parent_of(child)),
+        table_inline_layout: parent_block
             .and_then(|block| block.take_table_inline_layout_of(child))
             .or_else(|| parent_grid.and_then(|grid| grid.take_table_inline_layout_of(child))),
-    ))
+    })
 }
 
 /// Hands what the layout of a child handed its placement to the run's fragment builder, where the child is laid out
@@ -3063,6 +3142,19 @@ pub(crate) struct ChildRunShape {
     pub(crate) root_cells: used_values::RootInputCells,
     pub(crate) root_containing_block: Node,
 }
+
+// What a parent hands a child's run and what the run hands back can move to another thread.
+const _: () = {
+    const fn assert_send_and_sync<T: Send + Sync>() {}
+    assert_send_and_sync::<ChildRunShape>();
+    assert_send_and_sync::<LayoutInput>();
+    assert_send_and_sync::<table_formatting_context::TableInlineLayout>();
+    assert_send_and_sync::<ChildLayout>();
+    assert_send_and_sync::<run_state::LaidOutChildBox>();
+    assert_send_and_sync::<fragment_tree::RunRootFragment>();
+    assert_send_and_sync::<RunOutputs>();
+    assert_send_and_sync::<run_state::HostFindings>();
+};
 
 impl ChildRunShape {
     pub(crate) fn lays_out_at(&self, inline_size: CssPixels, constraints: ContainingBlockConstraints) -> bool {
@@ -3648,16 +3740,18 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
         .with_forced_sizes(viewport_inline_size, viewport_block_size);
         let fc_type = independent_formatting_context_type(root_for_layout, &callbacks);
         let root_outcome = callbacks.keep_host_findings_of(run_formatting_context(
-            true,
-            root_cells,
-            root_for_layout,
-            callbacks.in_flow_containing_block(root_for_layout),
-            None,
-            fc_type,
-            should_collect_devtools_layout_data,
             callbacks,
-            input,
-            None,
+            ChildRunRequest::of_shape(
+                ChildRunShape {
+                    node: root_for_layout,
+                    fc_type,
+                    input,
+                    root_cells,
+                    root_containing_block: callbacks.in_flow_containing_block(root_for_layout),
+                },
+                true,
+                should_collect_devtools_layout_data,
+            ),
         ));
         place_child(
             &entry_run,
@@ -3814,16 +3908,18 @@ fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
     let fc_type = formatting_context_type_created_by_box(facts)
         .expect("partial relayout root must establish an independent formatting context");
     let root_outcome = callbacks.keep_host_findings_of(run_formatting_context(
-        true,
-        root_cells,
-        root,
-        callbacks.in_flow_containing_block(root),
-        None,
-        fc_type,
-        run.should_collect_devtools_layout_data,
         *callbacks,
-        input,
-        None,
+        ChildRunRequest::of_shape(
+            ChildRunShape {
+                node: root,
+                fc_type,
+                input,
+                root_cells,
+                root_containing_block: callbacks.in_flow_containing_block(root),
+            },
+            true,
+            run.should_collect_devtools_layout_data,
+        ),
     ));
     let ChildLayout {
         laid_out_box: root_box,
