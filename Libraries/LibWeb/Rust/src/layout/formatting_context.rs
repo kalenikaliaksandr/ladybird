@@ -128,7 +128,7 @@ pub(crate) fn run_root_without_parent_fragments(
         laid_out_box,
         fragment_arrival,
     } = run_formatting_context(
-        None,
+        false,
         root_cells,
         node,
         root_containing_block,
@@ -1951,7 +1951,7 @@ fn body_input_with_inner_available_space(root: &impl BoxMetricCells, input: &Lay
 #[expect(clippy::too_many_arguments)]
 /// Runs the formatting context of `box_` with the input cells `root_cells` its parent sized it in.
 pub(super) fn run_formatting_context(
-    parent_fragments: Option<&fragment_tree::RunFragmentBuilder>,
+    parent_collects_fragments: bool,
     root_cells: used_values::RootInputCells,
     box_: Node,
     root_containing_block: Node,
@@ -1962,9 +1962,9 @@ pub(super) fn run_formatting_context(
     input: LayoutInput,
     table_inline_layout: Option<table_formatting_context::TableInlineLayout>,
 ) -> ChildLayout {
-    let builds_fragments = run_builds_fragments(&input, parent_fragments.is_some());
+    let builds_fragments = run_builds_fragments(&input, parent_collects_fragments);
     assert!(
-        parent_fragments.is_none() || builds_fragments,
+        !parent_collects_fragments || builds_fragments,
         "the run of {box_:?} builds no fragments for its parent to commit"
     );
     if callbacks.reads_no_memoized_layout() {
@@ -1982,7 +1982,15 @@ pub(super) fn run_formatting_context(
             table_inline_layout,
             None,
         );
-        return child_layout_from_outputs(&callbacks, parent_fragments, box_, &input, root_cells, &outputs, false);
+        return child_layout_from_outputs(
+            &callbacks,
+            parent_collects_fragments,
+            box_,
+            &input,
+            root_cells,
+            &outputs,
+            false,
+        );
     }
     let cache_key = fc_run_cache::FcRunCacheKey::new(fc_type, input.clone(), root_cells);
     let cache_attempt = match fc_run_cache::FcRunCacheAttempt::probe(
@@ -2007,7 +2015,7 @@ pub(super) fn run_formatting_context(
             });
             return child_layout_from_outputs(
                 &callbacks,
-                parent_fragments,
+                parent_collects_fragments,
                 box_,
                 &input,
                 root_cells,
@@ -2079,7 +2087,15 @@ pub(super) fn run_formatting_context(
         );
     }
     let outputs = cache_attempt.conclude(&callbacks, box_, cache_key, outputs);
-    child_layout_from_outputs(&callbacks, parent_fragments, box_, &input, root_cells, &outputs, false)
+    child_layout_from_outputs(
+        &callbacks,
+        parent_collects_fragments,
+        box_,
+        &input,
+        root_cells,
+        &outputs,
+        false,
+    )
 }
 
 fn keep_inline_margins_resolved_now_where_unobserved(
@@ -2975,7 +2991,7 @@ pub(crate) fn layout_inside_child_with_input_cells(
         percentage_block_insets_of_containing_block_have_definite_basis,
     );
     run_formatting_context(
-        run.fragments.as_deref(),
+        run.fragments.is_some(),
         child_input_cells,
         child,
         root_containing_block,
@@ -3350,7 +3366,7 @@ pub(super) fn content_block_size_adopted_after_run(
 
 fn child_layout_from_outputs(
     callbacks: &LayoutPass<'_>,
-    parent_fragments: Option<&fragment_tree::RunFragmentBuilder>,
+    parent_collects_fragments: bool,
     child: Node,
     input: &LayoutInput,
     root_cells: used_values::RootInputCells,
@@ -3372,7 +3388,7 @@ fn child_layout_from_outputs(
     if outputs_are_stored_ones {
         keep_inline_margins_resolved_now_where_unobserved(&mut laid_out_box, root_cells, *inputs_never_observed);
     }
-    let fragment_arrival = parent_fragments.and(root.as_ref()).map(|root| {
+    let fragment_arrival = root.as_ref().filter(|_| parent_collects_fragments).map(|root| {
         debug_assert!(
             root.fragment.node == child,
             "a child run returned a root for a different box"
@@ -3626,7 +3642,7 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
         .with_forced_sizes(viewport_inline_size, viewport_block_size);
         let fc_type = independent_formatting_context_type(root_for_layout, &callbacks);
         let root_outcome = run_formatting_context(
-            Some(&entry_fragments),
+            true,
             root_cells,
             root_for_layout,
             callbacks.in_flow_containing_block(root_for_layout),
@@ -3792,7 +3808,7 @@ fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
     let fc_type = formatting_context_type_created_by_box(facts)
         .expect("partial relayout root must establish an independent formatting context");
     let root_outcome = run_formatting_context(
-        Some(fragments),
+        true,
         root_cells,
         root,
         callbacks.in_flow_containing_block(root),
