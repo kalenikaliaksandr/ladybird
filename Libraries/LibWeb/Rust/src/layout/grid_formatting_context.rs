@@ -2844,18 +2844,22 @@ impl<'pass> GridFormattingContext<'pass> {
 
     fn min_content_size(&self, item: GridItem, axis: Axis) -> CssPixels {
         if axis.is_column() {
-            self.sizing().calculate_min_content_inline_size(
-                sizing_context::SizedBox::new(item.box_, &self.cells_of(item)),
-                self.intrinsic_contribution_constraints(item, axis),
-            )
+            self.sizing()
+                .calculate_min_content_inline_size(
+                    sizing_context::SizedBox::new(item.box_, &self.cells_of(item)),
+                    self.intrinsic_contribution_constraints(item, axis),
+                )
+                .noted_in(&self.sizing())
         } else if self.grid_item_is_column_only_subgrid(item) {
             self.column_subgrid_content_block_size(item)
         } else {
-            self.sizing().calculate_min_content_block_size(
-                sizing_context::SizedBox::new(item.box_, &self.cells_of(item)),
-                self.item_available_space(item).inline_size.to_px_or_zero(),
-                self.intrinsic_contribution_constraints(item, axis),
-            )
+            self.sizing()
+                .calculate_min_content_block_size(
+                    sizing_context::SizedBox::new(item.box_, &self.cells_of(item)),
+                    self.item_available_space(item).inline_size.to_px_or_zero(),
+                    self.intrinsic_contribution_constraints(item, axis),
+                )
+                .noted_in(&self.sizing())
         }
     }
 
@@ -4033,10 +4037,14 @@ impl<'pass> GridFormattingContext<'pass> {
             ));
         }
         if table_style.width().is_auto() {
-            wrapper_size = wrapper_size.max(sizing.calculate_min_content_inline_size(
-                sizing_context::SizedBox::new(item.box_, &self.cells_of(item)),
-                constraints,
-            ));
+            wrapper_size = wrapper_size.max(
+                sizing
+                    .calculate_min_content_inline_size(
+                        sizing_context::SizedBox::new(item.box_, &self.cells_of(item)),
+                        constraints,
+                    )
+                    .noted_in(&sizing),
+            );
         }
 
         let alignment = self.item_alignment(item, Axis::Column);

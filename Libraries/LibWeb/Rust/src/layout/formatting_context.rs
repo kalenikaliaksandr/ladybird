@@ -1532,11 +1532,9 @@ pub(crate) fn independent_root_automatic_block_size(
         // max-content size.
         // https://drafts.csswg.org/css-flexbox-1/#algo-main-container
         // https://www.w3.org/TR/css-grid-2/#intrinsic-sizes
-        return sizing.calculate_max_content_block_size(
-            sized,
-            available_inner_space.inline_size.to_px_or_zero(),
-            constraints,
-        );
+        return sizing
+            .calculate_max_content_block_size(sized, available_inner_space.inline_size.to_px_or_zero(), constraints)
+            .noted_in(sizing);
     }
     debug_assert!(false, "independent formatting context root of unexpected kind");
     CssPixels::default()

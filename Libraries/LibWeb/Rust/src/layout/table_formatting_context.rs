@@ -1781,11 +1781,13 @@ impl<'pass> TableFormattingContext<'pass> {
     fn calculate_min_content_inline_size_of_caption(&self, caption: Node) -> CssPixels {
         self.sizing()
             .calculate_min_content_inline_size(sizing_context::SizedBox::unheld(caption), self.participant_constraints)
+            .noted_in(&self.sizing())
     }
 
     fn calculate_max_content_inline_size_of_caption(&self, caption: Node) -> CssPixels {
         self.sizing()
             .calculate_max_content_inline_size(sizing_context::SizedBox::unheld(caption), self.participant_constraints)
+            .noted_in(&self.sizing())
     }
 
     /// The box of the cell at `cell_index`, sized in the cells this table keeps of it.
@@ -1880,6 +1882,7 @@ impl<'pass> TableFormattingContext<'pass> {
                 let content_sizes = self
                     .sizing()
                     .content_inline_sizes(self.sized_cell(cell_index), self.participant_constraints, None)
+                    .noted_in(&self.sizing())
                     .sizes;
                 (content_sizes.min, content_sizes.max)
             };
@@ -1888,16 +1891,22 @@ impl<'pass> TableFormattingContext<'pass> {
             self.cells[cell_index].max_content_inline_size = (!fixed).then_some(max_content_inline);
 
             if include_rows {
-                let min_content_block = self.sizing().calculate_min_content_block_size(
-                    self.sized_cell(cell_index),
-                    max_content_inline,
-                    self.participant_constraints,
-                );
-                let max_content_block = self.sizing().calculate_max_content_block_size(
-                    self.sized_cell(cell_index),
-                    min_content_inline,
-                    self.participant_constraints,
-                );
+                let min_content_block = self
+                    .sizing()
+                    .calculate_min_content_block_size(
+                        self.sized_cell(cell_index),
+                        max_content_inline,
+                        self.participant_constraints,
+                    )
+                    .noted_in(&self.sizing());
+                let max_content_block = self
+                    .sizing()
+                    .calculate_max_content_block_size(
+                        self.sized_cell(cell_index),
+                        min_content_inline,
+                        self.participant_constraints,
+                    )
+                    .noted_in(&self.sizing());
                 let block_offsets = padding_block_start + padding_block_end + border_block_start + border_block_end;
                 let mut min_block = style.min_height().to_px(block_basis);
                 if style.box_sizing() == box_sizing::BORDER_BOX {

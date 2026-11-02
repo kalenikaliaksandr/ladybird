@@ -2007,11 +2007,15 @@ impl AbsposEngine<'_> {
         let shrink_to_fit = |left: CssPixels, margin_left: AutoPx, margin_right: AutoPx, right: CssPixels| {
             let available = solve_for_inline_size(left, margin_left, margin_right, right);
             let sizing = self.sizing();
-            let preferred = sizing.calculate_max_content_inline_size(sized.sized_box(), constraints);
+            let preferred = sizing
+                .calculate_max_content_inline_size(sized.sized_box(), constraints)
+                .noted_in(&sizing);
             if preferred <= available {
                 preferred
             } else {
-                let preferred_minimum = sizing.calculate_min_content_inline_size(sized.sized_box(), constraints);
+                let preferred_minimum = sizing
+                    .calculate_min_content_inline_size(sized.sized_box(), constraints)
+                    .noted_in(&sizing);
                 preferred_minimum.max(available).min(preferred)
             }
         };
@@ -2419,12 +2423,15 @@ impl AbsposEngine<'_> {
                 return Some(sized.cells.content_block_size());
             }
             let inline_size = sized.cells.content_inline_size();
-            let preferred = sizing.calculate_max_content_block_size(sized.sized_box(), inline_size, constraints);
+            let preferred = sizing
+                .calculate_max_content_block_size(sized.sized_box(), inline_size, constraints)
+                .noted_in(&sizing);
             let size = if preferred <= stretch_fit_block_size {
                 preferred
             } else {
                 sizing
                     .calculate_min_content_block_size(sized.sized_box(), inline_size, constraints)
+                    .noted_in(&sizing)
                     .max(stretch_fit_block_size)
                     .min(preferred)
             };

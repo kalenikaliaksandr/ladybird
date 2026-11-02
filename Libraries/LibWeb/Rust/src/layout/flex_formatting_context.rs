@@ -1269,16 +1269,20 @@ impl<'pass> FlexFormattingContext<'pass> {
         let constraints = self.item_containing_block_constraints();
         let cells = &self.flex_item_details[index].cells;
         if cells.has_definite_block_size {
-            sizing.calculate_min_content_inline_size_at_definite_block_size(
-                sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
-                constraints,
-                cells.content_block_size,
-            )
+            sizing
+                .calculate_min_content_inline_size_at_definite_block_size(
+                    sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
+                    constraints,
+                    cells.content_block_size,
+                )
+                .noted_in(&sizing)
         } else {
-            sizing.calculate_min_content_inline_size(
-                sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
-                constraints,
-            )
+            sizing
+                .calculate_min_content_inline_size(
+                    sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
+                    constraints,
+                )
+                .noted_in(&sizing)
         }
     }
 
@@ -1288,33 +1292,41 @@ impl<'pass> FlexFormattingContext<'pass> {
         let constraints = self.item_containing_block_constraints();
         let cells = &self.flex_item_details[index].cells;
         if cells.has_definite_block_size {
-            sizing.calculate_max_content_inline_size_at_definite_block_size(
-                sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
-                constraints,
-                cells.content_block_size,
-            )
+            sizing
+                .calculate_max_content_inline_size_at_definite_block_size(
+                    sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
+                    constraints,
+                    cells.content_block_size,
+                )
+                .noted_in(&sizing)
         } else {
-            sizing.calculate_max_content_inline_size(
-                sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
-                constraints,
-            )
+            sizing
+                .calculate_max_content_inline_size(
+                    sizing_context::SizedBox::new(node, &self.flex_item_details[index].cells),
+                    constraints,
+                )
+                .noted_in(&sizing)
         }
     }
 
     fn calculate_min_content_block_size(&self, index: usize, inline_size: CssPixels) -> CssPixels {
-        self.sizing().calculate_min_content_block_size(
-            sizing_context::SizedBox::new(self.flex_items[index].box_, &self.flex_item_details[index].cells),
-            inline_size,
-            self.item_containing_block_constraints(),
-        )
+        self.sizing()
+            .calculate_min_content_block_size(
+                sizing_context::SizedBox::new(self.flex_items[index].box_, &self.flex_item_details[index].cells),
+                inline_size,
+                self.item_containing_block_constraints(),
+            )
+            .noted_in(&self.sizing())
     }
 
     fn calculate_max_content_block_size(&self, index: usize, inline_size: CssPixels) -> CssPixels {
-        self.sizing().calculate_max_content_block_size(
-            sizing_context::SizedBox::new(self.flex_items[index].box_, &self.flex_item_details[index].cells),
-            inline_size,
-            self.item_containing_block_constraints(),
-        )
+        self.sizing()
+            .calculate_max_content_block_size(
+                sizing_context::SizedBox::new(self.flex_items[index].box_, &self.flex_item_details[index].cells),
+                inline_size,
+                self.item_containing_block_constraints(),
+            )
+            .noted_in(&self.sizing())
     }
 
     fn calculate_inline_size_for_intrinsic_block_size(&self, index: usize) -> CssPixels {

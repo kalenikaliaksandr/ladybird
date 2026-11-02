@@ -1577,10 +1577,12 @@ impl<'pass> BlockFormattingContext<'pass> {
                     - margin_right;
                 // Then the shrink-to-fit inline size is:
                 // min(max(preferred minimum inline size, available inline size), preferred inline size).
-                let preferred = sizing.calculate_max_content_inline_size(
-                    sizing_context::SizedBox::new(node, &self.metrics_of(sized_child)),
-                    constraints,
-                );
+                let preferred = sizing
+                    .calculate_max_content_inline_size(
+                        sizing_context::SizedBox::new(node, &self.metrics_of(sized_child)),
+                        constraints,
+                    )
+                    .noted_in(&sizing);
                 if preferred <= available_inline_size {
                     preferred
                 } else {
@@ -1589,15 +1591,18 @@ impl<'pass> BlockFormattingContext<'pass> {
                             sizing_context::SizedBox::new(node, &self.metrics_of(sized_child)),
                             constraints,
                         )
+                        .noted_in(&sizing)
                         .max(available_inline_size)
                         .min(preferred)
                 }
             } else {
                 // Fold the shrink-to-fit formula for an indefinite available inline size.
-                sizing.calculate_max_content_inline_size(
-                    sizing_context::SizedBox::new(node, &self.metrics_of(sized_child)),
-                    constraints,
-                )
+                sizing
+                    .calculate_max_content_inline_size(
+                        sizing_context::SizedBox::new(node, &self.metrics_of(sized_child)),
+                        constraints,
+                    )
+                    .noted_in(&sizing)
             }
         };
 
@@ -2324,10 +2329,10 @@ impl<'pass> BlockFormattingContext<'pass> {
             percentage_basis_inline_size: Some(list_item.cells.content_inline_size),
             ..ContainingBlockConstraints::default()
         };
-        let max_content_inline_size = self.sizing().calculate_max_content_inline_size(
-            sizing_context::SizedBox::new(marker, &marker_cells),
-            marker_constraints,
-        );
+        let max_content_inline_size = self
+            .sizing()
+            .calculate_max_content_inline_size(sizing_context::SizedBox::new(marker, &marker_cells), marker_constraints)
+            .noted_in(&self.sizing());
         marker_cells.set_content_inline_size(max_content_inline_size);
         let inner_available_space = AvailableSpace {
             inline_size: AvailableSize::definite(max_content_inline_size),

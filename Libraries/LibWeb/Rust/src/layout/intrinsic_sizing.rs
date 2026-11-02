@@ -388,6 +388,7 @@ pub(super) fn content_sizes_of_block_container(
             } else if !floats.is_empty() && is_anonymous_wrapper_of_inline_content(child_facts) {
                 let first_line_max_content = sizing
                     .content_inline_sizes(sized_child, child_constraints, None)
+                    .noted_in(&sizing)
                     .first_line_max_content;
                 margin_box_contributions
                     .max
