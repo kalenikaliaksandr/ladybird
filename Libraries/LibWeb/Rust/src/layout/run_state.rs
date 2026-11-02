@@ -36,6 +36,14 @@ pub(crate) struct HostFindings {
     pub(crate) document_svg_root_natural_size: Option<(NodeSlotId, crate::css::style::NaturalSize)>,
 }
 
+/// What a finished run produced for its caller, beside what it found out for the host, which the caller keeps with
+/// [`LayoutPass::keep_host_findings_of`].
+#[must_use]
+pub(crate) struct WithHostFindings<T> {
+    pub(crate) value: T,
+    pub(crate) host_findings: Option<Box<HostFindings>>,
+}
+
 impl HostFindings {
     pub(crate) fn is_empty(&self) -> bool {
         self.messages.is_empty() && self.document_svg_root_natural_size.is_none()

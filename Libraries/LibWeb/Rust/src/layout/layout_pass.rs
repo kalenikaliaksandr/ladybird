@@ -203,6 +203,13 @@ impl<'arena> LayoutPass<'arena> {
         }
     }
 
+    /// Hands what a finished run found out to the run this pass view was handed to, and gives back what else the
+    /// finished run produced.
+    pub(crate) fn keep_host_findings_of<T>(&self, finished: super::run_state::WithHostFindings<T>) -> T {
+        self.receive_host_findings(finished.host_findings);
+        finished.value
+    }
+
     /// The intrinsic sizes passes measured, kept for the passes after them, or inside a run whose result is discarded,
     /// that run's own.
     pub(crate) fn intrinsic_size_caches(&self) -> &'arena super::layout_node_arena::IntrinsicSizeCaches {

@@ -3356,7 +3356,8 @@ impl<'pass, 'container> SizingContext<'pass, 'container> {
         let result = if let Some(child_run_shapes) = self.child_run_shapes
             && let Some(shape) = child_run_shapes.child_run_shape_at(node, inline_size, constraints)
         {
-            formatting_context::lay_out_shape_for_its_result(self.callbacks, shape)
+            self.callbacks
+                .keep_host_findings_of(formatting_context::lay_out_shape_for_its_result(self.callbacks, shape))
         } else {
             let _trace = self.callbacks.layout_trace().intrinsic_size_miss(node, kind);
             self.measure_block_size_with_normal_layout(node, inline_size, constraints)

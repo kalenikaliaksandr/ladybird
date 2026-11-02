@@ -2952,7 +2952,9 @@ impl<'pass> TableFormattingContext<'pass> {
                 participation: ParticipationInParentFormattingContext::Item,
             },
         );
-        let result = formatting_context::lay_out_shape_for_its_result(run.callbacks, shape);
+        let result = run
+            .callbacks
+            .keep_host_findings_of(formatting_context::lay_out_shape_for_its_result(run.callbacks, shape));
         Some(TableCellMeasurement {
             automatic_content_block_size: result.automatic_content_block_size,
             baselines: result.baselines,

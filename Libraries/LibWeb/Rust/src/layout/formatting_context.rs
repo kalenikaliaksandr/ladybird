@@ -127,7 +127,7 @@ pub(crate) fn run_root_without_parent_fragments(
         outcome: ChildLayoutOutcome::Created(result),
         laid_out_box,
         fragment_arrival,
-    } = run_formatting_context(
+    } = callbacks.keep_host_findings_of(run_formatting_context(
         false,
         root_cells,
         node,
@@ -138,7 +138,7 @@ pub(crate) fn run_root_without_parent_fragments(
         callbacks,
         input,
         None,
-    )
+    ))
     else {
         unreachable!("a run creates its root's result");
     };
@@ -1961,7 +1961,7 @@ pub(super) fn run_formatting_context(
     callbacks: LayoutPass<'_>,
     input: LayoutInput,
     table_inline_layout: Option<table_formatting_context::TableInlineLayout>,
-) -> ChildLayout {
+) -> WithHostFindings<ChildLayout> {
     let builds_fragments = run_builds_fragments(&input, parent_collects_fragments);
     assert!(
         !parent_collects_fragments || builds_fragments,
@@ -2990,7 +2990,7 @@ pub(crate) fn layout_inside_child_with_input_cells(
         force_independent_context_run,
         percentage_block_insets_of_containing_block_have_definite_basis,
     );
-    run_formatting_context(
+    run.callbacks.keep_host_findings_of(run_formatting_context(
         run.fragments.is_some(),
         child_input_cells,
         child,
@@ -3003,7 +3003,7 @@ pub(crate) fn layout_inside_child_with_input_cells(
         parent_block
             .and_then(|block| block.take_table_inline_layout_of(child))
             .or_else(|| parent_grid.and_then(|grid| grid.take_table_inline_layout_of(child))),
-    )
+    ))
 }
 
 /// Hands what the layout of a child handed its placement to the run's fragment builder, where the child is laid out
@@ -3156,13 +3156,16 @@ pub(crate) fn lay_out_measurement_root_for_its_result(
     root_cells: used_values::RootInputCells,
     input: LayoutInput,
 ) -> ChildLayoutResult {
-    lay_out_shape_for_its_result(
+    callbacks.keep_host_findings_of(lay_out_shape_for_its_result(
         callbacks,
         ChildRunShape::of_measurement_root(&callbacks, node, root_cells, input),
-    )
+    ))
 }
 
-pub(crate) fn lay_out_shape_for_its_result(callbacks: LayoutPass<'_>, shape: ChildRunShape) -> ChildLayoutResult {
+pub(crate) fn lay_out_shape_for_its_result(
+    callbacks: LayoutPass<'_>,
+    shape: ChildRunShape,
+) -> WithHostFindings<ChildLayoutResult> {
     let ChildRunShape {
         node,
         fc_type,
@@ -3187,9 +3190,9 @@ pub(crate) fn lay_out_shape_for_its_result(callbacks: LayoutPass<'_>, shape: Chi
             None,
         )
     };
-    let result_with_host_findings = |outputs: &RunOutputs| {
-        callbacks.receive_host_findings(outputs.host_findings.clone());
-        outputs.result
+    let result_with_host_findings = |outputs: &RunOutputs| WithHostFindings {
+        value: outputs.result,
+        host_findings: outputs.host_findings.clone(),
     };
     if callbacks.reads_no_memoized_layout() {
         return result_with_host_findings(&lay_out(callbacks, root_cells, &input, None));
@@ -3372,7 +3375,7 @@ fn child_layout_from_outputs(
     root_cells: used_values::RootInputCells,
     outputs: &RunOutputs,
     outputs_are_stored_ones: bool,
-) -> ChildLayout {
+) -> WithHostFindings<ChildLayout> {
     let RunOutputs {
         result,
         root,
@@ -3381,7 +3384,6 @@ fn child_layout_from_outputs(
         host_findings,
         laid_out_abspos_contained_by_root: _,
     } = outputs;
-    callbacks.receive_host_findings(host_findings.clone());
     let content_block_size_adopted_after_run =
         content_block_size_adopted_after_run(input, result.automatic_content_block_size);
     let mut laid_out_box = root_outcome.laid_out_child_box(root_cells, result, content_block_size_adopted_after_run);
@@ -3403,10 +3405,13 @@ fn child_layout_from_outputs(
             payloads_past_run: root.payloads_past_run.clone(),
         }
     });
-    ChildLayout {
-        outcome: ChildLayoutOutcome::Created(*result),
-        laid_out_box,
-        fragment_arrival,
+    WithHostFindings {
+        value: ChildLayout {
+            outcome: ChildLayoutOutcome::Created(*result),
+            laid_out_box,
+            fragment_arrival,
+        },
+        host_findings: host_findings.clone(),
     }
 }
 
@@ -3641,7 +3646,7 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
         )
         .with_forced_sizes(viewport_inline_size, viewport_block_size);
         let fc_type = independent_formatting_context_type(root_for_layout, &callbacks);
-        let root_outcome = run_formatting_context(
+        let root_outcome = callbacks.keep_host_findings_of(run_formatting_context(
             true,
             root_cells,
             root_for_layout,
@@ -3652,7 +3657,7 @@ fn compute_root_layout(input: LayoutStageInput<'_>, should_collect_devtools_layo
             callbacks,
             input,
             None,
-        );
+        ));
         place_child(
             &entry_run,
             root_for_layout,
@@ -3807,7 +3812,7 @@ fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
     debug_assert!(facts.is_svg_svg_box());
     let fc_type = formatting_context_type_created_by_box(facts)
         .expect("partial relayout root must establish an independent formatting context");
-    let root_outcome = run_formatting_context(
+    let root_outcome = callbacks.keep_host_findings_of(run_formatting_context(
         true,
         root_cells,
         root,
@@ -3818,7 +3823,7 @@ fn layout_subtree_with_frozen_root_geometry(run: &FormattingContextRun<'_>) {
         *callbacks,
         input,
         None,
-    );
+    ));
     let ChildLayout {
         laid_out_box: root_box,
         fragment_arrival,

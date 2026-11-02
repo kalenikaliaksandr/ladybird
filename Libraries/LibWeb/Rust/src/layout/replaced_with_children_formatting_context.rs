@@ -40,26 +40,28 @@ pub(super) fn layout_replaced_with_children(
     let mut wrapper_cells = used_values::cells_before_sizing(&run.callbacks, wrapper, wrapper_constraints);
     wrapper_cells.set_content_inline_size(content_inline_size);
 
-    let wrapper_outcome = formatting_context::run_formatting_context(
-        run.fragments.is_some(),
-        wrapper_cells,
-        wrapper,
-        run.callbacks.in_flow_containing_block(wrapper),
-        None,
-        formatting_context::FormattingContextType::Block,
-        run.should_collect_devtools_layout_data,
-        run.callbacks,
-        geometry::LayoutInput {
-            available_space: child_available_space,
-            containing_block_constraints: wrapper_constraints,
-            sizing: geometry::RootSizingDirectives {
-                adopt_automatic_content_block_size: true,
-                ..geometry::RootSizingDirectives::default()
+    let wrapper_outcome = run
+        .callbacks
+        .keep_host_findings_of(formatting_context::run_formatting_context(
+            run.fragments.is_some(),
+            wrapper_cells,
+            wrapper,
+            run.callbacks.in_flow_containing_block(wrapper),
+            None,
+            formatting_context::FormattingContextType::Block,
+            run.should_collect_devtools_layout_data,
+            run.callbacks,
+            geometry::LayoutInput {
+                available_space: child_available_space,
+                containing_block_constraints: wrapper_constraints,
+                sizing: geometry::RootSizingDirectives {
+                    adopt_automatic_content_block_size: true,
+                    ..geometry::RootSizingDirectives::default()
+                },
+                participation: geometry::ParticipationInParentFormattingContext::Item,
             },
-            participation: geometry::ParticipationInParentFormattingContext::Item,
-        },
-        None,
-    );
+            None,
+        ));
     let formatting_context::ChildLayoutOutcome::Created(wrapper_result) = wrapper_outcome.outcome else {
         unreachable!("a run creates its root's result");
     };

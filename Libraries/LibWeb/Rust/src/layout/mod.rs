@@ -103,7 +103,7 @@ pub(crate) use layout_pass::LayoutPass;
 pub(crate) use node_facts::NodeFacts;
 pub(crate) use partial_relayout::HeldNode as PartialRelayoutHeldNode;
 pub(crate) use rendered_text::{PublishedTextSlot, RenderedText, RenderedTextBoundary, TextFragments};
-pub(crate) use run_state::RunState;
+pub(crate) use run_state::{RunState, WithHostFindings};
 use std::cell::Cell;
 use std::cell::OnceCell;
 use std::cell::Ref;
