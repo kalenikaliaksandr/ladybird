@@ -136,8 +136,8 @@ impl InFlowBlockCacheStore {
         slot.latest = Some(std::sync::Arc::new(entry));
     }
 
-    pub(crate) fn remove_entry(&self, slot: u32) {
-        if let Some(slot) = self.entries.borrow_mut().get_mut(slot as usize) {
+    pub(crate) fn remove_entry(&mut self, slot: u32) {
+        if let Some(slot) = self.entries.get_mut().get_mut(slot as usize) {
             *slot = InFlowBlockSlot::default();
         }
     }
