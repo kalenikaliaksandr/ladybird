@@ -255,7 +255,7 @@ impl PreparedInlineContent {
 
 #[derive(Default)]
 pub(crate) struct PreparedInlineContentMemos {
-    by_slot: RefCell<Vec<Option<Arc<PreparedInlineContent>>>>,
+    by_slot: super::memo_slots::MemoSlots<Option<Arc<PreparedInlineContent>>>,
 }
 
 impl PreparedInlineContentMemos {
@@ -271,24 +271,23 @@ impl PreparedInlineContentMemos {
         validity: FcRunCacheValidity,
     ) -> Option<Arc<PreparedInlineContent>> {
         self.by_slot
+            .get(block_container.slot_index())?
             .borrow()
-            .get(block_container.slot_index() as usize)?
             .as_ref()
             .filter(|kept| kept.validity == validity)
             .cloned()
     }
 
     pub(crate) fn keep(&self, block_container: Node, prepared: Arc<PreparedInlineContent>) {
-        let index = block_container.slot_index() as usize;
-        let mut by_slot = self.by_slot.borrow_mut();
-        if by_slot.len() <= index {
-            by_slot.resize_with(index + 1, || None);
-        }
-        by_slot[index] = Some(prepared);
+        *self.by_slot.cell_to_write(block_container.slot_index()).borrow_mut() = Some(prepared);
+    }
+
+    pub(crate) fn provide_slots_up_to(&mut self, capacity: usize) {
+        self.by_slot.provide_up_to(capacity);
     }
 
     pub(crate) fn forget(&mut self, slot: u32) {
-        if let Some(kept) = self.by_slot.get_mut().get_mut(slot as usize) {
+        if let Some(kept) = self.by_slot.get_mut(slot) {
             *kept = None;
         }
     }

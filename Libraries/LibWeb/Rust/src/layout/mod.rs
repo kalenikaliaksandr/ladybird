@@ -39,6 +39,7 @@ pub(crate) mod line_box_fragment;
 pub(crate) mod line_builder;
 pub(crate) mod math_formatting_context;
 mod memo_invalidations;
+mod memo_slots;
 pub mod node_data;
 pub(crate) mod node_facts;
 pub(crate) mod tree_shape;

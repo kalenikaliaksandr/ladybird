@@ -8,7 +8,6 @@ use super::node_data::NodeSlotId;
 use super::text_transform::{TextRenderingOptions, may_require_bidi_processing, render_text};
 use super::{ComputedValuesView, LayoutNodeArena};
 use crate::css::css_enums::text_transform;
-use std::cell::RefCell;
 use std::sync::Arc;
 
 /// Selects the beginning or end of a transformed span for offsets inside it.
@@ -227,8 +226,8 @@ impl TextContent {
 /// text is still that text.
 #[derive(Default)]
 pub(crate) struct TextMemos {
-    chunks: RefCell<Vec<Option<ChunksOfText>>>,
-    grapheme_segmenters: RefCell<Vec<Option<GraphemeSegmenterOfText>>>,
+    chunks: super::memo_slots::MemoSlots<Option<ChunksOfText>>,
+    grapheme_segmenters: super::memo_slots::MemoSlots<Option<GraphemeSegmenterOfText>>,
 }
 
 /// The chunks a run made of a row's rendered text, and that text.
@@ -249,8 +248,20 @@ impl TextMemos {
     pub(crate) fn fork(&self) -> Self {
         Self {
             chunks: self.chunks.clone(),
-            grapheme_segmenters: RefCell::default(),
+            grapheme_segmenters: Default::default(),
         }
+    }
+
+    pub(crate) fn provide_slots_up_to(&mut self, capacity: usize) {
+        self.chunks.provide_up_to(capacity);
+        self.grapheme_segmenters.provide_up_to(capacity);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_slot_capacity_for_test(capacity: usize) -> Self {
+        let mut memos = Self::default();
+        memos.provide_slots_up_to(capacity);
+        memos
     }
 
     /// The chunks of the text row `node`, whose rendered text is `rendered`, for `key`, made by `compute` where the last
@@ -262,8 +273,8 @@ impl TextMemos {
         key: &TextChunkCacheKey,
         compute: impl FnOnce() -> Vec<super::text_chunker::TextChunk>,
     ) -> Arc<CachedTextChunks> {
-        let index = node.slot_index() as usize;
-        if let Some(Some(memo)) = self.chunks.borrow().get(index)
+        if let Some(memo) = self.chunks.get(node.slot_index())
+            && let Some(memo) = &*memo.borrow()
             && Arc::ptr_eq(&memo.rendered, rendered)
             && memo.chunks.key == *key
         {
@@ -277,11 +288,7 @@ impl TextMemos {
             key: key.clone(),
             chunks: compute(),
         });
-        let mut chunks = self.chunks.borrow_mut();
-        if chunks.len() <= index {
-            chunks.resize_with(index + 1, || None);
-        }
-        chunks[index] = Some(ChunksOfText {
+        *self.chunks.cell_to_write(node.slot_index()).borrow_mut() = Some(ChunksOfText {
             rendered: rendered.clone(),
             chunks: entry.clone(),
         });
@@ -295,12 +302,7 @@ impl TextMemos {
         rendered: &Arc<RenderedText>,
         read: impl FnOnce(&super::text_chunker::GraphemeSegmenter) -> R,
     ) -> R {
-        let index = node.slot_index() as usize;
-        let mut segmenters = self.grapheme_segmenters.borrow_mut();
-        if segmenters.len() <= index {
-            segmenters.resize_with(index + 1, || None);
-        }
-        let memo = &mut segmenters[index];
+        let mut memo = self.grapheme_segmenters.cell_to_write(node.slot_index()).borrow_mut();
         if !memo.as_ref().is_some_and(|memo| Arc::ptr_eq(&memo.rendered, rendered)) {
             *memo = Some(GraphemeSegmenterOfText {
                 segmenter: super::text_chunker::GraphemeSegmenter::new(&rendered.text),
@@ -312,10 +314,10 @@ impl TextMemos {
 
     /// Lets go of what the memos keep for the row in `slot`, which the arena freed.
     pub(crate) fn forget(&mut self, slot: u32) {
-        if let Some(chunks) = self.chunks.get_mut().get_mut(slot as usize) {
+        if let Some(chunks) = self.chunks.get_mut(slot) {
             *chunks = None;
         }
-        if let Some(segmenter) = self.grapheme_segmenters.get_mut().get_mut(slot as usize) {
+        if let Some(segmenter) = self.grapheme_segmenters.get_mut(slot) {
             *segmenter = None;
         }
     }
@@ -531,7 +533,7 @@ mod tests {
             frozen_font_list: std::sync::Arc::new(libgfx_rust::font::FrozenFontList::empty()),
             splits_at_orientation_changes: false,
         };
-        let memos = TextMemos::default();
+        let memos = TextMemos::with_slot_capacity_for_test(1);
         let node = NodeSlotId::new(0, 1);
         let mut previous = memos.text_chunks(node, content.rendered(), &key, Vec::new);
         for language in [
@@ -664,7 +666,7 @@ mod tests {
         let block = arena.allocate_for_test().slot;
         scratch.apply_memo_invalidations(&mut arena);
         let keep = |arena: &LayoutNodeArena, scratch: &LayoutScratch| {
-            let host_findings_outside_runs = RefCell::default();
+            let host_findings_outside_runs = std::cell::RefCell::default();
             let validity = run_root_validity(
                 &LayoutPass::for_test(arena, scratch, &host_findings_outside_runs),
                 block,

@@ -4447,7 +4447,7 @@ mod replaced_ratio_tests {
         contained: bool,
     ) -> (i32, i32) {
         let mut arena = LayoutNodeArena::new();
-        let scratch = LayoutScratch::default();
+        let mut scratch = LayoutScratch::default();
         let mut style = FfiStylePayloads {
             groups: std::array::from_fn(|index| GroupPayloadRef::default_payload(index).as_ptr()),
         };
@@ -4498,6 +4498,7 @@ mod replaced_ratio_tests {
                 ..Default::default()
             },
         );
+        scratch.apply_memo_invalidations(&mut arena);
         let host_findings_outside_runs = RefCell::default();
         let callbacks = LayoutPass::new(
             &arena,

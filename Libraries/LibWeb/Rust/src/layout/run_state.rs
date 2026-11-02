@@ -125,8 +125,20 @@ impl LayoutScratch {
         &self.prepared_inline_content_memos
     }
 
-    /// Brings the run memos up to date with what the arena's writes since the last call did to their boxes.
+    /// Provides the memos the runs of a pass share with a cell for every slot below `capacity`, so that the runs of
+    /// the pass after it write the memos of any slot of the arena without growing them.
+    fn provide_memo_slots_up_to(&mut self, capacity: usize) {
+        self.intrinsic_size_caches.provide_slots_up_to(capacity);
+        self.fc_run_cache_store.provide_slots_up_to(capacity);
+        self.in_flow_block_cache_store.provide_slots_up_to(capacity);
+        self.text_memos.provide_slots_up_to(capacity);
+        self.prepared_inline_content_memos.provide_slots_up_to(capacity);
+    }
+
+    /// Brings the run memos up to date with what the arena's writes since the last call did to their boxes, and
+    /// provides their cells for the arena's slots.
     pub(super) fn apply_memo_invalidations(&mut self, arena: &mut LayoutNodeArena) {
+        self.provide_memo_slots_up_to(arena.slot_capacity());
         arena.take_memo_invalidations().apply_to(
             &mut self.fc_run_cache_store,
             &mut self.in_flow_block_cache_store,

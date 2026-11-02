@@ -235,24 +235,69 @@ struct IntrinsicSizeCacheSlot {
 /// went stale in its memo invalidations, which the stage applies before its next run reads any.
 #[derive(Default)]
 pub(crate) struct IntrinsicSizeCaches {
-    slots: RefCell<Vec<IntrinsicSizeCacheSlot>>,
+    slots: IntrinsicSizeCacheSlots,
+}
+
+enum IntrinsicSizeCacheSlots {
+    /// The slots the runs of passes share, which the layout stage provides before each pass.
+    ProvidedBeforePass(super::memo_slots::MemoSlots<IntrinsicSizeCacheSlot>),
+    /// The slots of the one run that reaches them, which it grows as it measures.
+    GrownByTheirOnlyRun(RefCell<Vec<IntrinsicSizeCacheSlot>>),
+}
+
+impl Default for IntrinsicSizeCacheSlots {
+    fn default() -> Self {
+        Self::ProvidedBeforePass(Default::default())
+    }
 }
 
 impl IntrinsicSizeCaches {
+    /// The caches of a run whose result is discarded, which only that run reaches. They start empty.
+    pub(crate) fn for_discarded_run() -> Self {
+        Self {
+            slots: IntrinsicSizeCacheSlots::GrownByTheirOnlyRun(RefCell::default()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_slot_capacity_for_test(capacity: usize) -> Self {
+        Self {
+            slots: IntrinsicSizeCacheSlots::ProvidedBeforePass(super::memo_slots::MemoSlots::with_capacity_for_test(
+                capacity,
+            )),
+        }
+    }
+
+    pub(crate) fn provide_slots_up_to(&mut self, capacity: usize) {
+        if let IntrinsicSizeCacheSlots::ProvidedBeforePass(slots) = &mut self.slots {
+            slots.provide_up_to(capacity);
+        }
+    }
+
     pub(crate) fn drop_entries_of_slot(&mut self, slot: u32) {
-        if let Some(slot) = self.slots.get_mut().get_mut(slot as usize) {
+        let slot = match &mut self.slots {
+            IntrinsicSizeCacheSlots::ProvidedBeforePass(slots) => slots.get_mut(slot),
+            IntrinsicSizeCacheSlots::GrownByTheirOnlyRun(slots) => slots.get_mut().get_mut(slot as usize),
+        };
+        if let Some(slot) = slot {
             *slot = IntrinsicSizeCacheSlot::default();
         }
     }
 
     /// Answers `answer` from the maps of `node`, where they hold what was measured for it.
     fn with_maps<R>(&self, node: NodeSlotId, answer: impl FnOnce(&IntrinsicSizeMaps) -> Option<R>) -> Option<R> {
-        let caches = self.slots.borrow();
-        let slot = caches.get(node.slot_index() as usize)?;
-        if slot.generation != node.generation() {
-            return None;
+        let answer_from = |slot: &IntrinsicSizeCacheSlot| {
+            if slot.generation != node.generation() {
+                return None;
+            }
+            answer(slot.sizes.as_ref()?)
+        };
+        match &self.slots {
+            IntrinsicSizeCacheSlots::ProvidedBeforePass(slots) => answer_from(&slots.get(node.slot_index())?.borrow()),
+            IntrinsicSizeCacheSlots::GrownByTheirOnlyRun(slots) => {
+                answer_from(slots.borrow().get(node.slot_index() as usize)?)
+            }
         }
-        answer(slot.sizes.as_ref()?)
     }
 
     pub(crate) fn max_content_block_size_cache_get(
@@ -264,19 +309,28 @@ impl IntrinsicSizeCaches {
     }
 
     fn with_maps_mut(&self, node: NodeSlotId, callback: impl FnOnce(&mut IntrinsicSizeMaps)) {
-        let index = node.slot_index() as usize;
-        let mut caches = self.slots.borrow_mut();
-        if caches.len() <= index {
-            caches.resize_with(index + 1, IntrinsicSizeCacheSlot::default);
+        let write = |slot: &mut IntrinsicSizeCacheSlot| {
+            if slot.generation != node.generation() {
+                *slot = IntrinsicSizeCacheSlot {
+                    generation: node.generation(),
+                    sizes: None,
+                };
+            }
+            callback(slot.sizes.get_or_insert_with(Box::default));
+        };
+        match &self.slots {
+            IntrinsicSizeCacheSlots::ProvidedBeforePass(slots) => {
+                write(&mut slots.cell_to_write(node.slot_index()).borrow_mut());
+            }
+            IntrinsicSizeCacheSlots::GrownByTheirOnlyRun(slots) => {
+                let index = node.slot_index() as usize;
+                let mut slots = slots.borrow_mut();
+                if slots.len() <= index {
+                    slots.resize_with(index + 1, IntrinsicSizeCacheSlot::default);
+                }
+                write(&mut slots[index]);
+            }
         }
-        let slot = &mut caches[index];
-        if slot.generation != node.generation() {
-            *slot = IntrinsicSizeCacheSlot {
-                generation: node.generation(),
-                sizes: None,
-            };
-        }
-        callback(slot.sizes.get_or_insert_with(Box::default));
     }
 
     pub(crate) fn max_content_block_size_cache_put(
@@ -6017,6 +6071,11 @@ impl LayoutNodeArena {
         self.live_count
     }
 
+    /// How many slots the arena has made, live or free: every slot index lies below it.
+    pub(crate) fn slot_capacity(&self) -> usize {
+        self.slot_metadata.len()
+    }
+
     pub(crate) fn node_flags(&self, id: NodeSlotId) -> u32 {
         self.data(id).flags.get()
     }
@@ -7684,7 +7743,7 @@ mod tests {
     #[test]
     fn intrinsic_size_cache_answers_masked_probes_only_from_independent_measurements() {
         let mut arena = LayoutNodeArena::new();
-        let caches = super::IntrinsicSizeCaches::default();
+        let caches = super::IntrinsicSizeCaches::with_slot_capacity_for_test(16);
         let allocation = arena.allocate_for_test();
         let dependent_allocation = arena.allocate_for_test();
         let key_with_basis = |basis: i32| IntrinsicSizeCacheKey {
@@ -7821,7 +7880,7 @@ mod tests {
     #[test]
     fn intrinsic_inline_size_cache_answers_probes_through_every_combination_of_masked_key_parts() {
         let mut arena = LayoutNodeArena::new();
-        let caches = super::IntrinsicSizeCaches::default();
+        let caches = super::IntrinsicSizeCaches::with_slot_capacity_for_test(16);
         let measured_key = inline_size_cache_key(Some(100), Some(300), Some(50));
         for observed_parts in every_combination_of_key_parts() {
             let allocation = arena.allocate_for_test();
@@ -7854,7 +7913,7 @@ mod tests {
     #[test]
     fn intrinsic_inline_size_cache_masks_the_block_size_of_measurements_that_never_observed_it() {
         let mut arena = LayoutNodeArena::new();
-        let caches = super::IntrinsicSizeCaches::default();
+        let caches = super::IntrinsicSizeCaches::with_slot_capacity_for_test(16);
         let observes_block_size = IntrinsicMeasurementDependencies {
             block_size: true,
             ..Default::default()

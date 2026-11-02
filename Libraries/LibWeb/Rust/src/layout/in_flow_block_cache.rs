@@ -88,7 +88,7 @@ struct InFlowBlockSlot {
 /// Per-document store of in-flow block layouts, surviving across layout passes in the layout stage's scratch.
 #[derive(Clone, Default)]
 pub(crate) struct InFlowBlockCacheStore {
-    entries: RefCell<Vec<InFlowBlockSlot>>,
+    entries: super::memo_slots::MemoSlots<InFlowBlockSlot>,
 }
 
 impl InFlowBlockCacheStore {
@@ -100,8 +100,7 @@ impl InFlowBlockCacheStore {
         key: &InFlowBlockKey,
         committed_identity: u64,
     ) -> Option<std::sync::Arc<InFlowBlockEntry>> {
-        let entries = self.entries.borrow();
-        let slot = entries.get(slot as usize)?;
+        let slot = self.entries.get(slot)?.borrow();
         [&slot.committed, &slot.latest]
             .into_iter()
             .flatten()
@@ -113,11 +112,7 @@ impl InFlowBlockCacheStore {
 
     /// Stores `entry`, keeping the entry that placed the box's committed fragment, `committed_identity`.
     pub(super) fn store(&self, slot: u32, entry: InFlowBlockEntry, committed_identity: Option<u64>) {
-        let mut entries = self.entries.borrow_mut();
-        if entries.len() <= slot as usize {
-            entries.resize_with(slot as usize + 1, InFlowBlockSlot::default);
-        }
-        let slot = &mut entries[slot as usize];
+        let mut slot = self.entries.cell_to_write(slot).borrow_mut();
         let places_committed_fragment = |entry: &Option<std::sync::Arc<InFlowBlockEntry>>| {
             entry
                 .as_ref()
@@ -136,8 +131,12 @@ impl InFlowBlockCacheStore {
         slot.latest = Some(std::sync::Arc::new(entry));
     }
 
+    pub(crate) fn provide_slots_up_to(&mut self, capacity: usize) {
+        self.entries.provide_up_to(capacity);
+    }
+
     pub(crate) fn remove_entry(&mut self, slot: u32) {
-        if let Some(slot) = self.entries.get_mut().get_mut(slot as usize) {
+        if let Some(slot) = self.entries.get_mut(slot) {
             *slot = InFlowBlockSlot::default();
         }
     }
