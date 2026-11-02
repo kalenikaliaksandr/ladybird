@@ -177,7 +177,22 @@ pub(crate) struct InlineContentPreparationBuffers {
     pub(super) box_stack: Vec<Node>,
 }
 
+thread_local! {
+    /// The buffers the preparations of inline content on this thread fill, kept between them only for their capacity.
+    static INLINE_CONTENT_PREPARATION_BUFFERS: std::cell::Cell<InlineContentPreparationBuffers> =
+        std::cell::Cell::default();
+}
+
 impl InlineContentPreparationBuffers {
+    /// The buffers of this thread, which the caller hands back with [`Self::return_to_this_thread`] once it is done.
+    pub(super) fn take_from_this_thread() -> Self {
+        INLINE_CONTENT_PREPARATION_BUFFERS.take()
+    }
+
+    pub(super) fn return_to_this_thread(self) {
+        INLINE_CONTENT_PREPARATION_BUFFERS.set(self);
+    }
+
     pub(super) fn take_prepared_inline_content(&mut self, validity: FcRunCacheValidity) -> PreparedInlineContent {
         self.box_stack.clear();
         PreparedInlineContent {

@@ -572,7 +572,7 @@ impl<'pass> InlineContentPreparer<'pass> {
         let mut preparer = Self {
             pass,
             block_container,
-            buffers: pass.take_inline_content_preparation_buffers(),
+            buffers: InlineContentPreparationBuffers::take_from_this_thread(),
             next_node: pass.first_child(block_container),
             current_node: NodeSlotId::INVALID,
             text_node_context: None,
@@ -593,7 +593,7 @@ impl<'pass> InlineContentPreparer<'pass> {
         let prepared = preparer
             .buffers
             .take_prepared_inline_content(super::fc_run_cache::run_root_validity(&pass, block_container));
-        pass.return_inline_content_preparation_buffers(preparer.buffers);
+        preparer.buffers.return_to_this_thread();
         prepared
     }
 

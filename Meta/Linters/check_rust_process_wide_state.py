@@ -95,6 +95,7 @@ RENDER_STATE_ALLOWED = {
         [
             "css/cascaded_properties.rs:STORE_POOL",
             "css/style/column.rs:STAMPED_INDEX_POOL",
+            "layout/prepared_inline_content.rs:INLINE_CONTENT_PREPARATION_BUFFERS",
         ],
     ),
     **render_state_entries(
