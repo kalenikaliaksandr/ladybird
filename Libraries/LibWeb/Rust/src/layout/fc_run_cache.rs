@@ -440,8 +440,8 @@ const EARLIER_ENTRIES_PER_BOX: usize = 3;
 
 const LAYOUT_COMMITS_AN_UNCOMMITTED_ENTRY_SURVIVES_UNUSED: u64 = 2;
 
-/// How many boxes' entries a chunk of [`FcRunCacheStore::slots`] holds: a write after a fork copies this many.
-const FC_RUN_CACHE_SLOTS_PER_CHUNK: usize = 128;
+/// How many boxes' entries a chunk of [`LayoutCacheStore::slots`] holds: a write after a fork copies this many.
+const LAYOUT_CACHE_SLOTS_PER_CHUNK: usize = 128;
 
 #[derive(Clone, Copy, Default)]
 struct StoredEntrySummary {
@@ -471,36 +471,44 @@ impl StoredEntrySummary {
 
 type EarlierEntriesOfBox = smallvec::SmallVec<[std::sync::Arc<FcRunCacheEntry>; EARLIER_ENTRIES_PER_BOX]>;
 
+/// What the layout cache keeps for one box: the entries of its formatting context runs, and its layouts as an in-flow
+/// block of its parent's flow.
 #[derive(Clone, Default)]
-struct FcRunCacheSlot {
+struct LayoutCacheSlot {
     latest: Option<std::sync::Arc<FcRunCacheEntry>>,
     committed: Option<std::sync::Arc<FcRunCacheEntry>>,
     committed_summary: StoredEntrySummary,
     latest_summary: StoredEntrySummary,
     earlier: EarlierEntriesOfBox,
+    in_flow_block: in_flow_block_cache::InFlowBlockLayouts,
 }
 
-impl FcRunCacheSlot {
+impl LayoutCacheSlot {
     fn refresh_summaries(&mut self) {
         self.committed_summary = StoredEntrySummary::of(self.committed.as_deref());
         self.latest_summary = StoredEntrySummary::of(self.latest.as_deref());
     }
+
+    fn holds_run_entries(&self) -> bool {
+        self.latest.is_some() || self.committed.is_some() || !self.earlier.is_empty()
+    }
 }
 
-/// Per-document store of completed run results, surviving across layout passes in the layout stage's scratch: per box
-/// the latest entry, the one whose fragments the box committed where a later store moved it aside, and a few earlier
-/// ones.
+/// Per-document store of completed layouts, surviving across layout passes in the layout stage's scratch. Per box, it
+/// keeps the results of its formatting context runs: the latest entry, the one whose fragments the box committed where
+/// a later store moved it aside, and a few earlier ones. Beside them, it keeps the box's layouts as an in-flow block
+/// (see [`in_flow_block_cache`]). Both kinds are swept and dropped together.
 #[derive(Clone, Default)]
-pub(crate) struct FcRunCacheStore {
+pub(crate) struct LayoutCacheStore {
     /// In chunks a fork of the arena shares until either side writes one, so forking does not copy every box's entries.
-    slots: RefCell<crate::cow_column::CowVec<FcRunCacheSlot, FC_RUN_CACHE_SLOTS_PER_CHUNK>>,
+    slots: RefCell<crate::cow_column::CowVec<LayoutCacheSlot, LAYOUT_CACHE_SLOTS_PER_CHUNK>>,
     /// Noted between passes, and only read during one.
     inline_layout_damage: Vec<InlineLayoutDamage>,
     pending_sweep_slots: RefCell<Vec<u32>>,
     enrolled_for_sweep: RefCell<Vec<bool>>,
 }
 
-impl FcRunCacheStore {
+impl LayoutCacheStore {
     pub(super) fn enqueue_for_sweep(&self, slot: u32) {
         let mut enrolled = self.enrolled_for_sweep.borrow_mut();
         if enrolled.len() <= slot as usize {
@@ -513,9 +521,48 @@ impl FcRunCacheStore {
     }
 
     fn slot_holds_entries(&self, slot: u32) -> bool {
-        self.slots.borrow().get(slot as usize).is_some_and(|entries| {
-            entries.latest.is_some() || entries.committed.is_some() || !entries.earlier.is_empty()
-        })
+        self.slots
+            .borrow()
+            .get(slot as usize)
+            .is_some_and(|entries| entries.holds_run_entries() || !entries.in_flow_block.is_empty())
+    }
+
+    fn slot_holds_run_entries(&self, slot: u32) -> bool {
+        self.slots
+            .borrow()
+            .get(slot as usize)
+            .is_some_and(LayoutCacheSlot::holds_run_entries)
+    }
+
+    /// The stored layout of the box in `slot` as an in-flow block for `key` that placed the fragment the box
+    /// committed, `committed_identity`.
+    pub(super) fn in_flow_block_layout_matching(
+        &self,
+        slot: u32,
+        validity: FcRunCacheValidity,
+        key: &in_flow_block_cache::InFlowBlockKey,
+        committed_identity: u64,
+    ) -> Option<std::sync::Arc<in_flow_block_cache::InFlowBlockEntry>> {
+        self.slots
+            .borrow()
+            .get(slot as usize)?
+            .in_flow_block
+            .matching(validity, key, committed_identity)
+    }
+
+    /// Stores `entry` as the latest layout of the box in `slot` as an in-flow block, keeping the one that placed the
+    /// box's committed fragment, `committed_identity`.
+    pub(super) fn store_in_flow_block_layout(
+        &self,
+        slot: u32,
+        entry: in_flow_block_cache::InFlowBlockEntry,
+        committed_identity: Option<u64>,
+    ) {
+        let mut slots = self.slots.borrow_mut();
+        if slots.len() <= slot as usize {
+            slots.resize_with_default(slot as usize + 1);
+        }
+        slots[slot as usize].in_flow_block.store(entry, committed_identity);
     }
 
     pub(crate) fn note_invalidated_entry(&mut self, node: Node) {
@@ -563,13 +610,13 @@ impl FcRunCacheStore {
 
     pub(crate) fn remove_entry(&mut self, slot: u32) {
         if self.slot_holds_entries(slot) {
-            self.slots.get_mut()[slot as usize] = FcRunCacheSlot::default();
+            self.slots.get_mut()[slot as usize] = LayoutCacheSlot::default();
         }
         self.forget_inline_layout_damage(slot);
     }
 
     pub(crate) fn note_inline_layout_damage(&mut self, box_: Node) {
-        if !self.slot_holds_entries(box_.slot_index()) {
+        if !self.slot_holds_run_entries(box_.slot_index()) {
             return;
         }
         let damage = &mut self.inline_layout_damage;
@@ -691,10 +738,10 @@ impl FcRunCacheStore {
         stored
     }
 
-    /// Releases stale entries after their last chance to supply reusable inline line data. Keeps the entry whose
-    /// fragments the box committed, which `is_committed` finds, beside the latest one, and drops the entries holding
-    /// fragments the box did not commit once they went unused for a while, except the latest entry of a box that
-    /// committed none.
+    /// Releases stale entries after their last chance to supply reusable inline line data, and stale in-flow block
+    /// layouts with them. Keeps the entry whose fragments the box committed, which `is_committed` finds, beside the
+    /// latest one, and drops the entries holding fragments the box did not commit once they went unused for a while,
+    /// except the latest entry of a box that committed none.
     pub(super) fn sweep_pending_entries(
         &mut self,
         mut keep: impl FnMut(u32, FcRunCacheValidity) -> bool,
@@ -720,6 +767,7 @@ impl FcRunCacheStore {
             entries.committed.take_if(|committed| !keep(slot, committed.validity));
             entries.latest.take_if(|latest| !keep(slot, latest.validity));
             earlier.retain(|earlier| keep(slot, earlier.validity));
+            entries.in_flow_block.retain_current(|validity| keep(slot, validity));
             let mut is_committed =
                 |entry: &FcRunCacheEntry| is_committed(Node::new(slot, entry.validity.slot_generation), entry);
             if entries.latest.as_deref().is_some_and(&mut is_committed) {
@@ -844,7 +892,7 @@ impl FcRunCacheAttempt {
         ) {
             return Ok(Self::Bypass);
         }
-        let store = callbacks.fc_run_cache_store();
+        let store = callbacks.layout_cache_store();
         let validity = run_root_validity(callbacks, box_);
         if !builds_fragments {
             if let Some(entry) = store.first_entry_where_summary_allows(
@@ -894,7 +942,7 @@ impl FcRunCacheAttempt {
         probe: &FcRunCacheProbe<'_>,
         outputs: formatting_context::RunOutputs,
     ) -> formatting_context::RunOutputsHandle {
-        let store = callbacks.fc_run_cache_store();
+        let store = callbacks.layout_cache_store();
         let (validity, structurally_damaged_entry) = match self {
             Self::Bypass => return formatting_context::RunOutputsHandle::Owned(outputs),
             Self::StoreResultOnly { validity } => {
@@ -1087,7 +1135,7 @@ mod tests {
             .collect()
     }
 
-    fn widths_of_entries(store: &FcRunCacheStore, slot: u32) -> Vec<AvailableSize> {
+    fn widths_of_entries(store: &LayoutCacheStore, slot: u32) -> Vec<AvailableSize> {
         let mut widths = Vec::new();
         store.first_entry_where(slot, |entry| {
             widths.push(entry.key.input.available_space.inline_size);
@@ -1096,7 +1144,7 @@ mod tests {
         widths
     }
 
-    fn width_of_committed_entry(store: &FcRunCacheStore, slot: u32) -> Option<AvailableSize> {
+    fn width_of_committed_entry(store: &LayoutCacheStore, slot: u32) -> Option<AvailableSize> {
         store.slots.borrow()[slot as usize]
             .committed
             .as_ref()
@@ -1118,7 +1166,7 @@ mod tests {
 
     #[test]
     fn sweep_checks_changed_entries_without_discarding_reusable_stale_data_early() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let entry = |epoch| entry(at(300), epoch, None, 0);
         store.store(Node::new(0, 1), entry(1), nothing_is_committed);
         store.store(Node::new(1, 1), entry(1), nothing_is_committed);
@@ -1155,7 +1203,7 @@ mod tests {
 
     #[test]
     fn a_store_keeps_the_entry_whose_fragments_the_box_committed_beside_newer_ones() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1186,7 +1234,7 @@ mod tests {
 
     #[test]
     fn the_sweep_keeps_the_entry_whose_fragments_the_box_committed_and_its_fragments() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1228,7 +1276,7 @@ mod tests {
 
     #[test]
     fn an_earlier_entry_committed_in_place_of_the_latest_one_stays_beside_later_stores() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1264,7 +1312,7 @@ mod tests {
 
     #[test]
     fn a_committed_entry_that_no_longer_describes_the_committed_subtree_goes() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1284,7 +1332,7 @@ mod tests {
 
     #[test]
     fn entries_holding_fragments_the_box_never_committed_go_after_two_unused_layout_commits_beside_one_it_did() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1322,7 +1370,7 @@ mod tests {
 
     #[test]
     fn the_latest_entry_of_a_box_that_committed_none_of_its_entries_stays() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1337,7 +1385,7 @@ mod tests {
 
     #[test]
     fn earlier_entries_make_room_oldest_first_and_results_of_runs_without_fragments_first() {
-        let store = FcRunCacheStore::default();
+        let store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,
@@ -1374,10 +1422,8 @@ mod tests {
 
     #[test]
     fn queued_memo_invalidations_count_structural_changes_only_while_the_box_holds_entries() {
-        use crate::layout::in_flow_block_cache::InFlowBlockCacheStore;
         use crate::layout::memo_invalidations::MemoInvalidations;
-        let mut store = FcRunCacheStore::default();
-        let mut in_flow_block_cache = InFlowBlockCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let mut text_memos = crate::layout::rendered_text::TextMemos::default();
         let mut prepared_inline_content = crate::layout::prepared_inline_content::PreparedInlineContentMemos::default();
         let mut intrinsic_size_caches = crate::layout::layout_node_arena::IntrinsicSizeCaches::default();
@@ -1386,7 +1432,6 @@ mod tests {
         notes.note_structural_inline_change(node);
         notes.apply_to(
             &mut store,
-            &mut in_flow_block_cache,
             &mut text_memos,
             &mut prepared_inline_content,
             &mut intrinsic_size_caches,
@@ -1404,7 +1449,6 @@ mod tests {
         notes.note_structural_inline_change(node);
         notes.apply_to(
             &mut store,
-            &mut in_flow_block_cache,
             &mut text_memos,
             &mut prepared_inline_content,
             &mut intrinsic_size_caches,
@@ -1418,7 +1462,6 @@ mod tests {
         notes.note_structural_inline_change(reused);
         notes.apply_to(
             &mut store,
-            &mut in_flow_block_cache,
             &mut text_memos,
             &mut prepared_inline_content,
             &mut intrinsic_size_caches,
@@ -1429,7 +1472,7 @@ mod tests {
 
     #[test]
     fn a_store_keeps_the_inline_damage_an_earlier_entry_saw() {
-        let mut store = FcRunCacheStore::default();
+        let mut store = LayoutCacheStore::default();
         let box_ = Node::new(0, 1);
         store.store(
             box_,

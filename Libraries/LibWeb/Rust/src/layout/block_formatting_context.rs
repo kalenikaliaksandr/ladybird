@@ -3546,7 +3546,7 @@ impl<'pass> BlockFormattingContext<'pass> {
             .arena()
             .with_current_committed_fragment(node, |fragment| fragment.clone())
             .and_then(|fragment| {
-                let entry = callbacks.in_flow_block_cache_store().matching(
+                let entry = callbacks.layout_cache_store().in_flow_block_layout_matching(
                     node.slot_index(),
                     validity,
                     &key,
@@ -3675,10 +3675,11 @@ impl<'pass> BlockFormattingContext<'pass> {
             fragment_identity: placed.fragment.identity,
         };
         let committed_identity = arena.with_current_committed_fragment(node, |fragment| fragment.identity);
-        self.run
-            .callbacks
-            .in_flow_block_cache_store()
-            .store(node.slot_index(), entry, committed_identity);
+        self.run.callbacks.layout_cache_store().store_in_flow_block_layout(
+            node.slot_index(),
+            entry,
+            committed_identity,
+        );
     }
 
     fn layout_block_level_children(

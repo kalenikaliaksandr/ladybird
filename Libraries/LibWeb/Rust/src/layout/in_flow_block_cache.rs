@@ -7,7 +7,8 @@
 //! Reuse of an in-flow block-level child of a block formatting context whose subtree did not change, moved to where
 //! the flow now puts it. A block container that does not establish a formatting context is laid out inside its
 //! parent's run, so the formatting context run cache cannot see it: besides its layout input, it reads the margins
-//! its preceding siblings left open and the flow position, and it leaves margins and a flow position behind.
+//! its preceding siblings left open and the flow position, and it leaves margins and a flow position behind. Its
+//! layouts are kept in the box's slot of the layout cache, beside the box's run entries, and go with them.
 
 use super::*;
 
@@ -77,36 +78,27 @@ pub(super) struct InFlowBlockEntry {
     pub(super) fragment_identity: u64,
 }
 
-/// The in-flow block layouts kept for one slot: the latest one, and the one whose fragment the box committed, which a
+/// The in-flow block layouts kept for one box: the latest one, and the one whose fragment the box committed, which a
 /// later layout whose result is not committed must not displace.
 #[derive(Clone, Default)]
-struct InFlowBlockSlot {
+pub(super) struct InFlowBlockLayouts {
     latest: Option<std::sync::Arc<InFlowBlockEntry>>,
     committed: Option<std::sync::Arc<InFlowBlockEntry>>,
 }
 
-/// Per-document store of in-flow block layouts, surviving across layout passes in the layout stage's scratch.
-#[derive(Clone, Default)]
-pub(crate) struct InFlowBlockCacheStore {
-    /// In chunks a fork of the arena shares until either side writes one, so forking does not copy every box's entries.
-    entries: RefCell<crate::cow_column::CowVec<InFlowBlockSlot, IN_FLOW_BLOCK_SLOTS_PER_CHUNK>>,
-}
+impl InFlowBlockLayouts {
+    pub(super) fn is_empty(&self) -> bool {
+        self.latest.is_none() && self.committed.is_none()
+    }
 
-/// How many boxes' entries a chunk of [`InFlowBlockCacheStore::entries`] holds: a write after a fork copies this many.
-const IN_FLOW_BLOCK_SLOTS_PER_CHUNK: usize = 128;
-
-impl InFlowBlockCacheStore {
-    /// The stored layout of the box in `slot` for `key` that placed the fragment the box committed, `committed_identity`.
+    /// The stored layout for `key` that placed the fragment the box committed, `committed_identity`.
     pub(super) fn matching(
         &self,
-        slot: u32,
         validity: fc_run_cache::FcRunCacheValidity,
         key: &InFlowBlockKey,
         committed_identity: u64,
     ) -> Option<std::sync::Arc<InFlowBlockEntry>> {
-        let entries = self.entries.borrow();
-        let slot = entries.get(slot as usize)?;
-        [&slot.committed, &slot.latest]
+        [&self.committed, &self.latest]
             .into_iter()
             .flatten()
             .find(|entry| {
@@ -116,37 +108,28 @@ impl InFlowBlockCacheStore {
     }
 
     /// Stores `entry`, keeping the entry that placed the box's committed fragment, `committed_identity`.
-    pub(super) fn store(&self, slot: u32, entry: InFlowBlockEntry, committed_identity: Option<u64>) {
-        let mut entries = self.entries.borrow_mut();
-        if entries.len() <= slot as usize {
-            entries.resize_with_default(slot as usize + 1);
-        }
-        let slot = &mut entries[slot as usize];
+    pub(super) fn store(&mut self, entry: InFlowBlockEntry, committed_identity: Option<u64>) {
         let places_committed_fragment = |entry: &Option<std::sync::Arc<InFlowBlockEntry>>| {
             entry
                 .as_ref()
                 .is_some_and(|entry| Some(entry.fragment_identity) == committed_identity)
         };
-        if places_committed_fragment(&slot.latest) {
-            slot.committed = slot.latest.take();
-        } else if !places_committed_fragment(&slot.committed) {
-            slot.committed = None;
+        if places_committed_fragment(&self.latest) {
+            self.committed = self.latest.take();
+        } else if !places_committed_fragment(&self.committed) {
+            self.committed = None;
         }
         // An entry nothing else holds is written in place rather than allocated again.
-        if let Some(existing) = slot.latest.as_mut().and_then(std::sync::Arc::get_mut) {
+        if let Some(existing) = self.latest.as_mut().and_then(std::sync::Arc::get_mut) {
             *existing = entry;
             return;
         }
-        slot.latest = Some(std::sync::Arc::new(entry));
+        self.latest = Some(std::sync::Arc::new(entry));
     }
 
-    pub(crate) fn remove_entry(&mut self, slot: u32) {
-        let entries = self.entries.get_mut();
-        if entries
-            .get(slot as usize)
-            .is_some_and(|entries| entries.latest.is_some() || entries.committed.is_some())
-        {
-            entries[slot as usize] = InFlowBlockSlot::default();
-        }
+    /// Drops the layouts whose validity `is_current` no longer finds current.
+    pub(super) fn retain_current(&mut self, mut is_current: impl FnMut(fc_run_cache::FcRunCacheValidity) -> bool) {
+        self.latest.take_if(|latest| !is_current(latest.validity));
+        self.committed.take_if(|committed| !is_current(committed.validity));
     }
 }

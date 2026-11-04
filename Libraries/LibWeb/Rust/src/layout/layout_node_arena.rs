@@ -1388,7 +1388,7 @@ impl LayoutNodeArena {
     /// committed and ages the others. Checks only boxes whose entries were invalidated, stored or used since the
     /// previous sweep, or can still age out. Stale entries survive until commit so inline layout can reuse their
     /// undamaged line prefixes.
-    pub(crate) fn sweep_stale_fc_run_cache_entries(&self, store: &mut super::fc_run_cache::FcRunCacheStore) {
+    pub(crate) fn sweep_stale_layout_cache_entries(&self, store: &mut super::fc_run_cache::LayoutCacheStore) {
         store.sweep_pending_entries(
             |slot, validity| {
                 let Some(metadata) = self.slot_metadata.get(slot as usize) else {
@@ -5254,7 +5254,8 @@ impl LayoutNodeArena {
     pub(crate) fn clear_committed_fragment_link(&mut self, id: NodeSlotId) {
         // Cached runs may reuse the committed paintable subtree without replaying its fragments.
         // Once that subtree is cleared, a later layout must rebuild it instead.
-        self.memo_invalidations.note_run_cache_entries_dropped(id.slot_index());
+        self.memo_invalidations
+            .note_layout_cache_entries_dropped(id.slot_index());
         drop(self.take_committed_fragment_link(id));
     }
 

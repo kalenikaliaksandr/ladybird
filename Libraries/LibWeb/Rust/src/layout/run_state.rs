@@ -13,10 +13,9 @@ use super::*;
 pub(crate) struct LayoutScratch {
     /// The intrinsic sizes passes measured, kept for the passes after them.
     pub(super) intrinsic_size_caches: super::layout_node_arena::IntrinsicSizeCaches,
-    /// The results of formatting context runs, kept for the runs after them in this pass and the passes after it.
-    fc_run_cache_store: super::fc_run_cache::FcRunCacheStore,
-    /// The layouts of in-flow blocks, kept for the passes after the one that laid them out.
-    in_flow_block_cache_store: super::in_flow_block_cache::InFlowBlockCacheStore,
+    /// The results of formatting context runs and the layouts of in-flow blocks, kept for the runs after them in this
+    /// pass and the passes after it.
+    layout_cache_store: super::fc_run_cache::LayoutCacheStore,
     /// The document's layout trace while a stage lays the document out, which the stage takes from the arena and hands
     /// back once it is done.
     pub(super) layout_trace: super::trace::LayoutTrace,
@@ -95,24 +94,19 @@ impl LayoutScratch {
     /// the rest anew.
     pub(super) fn fork(&self) -> Self {
         Self {
-            fc_run_cache_store: self.fc_run_cache_store.clone(),
-            in_flow_block_cache_store: self.in_flow_block_cache_store.clone(),
+            layout_cache_store: self.layout_cache_store.clone(),
             text_memos: self.text_memos.fork(),
             prepared_inline_content_memos: self.prepared_inline_content_memos.fork(),
             ..Self::default()
         }
     }
 
-    pub(super) fn fc_run_cache_store(&self) -> &super::fc_run_cache::FcRunCacheStore {
-        &self.fc_run_cache_store
+    pub(super) fn layout_cache_store(&self) -> &super::fc_run_cache::LayoutCacheStore {
+        &self.layout_cache_store
     }
 
     pub(super) fn fragment_builder_scratch(&self) -> &RefCell<fragment_tree::FragmentBuilderScratch> {
         &self.fragment_builder_scratch
-    }
-
-    pub(super) fn in_flow_block_cache_store(&self) -> &super::in_flow_block_cache::InFlowBlockCacheStore {
-        &self.in_flow_block_cache_store
     }
 
     pub(super) fn text_memos(&self) -> &super::rendered_text::TextMemos {
@@ -132,18 +126,18 @@ impl LayoutScratch {
     /// Brings the run memos up to date with what the arena's writes since the last call did to their boxes.
     pub(super) fn apply_memo_invalidations(&mut self, arena: &mut LayoutNodeArena) {
         arena.take_memo_invalidations().apply_to(
-            &mut self.fc_run_cache_store,
-            &mut self.in_flow_block_cache_store,
+            &mut self.layout_cache_store,
             &mut self.text_memos,
             &mut self.prepared_inline_content_memos,
             &mut self.intrinsic_size_caches,
         );
     }
 
-    /// Brings the run memos up to date with what the commit into `arena` did to their boxes, and sweeps the run cache.
+    /// Brings the run memos up to date with what the commit into `arena` did to their boxes, and sweeps the layout
+    /// cache.
     pub(crate) fn end_layout_pass(&mut self, arena: &mut LayoutNodeArena) {
         self.apply_memo_invalidations(arena);
-        arena.sweep_stale_fc_run_cache_entries(&mut self.fc_run_cache_store);
+        arena.sweep_stale_layout_cache_entries(&mut self.layout_cache_store);
     }
 }
 

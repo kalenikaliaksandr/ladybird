@@ -187,18 +187,14 @@ impl<'arena> LayoutPass<'arena> {
         super::trace::LayoutTraceTarget::recording_into(&self.scratch.layout_trace)
     }
 
-    /// The results of formatting context runs, kept for the runs and passes after them.
-    pub(crate) fn fc_run_cache_store(&self) -> &'arena super::fc_run_cache::FcRunCacheStore {
-        self.scratch.fc_run_cache_store()
+    /// The results of formatting context runs and the layouts of in-flow blocks, kept for the runs and passes after
+    /// them.
+    pub(crate) fn layout_cache_store(&self) -> &'arena super::fc_run_cache::LayoutCacheStore {
+        self.scratch.layout_cache_store()
     }
 
     pub(crate) fn fragment_builder_scratch(&self) -> &'arena RefCell<super::fragment_tree::FragmentBuilderScratch> {
         self.scratch.fragment_builder_scratch()
-    }
-
-    /// The layouts of in-flow blocks, kept for the passes after the one that laid them out.
-    pub(crate) fn in_flow_block_cache_store(&self) -> &'arena super::in_flow_block_cache::InFlowBlockCacheStore {
-        self.scratch.in_flow_block_cache_store()
     }
 
     /// Whether this pass view is inside a run whose result is discarded, which reads no memoized layout from before it
