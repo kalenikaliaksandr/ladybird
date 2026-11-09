@@ -303,12 +303,12 @@ void CompositorState::update_display_list_resources(Web::CompositorContextId con
     show_animated_image_frames_in(*context);
 }
 
-void CompositorState::update_visual_context_tree(Web::CompositorContextId context_id, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction&& resource_transaction)
+void CompositorState::update_visual_context_tree(Web::CompositorContextId context_id, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction&& resource_transaction, Compositing::ScrollStateSnapshot&& scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state)
 {
     auto* context = context_if_present(context_id);
     VERIFY(context);
 
-    context->update_visual_context_tree(move(visual_context_tree), move(resource_transaction));
+    context->update_visual_context_tree(move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot), move(keyboard_scroll_state));
     show_animated_image_frames_in(*context);
 }
 

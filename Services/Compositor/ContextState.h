@@ -186,7 +186,7 @@ public:
         NonnullRefPtr<Compositing::DisplayList>,
         Compositing::AccumulatedVisualContextTree,
         Compositing::ScrollStateSnapshot&&);
-    void update_visual_context_tree(Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&);
+    void update_visual_context_tree(Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&, Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState);
     void update_scroll_state(Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState);
     void set_video_sink(Compositing::VideoSinkResourceId, RefPtr<Media::DisplayingVideoSink>);
     HashMap<u64, Media::VideoSinkHandle> const& video_sink_handles() const { return m_scene.video_sink_handles(); }
@@ -392,6 +392,8 @@ private:
     // Pans the visual viewport of a zoomed page by as much of a delta in screen pixels as it has room for, and returns
     // that part of the delta.
     Gfx::FloatPoint pan_visual_viewport_by(Gfx::FloatPoint delta_in_screen_pixels);
+    void adopt_scrolling_state(HashMap<Web::AsyncScrollNodeStableID, Gfx::FloatPoint> const&);
+    void update_scroll_state_with_known_offsets(Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState, HashMap<Web::AsyncScrollNodeStableID, Gfx::FloatPoint> const&, bool compositor_scroll_table_changed);
     HashMap<Web::AsyncScrollNodeStableID, Gfx::FloatPoint> scroll_offsets_by_stable_id() const;
     Optional<Gfx::FloatPoint> keep_scroll_offsets_of_known_nodes(HashMap<Web::AsyncScrollNodeStableID, Gfx::FloatPoint> const&);
     void store_pending_async_scroll_offsets(ReadonlySpan<Compositing::AsyncScrollOffset>, Optional<Compositing::AsyncScrollOperationID> = {});

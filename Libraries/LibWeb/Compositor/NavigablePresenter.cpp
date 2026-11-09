@@ -132,15 +132,18 @@ CompositorFrame NavigablePresenter::build_frame(SealedPresentation const& sealed
         frame.visual_context_tree_update = CompositorFrame::VisualContextTreeUpdate {
             .visual_context_tree = visual_context_tree,
             .resource_transaction = m_resource_storage.create_transaction(m_compositor_display_list_resources, resources),
+            .scroll_state_snapshot = sealed.scroll_state_snapshot,
+            .keyboard_scroll_state = move(keyboard_scroll_state),
         };
         m_resource_storage.retain_only(resources);
         m_compositor_display_list_resources = move(resources);
         m_compositor_visual_context_tree = visual_context_tree;
+    } else {
+        frame.scroll_state_update = CompositorFrame::ScrollStateUpdate {
+            .scroll_state_snapshot = sealed.scroll_state_snapshot,
+            .keyboard_scroll_state = move(keyboard_scroll_state),
+        };
     }
-    frame.scroll_state_update = CompositorFrame::ScrollStateUpdate {
-        .scroll_state_snapshot = sealed.scroll_state_snapshot,
-        .keyboard_scroll_state = move(keyboard_scroll_state),
-    };
     return frame;
 }
 

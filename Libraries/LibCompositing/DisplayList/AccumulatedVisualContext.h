@@ -69,6 +69,7 @@ public:
     ByteBuffer serialize_to_bytes() const;
     void const* rust_handle() const { return m_rust_tree; }
 
+    bool has_same_compositor_scroll_table_as(AccumulatedVisualContextTree const&) const;
     ReadonlySpan<CompositorScrollNodeRecord> compositor_scroll_nodes() const;
     ReadonlySpan<CompositorSnapContainerRecord> compositor_snap_containers() const;
     ReadonlySpan<CompositorSnapAreaRecord> compositor_snap_areas() const;

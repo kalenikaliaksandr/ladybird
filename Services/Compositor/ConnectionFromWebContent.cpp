@@ -347,11 +347,11 @@ void ConnectionFromWebContent::update_display_list_resources(Web::CompositorCont
     m_compositor_state->update_display_list_resources(context_id, move(resource_transaction));
 }
 
-void ConnectionFromWebContent::update_visual_context_tree(Web::CompositorContextId context_id, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction)
+void ConnectionFromWebContent::update_visual_context_tree(Web::CompositorContextId context_id, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Compositing::ScrollStateSnapshot scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state)
 {
     if (!context_is_owned_by_this_connection(context_id))
         return;
-    m_compositor_state->update_visual_context_tree(context_id, move(visual_context_tree), move(resource_transaction));
+    m_compositor_state->update_visual_context_tree(context_id, move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot), move(keyboard_scroll_state));
 }
 
 void ConnectionFromWebContent::update_scroll_state(Web::CompositorContextId context_id, Compositing::ScrollStateSnapshot scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state)

@@ -120,6 +120,11 @@ AccumulatedVisualContextTree AccumulatedVisualContextTree::with_visual_viewport_
     return adopt_rust_handle(Compositing::RustFFI::visual_context_tree_with_visual_viewport_transform(m_rust_tree, transform));
 }
 
+bool AccumulatedVisualContextTree::has_same_compositor_scroll_table_as(AccumulatedVisualContextTree const& other) const
+{
+    return RustFFI::visual_context_tree_has_same_compositor_scroll_table(m_rust_tree, other.m_rust_tree);
+}
+
 ReadonlySpan<CompositorScrollNodeRecord> AccumulatedVisualContextTree::compositor_scroll_nodes() const
 {
     RustFFI::FfiCompositorScrollTable table;

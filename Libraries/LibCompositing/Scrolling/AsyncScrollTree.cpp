@@ -13,17 +13,7 @@ namespace Compositing {
 
 void AsyncScrollTree::set_state(AsyncScrollingState&& state)
 {
-    m_document_id = state.document_id;
-    m_scroll_nodes = move(state.scroll_nodes);
-    m_snap_containers = move(state.snap_containers);
-    m_device_pixels_per_css_pixel = state.device_pixels_per_css_pixel;
-    m_wheel_hit_test_regions = move(state.wheel_hit_test_targets);
-    m_main_thread_wheel_event_regions = move(state.main_thread_wheel_event_regions);
-    m_nested_context_wheel_regions = move(state.nested_context_wheel_regions);
-    m_blocking_wheel_event_regions = move(state.blocking_wheel_event_regions);
-    m_has_blocking_wheel_event_region_covering_viewport = state.has_blocking_wheel_event_region_covering_viewport;
-    m_viewport_keeps_horizontal_scrolls = state.viewport_keeps_horizontal_scrolls;
-    m_viewport_keeps_vertical_scrolls = state.viewport_keeps_vertical_scrolls;
+    m_state = move(state);
     m_cached_wheel_hit_test_targets.clear();
     m_cached_main_thread_wheel_event_targets.clear();
     m_cached_nested_context_wheel_regions.clear();
@@ -50,7 +40,7 @@ Web::InputRoutingDecision input_routing_decision_for_first_wheel_step(WheelHitTe
 
 AsyncScrollNode const* AsyncScrollTree::scroll_node_for_index(Compositing::SpatialNodeIndex scroll_node_index) const
 {
-    for (auto const& node : m_scroll_nodes) {
+    for (auto const& node : m_state.scroll_nodes) {
         if (node.scroll_node_index == scroll_node_index)
             return &node;
     }
@@ -99,7 +89,7 @@ Optional<Compositing::SpatialNodeIndex> AsyncScrollTree::outermost_scroll_node_w
 {
     Optional<Compositing::SpatialNodeIndex> outermost_scroll_node_index;
     auto scroll_node_index = innermost_scroll_node_index;
-    for (size_t remaining_ancestors = m_scroll_nodes.size(); remaining_ancestors > 0; --remaining_ancestors) {
+    for (size_t remaining_ancestors = m_state.scroll_nodes.size(); remaining_ancestors > 0; --remaining_ancestors) {
         auto const* node = scroll_node_for_index(scroll_node_index);
         if (!node)
             break;
@@ -114,7 +104,7 @@ Optional<Compositing::SpatialNodeIndex> AsyncScrollTree::outermost_scroll_node_w
 
 AsyncSnapContainer const* AsyncScrollTree::snap_container_for_node(Compositing::SpatialNodeIndex scroll_node_index) const
 {
-    for (auto const& snap_container : m_snap_containers) {
+    for (auto const& snap_container : m_state.snap_containers) {
         if (snap_container.scroll_node_index == scroll_node_index)
             return &snap_container;
     }
@@ -123,7 +113,7 @@ AsyncSnapContainer const* AsyncScrollTree::snap_container_for_node(Compositing::
 
 AsyncScrollNode const* AsyncScrollTree::scroll_node_for_stable_id(Web::AsyncScrollNodeStableID stable_node_id) const
 {
-    for (auto const& node : m_scroll_nodes) {
+    for (auto const& node : m_state.scroll_nodes) {
         if (node.stable_node_id == stable_node_id)
             return &node;
     }
@@ -213,7 +203,7 @@ Optional<AsyncScrollOffset> AsyncScrollTree::apply_scroll_delta(Compositing::Spa
 {
     // The compositor can advance only the scroll offsets it owns in this snapshot. Hit testing already selects an
     // ancestor when the target cannot scroll in the wheel direction at all, so once a node moves it consumes the event.
-    for (size_t remaining_handoffs = m_scroll_nodes.size(); remaining_handoffs > 0 && !delta.is_zero(); --remaining_handoffs) {
+    for (size_t remaining_handoffs = m_state.scroll_nodes.size(); remaining_handoffs > 0 && !delta.is_zero(); --remaining_handoffs) {
         auto const* node = scroll_node_for_index(scroll_node_index);
         if (!node)
             break;
@@ -250,7 +240,7 @@ Optional<WheelScrollTarget> AsyncScrollTree::select_wheel_scroll_target(Composit
 {
     // Each box is measured from where its scroll in flight is headed, so a box already headed for its extent passes the
     // first step of a gesture on to an ancestor.
-    for (size_t remaining_handoffs = m_scroll_nodes.size(); remaining_handoffs > 0; --remaining_handoffs) {
+    for (size_t remaining_handoffs = m_state.scroll_nodes.size(); remaining_handoffs > 0; --remaining_handoffs) {
         auto const* node = scroll_node_for_index(scroll_node_index);
         if (!node)
             return {};
@@ -302,8 +292,8 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::Display
         return visual_context_tree->transform_rect_to_viewport(context.spatial, rect, scroll_state_snapshot);
     };
 
-    m_cached_wheel_hit_test_targets.ensure_capacity(m_wheel_hit_test_regions.size());
-    for (auto const& target : m_wheel_hit_test_regions) {
+    m_cached_wheel_hit_test_targets.ensure_capacity(m_state.wheel_hit_test_targets.size());
+    for (auto const& target : m_state.wheel_hit_test_targets) {
         if (!context_is_valid(target.context))
             continue;
         m_cached_wheel_hit_test_targets.append({
@@ -316,8 +306,8 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::Display
         });
     }
 
-    m_cached_main_thread_wheel_event_targets.ensure_capacity(m_main_thread_wheel_event_regions.size());
-    for (auto const& region : m_main_thread_wheel_event_regions) {
+    m_cached_main_thread_wheel_event_targets.ensure_capacity(m_state.main_thread_wheel_event_regions.size());
+    for (auto const& region : m_state.main_thread_wheel_event_regions) {
         if (!context_is_valid(region.context))
             continue;
         m_cached_main_thread_wheel_event_targets.append({
@@ -327,8 +317,8 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::Display
         });
     }
 
-    m_cached_nested_context_wheel_regions.ensure_capacity(m_nested_context_wheel_regions.size());
-    for (auto const& region : m_nested_context_wheel_regions) {
+    m_cached_nested_context_wheel_regions.ensure_capacity(m_state.nested_context_wheel_regions.size());
+    for (auto const& region : m_state.nested_context_wheel_regions) {
         if (!context_is_valid(region.context))
             continue;
         m_cached_nested_context_wheel_regions.append({
@@ -337,7 +327,7 @@ void AsyncScrollTree::rebuild_wheel_hit_test_targets(RefPtr<Compositing::Display
         });
     }
 
-    for (auto const& region : m_blocking_wheel_event_regions) {
+    for (auto const& region : m_state.blocking_wheel_event_regions) {
         // Keep invalid blockers so hit testing fails closed when their extent cannot be determined.
         m_cached_blocking_wheel_event_targets.append({
             .context = region.context,
@@ -371,16 +361,16 @@ Optional<Gfx::FloatPoint> AsyncScrollTree::scroll_offset_for_node(Compositing::S
 Web::CSSPixelPoint AsyncScrollTree::css_pixels_from_device_offset(Gfx::FloatPoint device_offset) const
 {
     return {
-        Web::CSSPixels { device_offset.x() / m_device_pixels_per_css_pixel },
-        Web::CSSPixels { device_offset.y() / m_device_pixels_per_css_pixel },
+        Web::CSSPixels { device_offset.x() / m_state.device_pixels_per_css_pixel },
+        Web::CSSPixels { device_offset.y() / m_state.device_pixels_per_css_pixel },
     };
 }
 
 Gfx::FloatPoint AsyncScrollTree::device_offset_from_css_pixels(Web::CSSPixelPoint offset) const
 {
     return {
-        static_cast<float>(offset.x().to_double() * m_device_pixels_per_css_pixel),
-        static_cast<float>(offset.y().to_double() * m_device_pixels_per_css_pixel),
+        static_cast<float>(offset.x().to_double() * m_state.device_pixels_per_css_pixel),
+        static_cast<float>(offset.y().to_double() * m_state.device_pixels_per_css_pixel),
     };
 }
 
@@ -396,7 +386,7 @@ Web::CSSPixelPoint AsyncScrollTree::css_scroll_offset_for_node(AsyncScrollNode c
 
 Optional<Compositing::SpatialNodeIndex> AsyncScrollTree::viewport_scroll_node_index() const
 {
-    for (auto const& node : m_scroll_nodes) {
+    for (auto const& node : m_state.scroll_nodes) {
         if (node.is_viewport)
             return node.scroll_node_index;
     }
@@ -412,7 +402,7 @@ Optional<Compositing::SpatialNodeIndex> AsyncScrollTree::scroll_node_index_for_s
 
 bool AsyncScrollTree::blocks_wheel_event_at_position(Compositing::AccumulatedVisualContextTree const& visual_context_tree, Gfx::FloatPoint position) const
 {
-    if (m_has_blocking_wheel_event_region_covering_viewport || !has_wheel_hit_test_targets_for(visual_context_tree))
+    if (m_state.has_blocking_wheel_event_region_covering_viewport || !has_wheel_hit_test_targets_for(visual_context_tree))
         return true;
 
     for (auto const& target : m_cached_blocking_wheel_event_targets) {
@@ -535,7 +525,7 @@ WheelHitTestResult AsyncScrollTree::hit_test_scroll_node_for_wheel(Compositing::
 
     // Neither the listeners nor the main thread have anything left to say about a step the page let through.
     bool page_has_yet_to_see_the_step = wheel_step_dispatch == WheelStepDispatch::NotYetDispatched;
-    if (page_has_yet_to_see_the_step && m_has_blocking_wheel_event_region_covering_viewport)
+    if (page_has_yet_to_see_the_step && m_state.has_blocking_wheel_event_region_covering_viewport)
         return { .outcome = WheelHitTestOutcome::BlockedByWheelEventRegion };
 
     if (page_has_yet_to_see_the_step && main_thread_wheel_event_region_contains(visual_context_tree, position))
@@ -628,7 +618,7 @@ bool AsyncScrollTree::scroll_node_is_viewport(Compositing::SpatialNodeIndex scro
 
 bool AsyncScrollTree::viewport_keeps_scrolls_along_main_axis_of(Gfx::FloatPoint delta) const
 {
-    return delta_is_mainly_vertical(delta) ? m_viewport_keeps_vertical_scrolls : m_viewport_keeps_horizontal_scrolls;
+    return delta_is_mainly_vertical(delta) ? m_state.viewport_keeps_vertical_scrolls : m_state.viewport_keeps_horizontal_scrolls;
 }
 
 Optional<Gfx::FloatPoint> AsyncScrollTree::set_scroll_offset(Compositing::SpatialNodeIndex scroll_node_index, Gfx::FloatPoint scroll_offset, Compositing::AccumulatedVisualContextTree const& visual_context_tree, Compositing::ScrollStateSnapshot& scroll_state_snapshot)

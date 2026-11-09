@@ -511,6 +511,18 @@ pub unsafe extern "C" fn visual_context_tree_with_visual_animation_samples(
 
 /// # Safety
 ///
+/// `tree` and `other` must be live retained tree handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visual_context_tree_has_same_compositor_scroll_table(
+    tree: *const c_void,
+    other: *const c_void,
+) -> bool {
+    unsafe { tree_from_handle(tree) }.compositor_scroll_table()
+        == unsafe { tree_from_handle(other) }.compositor_scroll_table()
+}
+
+/// # Safety
+///
 /// `tree` must be a live retained tree handle for the lifetime of the output spans.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn visual_context_tree_compositor_scroll_table(

@@ -158,19 +158,28 @@ void ContextState::install_display_list_update(
     m_scroll_state_snapshot.set_node_count(m_scene.visual_context_tree()->spatial_node_count());
     m_caret_blink_timer.did_install_display_list(*m_scene.display_list());
 
-    auto async_scrolling_state = Compositing::async_scrolling_state_from(*m_scene.display_list(), *m_scene.visual_context_tree());
-    auto async_scrolling_viewport_rect = async_scrolling_state.viewport_rect;
-    m_wheel_gesture_routing.did_install_scrolling_state(async_scrolling_state);
+    auto const& metadata = m_scene.display_list()->async_scrolling_metadata();
+    auto document_id = metadata.has_value() ? metadata->document_id : Optional<Web::UniqueNodeID> {};
     // The visual viewport of another document is where that document's visual context tree has it.
-    if (m_scene.has_async_visual_viewport_transform() && async_scrolling_state.document_id != m_visual_viewport_document_id) {
+    if (m_scene.has_async_visual_viewport_transform() && document_id != m_visual_viewport_document_id) {
         m_scene.drop_async_visual_viewport_transform();
         m_visual_viewport_document_id.clear();
     }
 
     // NB: What the page of one document let through of a pinch says nothing about the page of the next.
-    if (async_scrolling_state.document_id != m_async_scroll_tree.document_id())
+    if (document_id != m_async_scroll_tree.document_id())
         m_pinch_gesture_was_let_through = false;
 
+    adopt_scrolling_state(scroll_offsets_of_known_nodes);
+    if (metadata.has_value())
+        adopt_keyboard_scroll_state(metadata->keyboard_scroll_state);
+}
+
+void ContextState::adopt_scrolling_state(HashMap<Web::AsyncScrollNodeStableID, Gfx::FloatPoint> const& scroll_offsets_of_known_nodes)
+{
+    auto async_scrolling_state = Compositing::async_scrolling_state_from(*m_scene.display_list(), *m_scene.visual_context_tree());
+    auto async_scrolling_viewport_rect = async_scrolling_state.viewport_rect;
+    m_wheel_gesture_routing.did_install_scrolling_state(async_scrolling_state);
     auto box_of_dragged_scrollbar = box_of_captured_scrollbar();
     m_scrollbar_controller.set_scrollbars(async_scrolling_state.scrollbars);
     if (!m_scrollbar_controller.has_captured_scrollbar())
@@ -184,8 +193,6 @@ void ContextState::install_display_list_update(
     rebuild_wheel_hit_test_targets();
     m_async_scrolling_viewport_rect = async_scrolling_viewport_rect;
     m_has_async_scrolling_state = true;
-    if (auto const& metadata = m_scene.display_list()->async_scrolling_metadata(); metadata.has_value())
-        adopt_keyboard_scroll_state(metadata->keyboard_scroll_state);
 }
 
 Gfx::IntRect ContextState::damage_rect_of_blinking_carets()
@@ -213,31 +220,43 @@ Gfx::IntRect ContextState::damage_rect_of_blinking_carets()
     return damage_rect;
 }
 
-void ContextState::update_visual_context_tree(Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction&& resource_transaction)
+void ContextState::update_visual_context_tree(Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction&& resource_transaction, Compositing::ScrollStateSnapshot&& scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state)
 {
-    if (!m_scene.replace_visual_context_tree(move(visual_context_tree), move(resource_transaction)))
+    auto scroll_offsets_of_known_nodes = scroll_offsets_by_stable_id();
+    auto previous_visual_context_tree = m_scene.visual_context_tree();
+    if (!m_scene.replace_visual_context_tree(move(visual_context_tree), move(resource_transaction))) {
+        update_scroll_state(move(scroll_state_snapshot), move(keyboard_scroll_state));
         return;
-    // A constraints refresh changes sticky payloads without a new snapshot, and the snapshot that
-    // pairs with this tree arrives in a separate message.
-    Compositing::resolve_sticky_offsets(*m_scene.visual_context_tree(), m_scroll_state_snapshot);
+    }
 
-    if (m_has_async_scrolling_state)
-        rebuild_wheel_hit_test_targets();
+    bool compositor_scroll_table_changed = m_scene.display_list() && previous_visual_context_tree.has_value()
+        && !m_scene.visual_context_tree()->has_same_compositor_scroll_table_as(*previous_visual_context_tree);
+    update_scroll_state_with_known_offsets(move(scroll_state_snapshot), move(keyboard_scroll_state), scroll_offsets_of_known_nodes, compositor_scroll_table_changed);
 }
 
 void ContextState::update_scroll_state(Compositing::ScrollStateSnapshot&& scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state)
 {
-    m_scene.forget_whether_animated_content_may_affect_viewport();
     auto scroll_offsets_of_known_nodes = scroll_offsets_by_stable_id();
+    update_scroll_state_with_known_offsets(move(scroll_state_snapshot), move(keyboard_scroll_state), scroll_offsets_of_known_nodes, false);
+}
+
+void ContextState::update_scroll_state_with_known_offsets(Compositing::ScrollStateSnapshot&& scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state, HashMap<Web::AsyncScrollNodeStableID, Gfx::FloatPoint> const& scroll_offsets_of_known_nodes, bool compositor_scroll_table_changed)
+{
+    m_scene.forget_whether_animated_content_may_affect_viewport();
+    // Newly adopted stable ids must start at the offsets in the snapshot that pairs with this tree.
     m_scroll_state_snapshot = move(scroll_state_snapshot);
     m_scroll_state_snapshot.set_node_count(m_scene.visual_context_tree().has_value() ? m_scene.visual_context_tree()->spatial_node_count() : 0);
     if (!m_has_async_scrolling_state)
         return;
 
-    auto kept_viewport_scroll_offset = keep_scroll_offsets_of_known_nodes(scroll_offsets_of_known_nodes);
-    rebuild_wheel_hit_test_targets();
-    if (kept_viewport_scroll_offset.has_value())
-        m_async_scrolling_viewport_rect.set_location(kept_viewport_scroll_offset->to_type<int>());
+    if (compositor_scroll_table_changed) {
+        adopt_scrolling_state(scroll_offsets_of_known_nodes);
+    } else {
+        auto kept_viewport_scroll_offset = keep_scroll_offsets_of_known_nodes(scroll_offsets_of_known_nodes);
+        rebuild_wheel_hit_test_targets();
+        if (kept_viewport_scroll_offset.has_value())
+            m_async_scrolling_viewport_rect.set_location(kept_viewport_scroll_offset->to_type<int>());
+    }
     adopt_keyboard_scroll_state(move(keyboard_scroll_state));
 }
 
@@ -1961,9 +1980,7 @@ Compositing::FirstWheelStepRouteForTesting ContextState::route_first_wheel_step_
 
 String ContextState::scroll_state_for_testing(Web::AsyncScrollNodeStableID scroller) const
 {
-    auto const& display_list = m_scene.display_list();
-    auto const& visual_context_tree = m_scene.visual_context_tree();
-    auto scroll_state = Compositing::async_scrolling_state_to_json(display_list && visual_context_tree.has_value() ? Compositing::async_scrolling_state_from(*display_list, *visual_context_tree) : Compositing::AsyncScrollingState {});
+    auto scroll_state = Compositing::async_scrolling_state_to_json(m_async_scroll_tree.state());
 
     auto admission = m_wheel_gesture_routing.admission();
     auto admission_name = admission == Compositing::WheelRoutingAdmission::Accepted

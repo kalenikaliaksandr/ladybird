@@ -127,21 +127,22 @@ enum class ScrollChaining : u8 {
 class COMPOSITING_API AsyncScrollTree {
 public:
     void set_state(AsyncScrollingState&&);
+    AsyncScrollingState const& state() const { return m_state; }
 
     void rebuild_wheel_hit_test_targets(RefPtr<Compositing::DisplayList const> const&, Compositing::AccumulatedVisualContextTree const*, Compositing::ScrollStateSnapshot const&);
 
     Optional<Gfx::FloatPoint> scroll_offset_for_node(Compositing::SpatialNodeIndex, Compositing::ScrollStateSnapshot const&) const;
     static Gfx::FloatPoint scroll_offset_for_node(AsyncScrollNode const&, Compositing::ScrollStateSnapshot const&);
-    Optional<Web::UniqueNodeID> document_id() const { return m_document_id; }
+    Optional<Web::UniqueNodeID> document_id() const { return m_state.document_id; }
     Optional<Compositing::SpatialNodeIndex> viewport_scroll_node_index() const;
     Optional<Compositing::SpatialNodeIndex> scroll_node_index_for_stable_id(Web::AsyncScrollNodeStableID) const;
     AsyncScrollNode const* scroll_node_for_index(Compositing::SpatialNodeIndex) const;
-    ReadonlySpan<AsyncScrollNode> scroll_nodes() const { return m_scroll_nodes; }
+    ReadonlySpan<AsyncScrollNode> scroll_nodes() const { return m_state.scroll_nodes; }
     AsyncSnapContainer const* snap_container_for_node(Compositing::SpatialNodeIndex) const;
 
     // Scroll offsets are held in the device pixels of the display list; snap geometry is in the CSS pixels it was
     // recorded from, at the scale the display list carries.
-    double device_pixels_per_css_pixel() const { return m_device_pixels_per_css_pixel; }
+    double device_pixels_per_css_pixel() const { return m_state.device_pixels_per_css_pixel; }
     Web::CSSPixelPoint css_pixels_from_device_offset(Gfx::FloatPoint) const;
     Gfx::FloatPoint device_offset_from_css_pixels(Web::CSSPixelPoint) const;
     Optional<Web::CSSPixelPoint> css_scroll_offset_for_node(Compositing::SpatialNodeIndex, Compositing::ScrollStateSnapshot const&) const;
@@ -158,7 +159,7 @@ public:
     Optional<NestedContextHit> position_in_content_of_nested_context(Web::CompositorContextId, Compositing::AccumulatedVisualContextTree const&, Gfx::FloatPoint position) const;
     // Where a position in the viewport of the nested context lies in this context's viewport.
     Optional<Gfx::FloatPoint> position_of_nested_context_position(Web::CompositorContextId, Gfx::FloatPoint position_in_nested_context, Gfx::FloatSize nested_context_viewport_size, Compositing::AccumulatedVisualContextTree const&) const;
-    bool has_nested_contexts() const { return !m_nested_context_wheel_regions.is_empty(); }
+    bool has_nested_contexts() const { return !m_state.nested_context_wheel_regions.is_empty(); }
     bool has_wheel_hit_test_targets_for(Compositing::AccumulatedVisualContextTree const& visual_context_tree) const { return m_visual_context_tree_structural_epoch == visual_context_tree.structural_epoch(); }
     // Whether something painted above the given place in paint order takes pointer input at the position. It is taken
     // to be covered whenever that cannot be told.
@@ -197,23 +198,13 @@ private:
     Optional<Compositing::SpatialNodeIndex> scrollable_ancestor_for_node(Compositing::SpatialNodeIndex, Compositing::ScrollStateSnapshot const&, Gfx::FloatPoint delta) const;
     Gfx::FloatPoint apply_scroll_delta_to_node(AsyncScrollNode const&, Gfx::FloatPoint delta, Compositing::ScrollStateSnapshot&);
 
-    Optional<Web::UniqueNodeID> m_document_id;
-    Vector<AsyncScrollNode> m_scroll_nodes;
-    Vector<AsyncSnapContainer> m_snap_containers;
-    double m_device_pixels_per_css_pixel { 1.0 };
-    Vector<WheelHitTestTarget> m_wheel_hit_test_regions;
-    Vector<MainThreadWheelEventRegion> m_main_thread_wheel_event_regions;
-    Vector<NestedContextWheelRegion> m_nested_context_wheel_regions;
+    AsyncScrollingState m_state;
     Vector<CachedWheelHitTestTarget> m_cached_wheel_hit_test_targets;
-    Vector<BlockingWheelEventRegion> m_blocking_wheel_event_regions;
     Vector<CachedMainThreadWheelEventTarget> m_cached_main_thread_wheel_event_targets;
     Vector<CachedNestedContextWheelRegion> m_cached_nested_context_wheel_regions;
     Vector<CachedBlockingWheelEventTarget> m_cached_blocking_wheel_event_targets;
     Optional<u64> m_visual_context_tree_structural_epoch;
     Compositing::ScrollStateSnapshot m_scroll_state_snapshot;
-    bool m_has_blocking_wheel_event_region_covering_viewport { false };
-    bool m_viewport_keeps_horizontal_scrolls { false };
-    bool m_viewport_keeps_vertical_scrolls { false };
 };
 
 }

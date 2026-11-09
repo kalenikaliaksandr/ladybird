@@ -121,7 +121,7 @@ public:
     void stop_presenting_to_client(Web::CompositorContextId);
     void update_display_list(Web::CompositorContextId, NonnullRefPtr<Compositing::DisplayList>, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&, Compositing::ScrollStateSnapshot&&);
     void update_display_list_resources(Web::CompositorContextId, Compositing::DisplayListResourceTransaction&&);
-    void update_visual_context_tree(Web::CompositorContextId, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&);
+    void update_visual_context_tree(Web::CompositorContextId, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction&&, Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState);
     void update_scroll_state(Web::CompositorContextId, Compositing::ScrollStateSnapshot&&, Compositing::KeyboardScrollState);
     void add_video_sink(CompositorStateWebContentClient&, Media::VideoSinkHandle);
     // For a presentation channel that arrives after the sinks did, or that replaces the one their edges were on.
