@@ -120,6 +120,27 @@ AccumulatedVisualContextTree AccumulatedVisualContextTree::with_visual_viewport_
     return adopt_rust_handle(Compositing::RustFFI::visual_context_tree_with_visual_viewport_transform(m_rust_tree, transform));
 }
 
+ReadonlySpan<CompositorScrollNodeRecord> AccumulatedVisualContextTree::compositor_scroll_nodes() const
+{
+    RustFFI::FfiCompositorScrollTable table;
+    RustFFI::visual_context_tree_compositor_scroll_table(m_rust_tree, &table);
+    return table.nodes;
+}
+
+ReadonlySpan<CompositorSnapContainerRecord> AccumulatedVisualContextTree::compositor_snap_containers() const
+{
+    RustFFI::FfiCompositorScrollTable table;
+    RustFFI::visual_context_tree_compositor_scroll_table(m_rust_tree, &table);
+    return table.snap_containers;
+}
+
+ReadonlySpan<CompositorSnapAreaRecord> AccumulatedVisualContextTree::compositor_snap_areas() const
+{
+    RustFFI::FfiCompositorScrollTable table;
+    RustFFI::visual_context_tree_compositor_scroll_table(m_rust_tree, &table);
+    return table.snap_areas;
+}
+
 bool AccumulatedVisualContextTree::has_visual_animations() const
 {
     return Compositing::RustFFI::visual_context_tree_has_visual_animations(m_rust_tree);

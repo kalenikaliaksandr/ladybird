@@ -31,6 +31,11 @@ SpatialNodeIndex VisualContextTreeTestBuilder::append_scroll(SpatialNodeIndex pa
     return SpatialNodeIndex { Compositing::RustFFI::visual_context_tree_test_builder_append_scroll(m_builder, parent.value()) };
 }
 
+void VisualContextTreeTestBuilder::set_compositor_scroll_table(ReadonlySpan<CompositorScrollNodeRecord> nodes, ReadonlySpan<CompositorSnapContainerRecord> snap_containers, ReadonlySpan<CompositorSnapAreaRecord> snap_areas)
+{
+    RustFFI::visual_context_tree_test_builder_set_compositor_scroll_table(m_builder, { nodes, snap_containers, snap_areas });
+}
+
 SpatialNodeIndex VisualContextTreeTestBuilder::append_sticky(SpatialNodeIndex parent, StickyConstraints const& constraints)
 {
     Compositing::RustFFI::FfiTestStickyConstraints ffi_constraints {

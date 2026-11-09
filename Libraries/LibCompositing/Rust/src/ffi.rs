@@ -511,6 +511,22 @@ pub unsafe extern "C" fn visual_context_tree_with_visual_animation_samples(
 
 /// # Safety
 ///
+/// `tree` must be a live retained tree handle for the lifetime of the output spans.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visual_context_tree_compositor_scroll_table(
+    tree: *const c_void,
+    out: &mut crate::visual_context::ffi_types::FfiCompositorScrollTable<'_>,
+) {
+    let table = unsafe { tree_from_handle(tree) }.compositor_scroll_table();
+    *out = crate::visual_context::ffi_types::FfiCompositorScrollTable {
+        nodes: ak::Span::new(&table.nodes),
+        snap_containers: ak::Span::new(&table.snap_containers),
+        snap_areas: ak::Span::new(&table.snap_areas),
+    };
+}
+
+/// # Safety
+///
 /// `tree` must be a live retained tree handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn visual_context_tree_has_visual_animations(tree: *const c_void) -> bool {
@@ -668,6 +684,22 @@ pub unsafe extern "C" fn visual_context_tree_test_builder_append_transform(
         SpatialNodeIndex(parent),
     )
     .0
+}
+
+/// # Safety
+///
+/// `builder` must be a live builder handle, and the spans must lend valid records for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visual_context_tree_test_builder_set_compositor_scroll_table(
+    builder: *mut c_void,
+    table: crate::visual_context::ffi_types::FfiCompositorScrollTable<'_>,
+) {
+    let tree = unsafe { test_builder_tree(builder) };
+    tree.set_compositor_scroll_table(crate::visual_context::CompositorScrollTable {
+        nodes: table.nodes.as_slice().into(),
+        snap_containers: table.snap_containers.as_slice().into(),
+        snap_areas: table.snap_areas.as_slice().into(),
+    });
 }
 
 /// # Safety

@@ -118,3 +118,11 @@ pub struct FfiTestStickyConstraints {
     pub inset_bottom: OptionalF32,
     pub inset_left: OptionalF32,
 }
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfiCompositorScrollTable<'a> {
+    pub nodes: ak::Span<'a, super::CompositorScrollNodeRecord>,
+    pub snap_containers: ak::Span<'a, super::CompositorSnapContainerRecord>,
+    pub snap_areas: ak::Span<'a, super::CompositorSnapAreaRecord>,
+}

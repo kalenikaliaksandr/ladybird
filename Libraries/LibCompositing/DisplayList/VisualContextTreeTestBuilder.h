@@ -47,6 +47,7 @@ public:
 
     SpatialNodeIndex append_transform(SpatialNodeIndex parent, Gfx::FloatMatrix4x4 const&, Gfx::FloatPoint origin = {});
     SpatialNodeIndex append_scroll(SpatialNodeIndex parent);
+    void set_compositor_scroll_table(ReadonlySpan<CompositorScrollNodeRecord>, ReadonlySpan<CompositorSnapContainerRecord>, ReadonlySpan<CompositorSnapAreaRecord>);
     SpatialNodeIndex append_sticky(SpatialNodeIndex parent, StickyConstraints const&);
     ClipNodeIndex append_clip(ClipNodeIndex parent, SpatialNodeIndex spatial, Gfx::FloatRect, Gfx::CornerRadii = {}, ClipMode = ClipMode::Intersect);
 

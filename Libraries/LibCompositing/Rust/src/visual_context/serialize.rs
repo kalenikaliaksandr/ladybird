@@ -10,6 +10,12 @@ use super::{
     PerspectiveData, ScrollData, SpatialData, SpatialNode, SpatialNodeIndex, StickyData, TransformData,
     TransformDataRole, VISUAL_VIEWPORT_NODE_INDEX, VisualContextTree, scroll_state::NO_SCROLL_STATE_SLOT,
 };
+use super::{
+    CompositorScrollNodeKind, CompositorScrollNodeRecord, CompositorScrollTable, CompositorSnapAreaRecord,
+    CompositorSnapContainerRecord,
+};
+use crate::css_pixels::{CssPixels, FfiCssPixelPoint, FfiCssPixelRect};
+use crate::display_list::commands::UniqueNodeId;
 use crate::easing::{Easing, FfiEasingKind, FfiLinearEasingPoint};
 use crate::filter_bytes::{FfiFilterFunction, FfiFilterFunctionKind};
 use crate::host::{
@@ -28,7 +34,7 @@ use libgfx_rust::{
 };
 
 const SERIALIZED_TREE_MAGIC: u32 = 0x5443_5641;
-const SERIALIZED_TREE_FORMAT: u32 = 10;
+const SERIALIZED_TREE_FORMAT: u32 = 11;
 
 const SPATIAL_KIND_SCROLL: u8 = 0;
 const SPATIAL_KIND_STICKY: u8 = 1;
@@ -132,6 +138,16 @@ impl TreeByteWriter {
         self.i32(rect.y);
         self.i32(rect.width);
         self.i32(rect.height);
+    }
+    fn css_point(&mut self, point: FfiCssPixelPoint) {
+        self.i32(point.x.raw_value());
+        self.i32(point.y.raw_value());
+    }
+    fn css_rect(&mut self, rect: FfiCssPixelRect) {
+        self.i32(rect.x.raw_value());
+        self.i32(rect.y.raw_value());
+        self.i32(rect.width.raw_value());
+        self.i32(rect.height.raw_value());
     }
     fn matrix(&mut self, matrix: FloatMatrix4x4) {
         for row in matrix.elements {
@@ -251,6 +267,20 @@ impl<'a> TreeByteReader<'a> {
     }
     fn int_rect(&mut self) -> Option<IntRect> {
         Some(IntRect::new(self.i32()?, self.i32()?, self.i32()?, self.i32()?))
+    }
+    fn css_point(&mut self) -> Option<FfiCssPixelPoint> {
+        Some(FfiCssPixelPoint {
+            x: CssPixels::from_raw(self.i32()?),
+            y: CssPixels::from_raw(self.i32()?),
+        })
+    }
+    fn css_rect(&mut self) -> Option<FfiCssPixelRect> {
+        Some(FfiCssPixelRect {
+            x: CssPixels::from_raw(self.i32()?),
+            y: CssPixels::from_raw(self.i32()?),
+            width: CssPixels::from_raw(self.i32()?),
+            height: CssPixels::from_raw(self.i32()?),
+        })
     }
     fn matrix(&mut self) -> Option<FloatMatrix4x4> {
         let mut elements = [[0.0f32; 4]; 4];
@@ -838,6 +868,150 @@ fn read_visual_animation(reader: &mut TreeByteReader<'_>) -> Option<VisualAnimat
     })
 }
 
+const SERIALIZED_COMPOSITOR_SCROLL_NODE_SIZE: usize = 57;
+
+fn write_compositor_scroll_node(writer: &mut TreeByteWriter, record: &CompositorScrollNodeRecord) {
+    writer.i64(record.scrollable_node_id.0);
+    writer.spatial_index(record.scroll_node_index);
+    writer.spatial_index(record.parent_scroll_node_index);
+    writer.int_rect(record.scrollport_rect);
+    writer.point(record.min_scroll_offset);
+    writer.point(record.max_scroll_offset);
+    writer.u8(record.scroll_node_kind as u8);
+    writer.u8(record.pseudo_element_type);
+    writer.bool(record.is_viewport);
+    writer.bool(record.can_be_wheel_scrolled_horizontally);
+    writer.bool(record.can_be_wheel_scrolled_vertically);
+    writer.bool(record.chains_scroll_to_ancestors_horizontally);
+    writer.bool(record.chains_scroll_to_ancestors_vertically);
+    writer.bool(record.shows_overscroll_effect_horizontally);
+    writer.bool(record.shows_overscroll_effect_vertically);
+}
+
+fn read_compositor_scroll_node(reader: &mut TreeByteReader<'_>) -> Option<CompositorScrollNodeRecord> {
+    Some(CompositorScrollNodeRecord {
+        scrollable_node_id: UniqueNodeId(reader.i64()?),
+        scroll_node_index: reader.spatial_index()?,
+        parent_scroll_node_index: reader.spatial_index()?,
+        scrollport_rect: reader.int_rect()?,
+        min_scroll_offset: reader.point()?,
+        max_scroll_offset: reader.point()?,
+        scroll_node_kind: match reader.u8()? {
+            0 => CompositorScrollNodeKind::Viewport,
+            1 => CompositorScrollNodeKind::Element,
+            2 => CompositorScrollNodeKind::PseudoElement,
+            _ => return None,
+        },
+        pseudo_element_type: reader.u8()?,
+        is_viewport: reader.bool()?,
+        can_be_wheel_scrolled_horizontally: reader.bool()?,
+        can_be_wheel_scrolled_vertically: reader.bool()?,
+        chains_scroll_to_ancestors_horizontally: reader.bool()?,
+        chains_scroll_to_ancestors_vertically: reader.bool()?,
+        shows_overscroll_effect_horizontally: reader.bool()?,
+        shows_overscroll_effect_vertically: reader.bool()?,
+    })
+}
+
+const SERIALIZED_COMPOSITOR_SNAP_CONTAINER_SIZE: usize = 48;
+
+fn write_compositor_snap_container(writer: &mut TreeByteWriter, record: &CompositorSnapContainerRecord) {
+    writer.spatial_index(record.scroll_node_index);
+    writer.css_rect(record.snapport);
+    writer.css_point(record.min_scroll_offset);
+    writer.css_point(record.max_scroll_offset);
+    writer.u8(record.strictness);
+    writer.bool(record.snaps_x);
+    writer.bool(record.snaps_y);
+    writer.bool(record.horizontal_writing_mode);
+    writer.u32(record.first_area_index);
+    writer.u32(record.area_count);
+}
+
+fn read_compositor_snap_container(reader: &mut TreeByteReader<'_>) -> Option<CompositorSnapContainerRecord> {
+    Some(CompositorSnapContainerRecord {
+        scroll_node_index: reader.spatial_index()?,
+        snapport: reader.css_rect()?,
+        min_scroll_offset: reader.css_point()?,
+        max_scroll_offset: reader.css_point()?,
+        strictness: reader.u8()?,
+        snaps_x: reader.bool()?,
+        snaps_y: reader.bool()?,
+        horizontal_writing_mode: reader.bool()?,
+        first_area_index: reader.u32()?,
+        area_count: reader.u32()?,
+    })
+}
+
+const SERIALIZED_COMPOSITOR_SNAP_AREA_SIZE: usize = 28;
+
+fn write_compositor_snap_area(writer: &mut TreeByteWriter, record: &CompositorSnapAreaRecord) {
+    writer.i64(record.area_node_id.0);
+    writer.u8(record.pseudo_element_type);
+    writer.css_rect(record.rect);
+    writer.u8(record.align_x);
+    writer.u8(record.align_y);
+    writer.bool(record.always_stop);
+}
+
+fn read_compositor_snap_area(reader: &mut TreeByteReader<'_>) -> Option<CompositorSnapAreaRecord> {
+    Some(CompositorSnapAreaRecord {
+        area_node_id: UniqueNodeId(reader.i64()?),
+        pseudo_element_type: reader.u8()?,
+        rect: reader.css_rect()?,
+        align_x: reader.u8()?,
+        align_y: reader.u8()?,
+        always_stop: reader.bool()?,
+    })
+}
+
+fn write_compositor_scroll_table(writer: &mut TreeByteWriter, table: &CompositorScrollTable) {
+    writer.u32(table.nodes.len() as u32);
+    for record in table.nodes.iter() {
+        write_compositor_scroll_node(writer, record);
+    }
+    writer.u32(table.snap_containers.len() as u32);
+    for record in table.snap_containers.iter() {
+        write_compositor_snap_container(writer, record);
+    }
+    writer.u32(table.snap_areas.len() as u32);
+    for record in table.snap_areas.iter() {
+        write_compositor_snap_area(writer, record);
+    }
+}
+
+fn read_compositor_scroll_table(reader: &mut TreeByteReader<'_>) -> Option<CompositorScrollTable> {
+    let nodes_count = reader.u32()? as usize;
+    if nodes_count > reader.remaining() / SERIALIZED_COMPOSITOR_SCROLL_NODE_SIZE {
+        return None;
+    }
+    let mut nodes = Vec::with_capacity(nodes_count);
+    for _ in 0..nodes_count {
+        nodes.push(read_compositor_scroll_node(reader)?);
+    }
+    let snap_containers_count = reader.u32()? as usize;
+    if snap_containers_count > reader.remaining() / SERIALIZED_COMPOSITOR_SNAP_CONTAINER_SIZE {
+        return None;
+    }
+    let mut snap_containers = Vec::with_capacity(snap_containers_count);
+    for _ in 0..snap_containers_count {
+        snap_containers.push(read_compositor_snap_container(reader)?);
+    }
+    let snap_areas_count = reader.u32()? as usize;
+    if snap_areas_count > reader.remaining() / SERIALIZED_COMPOSITOR_SNAP_AREA_SIZE {
+        return None;
+    }
+    let mut snap_areas = Vec::with_capacity(snap_areas_count);
+    for _ in 0..snap_areas_count {
+        snap_areas.push(read_compositor_snap_area(reader)?);
+    }
+    Some(CompositorScrollTable {
+        nodes: nodes.into(),
+        snap_containers: snap_containers.into(),
+        snap_areas: snap_areas.into(),
+    })
+}
+
 impl VisualContextTree {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut writer = TreeByteWriter::default();
@@ -867,6 +1041,7 @@ impl VisualContextTree {
         for animation in self.visual_animations.iter() {
             write_visual_animation(&mut writer, animation);
         }
+        write_compositor_scroll_table(&mut writer, &self.compositor_scroll_table);
         writer.bytes
     }
 
@@ -926,6 +1101,8 @@ impl VisualContextTree {
             visual_animations.push(read_visual_animation(&mut reader)?);
         }
 
+        let compositor_scroll_table = read_compositor_scroll_table(&mut reader)?;
+
         if reader.remaining() != 0 {
             return None;
         }
@@ -948,6 +1125,10 @@ impl VisualContextTree {
         }) {
             return None;
         }
+        if !compositor_scroll_table.is_valid_for_tree(&tree) {
+            return None;
+        }
+        tree.set_compositor_scroll_table(compositor_scroll_table);
         tree.set_visual_animations(visual_animations);
         Some(tree)
     }
@@ -1334,6 +1515,301 @@ mod tests {
             assert!(effect_data_matches(&node.data, &other.data));
         }
         assert_eq!(a.visual_animations(), b.visual_animations());
+        assert_eq!(a.compositor_scroll_table(), b.compositor_scroll_table());
+    }
+
+    fn tree_with_compositor_scroll_table() -> VisualContextTree {
+        let mut tree = VisualContextTree::create(transform(FloatMatrix4x4::identity()));
+        let viewport = tree.append_spatial(
+            SpatialData::Scroll(ScrollData {
+                state_slot: NO_SCROLL_STATE_SLOT,
+                owner_paintable: NodeSlotId::INVALID,
+            }),
+            VISUAL_VIEWPORT_NODE_INDEX,
+        );
+        let nested = tree.append_spatial(
+            SpatialData::Scroll(ScrollData {
+                state_slot: NO_SCROLL_STATE_SLOT,
+                owner_paintable: NodeSlotId::INVALID,
+            }),
+            viewport,
+        );
+        let viewport_record = CompositorScrollNodeRecord {
+            scrollable_node_id: UniqueNodeId(17),
+            scroll_node_index: viewport,
+            parent_scroll_node_index: VISUAL_VIEWPORT_NODE_INDEX,
+            scrollport_rect: IntRect::new(0, 0, 800, 600),
+            min_scroll_offset: FloatPoint { x: -12.5, y: 0.0 },
+            max_scroll_offset: FloatPoint { x: 42.25, y: 1200.0 },
+            scroll_node_kind: CompositorScrollNodeKind::Viewport,
+            pseudo_element_type: 0,
+            is_viewport: true,
+            can_be_wheel_scrolled_horizontally: false,
+            can_be_wheel_scrolled_vertically: true,
+            chains_scroll_to_ancestors_horizontally: false,
+            chains_scroll_to_ancestors_vertically: true,
+            shows_overscroll_effect_horizontally: true,
+            shows_overscroll_effect_vertically: false,
+        };
+        tree.set_compositor_scroll_table(CompositorScrollTable {
+            nodes: vec![
+                viewport_record,
+                CompositorScrollNodeRecord {
+                    scrollable_node_id: UniqueNodeId(23),
+                    scroll_node_index: nested,
+                    parent_scroll_node_index: viewport,
+                    scrollport_rect: IntRect::new(10, 20, 200, 100),
+                    scroll_node_kind: CompositorScrollNodeKind::PseudoElement,
+                    pseudo_element_type: 1,
+                    is_viewport: false,
+                    ..viewport_record
+                },
+            ]
+            .into(),
+            snap_containers: vec![CompositorSnapContainerRecord {
+                scroll_node_index: nested,
+                snapport: FfiCssPixelRect {
+                    x: CssPixels::from_raw(1),
+                    y: CssPixels::from_integer(2),
+                    width: CssPixels::from_integer(200),
+                    height: CssPixels::from_integer(100),
+                },
+                min_scroll_offset: FfiCssPixelPoint {
+                    x: CssPixels::from_raw(-1),
+                    y: CssPixels::from_raw(-2),
+                },
+                max_scroll_offset: FfiCssPixelPoint {
+                    x: CssPixels::from_integer(10),
+                    y: CssPixels::from_integer(300),
+                },
+                strictness: 2,
+                snaps_x: false,
+                snaps_y: true,
+                horizontal_writing_mode: true,
+                first_area_index: 0,
+                area_count: 2,
+            }]
+            .into(),
+            snap_areas: vec![
+                CompositorSnapAreaRecord {
+                    area_node_id: UniqueNodeId(24),
+                    pseudo_element_type: 1,
+                    rect: FfiCssPixelRect {
+                        x: CssPixels::from_raw(-17),
+                        y: CssPixels::from_integer(30),
+                        width: CssPixels::from_integer(100),
+                        height: CssPixels::from_integer(50),
+                    },
+                    align_x: 1,
+                    align_y: 2,
+                    always_stop: true,
+                },
+                CompositorSnapAreaRecord {
+                    area_node_id: UniqueNodeId(25),
+                    pseudo_element_type: 0,
+                    rect: FfiCssPixelRect {
+                        x: CssPixels::from_integer(40),
+                        y: CssPixels::from_integer(200),
+                        width: CssPixels::from_integer(80),
+                        height: CssPixels::from_raw(2001),
+                    },
+                    align_x: 0,
+                    align_y: 3,
+                    always_stop: false,
+                },
+            ]
+            .into(),
+        });
+        tree
+    }
+
+    #[test]
+    fn compositor_scroll_table_round_trips() {
+        let tree = tree_with_compositor_scroll_table();
+        let bytes = tree.to_bytes();
+        let decoded = VisualContextTree::from_bytes(&bytes).expect("a scroll table decodes");
+        assert_trees_match(&tree, &decoded);
+        assert_eq!(decoded.to_bytes(), bytes);
+        let cloned = tree.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            &tree.compositor_scroll_table.nodes,
+            &cloned.compositor_scroll_table.nodes
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &tree.compositor_scroll_table.snap_containers,
+            &cloned.compositor_scroll_table.snap_containers
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &tree.compositor_scroll_table.snap_areas,
+            &cloned.compositor_scroll_table.snap_areas
+        ));
+    }
+
+    #[test]
+    fn compositor_scroll_table_setter_changes_values_without_changing_structure() {
+        let mut tree = tree_with_compositor_scroll_table();
+        let original = tree.clone();
+        let epoch = tree.structural_epoch;
+        assert!(!tree.set_compositor_scroll_table(tree.compositor_scroll_table().clone()));
+        assert_eq!(tree.structural_epoch, epoch);
+        let mut changed = tree.compositor_scroll_table().clone();
+        std::sync::Arc::make_mut(&mut changed.nodes)[1].max_scroll_offset.y += 1.0;
+        assert!(tree.set_compositor_scroll_table(changed));
+        assert_eq!(tree.structural_epoch, epoch);
+        assert_eq!(tree.node_count(), original.node_count());
+        assert_eq!(tree.live_spatial_node_count(), original.live_spatial_node_count());
+        assert_eq!(tree.spatial_slots.free, original.spatial_slots.free);
+        for (node, other) in tree.spatial_nodes.iter().zip(&original.spatial_nodes) {
+            assert_eq!(node.parent, other.parent);
+            assert!(spatial_data_matches(&node.data, &other.data));
+        }
+        assert_ne!(tree.compositor_scroll_table(), original.compositor_scroll_table());
+    }
+
+    #[test]
+    fn invalid_compositor_scroll_table_references_and_ranges_are_rejected() {
+        let rejected = |change: fn(&mut VisualContextTree)| {
+            let mut tree = tree_with_compositor_scroll_table();
+            change(&mut tree);
+            assert!(tree.node_references_are_consistent());
+            assert!(VisualContextTree::from_bytes(&tree.to_bytes()).is_none());
+        };
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[1].scroll_node_index =
+                SpatialNodeIndex(999)
+        });
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[0].scroll_node_index =
+                VISUAL_VIEWPORT_NODE_INDEX
+        });
+        rejected(|tree| {
+            tree.spatial_nodes[2].parent = VISUAL_VIEWPORT_NODE_INDEX;
+            tree.spatial_nodes[1].data = SpatialData::Dead;
+        });
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes).swap(0, 1));
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[1].scroll_node_index = SpatialNodeIndex(1)
+        });
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[1].is_viewport = true);
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[1].parent_scroll_node_index =
+                SpatialNodeIndex(999)
+        });
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[0].parent_scroll_node_index =
+                SpatialNodeIndex(2)
+        });
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[1].parent_scroll_node_index =
+                SpatialNodeIndex(2)
+        });
+        rejected(|tree| {
+            let unlisted_scroll = tree.append_spatial(
+                SpatialData::Scroll(ScrollData {
+                    state_slot: NO_SCROLL_STATE_SLOT,
+                    owner_paintable: NodeSlotId::INVALID,
+                }),
+                VISUAL_VIEWPORT_NODE_INDEX,
+            );
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_containers)[0].scroll_node_index =
+                unlisted_scroll;
+        });
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_containers)[0].area_count = 3);
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_containers)[0].area_count = 1);
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_containers)[0].first_area_index = 1
+        });
+        rejected(|tree| {
+            std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_containers)[0].first_area_index = u32::MAX
+        });
+        rejected(|tree| {
+            let container = tree.compositor_scroll_table.snap_containers[0];
+            tree.compositor_scroll_table.snap_containers = vec![
+                CompositorSnapContainerRecord {
+                    scroll_node_index: SpatialNodeIndex(1),
+                    ..container
+                },
+                CompositorSnapContainerRecord {
+                    first_area_index: 1,
+                    area_count: 1,
+                    ..container
+                },
+            ]
+            .into();
+        });
+        rejected(|tree| {
+            let container = tree.compositor_scroll_table.snap_containers[0];
+            tree.compositor_scroll_table.snap_containers = vec![container, container].into();
+        });
+        rejected(|tree| {
+            let container = tree.compositor_scroll_table.snap_containers[0];
+            tree.compositor_scroll_table.snap_containers = vec![
+                container,
+                CompositorSnapContainerRecord {
+                    scroll_node_index: SpatialNodeIndex(1),
+                    first_area_index: 2,
+                    area_count: 0,
+                    ..container
+                },
+            ]
+            .into();
+        });
+        rejected(|tree| tree.compositor_scroll_table.snap_containers = Default::default());
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_containers)[0].strictness = 3);
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_areas)[0].align_x = 4);
+        rejected(|tree| std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.snap_areas)[0].align_y = 4);
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for coordinate in 0..4 {
+                let mut tree = tree_with_compositor_scroll_table();
+                let node = &mut std::sync::Arc::make_mut(&mut tree.compositor_scroll_table.nodes)[0];
+                match coordinate {
+                    0 => node.min_scroll_offset.x = value,
+                    1 => node.min_scroll_offset.y = value,
+                    2 => node.max_scroll_offset.x = value,
+                    _ => node.max_scroll_offset.y = value,
+                }
+                assert!(VisualContextTree::from_bytes(&tree.to_bytes()).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_compositor_scroll_table_bytes_are_rejected() {
+        let tree = tree_with_compositor_scroll_table();
+        let bytes = tree.to_bytes();
+        let mut without_table = tree.clone();
+        without_table.set_compositor_scroll_table(CompositorScrollTable::default());
+        let empty_bytes = without_table.to_bytes();
+        assert_eq!(&empty_bytes[empty_bytes.len() - 12..], &[0; 12]);
+        let section_start = empty_bytes.len() - 12;
+        for end in section_start..bytes.len() {
+            assert!(
+                VisualContextTree::from_bytes(&bytes[..end]).is_none(),
+                "truncation at {end} decoded"
+            );
+        }
+        let nodes_start = section_start + 4;
+        let container_count_offset = nodes_start + 2 * SERIALIZED_COMPOSITOR_SCROLL_NODE_SIZE;
+        let container_start = container_count_offset + 4;
+        let area_count_offset = container_start + SERIALIZED_COMPOSITOR_SNAP_CONTAINER_SIZE;
+        let area_start = area_count_offset + 4;
+        for offset in [section_start, container_count_offset, area_count_offset] {
+            let mut invalid = bytes.clone();
+            invalid[offset..offset + 4].copy_from_slice(&u32::MAX.to_ne_bytes());
+            assert!(VisualContextTree::from_bytes(&invalid).is_none());
+        }
+        for offset in std::iter::once(nodes_start + 48)
+            .chain((nodes_start + 50)..(nodes_start + 57))
+            .chain((container_start + 36)..(container_start + 40))
+            .chain((area_start + 25)..(area_start + 28))
+        {
+            let mut invalid = bytes.clone();
+            invalid[offset] = u8::MAX;
+            assert!(
+                VisualContextTree::from_bytes(&invalid).is_none(),
+                "invalid byte at {offset} decoded"
+            );
+        }
     }
 
     #[test]
@@ -1427,7 +1903,7 @@ mod tests {
         let mut tree_without_animations = tree.clone();
         tree_without_animations.clear_visual_animations();
         // The target kind is the first byte after the animation count.
-        let animation_start = tree_without_animations.to_bytes().len() + 4;
+        let animation_start = tree_without_animations.to_bytes().len() - 12;
         assert_eq!(bytes[animation_start], FfiVisualAnimationTargetKind::Opacity as u8);
         bytes[animation_start] = 4;
         assert!(VisualContextTree::from_bytes(&bytes).is_none());
@@ -1931,7 +2407,7 @@ mod tests {
             probe.root_isolation_effect = None;
             probe.clear_visual_animations();
             let animation_count_size = 4;
-            probe.to_bytes().len() - header_size - animation_count_size
+            probe.to_bytes().len() - header_size - animation_count_size - 12
         };
         let first_clip_kind_offset = header_size + spatial_nodes_size + 4 + 4;
         let mut bad_clip_kind = bytes.clone();

@@ -12,6 +12,7 @@
 #include <AK/Function.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
+#include <AK/Span.h>
 #include <LibCompositing/Export.h>
 #include <LibCompositing/Forward.h>
 #include <LibCompositing/Scrolling/ScrollState.h>
@@ -24,6 +25,9 @@
 namespace Compositing {
 
 class ScrollStateSnapshot;
+struct CompositorScrollNodeRecord;
+struct CompositorSnapContainerRecord;
+struct CompositorSnapAreaRecord;
 
 struct TransformWithOrigin {
     Gfx::FloatMatrix4x4 matrix;
@@ -64,6 +68,10 @@ public:
     u64 structural_epoch() const;
     ByteBuffer serialize_to_bytes() const;
     void const* rust_handle() const { return m_rust_tree; }
+
+    ReadonlySpan<CompositorScrollNodeRecord> compositor_scroll_nodes() const;
+    ReadonlySpan<CompositorSnapContainerRecord> compositor_snap_containers() const;
+    ReadonlySpan<CompositorSnapAreaRecord> compositor_snap_areas() const;
 
     bool has_visual_animations() const;
     bool has_active_visual_animation_at(i64 monotonic_time_ns) const;
