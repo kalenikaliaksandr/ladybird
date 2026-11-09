@@ -34,7 +34,56 @@ static Web::AsyncScrollNodeStableID stable_scroll_node_id_for(Web::UniqueNodeID 
     };
 }
 
-AsyncScrollingState async_scrolling_state_from_display_list(Compositing::DisplayList const& display_list)
+static AsyncScrollNode async_scroll_node_from(auto const& node)
+{
+    Optional<Compositing::SpatialNodeIndex> parent_scroll_node_index;
+    if (node.parent_scroll_node_index != Compositing::VISUAL_VIEWPORT_NODE_INDEX)
+        parent_scroll_node_index = node.parent_scroll_node_index;
+    return {
+        .scroll_node_index = node.scroll_node_index,
+        .stable_node_id = stable_scroll_node_id_for(node.scrollable_node_id, node.scroll_node_kind, node.pseudo_element_type),
+        .parent_scroll_node_index = parent_scroll_node_index,
+        .scrollport_rect = node.scrollport_rect,
+        .min_scroll_offset = node.min_scroll_offset,
+        .max_scroll_offset = node.max_scroll_offset,
+        .is_viewport = node.is_viewport,
+        .can_be_wheel_scrolled_horizontally = node.can_be_wheel_scrolled_horizontally,
+        .can_be_wheel_scrolled_vertically = node.can_be_wheel_scrolled_vertically,
+        .chains_scroll_to_ancestors_horizontally = node.chains_scroll_to_ancestors_horizontally,
+        .chains_scroll_to_ancestors_vertically = node.chains_scroll_to_ancestors_vertically,
+        .shows_overscroll_effect_horizontally = node.shows_overscroll_effect_horizontally,
+        .shows_overscroll_effect_vertically = node.shows_overscroll_effect_vertically,
+    };
+}
+
+static AsyncSnapContainer async_snap_container_from(auto const& container)
+{
+    return {
+        .scroll_node_index = container.scroll_node_index,
+        .geometry = {
+            .snapport = container.snapport,
+            .min_scroll_offset = container.min_scroll_offset,
+            .max_scroll_offset = container.max_scroll_offset,
+            .strictness = static_cast<SnapStrictness>(container.strictness),
+            .axes = { .x = container.snaps_x, .y = container.snaps_y },
+            .horizontal_writing_mode = container.horizontal_writing_mode,
+        },
+        .areas = {},
+    };
+}
+
+static SnapAreaGeometry snap_area_geometry_from(auto const& area)
+{
+    return {
+        .identity = { .node_id = area.area_node_id, .pseudo_element_type = area.pseudo_element_type },
+        .rect = area.rect,
+        .align_x = static_cast<SnapAlign>(area.align_x),
+        .align_y = static_cast<SnapAlign>(area.align_y),
+        .always_stop = area.always_stop,
+    };
+}
+
+AsyncScrollingState async_scrolling_state_from(Compositing::DisplayList const& display_list, Compositing::AccumulatedVisualContextTree const& visual_context_tree)
 {
     AsyncScrollingState async_scrolling_state;
     u32 next_paint_order_index = 0;
@@ -48,6 +97,21 @@ AsyncScrollingState async_scrolling_state_from_display_list(Compositing::Display
         async_scrolling_state.viewport_keeps_horizontal_scrolls = metadata->viewport_keeps_horizontal_scrolls;
         async_scrolling_state.viewport_keeps_vertical_scrolls = metadata->viewport_keeps_vertical_scrolls;
         async_scrolling_state.device_pixels_per_css_pixel = metadata->device_pixels_per_css_pixel;
+    }
+
+    auto compositor_scroll_nodes = visual_context_tree.compositor_scroll_nodes();
+    // Fall back to commands until WebContent fills the tree's compositor scroll table.
+    bool use_scroll_table = !compositor_scroll_nodes.is_empty();
+    if (use_scroll_table) {
+        for (auto const& node : compositor_scroll_nodes)
+            async_scrolling_state.scroll_nodes.append(async_scroll_node_from(node));
+        auto snap_areas = visual_context_tree.compositor_snap_areas();
+        for (auto const& container : visual_context_tree.compositor_snap_containers()) {
+            auto snap_container = async_snap_container_from(container);
+            for (auto const& area : snap_areas.slice(container.first_area_index, container.area_count))
+                snap_container.areas.append(snap_area_geometry_from(area));
+            async_scrolling_state.snap_containers.append(move(snap_container));
+        }
     }
 
     display_list.for_each_compositor_metadata([&](Compositing::ContextRef context, Compositing::DisplayListCommandType command_type, ReadonlyBytes payload) {
@@ -75,25 +139,10 @@ AsyncScrollingState async_scrolling_state_from_display_list(Compositing::Display
             break;
         }
         case Compositing::DisplayListCommandType::CompositorScrollNode: {
+            if (use_scroll_table)
+                break;
             auto command = Compositing::read_display_list_object<Compositing::CompositorScrollNode>(payload);
-            Optional<Compositing::SpatialNodeIndex> parent_scroll_node_index;
-            if (command.parent_scroll_node_index.value())
-                parent_scroll_node_index = command.parent_scroll_node_index;
-            async_scrolling_state.scroll_nodes.append({
-                .scroll_node_index = command.scroll_node_index,
-                .stable_node_id = stable_scroll_node_id_for(command.scrollable_node_id, command.scroll_node_kind, command.pseudo_element_type),
-                .parent_scroll_node_index = parent_scroll_node_index,
-                .scrollport_rect = command.scrollport_rect,
-                .min_scroll_offset = command.min_scroll_offset,
-                .max_scroll_offset = command.max_scroll_offset,
-                .is_viewport = command.is_viewport,
-                .can_be_wheel_scrolled_horizontally = command.can_be_wheel_scrolled_horizontally,
-                .can_be_wheel_scrolled_vertically = command.can_be_wheel_scrolled_vertically,
-                .chains_scroll_to_ancestors_horizontally = command.chains_scroll_to_ancestors_horizontally,
-                .chains_scroll_to_ancestors_vertically = command.chains_scroll_to_ancestors_vertically,
-                .shows_overscroll_effect_horizontally = command.shows_overscroll_effect_horizontally,
-                .shows_overscroll_effect_vertically = command.shows_overscroll_effect_vertically,
-            });
+            async_scrolling_state.scroll_nodes.append(async_scroll_node_from(command));
             break;
         }
         case Compositing::DisplayListCommandType::CompositorWheelHitTestTarget: {
@@ -150,22 +199,15 @@ AsyncScrollingState async_scrolling_state_from_display_list(Compositing::Display
             break;
         }
         case Compositing::DisplayListCommandType::CompositorSnapContainer: {
+            if (use_scroll_table)
+                break;
             auto command = Compositing::read_display_list_object<Compositing::CompositorSnapContainer>(payload);
-            async_scrolling_state.snap_containers.append({
-                .scroll_node_index = command.scroll_node_index,
-                .geometry = {
-                    .snapport = command.snapport,
-                    .min_scroll_offset = command.min_scroll_offset,
-                    .max_scroll_offset = command.max_scroll_offset,
-                    .strictness = static_cast<SnapStrictness>(command.strictness),
-                    .axes = { .x = command.snaps_x, .y = command.snaps_y },
-                    .horizontal_writing_mode = command.horizontal_writing_mode,
-                },
-                .areas = {},
-            });
+            async_scrolling_state.snap_containers.append(async_snap_container_from(command));
             break;
         }
         case Compositing::DisplayListCommandType::CompositorSnapArea: {
+            if (use_scroll_table)
+                break;
             auto command = Compositing::read_display_list_object<Compositing::CompositorSnapArea>(payload);
             auto& snap_containers = async_scrolling_state.snap_containers;
             // A snap container's areas are recorded right after it.
@@ -173,13 +215,7 @@ AsyncScrollingState async_scrolling_state_from_display_list(Compositing::Display
                 dbgln("Ignoring a snap area recorded without its snap container");
                 break;
             }
-            snap_containers.last().areas.append({
-                .identity = { .node_id = command.area_node_id, .pseudo_element_type = command.pseudo_element_type },
-                .rect = command.rect,
-                .align_x = static_cast<SnapAlign>(command.align_x),
-                .align_y = static_cast<SnapAlign>(command.align_y),
-                .always_stop = command.always_stop,
-            });
+            snap_containers.last().areas.append(snap_area_geometry_from(command));
             break;
         }
         default:

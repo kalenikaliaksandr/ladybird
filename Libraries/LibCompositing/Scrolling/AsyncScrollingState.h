@@ -180,7 +180,7 @@ enum class WheelRoutingAdmission {
     StaleWheelEventListeners,
 };
 
-COMPOSITING_API AsyncScrollingState async_scrolling_state_from_display_list(Compositing::DisplayList const&);
+COMPOSITING_API AsyncScrollingState async_scrolling_state_from(Compositing::DisplayList const&, Compositing::AccumulatedVisualContextTree const&);
 // The scrolling state as tests read it, from WebContent and from the compositor alike.
 COMPOSITING_API JsonObject async_scrolling_state_to_json(AsyncScrollingState const&);
 COMPOSITING_API WheelRoutingAdmission wheel_routing_admission_for(AsyncScrollingState const&);

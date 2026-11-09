@@ -1718,7 +1718,7 @@ static Optional<RecordedScrollTree> recorded_scroll_tree_of(DOM::Document& docum
         .visual_context_tree = document.paint_state().visual_context_tree_without_update(read, document),
         .admission = {},
     };
-    auto async_scrolling_state = Compositing::async_scrolling_state_from_display_list(*display_list);
+    auto async_scrolling_state = Compositing::async_scrolling_state_from(*display_list, recorded.visual_context_tree);
     recorded.admission = Compositing::wheel_routing_admission_for(async_scrolling_state, document.wheel_event_listener_state_generation());
     recorded.scroll_tree.set_state(move(async_scrolling_state));
     recorded.scroll_tree.rebuild_wheel_hit_test_targets(display_list, &recorded.visual_context_tree, document.scroll_state_snapshot());
@@ -4070,8 +4070,14 @@ GC::Ref<JS::Object> Internals::style_invalidation_counters_object() const
 
 GC::Ref<JS::Object> Internals::recorded_async_scrolling_state_object()
 {
-    auto* display_list = window().associated_document().paint_state().display_list_used_as_paint_command_cache_source();
-    auto state = display_list ? Compositing::async_scrolling_state_from_display_list(*display_list) : Compositing::AsyncScrollingState {};
+    auto& document = window().associated_document();
+    Layout::ForcedReadScope read { document };
+    auto* display_list = document.paint_state().display_list_used_as_paint_command_cache_source();
+    Compositing::AsyncScrollingState state;
+    if (display_list) {
+        auto visual_context_tree = document.paint_state().visual_context_tree_without_update(read, document);
+        state = Compositing::async_scrolling_state_from(*display_list, visual_context_tree);
+    }
     return scrolling_state_report_to_object(window(), Compositing::async_scrolling_state_to_json(state));
 }
 

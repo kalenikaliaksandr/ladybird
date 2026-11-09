@@ -158,7 +158,7 @@ void ContextState::install_display_list_update(
     m_scroll_state_snapshot.set_node_count(m_scene.visual_context_tree()->spatial_node_count());
     m_caret_blink_timer.did_install_display_list(*m_scene.display_list());
 
-    auto async_scrolling_state = Compositing::async_scrolling_state_from_display_list(*m_scene.display_list());
+    auto async_scrolling_state = Compositing::async_scrolling_state_from(*m_scene.display_list(), *m_scene.visual_context_tree());
     auto async_scrolling_viewport_rect = async_scrolling_state.viewport_rect;
     m_wheel_gesture_routing.did_install_scrolling_state(async_scrolling_state);
     // The visual viewport of another document is where that document's visual context tree has it.
@@ -1962,7 +1962,8 @@ Compositing::FirstWheelStepRouteForTesting ContextState::route_first_wheel_step_
 String ContextState::scroll_state_for_testing(Web::AsyncScrollNodeStableID scroller) const
 {
     auto const& display_list = m_scene.display_list();
-    auto scroll_state = Compositing::async_scrolling_state_to_json(display_list ? Compositing::async_scrolling_state_from_display_list(*display_list) : Compositing::AsyncScrollingState {});
+    auto const& visual_context_tree = m_scene.visual_context_tree();
+    auto scroll_state = Compositing::async_scrolling_state_to_json(display_list && visual_context_tree.has_value() ? Compositing::async_scrolling_state_from(*display_list, *visual_context_tree) : Compositing::AsyncScrollingState {});
 
     auto admission = m_wheel_gesture_routing.admission();
     auto admission_name = admission == Compositing::WheelRoutingAdmission::Accepted
