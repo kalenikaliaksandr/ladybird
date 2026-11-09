@@ -4437,6 +4437,7 @@ impl<'pass> FlexFormattingContext<'pass> {
                             node,
                             input,
                             cells,
+                            None,
                             false,
                             percentage_block_insets_have_definite_basis,
                         )
