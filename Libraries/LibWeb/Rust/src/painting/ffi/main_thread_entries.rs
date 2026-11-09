@@ -364,16 +364,18 @@ pub unsafe extern "C" fn render_state_refresh_scroll_state(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
     device_pixels_per_css_pixel: f64,
+    device_viewport_size: libgfx_rust::IntSize,
     sink: *mut c_void,
     publish: unsafe extern "C" fn(*mut c_void, *const libgfx_rust::FloatPoint, usize),
-) {
-    let snapshot = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
-        crate::painting::paint_passes::refresh_scroll_state(arena, device_pixels_per_css_pixel)
+) -> crate::painting::paint_passes::FfiCompositorScrollRefreshOutcome {
+    let (snapshot, outcome) = run_paint_pass(read, host, PassEffect::RewritesRows, |arena| {
+        crate::painting::paint_passes::refresh_scroll_state(arena, device_pixels_per_css_pixel, device_viewport_size)
     });
     if let Some(snapshot) = snapshot {
         // SAFETY: The C++ sink copies the offsets synchronously.
         unsafe { publish(sink, snapshot.as_ptr(), snapshot.len()) };
     }
+    outcome
 }
 
 /// # Safety

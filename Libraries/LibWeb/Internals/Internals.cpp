@@ -1708,14 +1708,14 @@ struct RecordedScrollTree {
 }
 
 // The scroll tree of the display list the document last recorded, as the compositor builds it once the list reaches it.
-static Optional<RecordedScrollTree> recorded_scroll_tree_of(DOM::Document& document, Layout::BegunRead const& read)
+static Optional<RecordedScrollTree> recorded_scroll_tree_of(DOM::Document& document)
 {
     auto* display_list = document.paint_state().display_list_used_as_paint_command_cache_source();
     if (!display_list)
         return {};
     RecordedScrollTree recorded {
         .scroll_tree = {},
-        .visual_context_tree = document.paint_state().visual_context_tree_without_update(read, document),
+        .visual_context_tree = document.paint_state().paint_command_cache_source_visual_context_tree().value(),
         .admission = {},
     };
     auto async_scrolling_state = Compositing::async_scrolling_state_from(*display_list, recorded.visual_context_tree);
@@ -1729,7 +1729,7 @@ GC::Ref<JS::Object> Internals::recorded_display_list_wheel_target_at(double x, d
 {
     // A script reads the render state, which waits for a frame in flight.
     Layout::ForcedReadScope read { window().associated_document() };
-    auto recorded = recorded_scroll_tree_of(window().associated_document(), read);
+    auto recorded = recorded_scroll_tree_of(window().associated_document());
     if (!recorded.has_value())
         return first_wheel_step_route_to_object({ .route = { InputRoutingDecision::NoAsyncScrollingState }, .document_id = {} });
     auto const& scroll_tree = recorded->scroll_tree;
@@ -1746,7 +1746,7 @@ bool Internals::recorded_display_list_blocks_wheel_event_at(double x, double y)
 {
     // A script reads the render state, which waits for a frame in flight.
     Layout::ForcedReadScope read { window().associated_document() };
-    auto recorded = recorded_scroll_tree_of(window().associated_document(), read);
+    auto recorded = recorded_scroll_tree_of(window().associated_document());
     if (!recorded.has_value())
         return false;
     auto position = device_position_as_float_point(page().css_to_device_point({ x, y }));
@@ -4071,11 +4071,10 @@ GC::Ref<JS::Object> Internals::style_invalidation_counters_object() const
 GC::Ref<JS::Object> Internals::recorded_async_scrolling_state_object()
 {
     auto& document = window().associated_document();
-    Layout::ForcedReadScope read { document };
     auto* display_list = document.paint_state().display_list_used_as_paint_command_cache_source();
     Compositing::AsyncScrollingState state;
     if (display_list) {
-        auto visual_context_tree = document.paint_state().visual_context_tree_without_update(read, document);
+        auto const& visual_context_tree = document.paint_state().paint_command_cache_source_visual_context_tree().value();
         state = Compositing::async_scrolling_state_from(*display_list, visual_context_tree);
     }
     return scrolling_state_report_to_object(window(), Compositing::async_scrolling_state_to_json(state));

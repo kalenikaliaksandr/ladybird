@@ -263,21 +263,24 @@ static StringView snap_align_name(SnapAlign align)
     VERIFY_NOT_REACHED();
 }
 
-static JsonObject rect_to_json(Web::CSSPixelRect const& rect)
+static double json_coordinate(Web::CSSPixels value) { return value.to_double(); }
+static double json_coordinate(double value) { return value; }
+
+static JsonObject rect_to_json(auto const& rect)
 {
     JsonObject object;
-    object.set("x"sv, rect.x().to_double());
-    object.set("y"sv, rect.y().to_double());
-    object.set("width"sv, rect.width().to_double());
-    object.set("height"sv, rect.height().to_double());
+    object.set("x"sv, json_coordinate(rect.x()));
+    object.set("y"sv, json_coordinate(rect.y()));
+    object.set("width"sv, json_coordinate(rect.width()));
+    object.set("height"sv, json_coordinate(rect.height()));
     return object;
 }
 
-static JsonObject point_to_json(Web::CSSPixelPoint const& point)
+static JsonObject point_to_json(auto const& point)
 {
     JsonObject object;
-    object.set("x"sv, point.x().to_double());
-    object.set("y"sv, point.y().to_double());
+    object.set("x"sv, json_coordinate(point.x()));
+    object.set("y"sv, json_coordinate(point.y()));
     return object;
 }
 
@@ -289,6 +292,9 @@ JsonObject async_scrolling_state_to_json(AsyncScrollingState const& state)
         node.set("scrollNodeIndex"sv, scroll_node.scroll_node_index.value());
         node.set("parentScrollNodeIndex"sv, scroll_node.parent_scroll_node_index.has_value() ? scroll_node.parent_scroll_node_index->value() : 0);
         node.set("isViewport"sv, scroll_node.is_viewport);
+        node.set("scrollportRect"sv, rect_to_json(scroll_node.scrollport_rect));
+        node.set("minScrollOffset"sv, point_to_json(scroll_node.min_scroll_offset));
+        node.set("maxScrollOffset"sv, point_to_json(scroll_node.max_scroll_offset));
         scroll_nodes.must_append(move(node));
     }
 
