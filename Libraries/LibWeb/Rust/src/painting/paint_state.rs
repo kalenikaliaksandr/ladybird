@@ -34,6 +34,8 @@ pub struct PaintState {
     pub(crate) root_background_source: Option<crate::painting::host::RootBackgroundSource>,
     pub(crate) hit_test_list_generation: u64,
     pub(crate) last_recording: Option<Arc<crate::painting::record::RecordingOutput>>,
+    /// The window of the document that the recording published last holds, or none where that holds all of it.
+    pub(crate) window_of_published_recording: Option<Arc<crate::painting::record::window::RecordingWindow>>,
     /// The selection, shared with the frames published while it holds.
     pub(crate) selection: Option<Arc<SelectionRange>>,
     /// The `::selection` styles, shared with the frames published while they hold, so a write

@@ -17,7 +17,7 @@ use crate::painting::node_painting;
 use crate::painting::paint_order_plan::PaintScope;
 use crate::painting::paint_read::{GeometryRead, PaintSource};
 use crate::painting::record::RecordingInputs;
-use crate::painting::record::assemble::{Assembler, frame_is_unchanged};
+use crate::painting::record::assemble::{Assembler, Coverage, frame_is_unchanged};
 use crate::painting::record::frame_inputs::FrameInputs;
 use crate::painting::record::order_tree::ProducerKind;
 use crate::painting::record::paint::background_resolution::root_background_canvas_rect;
@@ -25,6 +25,7 @@ use crate::painting::record::resources::RecordingResourceManifest;
 use crate::painting::record::scratch::RecordingScratch;
 use crate::painting::record::svg_resources::MaskLayerSet;
 use crate::painting::record::trace::{Action, Operation};
+use crate::painting::record::window::{RecordingWindow, WindowSpaces};
 use crate::painting::record::{PublishedHitTestItems, RecordingOutput, RecordingResult};
 use std::sync::Arc;
 
@@ -41,7 +42,15 @@ pub(crate) fn record_display_list(
     scratch.begin_recording(source.frame().paintable_row_capacity());
     macro_rules! record {
         ($observer:ty) => {
-            record_display_list_impl::<$observer>(source, scratch, viewport, inputs, source_recording, source_items)
+            record_display_list_impl::<$observer>(
+                source,
+                scratch,
+                viewport,
+                inputs,
+                source_recording,
+                source_items,
+                WindowOfRecording::PlacedForFrame,
+            )
         };
     }
     let result = if trace {
@@ -53,6 +62,13 @@ pub(crate) fn record_display_list(
     result
 }
 
+enum WindowOfRecording {
+    /// The published recording's where it still holds, else one placed where the frame's scrollers are.
+    PlacedForFrame,
+    /// The window another recording of the frame was made for.
+    Given(Option<Arc<RecordingWindow>>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_display_list_impl<O: Observer>(
     source: &PaintSource<'_>,
@@ -61,6 +77,7 @@ fn record_display_list_impl<O: Observer>(
     inputs: &RecordingInputs,
     source_recording: Option<Arc<RecordingOutput>>,
     source_items: Option<Arc<PublishedHitTestItems>>,
+    window_of_recording: WindowOfRecording,
 ) -> RecordingResult {
     let paint_state = source.frame().paint_state();
     let structural_epoch = paint_state.structural_epoch();
@@ -87,6 +104,30 @@ fn record_display_list_impl<O: Observer>(
         .as_ref()
         .is_some_and(|frame| frame.window_is_focused != inputs.window_is_focused);
     let force_dark_settings = inputs.force_dark_enabled.then_some(inputs.force_dark_settings);
+    let is_the_recording_of_the_frame = matches!(window_of_recording, WindowOfRecording::PlacedForFrame);
+    let published_window = source_recording.as_ref().and_then(|frame| frame.window.as_ref());
+    let window = match window_of_recording {
+        WindowOfRecording::Given(window) => window,
+        WindowOfRecording::PlacedForFrame => {
+            (!inputs.records_whole_document && paint_state.visual_context_tree.is_some()).then(|| {
+                RecordingWindow::of_frame(
+                    published_window,
+                    inputs.uncaptured.device_viewport_size,
+                    inputs.device_pixels_per_css_pixel,
+                    paint_state,
+                )
+            })
+        }
+    };
+    let coverage = match (&window, published_window) {
+        (None, _) => Coverage::WholeDocument,
+        (Some(window), Some(published_window)) if Arc::ptr_eq(window, published_window) => Coverage::PublishedWindow,
+        (Some(_), _) => Coverage::AnotherWindow,
+    };
+    let window_spaces = window
+        .clone()
+        .zip(paint_state.visual_context_tree.as_deref())
+        .map(|(window, tree)| WindowSpaces::new(window, tree));
     let mut recorder = PaintRecorder {
         source,
         paint_state,
@@ -110,6 +151,7 @@ fn record_display_list_impl<O: Observer>(
         },
         scratch,
         resources: RecordingResourceManifest::default(),
+        window_spaces,
     };
     recorder
         .observer
@@ -135,13 +177,18 @@ fn record_display_list_impl<O: Observer>(
         .zip(recorder.source_items.as_ref())
         .zip(published_root.as_ref())
         .filter(|((frame, _), (root, _))| {
-            frame_is_unchanged(root, !source.frame().damage().is_empty(), window_focus_changed)
-                && !has_inspector_overlays
+            frame_is_unchanged(
+                root,
+                !source.frame().damage().is_empty(),
+                window_focus_changed,
+                coverage,
+            ) && !has_inspector_overlays
                 && frame.prologue_bytes == prologue_bytes
                 && recorder.recorder.bytes() == &frame.display_list.bytes[..prologue_bytes as usize]
         })
         .map(|((frame, items), (root, _))| (frame.display_list.clone(), items.items.clone(), Arc::clone(root)));
     let copies_from_published_recording = published_root.is_some() && unchanged_frame.is_none();
+    let frame_is_the_published_one = unchanged_frame.is_some();
     let (display_list, recorded_root) = match unchanged_frame {
         Some((display_list, items, root)) => {
             recorder
@@ -152,7 +199,7 @@ fn record_display_list_impl<O: Observer>(
             (display_list, root)
         }
         None => {
-            let recorded_root = Assembler::new(&mut recorder, window_focus_changed).assemble_root(
+            let recorded_root = Assembler::new(&mut recorder, window_focus_changed, coverage).assemble_root(
                 root_scope,
                 published_root
                     .as_ref()
@@ -180,6 +227,7 @@ fn record_display_list_impl<O: Observer>(
         hit_test_list,
         display_list,
         recorded_root: Some(recorded_root),
+        window,
         has_blocking_wheel_event_listeners: recorder.blocking_wheel_event_region_count > 0,
         wheel_event_listener_state_generation: inputs.wheel_event_listener_state_generation,
         is_identical_to_published_recording: false,
@@ -188,12 +236,105 @@ fn record_display_list_impl<O: Observer>(
         vector_image_display_lists: Vec::new(),
     };
     let resources = recorder.resources;
-    if copies_from_published_recording && copied_output_is_verified() {
-        let from_scratch =
-            record_display_list_impl::<super::trace::NoTrace>(source, scratch, viewport, inputs, None, None).output;
-        require_same_recording(&output, &from_scratch);
+    let mut record_from_scratch = |window: Option<Arc<RecordingWindow>>| {
+        record_display_list_impl::<super::trace::NoTrace>(
+            source,
+            scratch,
+            viewport,
+            inputs,
+            None,
+            None,
+            WindowOfRecording::Given(window),
+        )
+        .output
+    };
+    let verifies_copied_output = copies_from_published_recording && copied_output_is_verified();
+    let window_to_verify = output
+        .window
+        .clone()
+        .filter(|_| is_the_recording_of_the_frame && !frame_is_the_published_one && left_out_content_is_verified());
+    let from_scratch = (copies_from_published_recording && (verifies_copied_output || window_to_verify.is_some()))
+        .then(|| record_from_scratch(output.window.clone()));
+    if verifies_copied_output && let Some(from_scratch) = &from_scratch {
+        require_same_recording(&output, from_scratch);
+    }
+    if let Some(window) = window_to_verify
+        && let Some(tree) = paint_state.visual_context_tree.as_deref()
+    {
+        let of_whole_document = record_from_scratch(None);
+        require_only_what_misses_the_window_is_left_out(
+            from_scratch.as_ref().unwrap_or(&output),
+            &of_whole_document,
+            &WindowSpaces::new(window, tree),
+        );
     }
     RecordingResult { output, resources }
+}
+
+fn left_out_content_is_verified() -> bool {
+    static VERIFIED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFIED.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("LIBWEB_VERIFY_PAINT_WINDOW").is_some())
+}
+
+/// Requires a recording of a window, made from scratch, to lack only what misses the window: its tape is the tape
+/// of a recording of the whole document without some of its chunks, and no command in those draws where the window
+/// reaches. The commands that only describe the document to the compositor draw nothing.
+fn require_only_what_misses_the_window_is_left_out(
+    of_window: &RecordingOutput,
+    of_whole_document: &RecordingOutput,
+    spaces: &WindowSpaces<'_>,
+) {
+    use crate::painting::display_list::builder::{RecordedDisplayList, for_each_command};
+    use crate::painting::display_list::chunks::chunks_of;
+    let (windowed, whole) = (&of_window.display_list, &of_whole_document.display_list);
+    let first_command_of = |list: &RecordedDisplayList, chunk_start: u32| {
+        let mut first = None;
+        let run = list.command_runs.iter().find(|run| run.offset == chunk_start);
+        if let Some(run) = run {
+            for_each_command(
+                &list.bytes[run.offset as usize..(run.offset + run.size) as usize],
+                |header, _, _| {
+                    first.get_or_insert((header.command_type.name(), header.bounding_rect, run.context));
+                },
+            );
+        }
+        first
+    };
+    let mut chunks_of_window = chunks_of(&windowed.bytes, &windowed.command_runs, &windowed.chunks).peekable();
+    for (chunk, bytes, runs) in chunks_of(&whole.bytes, &whole.command_runs, &whole.chunks) {
+        let is_the_same_chunk = chunks_of_window
+            .next_if(|(kept, kept_bytes, kept_runs)| {
+                kept.id == chunk.id
+                    || (kept_bytes.len() == bytes.len()
+                        && kept_runs.len() == runs.len()
+                        && without_nested_display_list_ids(kept_bytes) == without_nested_display_list_ids(bytes))
+            })
+            .is_some();
+        if is_the_same_chunk {
+            continue;
+        }
+        for run in runs {
+            let run_bytes = &whole.bytes[run.offset as usize..(run.offset + run.size) as usize];
+            for_each_command(run_bytes, |header, _, _| {
+                if header.command_type.is_compositor_metadata() || !header.has_bounding_rect {
+                    return;
+                }
+                assert!(
+                    spaces.shows_in_window(header.bounding_rect.to_float(), run.context) != Some(true),
+                    "A recording of a window left out {} at {:?} under {:?}, which shows in the window",
+                    header.command_type.name(),
+                    header.bounding_rect,
+                    run.context
+                );
+            });
+        }
+    }
+    if let Some((chunk, bytes, _)) = chunks_of_window.next() {
+        panic!(
+            "A recording of a window holds a chunk that a recording of the whole document lacks, which starts with {:?}",
+            first_command_of(windowed, chunk.byte_end - bytes.len() as u32)
+        );
+    }
 }
 
 fn copied_output_is_verified() -> bool {
@@ -201,31 +342,33 @@ fn copied_output_is_verified() -> bool {
     *VERIFIED.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("LIBWEB_VERIFY_PAINT_REUSE").is_some())
 }
 
+/// The bytes of a tape without the ids of the display lists it nests. A command that paints an SVG image is recorded
+/// with a placeholder for the image's display list, which publication replaces with the list the host rendered, and
+/// the placeholder follows how many images the recording met before. A copied command names the list already.
+fn without_nested_display_list_ids(bytes: &[u8]) -> Vec<u8> {
+    use crate::painting::display_list::commands::{DisplayListCommandType, PaintNestedDisplayList};
+    let mut bytes = bytes.to_vec();
+    let id_field = std::mem::offset_of!(PaintNestedDisplayList, display_list_id);
+    let mut id_offsets = Vec::new();
+    crate::painting::display_list::nested_records::for_each_command_including_nested(
+        &bytes,
+        &mut |command_type, payload_offset, _| {
+            if command_type == DisplayListCommandType::PaintNestedDisplayList {
+                id_offsets.push(payload_offset + id_field);
+            }
+        },
+    );
+    for offset in id_offsets {
+        bytes[offset..offset + std::mem::size_of::<u64>()].fill(0);
+    }
+    bytes
+}
+
 /// Requires a recording that copied clean output from the published one to be the recording the same frame gives
 /// when everything is recorded: a difference is output that was copied though what it shows changed.
 fn require_same_recording(assembled: &RecordingOutput, from_scratch: &RecordingOutput) {
     use crate::painting::display_list::builder::{RecordedDisplayList, for_each_command};
     use crate::painting::display_list::chunks::{chunk_id, chunks_of};
-    use crate::painting::display_list::commands::{DisplayListCommandType, PaintNestedDisplayList};
-    // A command that paints an SVG image is recorded with a placeholder for the image's display list, which
-    // publication replaces with the list the host rendered. A copied command names that list already.
-    let without_nested_display_list_ids = |bytes: &[u8]| {
-        let mut bytes = bytes.to_vec();
-        let id_field = std::mem::offset_of!(PaintNestedDisplayList, display_list_id);
-        let mut id_offsets = Vec::new();
-        crate::painting::display_list::nested_records::for_each_command_including_nested(
-            &bytes,
-            &mut |command_type, payload_offset, _| {
-                if command_type == DisplayListCommandType::PaintNestedDisplayList {
-                    id_offsets.push(payload_offset + id_field);
-                }
-            },
-        );
-        for offset in id_offsets {
-            bytes[offset..offset + std::mem::size_of::<u64>()].fill(0);
-        }
-        bytes
-    };
     let (assembled_list, scratch_list) = (&assembled.display_list, &from_scratch.display_list);
     let assembled_bytes = without_nested_display_list_ids(&assembled_list.bytes);
     let scratch_bytes = without_nested_display_list_ids(&scratch_list.bytes);

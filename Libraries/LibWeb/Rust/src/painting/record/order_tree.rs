@@ -14,8 +14,10 @@
 //! and a recording shares every node it copied unchanged with the recording it copied from.
 
 use crate::css::css_pixels::CssPixelPoint;
+use crate::painting::display_list::commands::SpatialNodeIndex;
 use crate::painting::paint_order_plan::{PaintOrderItem, PaintScope};
 use crate::painting::record::damage::PaintDamage;
+use libgfx_rust::FloatRect;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -137,10 +139,19 @@ pub(crate) struct RecordedRun {
     pub child_scope_placements: Box<[RowPlacement]>,
 }
 
+/// Bounds what a part of a plan paints: a rect in device pixels in the space of a node of the visual context tree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InkBound {
+    pub rect: FloatRect,
+    pub space: SpatialNodeIndex,
+}
+
 #[derive(Debug)]
 pub(crate) enum RecordedSegment {
     Run(RecordedRun),
     Walked(Arc<RecordedScope>),
+    /// Nothing of the segment was recorded, because all of it lay outside the window of the recording.
+    Outside,
 }
 
 impl RecordedSegment {
@@ -148,6 +159,15 @@ impl RecordedSegment {
         match self {
             Self::Run(run) => run.output,
             Self::Walked(scope) => scope.output,
+            Self::Outside => OutputSize::default(),
+        }
+    }
+
+    pub(crate) fn leaves_out_what_lies_outside_the_window(&self) -> bool {
+        match self {
+            Self::Run(_) => false,
+            Self::Walked(scope) => scope.leaves_out_what_lies_outside_the_window,
+            Self::Outside => true,
         }
     }
 }
@@ -162,4 +182,13 @@ pub(crate) struct RecordedScope {
     pub output: OutputSize,
     /// Where the scope's owner was, which the producers of the owner in the scope's runs were recorded against.
     pub owner_placement: RowPlacement,
+    /// What bounds each segment, or none for a segment that may paint anywhere, where the recording had to ask:
+    /// it holds a window of the document that the scope is not wholly inside.
+    pub segment_bounds: Option<Arc<[Option<InkBound>]>>,
+    /// Whether a segment of the scope, or of a scope walked below it, was left out for lying outside the window.
+    pub leaves_out_what_lies_outside_the_window: bool,
+    /// Whether a scope walked below this one belongs to a box that cuts off some of what it holds, as a scroller
+    /// does: such a scope paints outside what bounds this one, so a recording of a window may leave some of it out
+    /// though this scope is wholly inside the window.
+    pub walks_a_scope_of_a_box_that_cuts_off_what_it_holds: bool,
 }

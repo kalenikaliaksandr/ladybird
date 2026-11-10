@@ -10,7 +10,7 @@
 //! host with them.
 
 use super::assemble::{AssemblyEvent, AssemblyHost, ItemCut, OutputPosition, ProducerOutcome, ScopeAction, ScopePlan};
-use super::order_tree::{ProducerKind, RowPlacement};
+use super::order_tree::{InkBound, ProducerKind, RowPlacement};
 use super::trace::{Action, Observer, Operation};
 use super::{PaintPhase, PaintRecorder};
 use crate::css::css_pixels::{CssPixelRect, CssPixels};
@@ -18,7 +18,7 @@ use crate::layout::node_data::NodeSlotId;
 use crate::painting::display_list::commands::ContextRef;
 use crate::painting::force_dark::ForceDarkRole;
 use crate::painting::paint_order_plan::{PaintOrderItem, PaintProducer, PaintScope, PaintScopePlan};
-use crate::painting::paint_read::GeometryRead;
+use crate::painting::paint_read::{GeometryRead, PaintRead};
 use crate::painting::record::damage::PaintDamage;
 use crate::painting::record::svg_resources::MaskLayerSet;
 use crate::painting::{node_painting, paintable_geometry};
@@ -367,6 +367,61 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
         }
     }
 
+    // A producer of the scope's owner is not bounded: the owner of a walked scope is in the window when the scope
+    // is, and its own producers mostly cover it.
+    fn bound_of_item(&mut self, _scope: PaintScope, item: PaintOrderItem) -> Option<InkBound> {
+        use crate::painting::ink_overflow::{ScopeInkBound, scope_ink_bound};
+        let PaintOrderItem::Scope(child) = item else {
+            return None;
+        };
+        let ScopeInkBound::Rect(bound) = scope_ink_bound(self.source, child) else {
+            return None;
+        };
+        // The bound says where a transform below the child has put what it moves, and nothing asks for a recording
+        // when the transform puts it elsewhere.
+        if self
+            .source
+            .stored_ink_overflow(child.owner)
+            .holds_what_a_transform_moves
+        {
+            return None;
+        }
+        let slack = super::ink_bounds::COMPARISON_SLACK_IN_DEVICE_PIXELS;
+        Some(InkBound {
+            rect: self
+                .converter
+                .enclosing_device_rect(bound)
+                .inflated_edges(slack, slack, slack, slack)
+                .to_float(),
+            space: self.own_context(child.owner).spatial,
+        })
+    }
+
+    fn united_bound(&mut self, first: InkBound, second: InkBound) -> Option<InkBound> {
+        self.window_spaces.as_mut()?.united(first, second)
+    }
+
+    fn is_outside_window(&mut self, bound: InkBound) -> bool {
+        self.window_spaces
+            .as_mut()
+            .is_some_and(|spaces| spaces.is_outside(bound))
+    }
+
+    fn is_wholly_inside_window(&mut self, bound: InkBound) -> bool {
+        self.window_spaces
+            .as_mut()
+            .is_some_and(|spaces| spaces.is_wholly_inside(bound))
+    }
+
+    // Any box whose overflow is not visible, though not every one of them clips: saying so of a box that does not
+    // only has its scopes ask what bounds their segments.
+    fn cuts_off_what_it_holds(&mut self, owner: NodeSlotId) -> bool {
+        use crate::css::css_enums::overflow;
+        self.source
+            .node_style_if_live(owner)
+            .is_some_and(|style| style.overflow_x() != overflow::VISIBLE || style.overflow_y() != overflow::VISIBLE)
+    }
+
     // SVG content is recorded by its root.
     fn producer_reads_descendants(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool {
         match kind {
@@ -398,6 +453,10 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
             AssemblyEvent::ScopeCopied(scope) => log.leaf(Operation::Scope(scope), Action::Copy, false),
             AssemblyEvent::ProducerCopied(owner, kind) => {
                 log.leaf(Operation::Producer(owner, kind), Action::Copy, false);
+            }
+            AssemblyEvent::ScopeLeftOut(scope) => log.leaf(Operation::Scope(scope), Action::LeaveOut, false),
+            AssemblyEvent::ProducerLeftOut(owner, kind) => {
+                log.leaf(Operation::Producer(owner, kind), Action::LeaveOut, false);
             }
         });
     }

@@ -385,12 +385,29 @@ pub(crate) fn refresh_scroll_state(
                 device_viewport_size,
             },
         );
-        if !state.needs_to_refresh_scroll_state {
-            return (None, outcome);
-        }
-        let snapshot = scroll_state_snapshot(&arena.paintable_rows(), state, device_pixels_per_css_pixel);
-        state.needs_to_refresh_scroll_state = false;
-        (Some(snapshot), outcome)
+        let snapshot = state.needs_to_refresh_scroll_state.then(|| {
+            let snapshot = scroll_state_snapshot(&arena.paintable_rows(), state, device_pixels_per_css_pixel);
+            state.needs_to_refresh_scroll_state = false;
+            snapshot
+        });
+        // The published recording holds a window of the document, and a scroller has moved too far from where the
+        // window was placed: the next recording places it again.
+        let window_no_longer_holds = arena
+            .paint_state()
+            .window_of_published_recording
+            .as_ref()
+            .is_some_and(|window| {
+                !window.still_holds(
+                    device_viewport_size,
+                    device_pixels_per_css_pixel,
+                    state.scroll_state.own_offsets(),
+                )
+            });
+        let outcome = FfiCompositorScrollRefreshOutcome {
+            requires_display_list_recording: outcome.requires_display_list_recording || window_no_longer_holds,
+            ..outcome
+        };
+        (snapshot, outcome)
     })
 }
 

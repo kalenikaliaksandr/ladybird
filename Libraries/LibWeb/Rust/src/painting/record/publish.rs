@@ -410,6 +410,7 @@ pub(crate) fn take_in_recording(
     }
     if publishes_recording {
         paint_state.visual_context.quarantined_slots_are_releasable = true;
+        paint_state.window_of_published_recording = output.window.clone();
     }
     paint_state.last_recording = Some(output);
     paint_state.hit_test_list_generation

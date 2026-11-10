@@ -24,6 +24,9 @@ pub(crate) struct InkOverflow {
     pub rect: CssPixelRect,
     pub unbounded: bool,
     pub contribution_unbounded: bool,
+    /// Whether something the rect bounds is there by the transform of a box below this one. A transform changes
+    /// without anything being painted again, so the rect bounds where that is now and not where it will be.
+    pub holds_what_a_transform_moves: bool,
 }
 
 fn inflated(rect: CssPixelRect, reach: CssPixels) -> CssPixelRect {
@@ -392,6 +395,7 @@ pub(crate) fn scope_ink_bound(source: &impl PaintRead, scope: PaintScope) -> Sco
 fn include_child(ink: &mut InkOverflow, child: InkOverflow) {
     ink.rect.unite(child.rect);
     ink.unbounded |= child.contribution_unbounded;
+    ink.holds_what_a_transform_moves |= child.holds_what_a_transform_moves;
 }
 
 /// Cuts the content a box gathered down to what its overflow clip keeps. The box's own ink is not content.
@@ -401,8 +405,10 @@ fn clip_content_to_overflow_clip(ink: &mut InkOverflow, own: InkOverflow, clip: 
     ink.rect = own.rect;
     ink.rect.unite(CssPixelRect::new(left, top, right - left, bottom - top));
     if clip.horizontal.is_some() && clip.vertical.is_some() {
-        // Whatever made a child's contribution unbounded is cut off with the rest of it.
+        // Whatever made a child's contribution unbounded is cut off with the rest of it, and so is whatever a
+        // transform moves.
         ink.unbounded = own.unbounded;
+        ink.holds_what_a_transform_moves = own.holds_what_a_transform_moves;
     }
 }
 
@@ -473,6 +479,7 @@ fn recalculated_ink_overflow(
                     crate::painting::visual_context::node_values::compute_transform(source, child, 1.0)
                 {
                     contribution = mapped_ink(contribution, &transform);
+                    contribution.holds_what_a_transform_moves = true;
                 }
                 include_child(&mut ink, contribution);
             }
@@ -759,6 +766,47 @@ mod tests {
         );
         assert_eq!(ink.rect, rect(-10, -50, 120, 200));
         assert!(!ink.unbounded);
+    }
+
+    #[test]
+    fn what_a_transform_moves_is_remembered_up_to_a_box_that_cuts_it_off() {
+        let mut ink = InkOverflow {
+            rect: rect(0, 0, 100, 100),
+            ..Default::default()
+        };
+        include_child(
+            &mut ink,
+            InkOverflow {
+                rect: rect(10, 10, 20, 20),
+                holds_what_a_transform_moves: true,
+                ..Default::default()
+            },
+        );
+        assert!(ink.holds_what_a_transform_moves);
+        let pixels = CssPixels::from_integer;
+        let own = InkOverflow {
+            rect: rect(0, 0, 100, 100),
+            ..Default::default()
+        };
+        let mut cut_on_one_axis = ink;
+        clip_content_to_overflow_clip(
+            &mut cut_on_one_axis,
+            own,
+            &OverflowClipRanges {
+                horizontal: Some((pixels(0), pixels(100))),
+                vertical: None,
+            },
+        );
+        assert!(cut_on_one_axis.holds_what_a_transform_moves);
+        clip_content_to_overflow_clip(
+            &mut ink,
+            own,
+            &OverflowClipRanges {
+                horizontal: Some((pixels(0), pixels(100))),
+                vertical: Some((pixels(0), pixels(100))),
+            },
+        );
+        assert!(!ink.holds_what_a_transform_moves);
     }
 
     #[test]

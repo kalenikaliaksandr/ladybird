@@ -9,10 +9,14 @@
 //! copied from the published recording, or recorded again from its first item to its last when damage reaches it or
 //! an ancestor moved it. Nothing is validated on the way: when assembly starts, the damage set is complete by
 //! construction.
+//!
+//! A recording of a window of the document leaves out the runs and the walked child scopes that lie outside the
+//! window, and remembers that it did, so that the recording after it records them once they lie inside.
 
 use super::PaintPhase;
 use super::order_tree::{
-    OutputSize, ProducerKind, RecordedRun, RecordedScope, RecordedSegment, RowPlacement, Segment, SegmentedPlan,
+    InkBound, OutputSize, ProducerKind, RecordedRun, RecordedScope, RecordedSegment, RowPlacement, Segment,
+    SegmentedPlan,
 };
 use crate::css::style::fast_hash::FastMap;
 use crate::layout::node_data::NodeSlotId;
@@ -82,6 +86,20 @@ pub(crate) enum AssemblyEvent {
     ScopeEnd(PaintScope),
     ScopeCopied(PaintScope),
     ProducerCopied(NodeSlotId, ProducerKind),
+    ScopeLeftOut(PaintScope),
+    ProducerLeftOut(NodeSlotId, ProducerKind),
+}
+
+/// How much of the document a recording holds, against what the published recording holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Coverage {
+    /// Everything, wherever it is.
+    WholeDocument,
+    /// What shows in a window, the one the published recording was made for: what lay outside it then still does,
+    /// unless damage says otherwise.
+    PublishedWindow,
+    /// What shows in a window the published recording was not made for.
+    AnotherWindow,
 }
 
 /// The end of the output being assembled: command bytes, hit-test items and blocking wheel
@@ -133,6 +151,33 @@ pub(crate) trait AssemblyHost {
 
     fn producer_reads_descendants(&mut self, owner: NodeSlotId, kind: ProducerKind) -> bool;
 
+    /// What bounds everything `item` of the plan of `scope` paints, or none where no rect in a space of the tree
+    /// does. Only a recording of a window asks.
+    fn bound_of_item(&mut self, _scope: PaintScope, _item: PaintOrderItem) -> Option<InkBound> {
+        None
+    }
+
+    /// One bound for what both bound, or none where their spaces have no common one that places both.
+    fn united_bound(&mut self, _first: InkBound, _second: InkBound) -> Option<InkBound> {
+        None
+    }
+
+    /// Whether nothing inside the bound shows in the window of the recording.
+    fn is_outside_window(&mut self, _bound: InkBound) -> bool {
+        false
+    }
+
+    /// Whether everything inside the bound shows in the window of the recording.
+    fn is_wholly_inside_window(&mut self, _bound: InkBound) -> bool {
+        false
+    }
+
+    /// Whether a box cuts off some of what it holds, as a scroller does. What bounds its scopes then bounds what
+    /// shows of them, and what they paint may lie outside it.
+    fn cuts_off_what_it_holds(&mut self, _owner: NodeSlotId) -> bool {
+        false
+    }
+
     fn observe(&mut self, _event: AssemblyEvent) {}
 }
 
@@ -172,9 +217,19 @@ enum SegmentKey {
 
 /// Whether the published recording can be returned as it is: nothing was pushed, and nothing in it is recorded every
 /// frame or read a window focus that changed.
-pub(crate) fn frame_is_unchanged(published_root: &RecordedScope, has_damage: bool, window_focus_changed: bool) -> bool {
+pub(crate) fn frame_is_unchanged(
+    published_root: &RecordedScope,
+    has_damage: bool,
+    window_focus_changed: bool,
+    coverage: Coverage,
+) -> bool {
     let output = published_root.output;
-    !has_damage && !output.live && !(window_focus_changed && output.reads_window_focus)
+    let covers_the_same = match coverage {
+        Coverage::PublishedWindow => true,
+        Coverage::WholeDocument => !published_root.leaves_out_what_lies_outside_the_window,
+        Coverage::AnotherWindow => false,
+    };
+    !has_damage && !output.live && !(window_focus_changed && output.reads_window_focus) && covers_the_same
 }
 
 // The damage of a scope's owner that cannot change what the scope records. The scope of a box's backgrounds and
@@ -197,14 +252,16 @@ pub(crate) struct Assembler<'a, H: AssemblyHost> {
     host: &'a mut H,
     // The published recording was made in the other window focus state.
     window_focus_changed: bool,
+    coverage: Coverage,
     pending_copy: Option<PendingCopy>,
 }
 
 impl<'a, H: AssemblyHost> Assembler<'a, H> {
-    pub(crate) fn new(host: &'a mut H, window_focus_changed: bool) -> Self {
+    pub(crate) fn new(host: &'a mut H, window_focus_changed: bool, coverage: Coverage) -> Self {
         Self {
             host,
             window_focus_changed,
+            coverage,
             pending_copy: None,
         }
     }
@@ -231,9 +288,86 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                     hits: 0,
                 },
             });
-        let root = self.walk_scope(root_scope, published);
+        let root_bound = match self.coverage {
+            Coverage::WholeDocument => None,
+            Coverage::PublishedWindow | Coverage::AnotherWindow => {
+                self.host.bound_of_item(root_scope, PaintOrderItem::Scope(root_scope))
+            }
+        };
+        let root_cuts_off_what_it_holds = self.host.cuts_off_what_it_holds(root_scope.owner);
+        let is_wholly_inside_window = self.is_wholly_inside_window(root_bound, false, root_cuts_off_what_it_holds);
+        let root = self.walk_scope(root_scope, published, is_wholly_inside_window);
         self.flush_pending_copy();
         root
+    }
+
+    // Nothing of what a scope paints directly is left out: the recording holds everything, or the scope is in a
+    // scope that is wholly inside the window or is bounded by something that is. The scope of a box that cuts off
+    // what it holds paints outside what bounds it, so being inside the window says nothing about what it holds.
+    fn is_wholly_inside_window(
+        &mut self,
+        bound: Option<InkBound>,
+        is_in_a_scope_wholly_inside_window: bool,
+        owner_cuts_off_what_it_holds: bool,
+    ) -> bool {
+        if self.coverage == Coverage::WholeDocument {
+            return true;
+        }
+        if owner_cuts_off_what_it_holds {
+            return false;
+        }
+        is_in_a_scope_wholly_inside_window || bound.is_some_and(|bound| self.host.is_wholly_inside_window(bound))
+    }
+
+    // Whether a clean walked scope of the published recording holds what this recording holds of it: neither left
+    // out what this one records, nor recorded what this one leaves out. In another window that is so where the scope
+    // is wholly inside both, down to the scopes below it that paint outside what bounds it.
+    fn published_scope_covers_the_same(&self, published: &RecordedScope, is_wholly_inside_window: bool) -> bool {
+        match self.coverage {
+            Coverage::PublishedWindow => true,
+            Coverage::WholeDocument => !published.leaves_out_what_lies_outside_the_window,
+            Coverage::AnotherWindow => {
+                !published.leaves_out_what_lies_outside_the_window
+                    && !published.walks_a_scope_of_a_box_that_cuts_off_what_it_holds
+                    && is_wholly_inside_window
+            }
+        }
+    }
+
+    fn bound_of_segment(&mut self, scope: PaintScope, plan: &SegmentedPlan, segment: &Segment) -> Option<InkBound> {
+        match segment {
+            Segment::Walked(item) => self.host.bound_of_item(scope, plan.items[*item as usize]),
+            Segment::Run(run) => {
+                let mut bound_of_run: Option<InkBound> = None;
+                for item in plan.items_of(run) {
+                    let bound = self.host.bound_of_item(scope, *item)?;
+                    bound_of_run = Some(match bound_of_run {
+                        Some(bound_so_far) => self.host.united_bound(bound_so_far, bound)?,
+                        None => bound,
+                    });
+                }
+                bound_of_run
+            }
+        }
+    }
+
+    // The events of a segment that was left out, for whoever follows the recording.
+    fn observe_left_out(&mut self, scope: PaintScope, plan: &SegmentedPlan, segment: &Segment) {
+        match segment {
+            Segment::Walked(item) => self.host.observe(AssemblyEvent::ScopeLeftOut(plan.walked_scope(*item))),
+            Segment::Run(run) => {
+                for item in plan.items_of(run) {
+                    match *item {
+                        PaintOrderItem::Producer(producer) => {
+                            for kind in producer_kinds(producer) {
+                                self.host.observe(AssemblyEvent::ProducerLeftOut(scope.owner, kind));
+                            }
+                        }
+                        PaintOrderItem::Scope(child) => self.host.observe(AssemblyEvent::ScopeLeftOut(child)),
+                    }
+                }
+            }
+        }
     }
 
     fn scope_is_clean(&mut self, scope: PaintScope, recorded_placement: RowPlacement) -> bool {
@@ -293,8 +427,15 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         }
     }
 
-    /// Walks the plan of `scope`, which damage reaches or the published recording did not walk.
-    fn walk_scope(&mut self, scope: PaintScope, published: Option<Published<'_>>) -> Arc<RecordedScope> {
+    /// Walks the plan of `scope`, which damage reaches or the published recording did not walk, or which holds
+    /// something the window of the published recording left out. A scope that is wholly inside the window of this
+    /// recording leaves nothing out, so nothing asks what bounds its segments.
+    fn walk_scope(
+        &mut self,
+        scope: PaintScope,
+        published: Option<Published<'_>>,
+        is_wholly_inside_window: bool,
+    ) -> Arc<RecordedScope> {
         let owner_damage = self.host.damage_of_row(scope.owner);
         let owner_placement = self.host.placement_of_row(scope.owner);
         let order_damage = match scope.kind {
@@ -328,10 +469,33 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             segments: Vec::with_capacity(plan.segments.len()),
             output: OutputSize::default(),
             owner_placement,
+            segment_bounds: None,
+            leaves_out_what_lies_outside_the_window: false,
+            walks_a_scope_of_a_box_that_cuts_off_what_it_holds: false,
         };
         if plan.active {
+            if !is_wholly_inside_window {
+                // A scope whose cuts were kept holds every item where it was, so what bounded its segments does.
+                let kept_bounds = published
+                    .filter(|_| cuts_were_kept)
+                    .and_then(|published| published.scope.segment_bounds.clone());
+                recorded.segment_bounds = Some(kept_bounds.unwrap_or_else(|| {
+                    plan.segments
+                        .iter()
+                        .map(|segment| self.bound_of_segment(scope, &plan, segment))
+                        .collect()
+                }));
+            }
+            let segment_bounds = recorded.segment_bounds.clone();
             let published_segments = published.map(|published| PublishedSegments::new(published, cuts_were_kept));
             for (index, segment) in plan.segments.iter().enumerate() {
+                let bound = segment_bounds.as_ref().and_then(|bounds| bounds[index]);
+                if bound.is_some_and(|bound| self.host.is_outside_window(bound)) {
+                    self.observe_left_out(scope, &plan, segment);
+                    recorded.leaves_out_what_lies_outside_the_window = true;
+                    recorded.segments.push(RecordedSegment::Outside);
+                    continue;
+                }
                 let published_segment = published_segments
                     .as_ref()
                     .and_then(|segments| segments.matching(index, segment, &plan));
@@ -344,10 +508,19 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                         owner_moved,
                     )),
                     Segment::Walked(item) => {
-                        RecordedSegment::Walked(self.assemble_walked_child(plan.walked_scope(*item), published_segment))
+                        let child = plan.walked_scope(*item);
+                        let child_cuts_off_what_it_holds = self.host.cuts_off_what_it_holds(child.owner);
+                        let child_is_wholly_inside_window =
+                            self.is_wholly_inside_window(bound, is_wholly_inside_window, child_cuts_off_what_it_holds);
+                        let assembled_child =
+                            self.assemble_walked_child(child, published_segment, child_is_wholly_inside_window);
+                        recorded.walks_a_scope_of_a_box_that_cuts_off_what_it_holds |= child_cuts_off_what_it_holds
+                            || assembled_child.walks_a_scope_of_a_box_that_cuts_off_what_it_holds;
+                        RecordedSegment::Walked(assembled_child)
                     }
                 };
                 recorded.output.add(assembled.output());
+                recorded.leaves_out_what_lies_outside_the_window |= assembled.leaves_out_what_lies_outside_the_window();
                 recorded.segments.push(assembled);
             }
         }
@@ -359,20 +532,22 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
         &mut self,
         child: PaintScope,
         published: Option<(&RecordedSegment, SourceCursor)>,
+        is_wholly_inside_window: bool,
     ) -> Arc<RecordedScope> {
         let published = published.and_then(|(segment, cursor)| match segment {
             RecordedSegment::Walked(scope) => Some(Published { scope, cursor }),
-            RecordedSegment::Run(_) => None,
+            RecordedSegment::Run(_) | RecordedSegment::Outside => None,
         });
         if let Some(published) = published
             && !self.records_again(published.scope.output)
+            && self.published_scope_covers_the_same(published.scope, is_wholly_inside_window)
             && self.scope_is_clean(child, published.scope.owner_placement)
         {
             self.copy(published.cursor, published.scope.output);
             self.host.observe(AssemblyEvent::ScopeCopied(child));
             return Arc::clone(published.scope);
         }
-        self.walk_scope(child, published)
+        self.walk_scope(child, published, is_wholly_inside_window)
     }
 
     fn assemble_run(
@@ -385,7 +560,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
     ) -> RecordedRun {
         let published = published.and_then(|(segment, cursor)| match segment {
             RecordedSegment::Run(run) => Some((run, cursor)),
-            RecordedSegment::Walked(_) => None,
+            RecordedSegment::Walked(_) | RecordedSegment::Outside => None,
         });
         if let Some((run, cursor)) = published
             && !owner_moved
@@ -671,6 +846,7 @@ mod tests {
         hit_test_items: Vec<HitTestItem>,
         prologue_bytes: u32,
         root: Arc<RecordedScope>,
+        window: Option<(i32, i32)>,
     }
 
     struct Output {
@@ -699,6 +875,13 @@ mod tests {
         events: Vec<AssemblyEvent>,
         output: Output,
         source: Option<Frame>,
+        // The rows a recording holds what shows in, from the first of them to the last, or none for a recording
+        // that holds everything. A row is as tall as a row of the grid.
+        window: Option<(i32, i32)>,
+        // The grid rows a child scope's owner paints in, from the first to the last.
+        rows_painted_in: HashMap<NodeSlotId, (i32, i32)>,
+        cutting_off_what_they_hold: HashSet<NodeSlotId>,
+        bounds_asked: usize,
     }
 
     impl Default for TestHost {
@@ -715,8 +898,23 @@ mod tests {
                 events: Vec::new(),
                 output: new_output(),
                 source: None,
+                window: None,
+                rows_painted_in: HashMap::new(),
+                cutting_off_what_they_hold: HashSet::new(),
+                bounds_asked: 0,
             }
         }
+    }
+
+    const ROW_HEIGHT: f32 = 512.0;
+
+    fn rect_of_rows(first: i32, last: i32) -> libgfx_rust::FloatRect {
+        libgfx_rust::FloatRect::new(
+            0.0,
+            first as f32 * ROW_HEIGHT,
+            100.0,
+            (last - first + 1) as f32 * ROW_HEIGHT,
+        )
     }
 
     impl TestHost {
@@ -752,6 +950,20 @@ mod tests {
                     _ => None,
                 })
                 .collect()
+        }
+
+        fn left_out_scopes(&self) -> Vec<PaintScope> {
+            self.events
+                .iter()
+                .filter_map(|event| match event {
+                    AssemblyEvent::ScopeLeftOut(scope) => Some(*scope),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn rows_recorded(&self) -> std::collections::BTreeSet<u32> {
+            self.recorded.iter().map(|(owner, _)| owner.slot_index()).collect()
         }
 
         fn action_of(&self, scope: PaintScope) -> Option<ScopeAction> {
@@ -852,6 +1064,39 @@ mod tests {
             self.output.recorder.end_chunk();
         }
 
+        fn bound_of_item(&mut self, _scope: PaintScope, item: PaintOrderItem) -> Option<InkBound> {
+            self.bounds_asked += 1;
+            let PaintOrderItem::Scope(child) = item else {
+                return None;
+            };
+            let (first, last) = *self.rows_painted_in.get(&child.owner)?;
+            Some(InkBound {
+                rect: rect_of_rows(first, last),
+                space: crate::painting::display_list::commands::SpatialNodeIndex(0),
+            })
+        }
+
+        fn united_bound(&mut self, first: InkBound, second: InkBound) -> Option<InkBound> {
+            Some(InkBound {
+                rect: first.rect.united(second.rect),
+                space: first.space,
+            })
+        }
+
+        fn is_outside_window(&mut self, bound: InkBound) -> bool {
+            let (first, last) = self.window.expect("only a recording of a window asks");
+            bound.rect.intersected(rect_of_rows(first, last)).is_empty()
+        }
+
+        fn is_wholly_inside_window(&mut self, bound: InkBound) -> bool {
+            let (first, last) = self.window.expect("only a recording of a window asks");
+            rect_of_rows(first, last).contains_rect(bound.rect)
+        }
+
+        fn cuts_off_what_it_holds(&mut self, owner: NodeSlotId) -> bool {
+            self.cutting_off_what_they_hold.contains(&owner)
+        }
+
         fn damage_of_row(&mut self, row: NodeSlotId) -> PaintDamage {
             self.damage.get(&row).copied().unwrap_or_default()
         }
@@ -896,7 +1141,13 @@ mod tests {
             .source
             .as_ref()
             .map(|frame| (Arc::clone(&frame.root), frame.prologue_bytes));
-        let root = Assembler::new(host, window_focus_changed).assemble_root(
+        let window = host.window;
+        let coverage = match (window, host.source.as_ref().map(|frame| frame.window)) {
+            (None, _) => Coverage::WholeDocument,
+            (Some(window), Some(Some(published_window))) if window == published_window => Coverage::PublishedWindow,
+            (Some(_), _) => Coverage::AnotherWindow,
+        };
+        let root = Assembler::new(host, window_focus_changed, coverage).assemble_root(
             context(row(0)),
             published.as_ref().map(|(root, prologue_bytes)| (root, *prologue_bytes)),
         );
@@ -907,6 +1158,7 @@ mod tests {
             hit_test_items,
             prologue_bytes,
             root,
+            window,
         }
     }
 
@@ -959,7 +1211,9 @@ mod tests {
         host.plan(context(row(0)), true, &items);
         host.produce(row(0), ProducerKind::DrawBackground, content(1, 0));
         for card in cards {
-            host.grid_rows.insert(row(card), (card as i32 - 1) / 2);
+            let grid_row = (card as i32 - 1) / 2;
+            host.grid_rows.insert(row(card), grid_row);
+            host.rows_painted_in.insert(row(card), (grid_row, grid_row));
             host.plan(backgrounds(row(card)), true, &[phase(PaintPhase::Background)]);
             host.plan(foreground(row(card)), true, &[phase(PaintPhase::Foreground)]);
             host.produce(row(card), ProducerKind::DrawBackground, content(1, 0));
@@ -995,8 +1249,8 @@ mod tests {
             frame.root.output.bytes as usize,
             frame.display_list.bytes.len() - frame.prologue_bytes as usize
         );
-        assert!(frame_is_unchanged(&frame.root, false, false));
-        assert!(!frame_is_unchanged(&frame.root, true, false));
+        assert!(frame_is_unchanged(&frame.root, false, false, Coverage::WholeDocument));
+        assert!(!frame_is_unchanged(&frame.root, true, false, Coverage::WholeDocument));
     }
 
     #[test]
@@ -1068,7 +1322,7 @@ mod tests {
                 .iter()
                 .find_map(|segment| match segment {
                     RecordedSegment::Walked(scope) => Some(Arc::clone(scope)),
-                    RecordedSegment::Run(_) => None,
+                    RecordedSegment::Run(_) | RecordedSegment::Outside => None,
                 })
                 .unwrap()
         };
@@ -1140,7 +1394,7 @@ mod tests {
             .unwrap()
             .reads_window_focus = true;
         let first = record_frame(&mut host);
-        assert!(!frame_is_unchanged(&first.root, false, false));
+        assert!(!frame_is_unchanged(&first.root, false, false, Coverage::WholeDocument));
         publish(&mut host, first);
 
         let quiet = record_frame(&mut host);
@@ -1168,5 +1422,224 @@ mod tests {
         assert!(host.recorded.is_empty());
         assert_eq!(frame.root.output, OutputSize::default());
         assert_eq!(frame.display_list.bytes.len(), frame.prologue_bytes as usize);
+    }
+
+    #[test]
+    fn a_recording_of_a_window_leaves_out_the_runs_and_walked_children_outside_it() {
+        let mut host = cards_host();
+        host.walked.insert(foreground(row(4)));
+        host.window = Some((2, 2));
+
+        let frame = record_frame(&mut host);
+
+        // The run with the viewport's own background is not bounded, so the backgrounds of the first two cards
+        // are recorded with it.
+        assert_eq!(
+            host.left_out_scopes(),
+            vec![
+                backgrounds(row(3)),
+                backgrounds(row(4)),
+                foreground(row(1)),
+                foreground(row(2)),
+                foreground(row(3)),
+                foreground(row(4)),
+            ]
+        );
+        assert_eq!(
+            host.rows_recorded().into_iter().collect::<Vec<_>>(),
+            vec![0, 1, 2, 5, 6]
+        );
+        assert!(matches!(frame.root.segments[1], RecordedSegment::Outside));
+        assert!(frame.root.leaves_out_what_lies_outside_the_window);
+        assert_eq!(
+            frame.root.output.bytes as usize,
+            frame.display_list.bytes.len() - frame.prologue_bytes as usize
+        );
+        assert_matches_from_scratch(&mut host, &frame);
+    }
+
+    #[test]
+    fn a_window_that_moved_records_what_came_into_it_and_drops_what_left_it() {
+        let mut host = cards_host();
+        host.window = Some((0, 0));
+        let first = record_frame(&mut host);
+        assert_eq!(host.rows_recorded().into_iter().collect::<Vec<_>>(), vec![0, 1, 2]);
+        publish(&mut host, first);
+
+        host.window = Some((1, 2));
+        host.recorded.clear();
+        host.events.clear();
+        let second = record_frame(&mut host);
+        assert_eq!(host.rows_recorded().into_iter().collect::<Vec<_>>(), vec![3, 4, 5, 6]);
+        assert_eq!(host.left_out_scopes(), vec![foreground(row(1)), foreground(row(2))]);
+        assert!(host.copied_scopes().contains(&backgrounds(row(1))));
+        assert_matches_from_scratch(&mut host, &second);
+        publish(&mut host, second);
+
+        // With the window where it was, nothing is recorded, and nothing asks what bounds the segments again but
+        // for the viewport's scope itself.
+        host.recorded.clear();
+        host.bounds_asked = 0;
+        let third = record_frame(&mut host);
+        assert!(host.recorded.is_empty());
+        assert_eq!(host.bounds_asked, 1);
+        assert!(frame_is_unchanged(&third.root, false, false, Coverage::PublishedWindow));
+        assert!(!frame_is_unchanged(&third.root, false, false, Coverage::AnotherWindow));
+        assert!(!frame_is_unchanged(&third.root, false, false, Coverage::WholeDocument));
+        assert_matches_from_scratch(&mut host, &third);
+    }
+
+    #[test]
+    fn a_recording_of_the_whole_document_records_what_a_window_left_out() {
+        let mut host = cards_host();
+        host.window = Some((0, 0));
+        let first = record_frame(&mut host);
+        publish(&mut host, first);
+
+        host.window = None;
+        host.recorded.clear();
+        host.events.clear();
+        let second = record_frame(&mut host);
+        assert_eq!(host.rows_recorded().into_iter().collect::<Vec<_>>(), vec![3, 4, 5, 6]);
+        assert!(host.left_out_scopes().is_empty());
+        assert!(!second.root.leaves_out_what_lies_outside_the_window);
+        assert!(frame_is_unchanged(&second.root, false, false, Coverage::WholeDocument));
+        assert_matches_from_scratch(&mut host, &second);
+    }
+
+    #[test]
+    fn a_clean_walked_child_is_copied_whole_where_neither_window_leaves_any_of_it_out() {
+        let mut host = cards_host();
+        // The fourth card's foreground is walked, and paints two cards of its own in the second and fourth rows.
+        host.walked.insert(foreground(row(4)));
+        host.rows_painted_in.insert(row(4), (1, 3));
+        host.plan(
+            foreground(row(4)),
+            true,
+            &[
+                phase(PaintPhase::Foreground),
+                child(foreground(row(7))),
+                child(foreground(row(8))),
+            ],
+        );
+        for (card, grid_row) in [(7, 1), (8, 3)] {
+            host.grid_rows.insert(row(card), grid_row);
+            host.rows_painted_in.insert(row(card), (grid_row, grid_row));
+            host.plan(foreground(row(card)), true, &[phase(PaintPhase::Foreground)]);
+            host.produce(row(card), ProducerKind::DrawForeground, content(1, 0));
+        }
+        let record_in_window = |host: &mut TestHost, window: (i32, i32)| {
+            host.window = Some(window);
+            host.recorded.clear();
+            host.events.clear();
+            let frame = record_frame(host);
+            assert_matches_from_scratch(host, &frame);
+            frame
+        };
+
+        // The window cuts the walked card: the card in the fourth row is left out.
+        let first = record_in_window(&mut host, (0, 1));
+        assert!(host.rows_recorded().contains(&7));
+        assert!(host.left_out_scopes().contains(&foreground(row(8))));
+        publish(&mut host, first);
+
+        // The window holds all of the walked card now, but the recording it would be copied from left some of it
+        // out, so it is walked and what was left out is recorded.
+        let second = record_in_window(&mut host, (0, 3));
+        assert_eq!(host.action_of(foreground(row(4))), Some(ScopeAction::Assembled));
+        assert_eq!(host.rows_recorded().into_iter().collect::<Vec<_>>(), vec![5, 6, 8]);
+        publish(&mut host, second);
+
+        // Both windows hold all of it: it is copied whole.
+        let third = record_in_window(&mut host, (0, 5));
+        assert!(host.copied_scopes().contains(&foreground(row(4))));
+        assert_eq!(host.action_of(foreground(row(4))), None);
+        assert!(host.recorded.is_empty());
+        publish(&mut host, third);
+
+        // The window cuts it again: it is walked, and the card in the fourth row is dropped.
+        record_in_window(&mut host, (0, 1));
+        assert_eq!(host.action_of(foreground(row(4))), Some(ScopeAction::Assembled));
+        assert!(host.left_out_scopes().contains(&foreground(row(8))));
+        assert!(host.recorded.is_empty());
+    }
+
+    #[test]
+    fn what_a_box_cuts_off_is_left_out_though_the_box_is_wholly_inside_the_window() {
+        let mut host = cards_host();
+        // The fourth card is in the second row, and scrolls two cards of its own, one of them far down.
+        host.walked.insert(foreground(row(4)));
+        host.cutting_off_what_they_hold.insert(row(4));
+        host.plan(
+            foreground(row(4)),
+            true,
+            &[
+                phase(PaintPhase::Foreground),
+                child(foreground(row(7))),
+                child(foreground(row(8))),
+            ],
+        );
+        for (card, grid_row) in [(7, 1), (8, 9)] {
+            host.grid_rows.insert(row(card), grid_row);
+            host.rows_painted_in.insert(row(card), (grid_row, grid_row));
+            host.plan(foreground(row(card)), true, &[phase(PaintPhase::Foreground)]);
+            host.produce(row(card), ProducerKind::DrawForeground, content(1, 0));
+        }
+        host.window = Some((0, 2));
+
+        let frame = record_frame(&mut host);
+
+        assert_eq!(host.left_out_scopes(), vec![foreground(row(8))]);
+        assert!(host.rows_recorded().contains(&7));
+        assert!(frame.root.leaves_out_what_lies_outside_the_window);
+        assert_matches_from_scratch(&mut host, &frame);
+    }
+
+    #[test]
+    fn a_scope_that_holds_what_a_box_cuts_off_is_not_copied_whole_into_another_window() {
+        let mut host = cards_host();
+        // The fourth card's foreground is walked and holds a walked scope of a box that scrolls two cards, one of
+        // them far down.
+        host.walked.insert(foreground(row(4)));
+        host.walked.insert(foreground(row(9)));
+        host.cutting_off_what_they_hold.insert(row(9));
+        host.plan(
+            foreground(row(4)),
+            true,
+            &[phase(PaintPhase::Foreground), child(foreground(row(9)))],
+        );
+        host.grid_rows.insert(row(9), 1);
+        host.rows_painted_in.insert(row(9), (1, 1));
+        host.plan(
+            foreground(row(9)),
+            true,
+            &[
+                phase(PaintPhase::Foreground),
+                child(foreground(row(7))),
+                child(foreground(row(8))),
+            ],
+        );
+        for (card, grid_row) in [(7, 1), (8, 9)] {
+            host.grid_rows.insert(row(card), grid_row);
+            host.rows_painted_in.insert(row(card), (grid_row, grid_row));
+            host.plan(foreground(row(card)), true, &[phase(PaintPhase::Foreground)]);
+            host.produce(row(card), ProducerKind::DrawForeground, content(1, 0));
+        }
+
+        // A recording of the whole document holds the far card.
+        let whole = record_frame(&mut host);
+        assert!(host.rows_recorded().contains(&8));
+        publish(&mut host, whole);
+
+        // The fourth card is wholly inside the window, and nothing of it was left out, but what the box in it cuts
+        // off reaches outside: the card is walked and the far card is dropped.
+        host.window = Some((0, 2));
+        host.recorded.clear();
+        host.events.clear();
+        let windowed = record_frame(&mut host);
+        assert_eq!(host.action_of(foreground(row(4))), Some(ScopeAction::Assembled));
+        assert_eq!(host.left_out_scopes(), vec![foreground(row(8))]);
+        assert!(host.recorded.is_empty());
+        assert_matches_from_scratch(&mut host, &windowed);
     }
 }

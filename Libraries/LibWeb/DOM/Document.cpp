@@ -12834,7 +12834,7 @@ Utf16String Document::dump_display_list()
     Layout::RustFFI::document_host_hold_clock_lane(host);
     ScopeGuard release_clock_lane = [&] { Layout::RustFFI::document_host_release_clock_lane(host); };
     auto& resource_storage = navigable()->display_list_resource_storage();
-    auto display_list = record_display_list(read, HTML::PaintConfig {}, resource_storage, Painting::PaintCommandCacheMode::ReadOnly);
+    auto display_list = record_display_list(read, HTML::PaintConfig { .records_whole_document = true }, resource_storage, Painting::PaintCommandCacheMode::ReadOnly);
     if (!display_list)
         return "No display list"_utf16;
 

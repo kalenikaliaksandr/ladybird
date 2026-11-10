@@ -7281,6 +7281,7 @@ void LocalNavigable::render_screenshot(NonnullRefPtr<Gfx::Bitmap> target, PaintC
             navigable->paint_next_frame_if_needed(DOM::UpdateLayoutReason::ProcessScreenshot);
     }
 
+    paint_config.records_whole_document = true;
     if (!commit_frame(paint_config)) {
         callback(Compositor::ScreenshotResult::Failed);
         return;
