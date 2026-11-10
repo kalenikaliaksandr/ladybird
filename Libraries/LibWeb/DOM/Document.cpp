@@ -12340,29 +12340,9 @@ Optional<Painting::HitTestQuery> Document::prepare_hit_test_query(Layout::BegunR
     if (!has_committed_viewport_box())
         return {};
 
-    // A hit test only reads a recording of the document as it is now: it presents nothing, so the compositor never
-    // shows a frame a hit test made in place of one the render clock sampled later. The next frame records again.
-    // It copies from the published recording only where it records with the paint config the frames record with.
-    auto rebuild_hit_test_display_list = [&] {
-        set_needs_to_record_display_list();
-        HTML::PaintConfig paint_config { .paint_overlay = true };
-        if (auto navigable = this->navigable())
-            paint_config = navigable->stamp_paint_config(paint_config);
-        Compositing::DisplayListResourceStorage throwaway_resource_storage_for_hit_test_only_recording;
-        (void)record_display_list(read, paint_config, throwaway_resource_storage_for_hit_test_only_recording, Painting::PaintCommandCacheMode::ReadOnly);
-    };
-
-    // The recording in flight replaces the hit-test list once it lands, so a list that is not current waits for it
-    // first.
-    if (!hit_test_display_list_is_current(read)) {
-        if (auto navigable = this->navigable())
-            navigable->take_recording_in_flight_in(HTML::LocalNavigable::TakeIn::Wait);
-    }
-    if (!hit_test_display_list_is_current(read)) {
-        rebuild_hit_test_display_list();
-        if (!hit_test_display_list_is_current(read))
-            return {};
-    }
+    // A hit test reads the document's rows as they are now, so it waits for no recording and makes none.
+    if (!m_hit_test_display_list)
+        m_hit_test_display_list = Painting::HitTestDisplayList::create_before_any_recording(layout_node_arena(), *m_chrome_widget_registry);
 
     auto visual_context_tree = paint_state().visual_context_tree_without_update(read, *this);
     if (visual_animation_sample_time_nanoseconds.has_value() && visual_context_tree.has_visual_animations())

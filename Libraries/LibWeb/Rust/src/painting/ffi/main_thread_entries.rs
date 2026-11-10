@@ -823,9 +823,10 @@ fn landed_recording_stands(host: &crate::render_state::DocumentHost, version: cr
     })
 }
 
-/// Answers `query` from the hit-test list of the last recording `host`'s document published, built up by `build`, and
-/// the rows as of every write the host made, with every row's overflow measured, in `read`. Answers `default` where no recording
-/// was published. Every entry that hits tests is called with a live document host, on its document's thread.
+/// Answers `query` from every hit-test item of `host`'s document, built up by `build`, and the rows as of every write
+/// the host made, with every row's overflow measured, in `read`. The items are walked from those rows where the ones
+/// the host kept no longer say what the rows do. Answers `default` where the document has no visual context tree.
+/// Every entry that hits tests is called with a live document host, on its document's thread.
 fn with_hit_test_list<R>(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
@@ -838,12 +839,14 @@ fn with_hit_test_list<R>(
     ) -> R,
 ) -> R {
     let rows = host.fresh_measured_rows(read);
-    let absolute_rects = std::cell::RefCell::default();
-    let source = crate::painting::paint_read::PaintSource::over_rows(&rows.paintable, &absolute_rects);
-    let mut recording = host.recording();
-    let Some(list) = recording.hit_test_list().as_mut() else {
+    let Some(tree) = rows.visual_context_tree.as_deref() else {
         return default;
     };
+    let absolute_rects = std::cell::RefCell::default();
+    let source = crate::painting::paint_read::PaintSource::over_rows(&rows.paintable, &absolute_rects);
+    let mut kept = host.whole_document_hit_test_list();
+    let list =
+        crate::painting::hit_test::walk::WholeDocumentHitTestList::current(&mut kept, &source, tree, rows.viewport);
     build(list, &source);
     query(list, &rows, &source)
 }

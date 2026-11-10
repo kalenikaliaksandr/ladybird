@@ -120,6 +120,7 @@ impl<'a> PaintableCommit<'a> {
 
     pub(crate) fn begin_commit(&mut self) {
         self.arena_mut().clear_absolute_rect_memo();
+        self.arena_mut().note_hit_test_items_changed();
     }
 
     /// Clears the committed link and row of a box the commit left without them.
