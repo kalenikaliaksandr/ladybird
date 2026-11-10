@@ -65,18 +65,18 @@ displayListTest({
                       BlockContainer<DIV>#first/border COPY
                       BlockContainer(anonymous)/descendants(background-and-borders) COPY
                       BlockContainer<DIV>#item/descendants(background-and-borders) ASSEMBLE
-                        BlockContainer<DIV>#item/background/hit-test COPY
-                        BlockContainer<DIV>#item/scroll-metadata COPY
+                        BlockContainer<DIV>#item/background/hit-test RECORD
+                        BlockContainer<DIV>#item/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#item/background SKIP
                         BlockContainer<DIV>#item/border SKIP
                         BlockContainer(anonymous)/descendants(background-and-borders) ASSEMBLE
-                          BlockContainer(anonymous)/background/hit-test COPY
-                          BlockContainer(anonymous)/scroll-metadata COPY
+                          BlockContainer(anonymous)/background/hit-test RECORD
+                          BlockContainer(anonymous)/scroll-metadata RECORD (empty)
                           BlockContainer(anonymous)/background RECORD
                           BlockContainer(anonymous)/border SKIP
                         BlockContainer(anonymous)/descendants(background-and-borders) ASSEMBLE
-                          BlockContainer(anonymous)/background/hit-test COPY
-                          BlockContainer(anonymous)/scroll-metadata COPY
+                          BlockContainer(anonymous)/background/hit-test RECORD (empty)
+                          BlockContainer(anonymous)/scroll-metadata RECORD (empty)
                           BlockContainer(anonymous)/background SKIP
                           BlockContainer(anonymous)/border SKIP
                       BlockContainer(anonymous)/descendants(background-and-borders) COPY
@@ -94,22 +94,22 @@ displayListTest({
                       BlockContainer<DIV>#first/foreground COPY
                       BlockContainer(anonymous)/descendants(foreground) COPY
                       BlockContainer<DIV>#item/descendants(foreground) ASSEMBLE
-                        BlockContainer<DIV>#item/foreground/hit-test COPY
+                        BlockContainer<DIV>#item/foreground/hit-test RECORD (empty)
                         BlockContainer<DIV>#item/foreground RECORD (empty)
                         BlockContainer(anonymous)/descendants(foreground) ASSEMBLE
-                          BlockContainer(anonymous)/foreground/hit-test COPY
+                          BlockContainer(anonymous)/foreground/hit-test RECORD
                           BlockContainer(anonymous)/foreground RECORD
                           BlockContainer(anonymous)/outline SKIP
-                          BlockContainer(anonymous)/overlay/hit-test COPY
+                          BlockContainer(anonymous)/overlay/hit-test RECORD (empty)
                           BlockContainer(anonymous)/overlay SKIP
                         BlockContainer(anonymous)/descendants(foreground) ASSEMBLE
-                          BlockContainer(anonymous)/foreground/hit-test COPY
+                          BlockContainer(anonymous)/foreground/hit-test RECORD
                           BlockContainer(anonymous)/foreground RECORD
                           BlockContainer(anonymous)/outline SKIP
-                          BlockContainer(anonymous)/overlay/hit-test COPY
+                          BlockContainer(anonymous)/overlay/hit-test RECORD (empty)
                           BlockContainer(anonymous)/overlay SKIP
                         BlockContainer<DIV>#item/outline SKIP
-                        BlockContainer<DIV>#item/overlay/hit-test COPY
+                        BlockContainer<DIV>#item/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#item/overlay SKIP
                       BlockContainer(anonymous)/descendants(foreground) COPY
                       BlockContainer<DIV>#first/outline COPY

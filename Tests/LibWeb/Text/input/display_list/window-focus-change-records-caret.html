@@ -38,11 +38,11 @@ const focusChangeTrace = `
           BlockContainer<BODY>#body/foreground/hit-test COPY
           BlockContainer<BODY>#body/foreground COPY
           BlockContainer<DIV>#editor/descendants(foreground) ASSEMBLE
-            BlockContainer<DIV>#editor/foreground/hit-test COPY
+            BlockContainer<DIV>#editor/foreground/hit-test RECORD
             BlockContainer<DIV>#editor/foreground RECORD
-            BlockContainer<DIV>#editor/outline COPY
-            BlockContainer<DIV>#editor/overlay/hit-test COPY
-            BlockContainer<DIV>#editor/overlay COPY
+            BlockContainer<DIV>#editor/outline SKIP
+            BlockContainer<DIV>#editor/overlay/hit-test RECORD (empty)
+            BlockContainer<DIV>#editor/overlay SKIP
           BlockContainer<DIV>#plain/descendants(foreground) COPY
           BlockContainer<BODY>#body/outline COPY
           BlockContainer<BODY>#body/overlay/hit-test COPY

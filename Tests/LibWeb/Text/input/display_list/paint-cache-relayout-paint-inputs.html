@@ -65,11 +65,11 @@ displayListTest({
                         BlockContainer<DIV>#target/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#target/background RECORD
                         BlockContainer<DIV>#target/border SKIP
-                        InlineNode<SPAN>#inline/descendants(background-and-borders) ASSEMBLE
+                        InlineNode<SPAN>#inline/descendants(background-and-borders) RECORD
                       CanvasBox<CANVAS>#trigger/descendants(background-and-borders) COPY
                     BlockContainer<BODY>#body/descendants(inline-background-and-borders) ASSEMBLE
                       BlockContainer<DIV>#target/descendants(inline-background-and-borders) ASSEMBLE
-                        InlineNode<SPAN>#inline/descendants(inline-background-and-borders) ASSEMBLE
+                        InlineNode<SPAN>#inline/descendants(inline-background-and-borders) RECORD
                       CanvasBox<CANVAS>#trigger/descendants(inline-background-and-borders) COPY
                     BlockContainer<HTML>#html/foreground/hit-test COPY
                     BlockContainer<HTML>#html/foreground COPY
@@ -79,7 +79,7 @@ displayListTest({
                       BlockContainer<DIV>#target/descendants(foreground) ASSEMBLE
                         BlockContainer<DIV>#target/foreground/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/foreground RECORD (empty)
-                        InlineNode<SPAN>#inline/descendants(foreground) ASSEMBLE
+                        InlineNode<SPAN>#inline/descendants(foreground) RECORD
                         BlockContainer<DIV>#target/outline SKIP
                         BlockContainer<DIV>#target/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/overlay SKIP
@@ -87,7 +87,7 @@ displayListTest({
                       BlockContainer<BODY>#body/outline COPY
                       BlockContainer<BODY>#body/overlay/hit-test COPY
                       BlockContainer<BODY>#body/overlay COPY
-                    InlineNode<SPAN>#inline ASSEMBLE
+                    InlineNode<SPAN>#inline RECORD
                       InlineNode<SPAN>#inline/background/hit-test RECORD
                       InlineNode<SPAN>#inline/scroll-metadata RECORD (empty)
                       InlineNode<SPAN>#inline/background SKIP
@@ -99,7 +99,7 @@ displayListTest({
                       InlineNode<SPAN>#inline/outline SKIP
                       InlineNode<SPAN>#inline/overlay/hit-test RECORD (empty)
                       InlineNode<SPAN>#inline/overlay SKIP
-                    BlockContainer<HTML>#html/outline COPY
+                    BlockContainer<HTML>#html/outline SKIP
                   @viewport/outline COPY
             `,
         },
@@ -139,15 +139,15 @@ displayListTest({
                       BlockContainer<BODY>#body/background COPY
                       BlockContainer<BODY>#body/border COPY
                       BlockContainer<DIV>#target/descendants(background-and-borders) ASSEMBLE
-                        BlockContainer<DIV>#target/background/hit-test COPY
-                        BlockContainer<DIV>#target/scroll-metadata COPY
+                        BlockContainer<DIV>#target/background/hit-test RECORD
+                        BlockContainer<DIV>#target/scroll-metadata RECORD (empty)
                         BlockContainer<DIV>#target/background RECORD
                         BlockContainer<DIV>#target/border SKIP
-                        InlineNode<SPAN>#inline/descendants(background-and-borders) ASSEMBLE
+                        InlineNode<SPAN>#inline/descendants(background-and-borders) RECORD
                       CanvasBox<CANVAS>#trigger/descendants(background-and-borders) COPY
                     BlockContainer<BODY>#body/descendants(inline-background-and-borders) ASSEMBLE
                       BlockContainer<DIV>#target/descendants(inline-background-and-borders) ASSEMBLE
-                        InlineNode<SPAN>#inline/descendants(inline-background-and-borders) ASSEMBLE
+                        InlineNode<SPAN>#inline/descendants(inline-background-and-borders) RECORD
                       CanvasBox<CANVAS>#trigger/descendants(inline-background-and-borders) COPY
                     BlockContainer<HTML>#html/foreground/hit-test COPY
                     BlockContainer<HTML>#html/foreground COPY
@@ -155,29 +155,29 @@ displayListTest({
                       BlockContainer<BODY>#body/foreground/hit-test COPY
                       BlockContainer<BODY>#body/foreground COPY
                       BlockContainer<DIV>#target/descendants(foreground) ASSEMBLE
-                        BlockContainer<DIV>#target/foreground/hit-test COPY
+                        BlockContainer<DIV>#target/foreground/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/foreground RECORD (empty)
-                        InlineNode<SPAN>#inline/descendants(foreground) ASSEMBLE
+                        InlineNode<SPAN>#inline/descendants(foreground) RECORD
                         BlockContainer<DIV>#target/outline SKIP
-                        BlockContainer<DIV>#target/overlay/hit-test COPY
+                        BlockContainer<DIV>#target/overlay/hit-test RECORD (empty)
                         BlockContainer<DIV>#target/overlay SKIP
                       CanvasBox<CANVAS>#trigger/descendants(foreground) COPY
                       BlockContainer<BODY>#body/outline COPY
                       BlockContainer<BODY>#body/overlay/hit-test COPY
                       BlockContainer<BODY>#body/overlay COPY
-                    InlineNode<SPAN>#inline ASSEMBLE
-                      InlineNode<SPAN>#inline/background/hit-test COPY
-                      InlineNode<SPAN>#inline/scroll-metadata COPY
+                    InlineNode<SPAN>#inline RECORD
+                      InlineNode<SPAN>#inline/background/hit-test RECORD
+                      InlineNode<SPAN>#inline/scroll-metadata RECORD (empty)
                       InlineNode<SPAN>#inline/background SKIP
                       InlineNode<SPAN>#inline/border SKIP
-                      InlineNode<SPAN>#inline/foreground/hit-test COPY
+                      InlineNode<SPAN>#inline/foreground/hit-test RECORD
                       InlineNode<SPAN>#inline/inline-piece RECORD (empty)
                       InlineNode<SPAN>#inline/text-fragment RECORD
                       InlineNode<SPAN>#inline/foreground RECORD (empty)
                       InlineNode<SPAN>#inline/outline SKIP
-                      InlineNode<SPAN>#inline/overlay/hit-test COPY
+                      InlineNode<SPAN>#inline/overlay/hit-test RECORD (empty)
                       InlineNode<SPAN>#inline/overlay SKIP
-                    BlockContainer<HTML>#html/outline COPY
+                    BlockContainer<HTML>#html/outline SKIP
                   @viewport/outline COPY
             `,
         },

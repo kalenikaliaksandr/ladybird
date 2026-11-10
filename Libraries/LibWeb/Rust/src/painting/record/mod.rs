@@ -28,7 +28,6 @@ pub(crate) mod vector_images;
 
 use crate::css::css_enums;
 use crate::css::css_pixels::CssPixelRect;
-use crate::css::style::fast_hash::FastSet;
 use crate::layout::node_data::NodeSlotId;
 use crate::layout::node_data::{NodeFlag, NodeKind};
 use crate::painting::border_radii::BorderRadii;
@@ -58,6 +57,9 @@ pub struct RecordingOutput {
     pub root_group_color: libgfx_rust::Color,
     pub hit_test_list: HitTestList,
     pub display_list: Arc<RecordedDisplayList>,
+    /// The scopes the recording walked, with what each part of them recorded, which the next recording copies its
+    /// clean output by.
+    pub(crate) recorded_root: Option<Arc<order_tree::RecordedScope>>,
     pub has_blocking_wheel_event_listeners: bool,
     pub wheel_event_listener_state_generation: u64,
     pub is_identical_to_published_recording: bool,
@@ -122,7 +124,6 @@ pub struct PaintRecorder<'a, O: Observer> {
     // Set while a producer records output that depends on whether the window is focused.
     producer_reads_window_focus: std::cell::Cell<bool>,
     // Rows of the layout subtrees whose root moved: every producer of theirs records again.
-    pub(crate) moved_expansion: FastSet<NodeSlotId>,
     pub(crate) blocking_wheel_event_region_count: u32,
     pub(crate) records_per_box_wheel_hit_test_targets: bool,
     pub(crate) observer: O,

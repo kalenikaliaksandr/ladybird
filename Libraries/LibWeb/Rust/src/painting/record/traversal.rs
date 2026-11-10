@@ -7,7 +7,6 @@
 use crate::painting::record::trace::Observer;
 
 use super::{PaintPhase, PaintRecorder};
-use crate::css::style::fast_hash::FastSet;
 use crate::layout::node_data::{NodeKind, NodeSlotId};
 use crate::layout::node_facts;
 use crate::painting::display_list::commands::ContextRef;
@@ -20,7 +19,7 @@ use crate::painting::paint_read::{GeometryRead, PaintSource};
 use crate::painting::record::RecordingInputs;
 use crate::painting::record::assemble::{Assembler, frame_is_unchanged};
 use crate::painting::record::frame_inputs::FrameInputs;
-use crate::painting::record::order_tree::{PaintOrderTreeAccess, ProducerKind};
+use crate::painting::record::order_tree::ProducerKind;
 use crate::painting::record::paint::background_resolution::root_background_canvas_rect;
 use crate::painting::record::resources::RecordingResourceManifest;
 use crate::painting::record::scratch::RecordingScratch;
@@ -33,7 +32,6 @@ use std::sync::Arc;
 pub(crate) fn record_display_list(
     source: &PaintSource<'_>,
     scratch: &mut RecordingScratch,
-    tree: PaintOrderTreeAccess<'_>,
     viewport: NodeSlotId,
     inputs: &RecordingInputs,
     source_recording: Option<Arc<RecordingOutput>>,
@@ -43,15 +41,7 @@ pub(crate) fn record_display_list(
     scratch.begin_recording(source.frame().paintable_row_capacity());
     macro_rules! record {
         ($observer:ty) => {
-            record_display_list_impl::<$observer>(
-                source,
-                scratch,
-                tree,
-                viewport,
-                inputs,
-                source_recording,
-                source_items,
-            )
+            record_display_list_impl::<$observer>(source, scratch, viewport, inputs, source_recording, source_items)
         };
     }
     let result = if trace {
@@ -67,7 +57,6 @@ pub(crate) fn record_display_list(
 fn record_display_list_impl<O: Observer>(
     source: &PaintSource<'_>,
     scratch: &mut RecordingScratch,
-    tree: PaintOrderTreeAccess<'_>,
     viewport: NodeSlotId,
     inputs: &RecordingInputs,
     source_recording: Option<Arc<RecordingOutput>>,
@@ -112,7 +101,6 @@ fn record_display_list_impl<O: Observer>(
         live_producer: false,
         producer_reads_window_focus: std::cell::Cell::new(false),
         line_root_positions: None,
-        moved_expansion: FastSet::default(),
         blocking_wheel_event_region_count: 0,
         records_per_box_wheel_hit_test_targets: frame_inputs.records_per_box_wheel_hit_test_targets(),
         observer: O::default(),
@@ -133,47 +121,49 @@ fn record_display_list_impl<O: Observer>(
         || !inputs.flex_overlays.is_empty()
         || inputs.caret_debug_rect.is_some();
     let root_scope = PaintScope::stacking_context(viewport);
+    // The scopes the published recording walked, where it can be copied from.
+    let published_root = recorder
+        .source_recording
+        .as_ref()
+        .and_then(|frame| Some((frame.recorded_root.clone()?, frame.prologue_bytes)));
     // Nothing was pushed and nothing records every frame: the published tape and items are
     // this frame, which lets the compositor skip its update as well.
     let unchanged_frame = recorder
         .source_recording
         .as_ref()
         .zip(recorder.source_items.as_ref())
-        .filter(|(frame, _)| {
-            frame_is_unchanged(tree.read(), !source.frame().damage().is_empty(), window_focus_changed)
+        .zip(published_root.as_ref())
+        .filter(|((frame, _), (root, _))| {
+            frame_is_unchanged(root, !source.frame().damage().is_empty(), window_focus_changed)
                 && !has_inspector_overlays
                 && frame.prologue_bytes == prologue_bytes
                 && recorder.recorder.bytes() == &frame.display_list.bytes[..prologue_bytes as usize]
         })
-        .map(|(frame, items)| (frame.display_list.clone(), items.items.clone()));
-    let display_list = match unchanged_frame {
-        Some((display_list, items)) => {
+        .map(|((frame, items), (root, _))| (frame.display_list.clone(), items.items.clone(), Arc::clone(root)));
+    let copies_from_published_recording = published_root.is_some() && unchanged_frame.is_none();
+    let (display_list, recorded_root) = match unchanged_frame {
+        Some((display_list, items, root)) => {
             recorder
                 .observer
                 .observe(|log| log.leaf(Operation::Scope(root_scope), Action::Copy, false));
             recorder.list.items = items;
-            recorder.blocking_wheel_event_region_count = tree.read().root_entry().output().blocking_wheel_event_regions;
-            display_list
+            recorder.blocking_wheel_event_region_count = root.output.blocking_wheel_event_regions;
+            (display_list, root)
         }
         None => {
-            let source_prologue_bytes = recorder.source_recording.as_ref().map(|frame| frame.prologue_bytes);
-            let mut marks = std::mem::take(&mut recorder.scratch.scope_marks);
-            Assembler::new(
-                &mut recorder,
-                tree,
-                &mut marks,
-                source_prologue_bytes,
-                window_focus_changed,
-            )
-            .assemble_root(root_scope);
-            recorder.scratch.scope_marks = marks;
+            let recorded_root = Assembler::new(&mut recorder, window_focus_changed).assemble_root(
+                root_scope,
+                published_root
+                    .as_ref()
+                    .map(|(root, prologue_bytes)| (root, *prologue_bytes)),
+            );
             if has_inspector_overlays {
                 recorder.trace_paint(
                     Operation::Named(None, "inspector-overlays"),
                     crate::painting::record::paint::inspector_overlay::record_inspector_overlays,
                 );
             }
-            Arc::new(recorder.recorder.into_builder().finish())
+            (Arc::new(recorder.recorder.into_builder().finish()), recorded_root)
         }
     };
     recorder.ink_bounds_audit.report();
@@ -188,6 +178,7 @@ fn record_display_list_impl<O: Observer>(
         root_group_color,
         hit_test_list,
         display_list,
+        recorded_root: Some(recorded_root),
         has_blocking_wheel_event_listeners: recorder.blocking_wheel_event_region_count > 0,
         wheel_event_listener_state_generation: inputs.wheel_event_listener_state_generation,
         is_identical_to_published_recording: false,
@@ -195,10 +186,82 @@ fn record_display_list_impl<O: Observer>(
         capture_log: recorder.observer.finish(),
         vector_image_display_lists: Vec::new(),
     };
-    RecordingResult {
-        output,
-        resources: recorder.resources,
+    let resources = recorder.resources;
+    if copies_from_published_recording && copied_output_is_verified() {
+        let from_scratch =
+            record_display_list_impl::<super::trace::NoTrace>(source, scratch, viewport, inputs, None, None).output;
+        require_same_recording(&output, &from_scratch);
     }
+    RecordingResult { output, resources }
+}
+
+fn copied_output_is_verified() -> bool {
+    static VERIFIED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFIED.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("LIBWEB_VERIFY_PAINT_REUSE").is_some())
+}
+
+/// Requires a recording that copied clean output from the published one to be the recording the same frame gives
+/// when everything is recorded: a difference is output that was copied though what it shows changed.
+fn require_same_recording(assembled: &RecordingOutput, from_scratch: &RecordingOutput) {
+    use crate::painting::display_list::builder::for_each_command;
+    use crate::painting::display_list::commands::{DisplayListCommandType, PaintNestedDisplayList};
+    // A command that paints an SVG image is recorded with a placeholder for the image's display list, which
+    // publication replaces with the list the host rendered. A copied command names that list already.
+    let without_nested_display_list_ids = |bytes: &[u8]| {
+        let mut bytes = bytes.to_vec();
+        let id_field = std::mem::offset_of!(PaintNestedDisplayList, display_list_id);
+        let mut id_offsets = Vec::new();
+        crate::painting::display_list::nested_records::for_each_command_including_nested(
+            &bytes,
+            &mut |command_type, payload_offset, _| {
+                if command_type == DisplayListCommandType::PaintNestedDisplayList {
+                    id_offsets.push(payload_offset + id_field);
+                }
+            },
+        );
+        for offset in id_offsets {
+            bytes[offset..offset + std::mem::size_of::<u64>()].fill(0);
+        }
+        bytes
+    };
+    let (assembled_list, scratch_list) = (&assembled.display_list, &from_scratch.display_list);
+    let assembled_bytes = without_nested_display_list_ids(&assembled_list.bytes);
+    let scratch_bytes = without_nested_display_list_ids(&scratch_list.bytes);
+    if assembled_bytes != scratch_bytes {
+        let first_differing_byte = assembled_bytes
+            .iter()
+            .zip(&scratch_bytes)
+            .position(|(copied, recorded)| copied != recorded)
+            .unwrap_or(assembled_bytes.len().min(scratch_bytes.len()));
+        let command_at = |bytes: &[u8]| {
+            let mut found = None;
+            for_each_command(bytes, |header, offset, _| {
+                if offset <= first_differing_byte {
+                    found = Some((offset, header.command_type.name(), header.bounding_rect));
+                }
+            });
+            found
+        };
+        panic!(
+            "A recording copied output that recording from scratch replaces: {} bytes against {}, differing from byte {first_differing_byte}, in {:?} where recording from scratch has {:?}",
+            assembled_list.bytes.len(),
+            scratch_list.bytes.len(),
+            command_at(&assembled_list.bytes),
+            command_at(&scratch_list.bytes)
+        );
+    }
+    assert!(
+        assembled_list.command_runs == scratch_list.command_runs,
+        "A recording copied command runs that recording from scratch replaces"
+    );
+    assert!(
+        assembled.hit_test_list.items == from_scratch.hit_test_list.items,
+        "A recording copied hit-test items that recording from scratch replaces"
+    );
+    assert!(
+        assembled.has_blocking_wheel_event_listeners == from_scratch.has_blocking_wheel_event_listeners,
+        "A recording copied wheel regions that recording from scratch replaces"
+    );
 }
 
 impl<O: Observer> PaintRecorder<'_, O> {

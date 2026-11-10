@@ -72,10 +72,10 @@ displayListTest({
                       BlockContainer<DIV>#root/foreground/hit-test COPY
                       BlockContainer<DIV>#root/foreground COPY
                       SVGSVGBox<svg>#svg/descendants(foreground) ASSEMBLE
-                        SVGSVGBox<svg>#svg/background/hit-test COPY
-                        SVGSVGBox<svg>#svg/scroll-metadata COPY
-                        SVGSVGBox<svg>#svg/background COPY
-                        SVGSVGBox<svg>#svg/border COPY
+                        SVGSVGBox<svg>#svg/background/hit-test RECORD
+                        SVGSVGBox<svg>#svg/scroll-metadata RECORD (empty)
+                        SVGSVGBox<svg>#svg/background SKIP
+                        SVGSVGBox<svg>#svg/border SKIP
                         SVGSVGBox<svg>#svg/svg RECORD
                           SVGSVGBox<svg>#svg/foreground/hit-test RECORD (empty)
                           SVGSVGBox<svg>#svg/foreground RECORD (empty)

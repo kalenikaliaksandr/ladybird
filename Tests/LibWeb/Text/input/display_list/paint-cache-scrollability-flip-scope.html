@@ -102,14 +102,14 @@ displayListTest({
                     BlockContainer<DIV>#row-0.box COPY
                     BlockContainer<DIV>#outer.box COPY
                     BlockContainer<DIV>#row-2.box ASSEMBLE
-                      BlockContainer<DIV>#row-2.box/background/hit-test COPY
-                      BlockContainer<DIV>#row-2.box/scroll-metadata COPY
+                      BlockContainer<DIV>#row-2.box/background/hit-test RECORD
+                      BlockContainer<DIV>#row-2.box/scroll-metadata RECORD
                       BlockContainer<DIV>#row-2.box/background SKIP
                       BlockContainer<DIV>#row-2.box/border RECORD
-                      BlockContainer<DIV>#row-2.box/foreground/hit-test COPY
+                      BlockContainer<DIV>#row-2.box/foreground/hit-test RECORD
                       BlockContainer<DIV>#row-2.box/foreground RECORD
                       BlockContainer<DIV>#row-2.box/outline SKIP
-                      BlockContainer<DIV>#row-2.box/overlay/hit-test COPY
+                      BlockContainer<DIV>#row-2.box/overlay/hit-test RECORD (empty)
                       BlockContainer<DIV>#row-2.box/overlay SKIP
                     BlockContainer<DIV>#second-row-0.box COPY
                     BlockContainer<DIV>#second-row-1.box COPY
@@ -185,10 +185,10 @@ displayListTest({
                         BlockContainer<DIV>#inner/background SKIP
                         BlockContainer<DIV>#inner/border SKIP
                         BlockContainer<DIV>#inner-content.tall/descendants(background-and-borders) ASSEMBLE
-                          BlockContainer<DIV>#inner-content.tall/background/hit-test COPY
+                          BlockContainer<DIV>#inner-content.tall/background/hit-test RECORD
                           BlockContainer<DIV>#inner-content.tall/scroll-metadata RECORD
-                          BlockContainer<DIV>#inner-content.tall/background COPY
-                          BlockContainer<DIV>#inner-content.tall/border COPY
+                          BlockContainer<DIV>#inner-content.tall/background SKIP
+                          BlockContainer<DIV>#inner-content.tall/border SKIP
                       BlockContainer<DIV>#filler.tall/descendants(background-and-borders) ASSEMBLE
                         BlockContainer<DIV>#filler.tall/background/hit-test RECORD
                         BlockContainer<DIV>#filler.tall/scroll-metadata RECORD

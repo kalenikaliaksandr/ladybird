@@ -104,6 +104,7 @@ RENDER_STATE_ALLOWED = {
             "layout/run_repeatability.rs:VERIFICATION",
             "painting/hit_test/walk.rs:VERIFIED",
             "painting/record/ink_bounds.rs:VERIFICATION",
+            "painting/record/traversal.rs:VERIFIED",
             "render_state/clock/hover.rs:LOGS",
         ],
     ),

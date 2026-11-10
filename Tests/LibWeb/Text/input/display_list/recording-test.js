@@ -1,5 +1,9 @@
 // Exact work expectations for incremental display list recordings. Output is buffered: println()
 // changes the document and would otherwise invalidate the next step's caches.
+//
+// A recording keeps what it recorded in runs about a screen row of the document tall, and records a run again as a
+// whole. These pages are much smaller than one run, so the recordings here are cut as finely as they go, which shows
+// which boxes a change reaches.
 
 function normalizeDisplayListTrace(text) {
     const lines = text.replace(/\r/g, "").split("\n");
@@ -41,13 +45,13 @@ function displayListTest({ setup, steps, cleanup }) {
             await setup?.();
             await document.fonts.ready;
             __outputElement.style.display = "none";
-            internals.recordDisplayListForTesting(false, false);
+            internals.recordDisplayListForTesting(false, false, true);
             for (const step of steps) {
                 let error = null;
                 internals.beginDisplayListTrace();
                 try {
                     if (step.mutate?.()?.then) throw new Error("mutate must be synchronous");
-                    internals.recordDisplayListForTesting(step.paintOverlay ?? false, step.cold ?? false);
+                    internals.recordDisplayListForTesting(step.paintOverlay ?? false, step.cold ?? false, true);
                     const result = step.check?.((actual, expected, label) => {
                         if (!Object.is(actual, expected)) {
                             throw new Error(

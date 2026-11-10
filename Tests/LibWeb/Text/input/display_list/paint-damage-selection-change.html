@@ -22,12 +22,12 @@ displayListTest({
                 @canvas RECORD (empty)
                 @viewport ASSEMBLE
                   @viewport/preamble RECORD (empty)
-                  @viewport/background/hit-test COPY
-                  @viewport/scroll-metadata COPY
+                  @viewport/background/hit-test RECORD
+                  @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
                   BlockContainer<HTML>#html/descendants(background-and-borders) ASSEMBLE
-                  @viewport/foreground/hit-test COPY
+                  @viewport/foreground/hit-test RECORD (empty)
                   @viewport/foreground RECORD (empty)
                   BlockContainer<HTML>#html/descendants(foreground) ASSEMBLE
                   BlockContainer<HTML>#html ASSEMBLE
@@ -48,8 +48,8 @@ displayListTest({
                         BlockContainer<DIV>#outer/border COPY
                         BlockContainer<DIV>#before.section/descendants(background-and-borders) COPY
                         BlockContainer<DIV>#target.section/descendants(background-and-borders) ASSEMBLE
-                          BlockContainer<DIV>#target.section/background/hit-test COPY
-                          BlockContainer<DIV>#target.section/scroll-metadata COPY
+                          BlockContainer<DIV>#target.section/background/hit-test RECORD
+                          BlockContainer<DIV>#target.section/scroll-metadata RECORD (empty)
                           BlockContainer<DIV>#target.section/background SKIP
                           BlockContainer<DIV>#target.section/border SKIP
                         BlockContainer<DIV>#after.section/descendants(background-and-borders) COPY
@@ -63,10 +63,10 @@ displayListTest({
                         BlockContainer<DIV>#outer/foreground COPY
                         BlockContainer<DIV>#before.section/descendants(foreground) COPY
                         BlockContainer<DIV>#target.section/descendants(foreground) ASSEMBLE
-                          BlockContainer<DIV>#target.section/foreground/hit-test COPY
+                          BlockContainer<DIV>#target.section/foreground/hit-test RECORD
                           BlockContainer<DIV>#target.section/foreground RECORD
                           BlockContainer<DIV>#target.section/outline SKIP
-                          BlockContainer<DIV>#target.section/overlay/hit-test COPY
+                          BlockContainer<DIV>#target.section/overlay/hit-test RECORD (empty)
                           BlockContainer<DIV>#target.section/overlay SKIP
                         BlockContainer<DIV>#after.section/descendants(foreground) COPY
                         BlockContainer<DIV>#outer/outline COPY
@@ -87,12 +87,12 @@ displayListTest({
                 @canvas RECORD (empty)
                 @viewport ASSEMBLE
                   @viewport/preamble RECORD (empty)
-                  @viewport/background/hit-test COPY
-                  @viewport/scroll-metadata COPY
+                  @viewport/background/hit-test RECORD
+                  @viewport/scroll-metadata RECORD (empty)
                   @viewport/background SKIP
                   @viewport/border SKIP
                   BlockContainer<HTML>#html/descendants(background-and-borders) ASSEMBLE
-                  @viewport/foreground/hit-test COPY
+                  @viewport/foreground/hit-test RECORD (empty)
                   @viewport/foreground RECORD (empty)
                   BlockContainer<HTML>#html/descendants(foreground) ASSEMBLE
                   BlockContainer<HTML>#html ASSEMBLE
@@ -113,8 +113,8 @@ displayListTest({
                         BlockContainer<DIV>#outer/border COPY
                         BlockContainer<DIV>#before.section/descendants(background-and-borders) COPY
                         BlockContainer<DIV>#target.section/descendants(background-and-borders) ASSEMBLE
-                          BlockContainer<DIV>#target.section/background/hit-test COPY
-                          BlockContainer<DIV>#target.section/scroll-metadata COPY
+                          BlockContainer<DIV>#target.section/background/hit-test RECORD
+                          BlockContainer<DIV>#target.section/scroll-metadata RECORD (empty)
                           BlockContainer<DIV>#target.section/background SKIP
                           BlockContainer<DIV>#target.section/border SKIP
                         BlockContainer<DIV>#after.section/descendants(background-and-borders) COPY
@@ -128,10 +128,10 @@ displayListTest({
                         BlockContainer<DIV>#outer/foreground COPY
                         BlockContainer<DIV>#before.section/descendants(foreground) COPY
                         BlockContainer<DIV>#target.section/descendants(foreground) ASSEMBLE
-                          BlockContainer<DIV>#target.section/foreground/hit-test COPY
+                          BlockContainer<DIV>#target.section/foreground/hit-test RECORD
                           BlockContainer<DIV>#target.section/foreground RECORD
                           BlockContainer<DIV>#target.section/outline SKIP
-                          BlockContainer<DIV>#target.section/overlay/hit-test COPY
+                          BlockContainer<DIV>#target.section/overlay/hit-test RECORD (empty)
                           BlockContainer<DIV>#target.section/overlay SKIP
                         BlockContainer<DIV>#after.section/descendants(foreground) COPY
                         BlockContainer<DIV>#outer/outline COPY

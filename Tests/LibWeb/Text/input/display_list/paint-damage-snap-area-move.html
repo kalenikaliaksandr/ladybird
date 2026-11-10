@@ -58,10 +58,10 @@ displayListTest({
                       BlockContainer<BODY>#body/background COPY
                       BlockContainer<BODY>#body/border COPY
                       BlockContainer<DIV>#snap/descendants(background-and-borders) ASSEMBLE
-                        BlockContainer<DIV>#snap/background/hit-test COPY
+                        BlockContainer<DIV>#snap/background/hit-test RECORD
                         BlockContainer<DIV>#snap/scroll-metadata RECORD
-                        BlockContainer<DIV>#snap/background COPY
-                        BlockContainer<DIV>#snap/border COPY
+                        BlockContainer<DIV>#snap/background SKIP
+                        BlockContainer<DIV>#snap/border SKIP
                         BlockContainer<DIV>#area0.area/descendants(background-and-borders) COPY
                         BlockContainer<DIV>#area1.area/descendants(background-and-borders) ASSEMBLE
                           BlockContainer<DIV>#area1.area/background/hit-test RECORD
@@ -94,7 +94,7 @@ displayListTest({
                           BlockContainer<DIV>#area2.area/outline SKIP
                           BlockContainer<DIV>#area2.area/overlay/hit-test RECORD (empty)
                           BlockContainer<DIV>#area2.area/overlay SKIP
-                        BlockContainer<DIV>#snap/outline COPY
+                        BlockContainer<DIV>#snap/outline SKIP
                         BlockContainer<DIV>#snap/overlay/hit-test RECORD
                         BlockContainer<DIV>#snap/overlay RECORD
                       BlockContainer<BODY>#body/outline COPY
