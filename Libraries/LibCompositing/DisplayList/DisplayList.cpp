@@ -159,6 +159,29 @@ ErrorOr<NonnullRefPtr<DisplayList>> DisplayList::create_from_shared_buffer(Prope
     return adopt_received_storage(move(properties), storage);
 }
 
+ErrorOr<Core::AnonymousBuffer> DisplayList::copy_update_to_shared_buffer(DisplayList const* held_by_receiver) const
+{
+    auto const* held_storage = held_by_receiver ? held_by_receiver->m_storage : nullptr;
+    // Sealed where the platform supports it, so the receiver cannot be faulted by the file shrinking.
+    auto buffer = TRY(Core::AnonymousBuffer::create_with_size(RustFFI::display_list_storage_update_size(m_storage, held_storage)));
+    RustFFI::display_list_storage_write_update(m_storage, held_storage, buffer.data<u8>());
+    return buffer;
+}
+
+ErrorOr<NonnullRefPtr<DisplayList>> DisplayList::create_from_update(Properties properties, Core::AnonymousBuffer update_buffer, DisplayList const* held)
+{
+    if (!update_buffer.is_valid())
+        return Error::from_string_literal("Display list update has no buffer");
+    TRY(update_buffer.validate_backing_size());
+    auto update = update_buffer.bytes();
+    u8 const* error = nullptr;
+    size_t error_size = 0;
+    auto const* storage = RustFFI::display_list_storage_receive_update(update.data(), update.size(), held ? held->m_storage : nullptr, &error, &error_size);
+    if (!storage)
+        return Error::from_string_view({ error, error_size });
+    return adopt_received_storage(move(properties), storage);
+}
+
 DisplayList::Properties DisplayList::properties() const
 {
     return {

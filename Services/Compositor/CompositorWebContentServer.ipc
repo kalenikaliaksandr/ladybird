@@ -42,7 +42,9 @@ endpoint CompositorWebContentServer
     stop_presenting_to_client(Web::CompositorContextId context_id) =|
     destroy_context(Web::CompositorContextId context_id) =|
 
-    update_display_list(Web::CompositorContextId context_id, Core::AnonymousBuffer display_list_buffer, u64 tape_size, u64 run_count, Compositing::DisplayList::Properties display_list_properties, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Compositing::ScrollStateSnapshot scroll_state_snapshot) =|
+    // The buffer names every chunk of the list's tape and holds the chunks that the list this process was sent for the
+    // context before, whose id is held_display_list_id, lacks.
+    update_display_list(Web::CompositorContextId context_id, Core::AnonymousBuffer display_list_update, Optional<u64> held_display_list_id, Compositing::DisplayList::Properties display_list_properties, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Compositing::ScrollStateSnapshot scroll_state_snapshot) =|
     update_display_list_resources(Web::CompositorContextId context_id, Compositing::DisplayListResourceTransaction resource_transaction) =|
     update_visual_context_tree(Web::CompositorContextId context_id, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Compositing::ScrollStateSnapshot scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state) =|
     update_scroll_state(Web::CompositorContextId context_id, Compositing::ScrollStateSnapshot scroll_state_snapshot, Compositing::KeyboardScrollState keyboard_scroll_state) =|

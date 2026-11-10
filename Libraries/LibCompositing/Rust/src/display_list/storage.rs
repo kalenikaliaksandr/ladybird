@@ -9,6 +9,7 @@
 //! it back to the entry points of this crate.
 
 use super::builder::RecordedDisplayList;
+use super::chunks::{ChunkIndex, ChunkedTape, DisplayListChunk, receive_update, update_size, write_update};
 use super::commands::{ContextRef, DisplayListCommandRun, DisplayListCommandType};
 use super::effect_clip_plan::EffectClipPlan;
 use super::summary::{
@@ -77,6 +78,8 @@ enum Tape {
     Received {
         bytes: AlignedBytes,
         command_runs: Vec<DisplayListCommandRun>,
+        // Empty for a tape that arrived whole.
+        chunks: Vec<DisplayListChunk>,
     },
 }
 
@@ -90,6 +93,7 @@ pub struct DisplayListStorage {
     // against trees of one structural epoch only, so one plan serves every replay.
     effect_clip_plan: OnceLock<EffectClipPlan>,
     summary: OnceLock<DisplayListSummary>,
+    chunk_index: OnceLock<ChunkIndex>,
 }
 
 // SAFETY: The view's pointers address the tape the storage owns, and nothing changes the tape.
@@ -102,13 +106,16 @@ impl DisplayListStorage {
         let view = match &tape {
             Tape::Empty => TapeView::empty(),
             Tape::Recorded(recorded) => TapeView::of(&recorded.bytes, &recorded.command_runs),
-            Tape::Received { bytes, command_runs } => TapeView::of(bytes.as_slice(), command_runs),
+            Tape::Received {
+                bytes, command_runs, ..
+            } => TapeView::of(bytes.as_slice(), command_runs),
         };
         Arc::new(Self {
             view,
             tape,
             effect_clip_plan: OnceLock::new(),
             summary: OnceLock::new(),
+            chunk_index: OnceLock::new(),
         })
     }
 
@@ -126,6 +133,30 @@ impl DisplayListStorage {
             Tape::Recorded(recorded) => &recorded.command_runs,
             Tape::Received { command_runs, .. } => command_runs,
         }
+    }
+
+    /// The tape with the chunks it is cut into, for a tape that was recorded here or arrived as an update.
+    fn chunked_tape(&self) -> ChunkedTape<'_> {
+        let chunks = match &self.tape {
+            Tape::Empty => &[][..],
+            Tape::Recorded(recorded) => &recorded.chunks,
+            Tape::Received { chunks, .. } => chunks,
+        };
+        assert_eq!(
+            chunks.last().map_or(0, |chunk| chunk.byte_end as usize),
+            self.bytes().len(),
+            "a tape that arrived whole is not cut into chunks"
+        );
+        ChunkedTape {
+            bytes: self.bytes(),
+            runs: self.command_runs(),
+            chunks,
+        }
+    }
+
+    fn chunk_index(&self) -> &ChunkIndex {
+        self.chunk_index
+            .get_or_init(|| ChunkIndex::of(self.chunked_tape().chunks))
     }
 
     pub fn summary(&self) -> &DisplayListSummary {
@@ -351,6 +382,94 @@ pub unsafe extern "C" fn display_list_storage_receive_packed(
     unsafe { display_list_storage_finish(pending.pending, error, error_size) }
 }
 
+/// # Safety
+/// `held_by_receiver` must be null or a live storage handle.
+unsafe fn chunk_index_of_held<'a>(held_by_receiver: *const c_void) -> Option<&'a ChunkIndex> {
+    (!held_by_receiver.is_null()).then(|| unsafe { storage_from_handle(held_by_receiver) }.chunk_index())
+}
+
+/// The size of the update that takes a receiver holding the tape of `held_by_receiver`, or no tape where that is
+/// null, to the tape of `storage`.
+///
+/// # Safety
+/// `storage` must be a live storage handle, and `held_by_receiver` null or one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn display_list_storage_update_size(
+    storage: *const c_void,
+    held_by_receiver: *const c_void,
+) -> usize {
+    let storage = unsafe { storage_from_handle(storage) };
+    update_size(storage.chunked_tape(), unsafe { chunk_index_of_held(held_by_receiver) })
+}
+
+/// Writes the update that takes a receiver holding the tape of `held_by_receiver` to the tape of `storage`: every
+/// chunk by name, and the records and runs of the chunks the held tape lacks.
+///
+/// # Safety
+/// `storage` must be a live storage handle, `held_by_receiver` null or one, and `destination` must address
+/// `display_list_storage_update_size(storage, held_by_receiver)` writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn display_list_storage_write_update(
+    storage: *const c_void,
+    held_by_receiver: *const c_void,
+    destination: *mut u8,
+) {
+    let storage = unsafe { storage_from_handle(storage) };
+    let held_by_receiver = unsafe { chunk_index_of_held(held_by_receiver) };
+    let tape = storage.chunked_tape();
+    // SAFETY: The caller guarantees `destination` addresses that many writable bytes.
+    let destination = unsafe { ak::slice_from_raw_parts_mut(destination, update_size(tape, held_by_receiver)) };
+    write_update(tape, held_by_receiver, destination);
+}
+
+/// Copies an update out of memory that another process can still write to, and puts the tape it describes together
+/// from the copy and from the tape of `held`, which the update was written against, or from the copy alone where
+/// `held` is null. Returns the new storage, or null with a static error message whose address and size it writes.
+///
+/// # Safety
+/// `update` must address `update_size_in_bytes` readable bytes, `held` must be null or a live storage handle, and
+/// `error` and `error_size` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn display_list_storage_receive_update(
+    update: *const u8,
+    update_size_in_bytes: usize,
+    held: *const c_void,
+    error: *mut *const u8,
+    error_size: *mut usize,
+) -> *const c_void {
+    let fail = |message: &'static str| {
+        // SAFETY: The caller guarantees both are writable.
+        unsafe {
+            *error = message.as_ptr();
+            *error_size = message.len();
+        }
+        std::ptr::null()
+    };
+    let mut copy: Vec<u8> = Vec::new();
+    if copy.try_reserve_exact(update_size_in_bytes).is_err() {
+        return fail("Display list update is too large to receive");
+    }
+    if update_size_in_bytes > 0 {
+        // SAFETY: The caller guarantees `update` addresses that many bytes, and the copy has room for them.
+        unsafe {
+            std::ptr::copy_nonoverlapping(update, copy.as_mut_ptr(), update_size_in_bytes);
+            copy.set_len(update_size_in_bytes);
+        }
+    }
+    let held = (!held.is_null()).then(|| unsafe { storage_from_handle(held) });
+    match receive_update(&copy, held.map(|held| (held.chunked_tape(), held.chunk_index()))) {
+        Ok(tape) => into_handle(DisplayListStorage::new(Tape::Received {
+            bytes: AlignedBytes {
+                words: tape.words,
+                size: tape.byte_count,
+            },
+            command_runs: tape.runs,
+            chunks: tape.chunks,
+        })),
+        Err(message) => fail(message),
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct FfiReferencedResourceIds {
@@ -520,6 +639,7 @@ pub unsafe extern "C" fn display_list_storage_finish(
         Ok(command_runs) => into_handle(DisplayListStorage::new(Tape::Received {
             bytes: pending.bytes,
             command_runs,
+            chunks: Vec::new(),
         })),
         Err(message) => {
             // SAFETY: The caller guarantees both are writable.

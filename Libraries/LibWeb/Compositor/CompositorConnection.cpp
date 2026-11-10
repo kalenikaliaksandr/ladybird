@@ -62,6 +62,23 @@ public:
         m_transport = nullptr;
     }
 
+    // Runs `tell_compositor`, which tells the compositor to destroy a context, in order with the frames posted for
+    // the context, and posts no display list for it from then on: one may still arrive from a recording that began
+    // before, and the compositor would hold it for a context that never takes it.
+    void destroy_context(Web::CompositorContextId context_id, Function<void()> const& tell_compositor)
+    {
+        MutexLocker locker(m_mutex);
+        m_display_lists_held_by_compositor.remove(context_id);
+        m_destroyed_contexts.set(context_id);
+        tell_compositor();
+    }
+
+    void context_was_created(Web::CompositorContextId context_id)
+    {
+        MutexLocker locker(m_mutex);
+        m_destroyed_contexts.remove(context_id);
+    }
+
 private:
     // Only for a test of the transport, which has no Paint thread.
     friend class CompositorConnection;
@@ -74,6 +91,10 @@ private:
 
     // Held while a frame is posted, so that frames submitted from different threads do not interleave.
     Mutex m_mutex;
+    // The display list posted for each context last, which is the one the compositor holds for it: the next one goes
+    // over as the chunks this one lacks.
+    HashMap<Web::CompositorContextId, NonnullRefPtr<Compositing::DisplayList>> m_display_lists_held_by_compositor;
+    HashTable<Web::CompositorContextId> m_destroyed_contexts;
     IPC::Transport* m_transport { nullptr };
 };
 
@@ -139,9 +160,15 @@ void CompositorConnection::stop_presenting_to_client(Web::CompositorContextId co
 void CompositorConnection::destroy_context(Web::CompositorContextId context_id)
 {
     m_pending_async_scroll_updates.remove(context_id);
-    if (!can_send_message_to_compositor())
-        return;
-    async_destroy_context(context_id);
+    m_frame_sink->destroy_context(context_id, [&] {
+        if (can_send_message_to_compositor())
+            async_destroy_context(context_id);
+    });
+}
+
+void CompositorConnection::context_was_created(Web::CompositorContextId context_id)
+{
+    m_frame_sink->context_was_created(context_id);
 }
 
 // A font backed by raw font data carries the descriptor of its typeface's buffer, and an image frame the descriptor
@@ -186,22 +213,27 @@ bool CompositorConnectionFrameSink::post_display_list_update(Web::CompositorCont
     if (!post_resource_additions_in_batches(context_id, update.resource_transaction))
         return false;
 
-    // The tape and run table go over in a fresh shared buffer that the Compositor takes ownership of;
-    // this process keeps no mapping once the message is posted.
+    // The chunks of the tape that the compositor lacks go over in a fresh shared buffer that the Compositor takes
+    // ownership of; this process keeps no mapping once the message is posted.
     auto& display_list = *update.display_list;
+    RefPtr<Compositing::DisplayList> held_by_compositor;
+    if (auto held = m_display_lists_held_by_compositor.get(context_id); held.has_value())
+        held_by_compositor = *held;
     auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-    auto shared_tape_buffer = display_list.copy_to_shared_buffer();
-    if (shared_tape_buffer.is_error()) {
-        dbgln("WebContent: Could not place a {} byte display list in shared memory: {}", display_list.tape_size(), shared_tape_buffer.error());
+    auto shared_update_buffer = display_list.copy_update_to_shared_buffer(held_by_compositor);
+    if (shared_update_buffer.is_error()) {
+        dbgln("WebContent: Could not place the update of a {} byte display list in shared memory: {}", display_list.tape_size(), shared_update_buffer.error());
         return true;
     }
     auto copy_time = timer.elapsed_time();
 
-    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateDisplayList::static_encode(context_id, shared_tape_buffer.value(), display_list.tape_size(), display_list.run_count(), display_list.properties(), update.visual_context_tree, update.resource_transaction, update.scroll_state_snapshot));
+    auto held_display_list_id = held_by_compositor ? Optional<u64> { held_by_compositor->id() } : Optional<u64> {};
+    auto encoded_message = MUST(Messages::CompositorWebContentServer::UpdateDisplayList::static_encode(context_id, shared_update_buffer.value(), held_display_list_id, display_list.properties(), update.visual_context_tree, update.resource_transaction, update.scroll_state_snapshot));
     if (!post(encoded_message))
         return false;
+    m_display_lists_held_by_compositor.set(context_id, update.display_list);
     if (display_list_timing_enabled())
-        dbgln("DISPLAY_LIST_PUBLISH bytes={} copy={} µs encode+post={} µs", display_list.tape_size(), copy_time.to_microseconds(), (timer.elapsed_time() - copy_time).to_microseconds());
+        dbgln("DISPLAY_LIST_PUBLISH bytes={} update={} copy={} µs encode+post={} µs", display_list.tape_size(), shared_update_buffer.value().size(), copy_time.to_microseconds(), (timer.elapsed_time() - copy_time).to_microseconds());
     return true;
 }
 
@@ -212,7 +244,7 @@ bool CompositorConnectionFrameSink::submit(CompositorFrame&& frame)
         return false;
 
     auto context_id = frame.context_id;
-    if (auto& update = frame.display_list_update; update.has_value()) {
+    if (auto& update = frame.display_list_update; update.has_value() && !m_destroyed_contexts.contains(context_id)) {
         if (!post_display_list_update(context_id, *update))
             return false;
     }

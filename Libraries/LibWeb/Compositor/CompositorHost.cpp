@@ -141,6 +141,8 @@ CompositorHost::~CompositorHost() = default;
 
 OwnPtr<CompositorContextHandle> CompositorHost::create_context(Web::CompositorContextId context_id)
 {
+    if (auto* connection = compositor_connection())
+        connection->context_was_created(context_id);
     return adopt_own(*new CompositorContextHandle(*this, context_id));
 }
 

@@ -49,6 +49,8 @@ public:
     void set_parent_context(Web::CompositorContextId, Optional<Web::CompositorContextId>);
     void stop_presenting_to_client(Web::CompositorContextId);
     void destroy_context(Web::CompositorContextId);
+    // A context with an id that a destroyed one may have had presents frames from now on.
+    void context_was_created(Web::CompositorContextId);
     // Has the Paint thread present frames through this connection from now on.
     void hand_frame_sink_to_paint_thread();
     void add_animated_image(u64 frame_id, AnimatedImageRegistration const&);

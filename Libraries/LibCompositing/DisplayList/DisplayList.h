@@ -75,6 +75,15 @@ public:
     // write to, and checks the copies. Fails when the sizes do not fit the buffer or the tape is malformed.
     static ErrorOr<NonnullRefPtr<DisplayList>> create_from_shared_buffer(Properties, Core::AnonymousBuffer, u64 tape_size, u64 run_count);
 
+    // The producer's side of sending a list to a receiver that holds the list it was sent last: a fresh shared buffer
+    // that names every chunk of the tape and holds the chunks `held_by_receiver` lacks, or every chunk where the
+    // receiver holds none.
+    ErrorOr<Core::AnonymousBuffer> copy_update_to_shared_buffer(DisplayList const* held_by_receiver) const;
+    // The receiver's side: copies the update out of the buffer, which the sender can still write to, checks the chunks
+    // it holds, and takes the others from `held`, the list the update was made against. Fails when the update is
+    // malformed or names a chunk `held` lacks.
+    static ErrorOr<NonnullRefPtr<DisplayList>> create_from_update(Properties, Core::AnonymousBuffer, DisplayList const* held);
+
     // Taken at send time: the async scrolling metadata is restamped on every send.
     Properties properties() const;
 

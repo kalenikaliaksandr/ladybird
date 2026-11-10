@@ -57,7 +57,7 @@ private:
     virtual void set_parent_context(Web::CompositorContextId, Optional<Web::CompositorContextId>) override;
     virtual void stop_presenting_to_client(Web::CompositorContextId) override;
     virtual void destroy_context(Web::CompositorContextId) override;
-    virtual void update_display_list(Web::CompositorContextId, Core::AnonymousBuffer display_list_buffer, u64 tape_size, u64 run_count, Compositing::DisplayList::Properties, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction, Compositing::ScrollStateSnapshot) override;
+    virtual void update_display_list(Web::CompositorContextId, Core::AnonymousBuffer display_list_update, Optional<u64> held_display_list_id, Compositing::DisplayList::Properties, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction, Compositing::ScrollStateSnapshot) override;
     virtual void update_visual_context_tree(Web::CompositorContextId, Compositing::AccumulatedVisualContextTree, Compositing::DisplayListResourceTransaction, Compositing::ScrollStateSnapshot, Compositing::KeyboardScrollState) override;
     virtual void update_scroll_state(Web::CompositorContextId, Compositing::ScrollStateSnapshot, Compositing::KeyboardScrollState) override;
     virtual void update_display_list_resources(Web::CompositorContextId, Compositing::DisplayListResourceTransaction) override;
@@ -123,6 +123,9 @@ private:
     bool context_is_owned_by_this_connection(Web::CompositorContextId);
 
     NonnullRefPtr<CompositorState> m_compositor_state;
+    // The display list WebContent sent for each context last, which it sends the next one against. A list is held
+    // from when it arrives, whether or not its context exists by then or takes it.
+    HashMap<Web::CompositorContextId, NonnullRefPtr<Compositing::DisplayList>> m_display_lists_held_for_web_content;
     VideoFrameHolds m_video_frame_holds;
     CanvasHost m_canvas_host;
 

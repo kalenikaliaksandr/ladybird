@@ -309,6 +309,7 @@ void ConnectionFromWebContent::stop_presenting_to_client(Web::CompositorContextI
 
 void ConnectionFromWebContent::destroy_context(Web::CompositorContextId context_id)
 {
+    m_display_lists_held_for_web_content.remove(context_id);
     if (!context_is_owned_by_this_connection(context_id))
         return;
     m_compositor_state->destroy_context(context_id);
@@ -323,21 +324,33 @@ static bool display_list_timing_enabled()
     return enabled;
 }
 
-void ConnectionFromWebContent::update_display_list(Web::CompositorContextId context_id, Core::AnonymousBuffer display_list_buffer, u64 tape_size, u64 run_count, Compositing::DisplayList::Properties display_list_properties, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Compositing::ScrollStateSnapshot scroll_state_snapshot)
+void ConnectionFromWebContent::update_display_list(Web::CompositorContextId context_id, Core::AnonymousBuffer display_list_update, Optional<u64> held_display_list_id, Compositing::DisplayList::Properties display_list_properties, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::DisplayListResourceTransaction resource_transaction, Compositing::ScrollStateSnapshot scroll_state_snapshot)
 {
     auto timer = Core::ElapsedTimer::start_new(Core::TimerType::Precise);
-    auto display_list = Compositing::DisplayList::create_from_shared_buffer(move(display_list_properties), move(display_list_buffer), tape_size, run_count);
+    RefPtr<Compositing::DisplayList> held;
+    if (held_display_list_id.has_value()) {
+        if (auto held_for_context = m_display_lists_held_for_web_content.get(context_id); held_for_context.has_value())
+            held = *held_for_context;
+        if (!held || held->id() != *held_display_list_id) {
+            did_misbehave("WebContent updated a display list other than the one it sent last");
+            return;
+        }
+    }
+    auto update_size = display_list_update.size();
+    auto display_list = Compositing::DisplayList::create_from_update(move(display_list_properties), move(display_list_update), held);
     if (display_list.is_error()) {
         dbgln("Compositor: Rejecting display list from WebContent: {}", display_list.error());
         did_misbehave("WebContent published a display list its shared buffer does not hold");
         return;
     }
+    m_display_lists_held_for_web_content.set(context_id, display_list.value());
     auto adopt_time = timer.elapsed_time();
     if (!context_is_owned_by_this_connection(context_id))
         return;
+    auto tape_size = display_list.value()->tape_size();
     m_compositor_state->update_display_list(context_id, display_list.release_value(), move(visual_context_tree), move(resource_transaction), move(scroll_state_snapshot));
     if (display_list_timing_enabled())
-        dbgln("DISPLAY_LIST_RECEIVE bytes={} adopt={} µs install={} µs", tape_size, adopt_time.to_microseconds(), (timer.elapsed_time() - adopt_time).to_microseconds());
+        dbgln("DISPLAY_LIST_RECEIVE bytes={} update={} adopt={} µs install={} µs", tape_size, update_size, adopt_time.to_microseconds(), (timer.elapsed_time() - adopt_time).to_microseconds());
 }
 
 void ConnectionFromWebContent::update_display_list_resources(Web::CompositorContextId context_id, Compositing::DisplayListResourceTransaction resource_transaction)
