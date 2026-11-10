@@ -596,9 +596,7 @@ fn highlight_rect<O: Observer>(recorder: &PaintRecorder<'_, O>, block: NodeSlotI
         start: span.start_code_unit,
         end: span.end_code_unit,
     };
-    text_fragment::rect_for_selection_offsets(recorder.source, fragment, offsets, || {
-        text_fragment::first_available_font(recorder.source, fragment)
-    })
+    text_fragment::rect_for_selection_offsets(recorder.source, fragment, offsets)
 }
 
 fn paint_text_shadow<O: Observer>(
@@ -804,7 +802,6 @@ fn paint_text_fragment<O: Observer>(
                 start: span.start_code_unit,
                 end: span.end_code_unit,
             },
-            || text_fragment::first_available_font(recorder.source, fragment),
         );
         let span_rect = converter.rounded_device_rect(range_rect);
         recorder.recorder.record_clipped_to(span_rect, |recorder| {
