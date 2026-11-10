@@ -1,0 +1,14 @@
+wrapped 0: 10,13 0x23, bounding 10,13 0x23
+wrapped 4: 58,13 0x23, bounding 58,13 0x23
+wrapped 9: 118,13 0x23, bounding 118,13 0x23
+wrapped 10: 10,43 0x23, bounding 10,43 0x23
+wrapped 13: 46,43 0x23, bounding 46,43 0x23
+pre 0: 200,13 0x23, bounding 200,13 0x23
+pre 3: 236,13 0x23, bounding 236,13 0x23
+pre 4: none, bounding 0,0 0x0
+pre 5: 200,73 0x23, bounding 200,73 0x23
+pre 10: 260,73 0x23, bounding 260,73 0x23
+vertical 0: 404,10 23x0, bounding 404,10 23x0
+vertical 2: 404,34 23x0, bounding 404,34 23x0
+vertical 7: 404,94 23x0, bounding 404,94 23x0
+scroller 1: 22,243 0x23, bounding 22,243 0x23
