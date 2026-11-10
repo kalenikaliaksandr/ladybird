@@ -1016,11 +1016,17 @@ fn used_overflow(
     (overflow_x, overflow_y)
 }
 
-pub(crate) fn compute_clip_data(layout_arena: &impl PaintRead, slot: NodeSlotId, pixel_ratio: f64) -> Option<ClipData> {
+/// The range of each axis that a box's overflow clip keeps, in absolute layout CSS pixels.
+pub(crate) struct OverflowClipRanges {
+    pub horizontal: Option<(CssPixels, CssPixels)>,
+    pub vertical: Option<(CssPixels, CssPixels)>,
+}
+
+/// `None` when the box clips neither axis.
+pub(crate) fn overflow_clip_ranges(layout_arena: &impl PaintRead, slot: NodeSlotId) -> Option<OverflowClipRanges> {
     use crate::css::css_enums::overflow;
-    let node = slot;
-    let style = layout_arena.node_style_if_live(node)?;
-    let (overflow_x, overflow_y) = used_overflow(layout_arena, node, style);
+    let style = layout_arena.node_style_if_live(slot)?;
+    let (overflow_x, overflow_y) = used_overflow(layout_arena, slot, style);
 
     // https://drafts.csswg.org/css-overflow-3/#propdef-overflow
     // 'clip'
@@ -1032,20 +1038,29 @@ pub(crate) fn compute_clip_data(layout_arena: &impl PaintRead, slot: NodeSlotId,
 
     let padding_box = paintable_geometry::absolute_padding_box_rect(layout_arena, slot);
     let overflow_clip_edge = overflow_clip_edge_rect(style, layout_arena, slot);
+    Some(OverflowClipRanges {
+        horizontal: match overflow_x {
+            overflow::VISIBLE => None,
+            overflow::CLIP => Some((overflow_clip_edge.x, overflow_clip_edge.x + overflow_clip_edge.width)),
+            _ => Some((padding_box.x, padding_box.x + padding_box.width)),
+        },
+        vertical: match overflow_y {
+            overflow::VISIBLE => None,
+            overflow::CLIP => Some((overflow_clip_edge.y, overflow_clip_edge.y + overflow_clip_edge.height)),
+            _ => Some((padding_box.y, padding_box.y + padding_box.height)),
+        },
+    })
+}
+
+pub(crate) fn compute_clip_data(layout_arena: &impl PaintRead, slot: NodeSlotId, pixel_ratio: f64) -> Option<ClipData> {
+    let style = layout_arena.node_style_if_live(slot)?;
+    let ranges = overflow_clip_ranges(layout_arena, slot)?;
     // NB: An axis that is not clipped must extend into negative coordinates too, since content can be laid out above or
     //     to the left of the origin (e.g. inside a scroll container with flex-direction: column-reverse). Half the
     //     range on each side keeps the rect's size from saturating.
     let extent_limit = CssPixels::from_integer(crate::css::css_pixels::MAX_INTEGER_VALUE as i64 / 2);
-    let (left, right) = match overflow_x {
-        overflow::VISIBLE => (-extent_limit, extent_limit),
-        overflow::CLIP => (overflow_clip_edge.x, overflow_clip_edge.x + overflow_clip_edge.width),
-        _ => (padding_box.x, padding_box.x + padding_box.width),
-    };
-    let (top, bottom) = match overflow_y {
-        overflow::VISIBLE => (-extent_limit, extent_limit),
-        overflow::CLIP => (overflow_clip_edge.y, overflow_clip_edge.y + overflow_clip_edge.height),
-        _ => (padding_box.y, padding_box.y + padding_box.height),
-    };
+    let (left, right) = ranges.horizontal.unwrap_or((-extent_limit, extent_limit));
+    let (top, bottom) = ranges.vertical.unwrap_or((-extent_limit, extent_limit));
     let clip_rect = CssPixelRect::new(left, top, right - left, bottom - top);
 
     // https://drafts.csswg.org/css-overflow-3/#corner-clipping
@@ -1063,7 +1078,7 @@ pub(crate) fn compute_clip_data(layout_arena: &impl PaintRead, slot: NodeSlotId,
     // INTEROP: A single-line text field clips its contents to its padding box without rounding the corners, so that
     //         text selected at the edge of a short field with rounded corners keeps its square highlight.
     let is_text_input = layout_arena.node_kind_if_live(slot) == Some(crate::layout::node_data::NodeKind::TextInputBox);
-    let radii = if overflow_x != overflow::VISIBLE && overflow_y != overflow::VISIBLE && !is_text_input {
+    let radii = if ranges.horizontal.is_some() && ranges.vertical.is_some() && !is_text_input {
         padding_edge_border_radii(style, layout_arena, slot)
     } else {
         BorderRadii::default()
