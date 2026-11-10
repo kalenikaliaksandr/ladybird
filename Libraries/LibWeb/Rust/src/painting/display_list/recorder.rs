@@ -477,16 +477,21 @@ impl DisplayListRecorder {
         );
     }
 
-    /// Copies the commands in `bytes` of `source` as they were recorded. The caller must establish
+    /// Copies the chunks that hold `bytes` of `source` as they were recorded. The caller must establish
     /// that their visual-context indices are still valid for the current visual context tree.
     pub fn append_cached_commands(&mut self, source: &RecordedDisplayList, bytes: std::ops::Range<u32>) {
-        self.builder.append_command_range(
+        self.builder.append_chunks(
             source,
             CommandRange {
                 offset: bytes.start,
                 size: bytes.end - bytes.start,
             },
         );
+    }
+
+    /// Ends a chunk of the tape with what was recorded since the last one ended.
+    pub fn end_chunk(&mut self) {
+        self.builder.end_chunk();
     }
 
     pub fn fill_rect(&mut self, rect: IntRect, color: Color, force_dark_role: ForceDarkRole) {

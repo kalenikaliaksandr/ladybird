@@ -106,11 +106,13 @@ pub(crate) enum Segment {
     Walked(u32),
 }
 
-/// The plan of a walked scope with where it is cut.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// The plan of a walked scope with where it is cut. The items follow paint order alone, and are shared with the
+/// plan they were kept from while that holds. The cuts follow where the items are, so a recording that walks the
+/// scope after anything in it changed or moved cuts it again.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SegmentedPlan {
     pub active: bool,
-    pub items: Vec<PaintOrderItem>,
+    pub items: Arc<[PaintOrderItem]>,
     pub segments: Vec<Segment>,
 }
 

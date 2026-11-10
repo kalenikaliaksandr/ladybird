@@ -121,6 +121,9 @@ pub(crate) trait AssemblyHost {
     /// Appends the published recording's command bytes and hit-test items in the given ranges.
     fn copy_published(&mut self, bytes: Range<u32>, hits: Range<u32>, blocking_wheel_event_regions: u32);
 
+    /// Ends the chunk of the tape that holds a run recorded whole, so that copying the run copies whole chunks.
+    fn end_recorded_run(&mut self);
+
     /// The damage pushed for a row since the published recording, with the hint that something below it was
     /// damaged.
     fn damage_of_row(&mut self, row: NodeSlotId) -> PaintDamage;
@@ -246,12 +249,16 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             || (damage.contains(PaintDamage::DESCENDANT_READERS) && self.host.producer_reads_descendants(owner, kind))
     }
 
-    fn cut_plan(&mut self, scope: PaintScope) -> SegmentedPlan {
+    fn plan_and_cut(&mut self, scope: PaintScope) -> SegmentedPlan {
         let plan = self.host.plan_scope(scope);
+        self.cut(scope, plan.active, plan.items.into_vec().into())
+    }
+
+    fn cut(&mut self, scope: PaintScope, active: bool, items: Arc<[PaintOrderItem]>) -> SegmentedPlan {
         let mut segments = Vec::new();
         let mut run_start = 0;
         let mut grid_row_of_run = None;
-        for (index, item) in plan.items.iter().enumerate() {
+        for (index, item) in items.iter().enumerate() {
             let cut = self.host.cut_at(scope, *item);
             let starts_another_run = match cut {
                 ItemCut::Walked => true,
@@ -276,12 +283,12 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 ItemCut::InRun { grid_row } => grid_row_of_run = grid_row_of_run.or(grid_row),
             }
         }
-        if run_start < plan.items.len() {
-            segments.push(Segment::Run(run_start as u32..plan.items.len() as u32));
+        if run_start < items.len() {
+            segments.push(Segment::Run(run_start as u32..items.len() as u32));
         }
         SegmentedPlan {
-            active: plan.active,
-            items: plan.items.into_vec(),
+            active,
+            items,
             segments,
         }
     }
@@ -296,12 +303,19 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             }
             PaintScopeKind::Descendants(_) => PaintDamage::ORDER,
         };
-        let kept_plan = published
+        let owner_moved = published.is_some_and(|published| published.scope.owner_placement != owner_placement);
+        let published_plan = published
             .filter(|_| !owner_damage.intersects(order_damage))
-            .map(|published| Arc::clone(&published.scope.plan));
-        let plan_was_kept = kept_plan.is_some();
-        let plan = kept_plan.unwrap_or_else(|| Arc::new(self.cut_plan(scope)));
-        let action = match (published.is_some(), plan_was_kept, plan.active) {
+            .map(|published| &published.scope.plan);
+        let items_were_kept = published_plan.is_some();
+        // Nothing was pushed for the owner or anything below it, and nothing moved it: every item is where it was.
+        let cuts_were_kept = items_were_kept && owner_damage.is_empty() && !owner_moved;
+        let plan = match published_plan {
+            Some(published_plan) if cuts_were_kept => Arc::clone(published_plan),
+            Some(published_plan) => Arc::new(self.cut(scope, published_plan.active, Arc::clone(&published_plan.items))),
+            None => Arc::new(self.plan_and_cut(scope)),
+        };
+        let action = match (published.is_some(), items_were_kept, plan.active) {
             (_, _, false) => ScopeAction::Inactive,
             (true, true, true) => ScopeAction::Assembled,
             (true, false, true) => ScopeAction::Replanned,
@@ -316,8 +330,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
             owner_placement,
         };
         if plan.active {
-            let owner_moved = published.is_some_and(|published| published.scope.owner_placement != owner_placement);
-            let published_segments = published.map(|published| PublishedSegments::new(published, plan_was_kept));
+            let published_segments = published.map(|published| PublishedSegments::new(published, cuts_were_kept));
             for (index, segment) in plan.segments.iter().enumerate() {
                 let published_segment = published_segments
                     .as_ref()
@@ -411,6 +424,7 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
                 }
             }
         }
+        self.host.end_recorded_run();
         RecordedRun {
             output,
             child_scope_placements: child_scope_placements.into_boxed_slice(),
@@ -510,8 +524,8 @@ impl<'a, H: AssemblyHost> Assembler<'a, H> {
 }
 
 /// The segments a walked scope had in the published recording, each with where its output starts there. A plan
-/// that was kept has the same segments as then. One that was planned again is matched by what its segments
-/// begin with: a run is the published one when it lists the same items from the same first item.
+/// whose cuts were kept has the same segments as then. One that was cut again is matched by what its segments begin
+/// with: a run is the published one when it lists the same items from the same first item.
 struct PublishedSegments<'a> {
     published: Published<'a>,
     cursors: Vec<SourceCursor>,
@@ -519,7 +533,7 @@ struct PublishedSegments<'a> {
 }
 
 impl<'a> PublishedSegments<'a> {
-    fn new(published: Published<'a>, plan_was_kept: bool) -> Self {
+    fn new(published: Published<'a>, cuts_were_kept: bool) -> Self {
         let scope = published.scope;
         let mut cursor = published.cursor;
         let cursors = scope
@@ -531,7 +545,7 @@ impl<'a> PublishedSegments<'a> {
                 start
             })
             .collect();
-        let index_by_key = (!plan_was_kept).then(|| {
+        let index_by_key = (!cuts_were_kept).then(|| {
             scope
                 .plan
                 .segments
@@ -834,6 +848,10 @@ mod tests {
             self.output.blocking_wheel_event_region_count += blocking_wheel_event_regions;
         }
 
+        fn end_recorded_run(&mut self) {
+            self.output.recorder.end_chunk();
+        }
+
         fn damage_of_row(&mut self, row: NodeSlotId) -> PaintDamage {
             self.damage.get(&row).copied().unwrap_or_default()
         }
@@ -872,6 +890,7 @@ mod tests {
             Color::from_rgb(255, 255, 255),
             ForceDarkRole::Background,
         );
+        host.output.recorder.end_chunk();
         let prologue_bytes = host.output.recorder.byte_size() as u32;
         let published = host
             .source
@@ -914,6 +933,7 @@ mod tests {
             "command bytes differ"
         );
         assert_eq!(assembled.display_list.command_runs, fresh.display_list.command_runs);
+        assert_eq!(assembled.display_list.chunks, fresh.display_list.chunks);
         // Comparing whole items would compare their paths through the host's path equality.
         let item_identities = |items: &[HitTestItem]| -> Vec<(NodeSlotId, Option<usize>)> {
             items

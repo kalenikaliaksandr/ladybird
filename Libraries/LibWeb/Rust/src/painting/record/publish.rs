@@ -66,10 +66,11 @@ fn patch_vector_image_placeholders(output: &mut RecordingOutput, resolved_ids: &
             }
         },
     );
-    for (offset, resolved_id) in patch_offsets {
+    for &(offset, resolved_id) in &patch_offsets {
         display_list.bytes[offset..offset + std::mem::size_of::<u64>()]
             .copy_from_slice(&DisplayListResourceId(resolved_id).0.to_ne_bytes());
     }
+    display_list.rename_chunks_holding(patch_offsets.iter().map(|(offset, _)| *offset));
 }
 
 /// Publishes a pending recording from the document: hands its resources to the host and takes

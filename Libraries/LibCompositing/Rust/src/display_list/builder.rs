@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+use super::chunks::{ChunkId, DisplayListChunk, chunk_id, chunks_of};
 use super::commands::*;
 use crate::display_list::ffi_bytes::FfiBytes;
 use libgfx_rust::path::Path;
@@ -118,11 +119,36 @@ impl CommandRange {
     }
 }
 
-// A finished tape together with the run table summarizing it.
+// A finished tape together with the run table summarizing it and the chunks it is cut into.
 #[derive(Clone, Default)]
 pub struct RecordedDisplayList {
     pub bytes: Vec<u8>,
     pub command_runs: Vec<DisplayListCommandRun>,
+    pub chunks: Vec<DisplayListChunk>,
+}
+
+impl RecordedDisplayList {
+    /// Names the chunks that hold the bytes at `changed_offsets` again, after those bytes were written in place.
+    pub fn rename_chunks_holding(&mut self, changed_offsets: impl IntoIterator<Item = usize>) {
+        for offset in changed_offsets {
+            let index = self.chunks.partition_point(|chunk| chunk.byte_end as usize <= offset);
+            self.chunks[index].id = ChunkId::UNSET;
+        }
+        name_unnamed_chunks(&self.bytes, &self.command_runs, &mut self.chunks);
+    }
+}
+
+fn name_unnamed_chunks(bytes: &[u8], runs: &[DisplayListCommandRun], chunks: &mut [DisplayListChunk]) {
+    let mut ids = Vec::new();
+    for (index, (chunk, chunk_bytes, chunk_runs)) in chunks_of(bytes, runs, chunks).enumerate() {
+        if chunk.id == ChunkId::UNSET {
+            let chunk_start = chunk.byte_end - chunk_bytes.len() as u32;
+            ids.push((index, chunk_id(chunk_bytes, chunk_runs, chunk_start)));
+        }
+    }
+    for (index, id) in ids {
+        chunks[index].id = id;
+    }
 }
 
 pub struct OpenGroup {
@@ -155,6 +181,9 @@ impl OpenGroup {
 pub struct DisplayListBuilder {
     bytes: Vec<u8>,
     runs: Vec<DisplayListCommandRun>,
+    // The chunks ended so far. What was appended since the last one ends is the chunk still open, whose runs are
+    // the only ones a command can extend.
+    chunks: Vec<DisplayListChunk>,
     open_group_depth: usize,
     open_group_context: Option<ContextRef>,
 }
@@ -172,11 +201,50 @@ impl DisplayListBuilder {
         &self.runs
     }
 
-    pub fn finish(self) -> RecordedDisplayList {
+    pub fn chunks(&self) -> &[DisplayListChunk] {
+        &self.chunks
+    }
+
+    /// Ends the tape with the chunk still open and names every chunk that was recorded rather than copied.
+    pub fn finish(mut self) -> RecordedDisplayList {
+        self.end_chunk();
+        name_unnamed_chunks(&self.bytes, &self.runs, &mut self.chunks);
         RecordedDisplayList {
             bytes: self.bytes,
             command_runs: self.runs,
+            chunks: self.chunks,
         }
+    }
+
+    /// Ends a chunk with what was appended since the last one ended, if anything was. What is appended next starts
+    /// a run of its own.
+    pub fn end_chunk(&mut self) {
+        debug_assert_eq!(self.open_group_depth, 0, "a chunk holds whole records");
+        let byte_end = u32::try_from(self.bytes.len()).expect("display list exceeds u32");
+        if self.chunks.last().map_or(0, |chunk| chunk.byte_end) == byte_end {
+            return;
+        }
+        self.chunks.push(DisplayListChunk {
+            id: ChunkId::UNSET,
+            byte_end,
+            run_end: u32::try_from(self.runs.len()).expect("display list exceeds u32"),
+        });
+    }
+
+    fn note_command(&mut self, header: &DisplayListCommandHeader, context: ContextRef, offset: usize, size: usize) {
+        // Every run so far belongs to a chunk that has ended.
+        if self
+            .chunks
+            .last()
+            .is_some_and(|chunk| chunk.run_end as usize == self.runs.len())
+        {
+            self.runs.push(DisplayListCommandRun {
+                offset: u32::try_from(offset).expect("display list exceeds u32"),
+                context,
+                ..Default::default()
+            });
+        }
+        note_command(&mut self.runs, header, context, offset, size);
     }
 
     pub fn byte_size(&self) -> usize {
@@ -231,7 +299,7 @@ impl DisplayListBuilder {
             &header,
         );
         if self.open_group_depth == 0 {
-            note_command(&mut self.runs, &header, context, start, padded_record_size);
+            self.note_command(&header, context, start, padded_record_size);
         } else {
             self.note_group_context(context);
         }
@@ -334,7 +402,7 @@ impl DisplayListBuilder {
         command.write_ffi_bytes(&mut self.bytes[payload_start..payload_start + std::mem::size_of::<C>()]);
         self.write_tail_entries(&inline_clips, None, &path_spans, payload_start, entries_offset, &header);
         if self.open_group_depth == 0 {
-            note_command(&mut self.runs, &header, context, group.record_start, padded_record_size);
+            self.note_command(&header, context, group.record_start, padded_record_size);
             self.open_group_context = None;
         }
     }
@@ -449,59 +517,45 @@ impl DisplayListBuilder {
         }
     }
 
-    pub fn append_command_range(&mut self, source: &RecordedDisplayList, range: CommandRange) -> u32 {
-        debug_assert_eq!(self.open_group_depth, 0, "captures are never spliced inside a group");
-        debug_assert_eq!(self.bytes.len() % COMMAND_ALIGNMENT, 0);
-        debug_assert_eq!(range.size as usize % COMMAND_ALIGNMENT, 0);
-        let destination_offset = self.bytes.len();
+    /// Appends the chunks of `source` that `range` covers as they are, with their names. The range starts where a
+    /// chunk of `source` starts and ends where one ends. Returns the offset the copy starts at.
+    pub fn append_chunks(&mut self, source: &RecordedDisplayList, range: CommandRange) -> u32 {
+        debug_assert_eq!(self.open_group_depth, 0, "chunks are never copied into a group");
+        self.end_chunk();
+        let destination_offset = u32::try_from(self.bytes.len()).expect("display list exceeds u32");
         if range.is_empty() {
-            return u32::try_from(destination_offset).expect("display list exceeds u32");
+            return destination_offset;
         }
-        let source_range = &source.bytes[range.offset as usize..(range.offset + range.size) as usize];
-        self.bytes.extend_from_slice(source_range);
-        self.note_runs_copied_from_source(&source.command_runs, range, destination_offset);
-        u32::try_from(destination_offset).expect("display list exceeds u32")
-    }
-
-    fn note_runs_copied_from_source(
-        &mut self,
-        source_runs: &[DisplayListCommandRun],
-        range: CommandRange,
-        destination_offset: usize,
-    ) {
         let range_end = range.offset + range.size;
-        let first = source_runs.partition_point(|run| run.offset + run.size <= range.offset);
-        for run in &source_runs[first..] {
-            if run.offset >= range_end {
-                break;
-            }
-            let start = run.offset.max(range.offset);
-            let end = (run.offset + run.size).min(range_end);
-            let destination_start = destination_offset + (start - range.offset) as usize;
-            let context = run.context;
-            if start == run.offset && end == run.offset + run.size {
-                push_or_merge_run(
-                    &mut self.runs,
-                    DisplayListCommandRun {
-                        offset: u32::try_from(destination_start).expect("display list exceeds u32"),
-                        context,
-                        ..*run
-                    },
-                );
-                continue;
-            }
-            let Self { bytes, runs, .. } = self;
-            let destination_end = destination_offset + (end - range.offset) as usize;
-            for_each_command(&bytes[destination_start..destination_end], |header, offset, payload| {
-                note_command(
-                    runs,
-                    header,
-                    context,
-                    destination_start + offset,
-                    HEADER_SIZE + payload.len(),
-                );
-            });
-        }
+        let first_chunk = source.chunks.partition_point(|chunk| chunk.byte_end <= range.offset);
+        let chunk_count = source.chunks[first_chunk..].partition_point(|chunk| chunk.byte_end <= range_end);
+        let chunks = &source.chunks[first_chunk..first_chunk + chunk_count];
+        let (byte_start, run_start) = match first_chunk.checked_sub(1) {
+            Some(previous) => (source.chunks[previous].byte_end, source.chunks[previous].run_end),
+            None => (0, 0),
+        };
+        assert!(
+            byte_start == range.offset && chunks.last().is_some_and(|chunk| chunk.byte_end == range_end),
+            "a copied range holds whole chunks"
+        );
+        let run_end = chunks.last().expect("a copied range holds a chunk").run_end;
+        let destination_run_start = u32::try_from(self.runs.len()).expect("display list exceeds u32");
+        self.bytes
+            .extend_from_slice(&source.bytes[range.offset as usize..range_end as usize]);
+        self.runs.extend(
+            source.command_runs[run_start as usize..run_end as usize]
+                .iter()
+                .map(|run| DisplayListCommandRun {
+                    offset: run.offset - byte_start + destination_offset,
+                    ..*run
+                }),
+        );
+        self.chunks.extend(chunks.iter().map(|chunk| DisplayListChunk {
+            id: chunk.id,
+            byte_end: chunk.byte_end - byte_start + destination_offset,
+            run_end: chunk.run_end - run_start + destination_run_start,
+        }));
+        destination_offset
     }
 }
 
@@ -519,19 +573,6 @@ pub fn append_record<C: DisplayListCommand>(bytes: &mut Vec<u8>, command: &C, in
     command.write_ffi_bytes(&mut bytes[payload_start..payload_start + std::mem::size_of::<C>()]);
     let inline_start = payload_start + std::mem::size_of::<C>();
     bytes[inline_start..inline_start + inline_data.len()].copy_from_slice(inline_data);
-}
-
-fn push_or_merge_run(runs: &mut Vec<DisplayListCommandRun>, run: DisplayListCommandRun) {
-    if let Some(last) = runs.last_mut()
-        && last.context == run.context
-    {
-        debug_assert_eq!(last.offset + last.size, run.offset);
-        last.size += run.size;
-        last.has_compositor_metadata |= run.has_compositor_metadata;
-        last.ink_bounds = last.ink_bounds.united(run.ink_bounds);
-        return;
-    }
-    runs.push(run);
 }
 
 pub(crate) fn note_command(
@@ -688,17 +729,10 @@ mod tests {
         }
     }
 
-    fn finished(builder: &DisplayListBuilder) -> RecordedDisplayList {
-        RecordedDisplayList {
-            bytes: builder.bytes().to_vec(),
-            command_runs: builder.command_runs().to_vec(),
-        }
-    }
-
-    fn whole_tape(builder: &DisplayListBuilder) -> CommandRange {
+    fn whole_tape(tape: &RecordedDisplayList) -> CommandRange {
         CommandRange {
             offset: 0,
-            size: u32::try_from(builder.byte_size()).unwrap(),
+            size: u32::try_from(tape.bytes.len()).unwrap(),
         }
     }
 
@@ -873,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn spliced_records_keep_inline_clip_entries_byte_identical() {
+    fn copied_records_keep_inline_clip_entries_byte_identical() {
         let mut source = DisplayListBuilder::new();
         let recorded = context(4, None);
         source.append_with_inline_clips(
@@ -884,118 +918,113 @@ mod tests {
                 10, 10, 20, 20,
             ))],
         );
+        let source = source.finish();
 
         let mut builder = DisplayListBuilder::new();
-        let destination_offset = builder.append_command_range(&finished(&source), whole_tape(&source));
-        let source_header = read_header(source.bytes());
-        let spliced_header = read_header(&builder.bytes()[destination_offset as usize..]);
+        let destination_offset = builder.append_chunks(&source, whole_tape(&source));
+        let source_header = read_header(&source.bytes);
+        let copied_header = read_header(&builder.bytes()[destination_offset as usize..]);
         assert_eq!(builder.command_runs()[0].context, recorded);
-        assert_eq!(builder.bytes(), source.bytes());
-        assert_eq!(spliced_header.inline_clip_count, source_header.inline_clip_count);
-        let payload_of = |bytes: &[u8], offset: usize| {
-            let header = read_header(&bytes[offset..]);
-            bytes[offset + HEADER_SIZE..offset + HEADER_SIZE + header.payload_size as usize].to_vec()
-        };
-        assert_eq!(
-            payload_of(source.bytes(), 0),
-            payload_of(builder.bytes(), destination_offset as usize)
-        );
+        assert_eq!(builder.bytes(), &source.bytes[..]);
+        assert_eq!(copied_header.inline_clip_count, source_header.inline_clip_count);
     }
 
     #[test]
-    fn a_verbatim_splice_reproduces_the_source_runs_rebased() {
-        let mut source = DisplayListBuilder::new();
-        let a = context(2, None);
-        let b = context(3, Some(0));
-        source.append(&fill_rect(0, 0, 10, 10), &[], a);
-        source.append(&fill_rect(20, 20, 10, 10), &[], b);
-        source.append(&fill_rect(40, 40, 10, 10), &[], b);
-        let source_runs = source.command_runs().to_vec();
-        assert_eq!(source_runs.len(), 2);
-
+    fn a_chunk_boundary_separates_runs_in_one_context() {
         let mut builder = DisplayListBuilder::new();
-        builder.append(&fill_rect(0, 0, 1, 1), &[], context(9, None));
-        let destination_offset = builder.append_command_range(&finished(&source), whole_tape(&source));
+        let a = context(2, None);
+        builder.append(&fill_rect(0, 0, 10, 10), &[], a);
+        builder.append(&fill_rect(20, 0, 10, 10), &[], a);
+        builder.end_chunk();
+        // Ending a chunk that holds nothing leaves no chunk.
+        builder.end_chunk();
+        builder.append(&fill_rect(40, 0, 10, 10), &[], a);
+        builder.append(&fill_rect(60, 0, 10, 10), &[], a);
         assert_runs_cover_tape(&builder);
-        let spliced_runs = &builder.command_runs()[1..];
-        assert_eq!(spliced_runs.len(), source_runs.len());
-        for (spliced, original) in spliced_runs.iter().zip(&source_runs) {
-            assert_eq!(spliced.offset, original.offset + destination_offset);
-            assert_eq!(
-                DisplayListCommandRun {
-                    offset: original.offset,
-                    ..*spliced
-                },
-                *original
-            );
-        }
+        let tape = builder.finish();
+        assert_eq!(tape.command_runs.len(), 2);
+        assert_eq!(tape.chunks.len(), 2);
+        assert_eq!(tape.chunks[0].run_end, 1);
+        assert_eq!(tape.chunks[0].byte_end, tape.command_runs[1].offset);
+        assert_eq!(tape.chunks[1].run_end, 2);
+        assert_eq!(tape.chunks[1].byte_end as usize, tape.bytes.len());
+        assert_eq!(tape.command_runs[0].ink_bounds, IntRect::new(0, 0, 30, 10));
+        assert_eq!(tape.command_runs[1].ink_bounds, IntRect::new(40, 0, 30, 10));
     }
 
     #[test]
-    fn copied_runs_match_a_walk_of_the_copied_records_for_every_range() {
-        let mut source = DisplayListBuilder::new();
-        let contexts = [
-            context(1, None),
-            context(1, None),
-            context(2, Some(0)),
-            context(1, None),
-            context(1, None),
-        ];
-        for (index, run_context) in contexts.iter().enumerate() {
-            let size = 10 * (index as i32 + 1);
-            source.append(&fill_rect(size, size, size, size), &[], *run_context);
-            if index == 2 {
-                source.append(
+    fn copying_any_range_of_whole_chunks_gives_the_tape_that_recording_them_gives() {
+        // One chunk for each row: rects in two contexts, where the first context of a row is the last of the row
+        // before it, and a metadata command in the third row.
+        let record_row = |builder: &mut DisplayListBuilder, row: usize| {
+            let y = row as i32 * 10;
+            let (first_context, second_context) = if row.is_multiple_of(2) { (1, 2) } else { (2, 1) };
+            builder.append(&fill_rect(0, y, 10, 10), &[], context(first_context, None));
+            builder.append(&fill_rect(20, y, 10, 10), &[], context(second_context, Some(0)));
+            if row == 2 {
+                builder.append(
                     &CompositorBlockingWheelEventRegion {
                         rect: FloatRect::new(0.0, 0.0, 500.0, 500.0),
                     },
                     &[],
-                    *run_context,
+                    context(second_context, Some(0)),
                 );
             }
+            builder.end_chunk();
+        };
+        let row_count = 5;
+        let mut source = DisplayListBuilder::new();
+        for row in 0..row_count {
+            record_row(&mut source, row);
         }
-        let source = finished(&source);
-        let mut record_offsets = Vec::new();
-        for_each_command(&source.bytes, |_, offset, _| record_offsets.push(offset as u32));
-        record_offsets.push(source.bytes.len() as u32);
+        let source = source.finish();
+        assert_eq!(source.chunks.len(), row_count);
 
-        for (start_index, &start) in record_offsets.iter().enumerate() {
-            for &end in &record_offsets[start_index + 1..] {
+        for first in 0..row_count {
+            for last in first..row_count {
+                let range_start = match first.checked_sub(1) {
+                    Some(previous) => source.chunks[previous].byte_end,
+                    None => 0,
+                };
                 let range = CommandRange {
-                    offset: start,
-                    size: end - start,
+                    offset: range_start,
+                    size: source.chunks[last].byte_end - range_start,
                 };
                 let mut copied = DisplayListBuilder::new();
                 copied.append(&fill_rect(0, 0, 1, 1), &[], context(1, None));
-                copied.append_command_range(&source, range);
-
-                let mut walked = DisplayListBuilder::new();
-                walked.append(&fill_rect(0, 0, 1, 1), &[], context(1, None));
-                let destination_offset = walked.bytes.len();
-                walked
-                    .bytes
-                    .extend_from_slice(&source.bytes[start as usize..end as usize]);
-                for run in &source.command_runs {
-                    let run_start = run.offset.max(start) as usize;
-                    let run_end = (run.offset + run.size).min(end) as usize;
-                    if run_start >= run_end {
-                        continue;
-                    }
-                    for_each_command(&source.bytes[run_start..run_end], |header, offset, payload| {
-                        note_command(
-                            &mut walked.runs,
-                            header,
-                            run.context,
-                            destination_offset + run_start - start as usize + offset,
-                            HEADER_SIZE + payload.len(),
-                        );
-                    });
-                }
-
-                assert_eq!(copied.bytes(), walked.bytes());
-                assert_eq!(copied.command_runs(), walked.command_runs(), "range {range:?}");
+                copied.append_chunks(&source, range);
+                copied.append(&fill_rect(0, 0, 1, 1), &[], context(1, None));
                 assert_runs_cover_tape(&copied);
+                let copied = copied.finish();
+
+                let mut recorded = DisplayListBuilder::new();
+                recorded.append(&fill_rect(0, 0, 1, 1), &[], context(1, None));
+                recorded.end_chunk();
+                for row in first..=last {
+                    record_row(&mut recorded, row);
+                }
+                recorded.append(&fill_rect(0, 0, 1, 1), &[], context(1, None));
+                let recorded = recorded.finish();
+
+                assert_eq!(copied.bytes, recorded.bytes);
+                assert_eq!(copied.command_runs, recorded.command_runs, "rows {first}..={last}");
+                assert_eq!(copied.chunks, recorded.chunks, "rows {first}..={last}");
             }
         }
+    }
+
+    #[test]
+    fn a_chunk_written_in_place_is_named_again() {
+        let mut builder = DisplayListBuilder::new();
+        builder.append(&fill_rect(0, 0, 10, 10), &[], context(1, None));
+        builder.end_chunk();
+        builder.append(&fill_rect(0, 10, 10, 10), &[], context(1, None));
+        let mut tape = builder.finish();
+        let names_before: Vec<_> = tape.chunks.iter().map(|chunk| chunk.id).collect();
+        let changed_offset = tape.chunks[0].byte_end as usize + HEADER_SIZE;
+        tape.bytes[changed_offset] ^= 1;
+        tape.rename_chunks_holding([changed_offset]);
+        assert_eq!(tape.chunks[0].id, names_before[0]);
+        assert_ne!(tape.chunks[1].id, names_before[1]);
     }
 }

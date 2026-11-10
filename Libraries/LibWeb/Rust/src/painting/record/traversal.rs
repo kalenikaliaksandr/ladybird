@@ -115,6 +115,7 @@ fn record_display_list_impl<O: Observer>(
         .observer
         .observe(|log| log.damage = Some(source.frame().damage().summary()));
     let root_group_color = recorder.record_canvas();
+    recorder.recorder.end_chunk();
     let prologue_bytes = u32::try_from(recorder.recorder.byte_size()).expect("display list exceeds u32");
     let has_inspector_overlays = inputs.inspector_highlight.is_some()
         || inputs.grid_overlays.is_some()
@@ -203,7 +204,8 @@ fn copied_output_is_verified() -> bool {
 /// Requires a recording that copied clean output from the published one to be the recording the same frame gives
 /// when everything is recorded: a difference is output that was copied though what it shows changed.
 fn require_same_recording(assembled: &RecordingOutput, from_scratch: &RecordingOutput) {
-    use crate::painting::display_list::builder::for_each_command;
+    use crate::painting::display_list::builder::{RecordedDisplayList, for_each_command};
+    use crate::painting::display_list::chunks::{chunk_id, chunks_of};
     use crate::painting::display_list::commands::{DisplayListCommandType, PaintNestedDisplayList};
     // A command that paints an SVG image is recorded with a placeholder for the image's display list, which
     // publication replaces with the list the host rendered. A copied command names that list already.
@@ -254,6 +256,27 @@ fn require_same_recording(assembled: &RecordingOutput, from_scratch: &RecordingO
         assembled_list.command_runs == scratch_list.command_runs,
         "A recording copied command runs that recording from scratch replaces"
     );
+    let chunk_ends = |list: &RecordedDisplayList| -> Vec<(u32, u32)> {
+        list.chunks
+            .iter()
+            .map(|chunk| (chunk.byte_end, chunk.run_end))
+            .collect()
+    };
+    assert!(
+        chunk_ends(assembled_list) == chunk_ends(scratch_list),
+        "A recording cut its tape into other chunks than recording from scratch does"
+    );
+    for (chunk, bytes, runs) in chunks_of(
+        &assembled_list.bytes,
+        &assembled_list.command_runs,
+        &assembled_list.chunks,
+    ) {
+        let chunk_start = chunk.byte_end - bytes.len() as u32;
+        assert!(
+            chunk.id == chunk_id(bytes, runs, chunk_start),
+            "A recording copied a chunk under a name that is not the name of what it holds"
+        );
+    }
     assert!(
         assembled.hit_test_list.items == from_scratch.hit_test_list.items,
         "A recording copied hit-test items that recording from scratch replaces"

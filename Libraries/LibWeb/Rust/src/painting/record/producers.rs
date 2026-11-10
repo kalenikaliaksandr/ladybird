@@ -271,6 +271,10 @@ impl<O: Observer> AssemblyHost for PaintRecorder<'_, O> {
         self.blocking_wheel_event_region_count += blocking_wheel_event_regions;
     }
 
+    fn end_recorded_run(&mut self) {
+        self.recorder.end_chunk();
+    }
+
     fn damage_of_row(&mut self, row: NodeSlotId) -> PaintDamage {
         self.source.paint_damage_of_row(row)
     }
