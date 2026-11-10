@@ -6,6 +6,7 @@
 
 pub mod caret;
 pub mod geometry;
+pub(crate) mod items;
 pub mod query;
 pub mod resolve;
 
