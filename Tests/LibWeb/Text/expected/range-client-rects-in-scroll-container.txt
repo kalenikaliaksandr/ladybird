@@ -1,0 +1,6 @@
+text: 10,21 24x23
+br1: left 274, middle -7
+br2: left 274, middle 18
+br3: left 250, middle 43
+sticky text: 22,150 24x23
+text after sticky: 10,166 48x23
