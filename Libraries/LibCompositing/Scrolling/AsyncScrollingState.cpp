@@ -34,7 +34,7 @@ static Web::AsyncScrollNodeStableID stable_scroll_node_id_for(Web::UniqueNodeID 
     };
 }
 
-static AsyncScrollNode async_scroll_node_from(auto const& node)
+static AsyncScrollNode async_scroll_node_from(Compositing::CompositorScrollNodeRecord const& node)
 {
     Optional<Compositing::SpatialNodeIndex> parent_scroll_node_index;
     if (node.parent_scroll_node_index != Compositing::VISUAL_VIEWPORT_NODE_INDEX)
@@ -56,7 +56,7 @@ static AsyncScrollNode async_scroll_node_from(auto const& node)
     };
 }
 
-static AsyncSnapContainer async_snap_container_from(auto const& container)
+static AsyncSnapContainer async_snap_container_from(Compositing::CompositorSnapContainerRecord const& container)
 {
     return {
         .scroll_node_index = container.scroll_node_index,
@@ -72,7 +72,7 @@ static AsyncSnapContainer async_snap_container_from(auto const& container)
     };
 }
 
-static SnapAreaGeometry snap_area_geometry_from(auto const& area)
+static SnapAreaGeometry snap_area_geometry_from(Compositing::CompositorSnapAreaRecord const& area)
 {
     return {
         .identity = { .node_id = area.area_node_id, .pseudo_element_type = area.pseudo_element_type },
@@ -99,19 +99,14 @@ AsyncScrollingState async_scrolling_state_from(Compositing::DisplayList const& d
         async_scrolling_state.device_pixels_per_css_pixel = metadata->device_pixels_per_css_pixel;
     }
 
-    auto compositor_scroll_nodes = visual_context_tree.compositor_scroll_nodes();
-    // Fall back to commands until WebContent fills the tree's compositor scroll table.
-    bool use_scroll_table = !compositor_scroll_nodes.is_empty();
-    if (use_scroll_table) {
-        for (auto const& node : compositor_scroll_nodes)
-            async_scrolling_state.scroll_nodes.append(async_scroll_node_from(node));
-        auto snap_areas = visual_context_tree.compositor_snap_areas();
-        for (auto const& container : visual_context_tree.compositor_snap_containers()) {
-            auto snap_container = async_snap_container_from(container);
-            for (auto const& area : snap_areas.slice(container.first_area_index, container.area_count))
-                snap_container.areas.append(snap_area_geometry_from(area));
-            async_scrolling_state.snap_containers.append(move(snap_container));
-        }
+    for (auto const& node : visual_context_tree.compositor_scroll_nodes())
+        async_scrolling_state.scroll_nodes.append(async_scroll_node_from(node));
+    auto snap_areas = visual_context_tree.compositor_snap_areas();
+    for (auto const& container : visual_context_tree.compositor_snap_containers()) {
+        auto snap_container = async_snap_container_from(container);
+        for (auto const& area : snap_areas.slice(container.first_area_index, container.area_count))
+            snap_container.areas.append(snap_area_geometry_from(area));
+        async_scrolling_state.snap_containers.append(move(snap_container));
     }
 
     display_list.for_each_compositor_metadata([&](Compositing::ContextRef context, Compositing::DisplayListCommandType command_type, ReadonlyBytes payload) {
@@ -136,13 +131,6 @@ AsyncScrollingState async_scrolling_state_from(Compositing::DisplayList const& d
                 .context = context,
                 .rect = command.rect,
             });
-            break;
-        }
-        case Compositing::DisplayListCommandType::CompositorScrollNode: {
-            if (use_scroll_table)
-                break;
-            auto command = Compositing::read_display_list_object<Compositing::CompositorScrollNode>(payload);
-            async_scrolling_state.scroll_nodes.append(async_scroll_node_from(command));
             break;
         }
         case Compositing::DisplayListCommandType::CompositorWheelHitTestTarget: {
@@ -196,26 +184,6 @@ AsyncScrollingState async_scrolling_state_from(Compositing::DisplayList const& d
                 .vertical = command.vertical,
                 .is_painted_by_compositor = command.is_painted_by_compositor,
             });
-            break;
-        }
-        case Compositing::DisplayListCommandType::CompositorSnapContainer: {
-            if (use_scroll_table)
-                break;
-            auto command = Compositing::read_display_list_object<Compositing::CompositorSnapContainer>(payload);
-            async_scrolling_state.snap_containers.append(async_snap_container_from(command));
-            break;
-        }
-        case Compositing::DisplayListCommandType::CompositorSnapArea: {
-            if (use_scroll_table)
-                break;
-            auto command = Compositing::read_display_list_object<Compositing::CompositorSnapArea>(payload);
-            auto& snap_containers = async_scrolling_state.snap_containers;
-            // A snap container's areas are recorded right after it.
-            if (snap_containers.is_empty() || snap_containers.last().scroll_node_index != command.scroll_node_index) {
-                dbgln("Ignoring a snap area recorded without its snap container");
-                break;
-            }
-            snap_containers.last().areas.append(snap_area_geometry_from(command));
             break;
         }
         default:

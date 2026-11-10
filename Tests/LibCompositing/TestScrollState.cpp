@@ -111,9 +111,6 @@ static Compositing::AsyncScrollNode make_scroll_node(SpatialNodeIndex scroll_nod
 
 TEST_CASE(async_scroll_tree_ignores_out_of_range_scroll_node_index)
 {
-    // The second ingress: a crafted CompositorScrollNode command in the display list gives the scroll tree an out-of-
-    // range scroll node index — which apply_scroll_delta feeds to the same dense-store setter. The node-count bound on
-    // the snapshot drops it, instead of aborting.
     Compositing::AsyncScrollingState state;
     auto out_of_range_index = SpatialNodeIndex { malicious_index };
     state.scroll_nodes.append(make_scroll_node(out_of_range_index));
