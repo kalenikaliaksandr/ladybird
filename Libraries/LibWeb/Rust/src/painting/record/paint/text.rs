@@ -536,7 +536,8 @@ pub(crate) fn paint_fragments<O: Observer>(recorder: &mut PaintRecorder<'_, O>, 
         paint_text_shadow(recorder, block, span, &span.shadow_layers);
     }
     for span in spans.iter().filter(|span| span.highlights.is_empty()) {
-        let sets = crate::painting::record::paint::text_decoration::decoration_sets_for_span(recorder, block, span);
+        let sets =
+            crate::painting::record::paint::text_decoration::decoration_sets_for_span(recorder.source, block, span);
         paint_text_fragment(recorder, block, span, &sets);
     }
 
@@ -585,7 +586,8 @@ pub(crate) fn paint_fragments<O: Observer>(recorder: &mut PaintRecorder<'_, O>, 
     }
 
     for span in spans.iter().filter(|span| !span.highlights.is_empty()) {
-        let sets = crate::painting::record::paint::text_decoration::decoration_sets_for_span(recorder, block, span);
+        let sets =
+            crate::painting::record::paint::text_decoration::decoration_sets_for_span(recorder.source, block, span);
         paint_text_fragment(recorder, block, span, &sets);
     }
 }

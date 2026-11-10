@@ -102,6 +102,7 @@ RENDER_STATE_ALLOWED = {
             "layout/parallel_layout.rs:SUBTREE_LEASES_ARE_VERIFIED",
             "layout/run_repeatability.rs:ENABLED",
             "layout/run_repeatability.rs:VERIFICATION",
+            "painting/record/ink_bounds.rs:VERIFICATION",
             "render_state/clock/hover.rs:LOGS",
         ],
     ),
