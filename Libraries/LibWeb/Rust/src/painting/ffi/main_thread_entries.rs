@@ -848,15 +848,6 @@ fn with_hit_test_list<R>(
     query(list, &rows, &source)
 }
 
-fn with_hit_test_list_items_only<R>(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    default: R,
-    query: impl FnOnce(&crate::painting::hit_test::HitTestList, &crate::painting::paint_read::PaintSource<'_>) -> R,
-) -> R {
-    with_hit_test_list(host, read, default, |_, _| {}, |list, _, source| query(list, source))
-}
-
 fn with_hit_test_list_and_caret_lines<R>(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
@@ -916,39 +907,6 @@ fn tree_as_the_query_reads_it<'tree>(
     }
 }
 
-fn ffi_topmost(item: Option<crate::painting::hit_test::query::TopmostItem>) -> crate::painting::host::FfiTopmostItem {
-    match item {
-        Some(item) => crate::painting::host::FfiTopmostItem {
-            has_item: true,
-            index: item.index,
-            local: item.local_point.into(),
-        },
-        None => crate::painting::host::FfiTopmostItem::default(),
-    }
-}
-
-/// # Safety
-///
-/// `host` must be a live document host, on its document's thread; the
-/// sink pointer must stay valid for this synchronous call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_hit_test_visit_chrome_widgets(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    sink: *mut c_void,
-    visit: unsafe extern "C" fn(*mut c_void, NodeSlotId, u8),
-) {
-    with_hit_test_list_items_only(host, read, (), |list, _arena| {
-        for item in list.items.iter() {
-            if item.chrome_widget_kind == crate::painting::hit_test::CHROME_WIDGET_NONE {
-                continue;
-            }
-            // SAFETY: The C++ host consumes the visit synchronously.
-            unsafe { visit(sink, item.paintable, item.chrome_widget_kind) };
-        }
-    });
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn layout_hit_test_list_generation(host: &crate::render_state::DocumentHost) -> u64 {
     let mut recording = host.recording();
@@ -967,99 +925,105 @@ pub extern "C" fn layout_paintable_event_dispatch_target(
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn layout_hit_test_item_facts(
+/// Answers `query` about `point` from the rows as of every write the host made, with every row's overflow measured, in
+/// `read`. A hit test paints nothing, so it walks the overlays a frame paints.
+fn with_point_query<R>(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
-    index: usize,
-    out: &mut crate::painting::host::FfiHitTestItemExport,
-) {
-    *out = with_hit_test_list_items_only(host, read, None, |list, arena| {
-        let item = &list.items[index];
-        assert!(
-            arena.paintable_row_is_populated(item.paintable),
-            "exporting a hit-test item for a non-live paintable"
-        );
-        assert!(
-            arena.paintable_row_is_populated(item.hit_node),
-            "exporting a hit-test item that names a non-live paintable"
-        );
-        Some(crate::painting::host::FfiHitTestItemExport {
-            can_produce_caret_position: item.can_produce_caret_position,
-            paintable: item.paintable,
-            hit_node: item.hit_node,
-            chrome_widget_kind: item.chrome_widget_kind,
-            caret_rect: item.caret_rect.into(),
-            context: item.context,
-        })
-    })
-    .expect("no hit-test list");
+    callbacks: &crate::painting::host::FfiHitTestQueryCallbacks,
+    point: FfiCssPixelPoint,
+    default: R,
+    query: impl FnOnce(&crate::painting::paint_read::PaintSource<'_>, crate::painting::hit_test::walk::PointQuery<'_>) -> R,
+) -> R {
+    let rows = host.fresh_measured_rows(read);
+    let Some(tree) = rows.visual_context_tree.as_deref() else {
+        return default;
+    };
+    let mut sampled = None;
+    let tree = tree_as_the_query_reads_it(tree, callbacks, &mut sampled);
+    let world = callbacks.build_world_transforms(tree);
+    let callbacks = &callbacks.with_world_transforms(&world);
+    let absolute_rects = std::cell::RefCell::default();
+    let source = crate::painting::paint_read::PaintSource::over_rows(&rows.paintable, &absolute_rects);
+    query(
+        &source,
+        crate::painting::hit_test::walk::PointQuery {
+            tree,
+            callbacks,
+            viewport: rows.viewport,
+            paint_overlay: true,
+            point: point.into(),
+        },
+    )
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn layout_hit_test_resolve_hit(
-    host: &crate::render_state::DocumentHost,
-    read: &crate::render_state::BegunRead,
-    item_index: usize,
-    local_point: FfiCssPixelPoint,
-) -> crate::painting::host::FfiResolvedHit {
-    with_hit_test_list_items_only(host, read, Default::default(), |list, arena| {
-        list.resolve_hit(arena, item_index, local_point.into())
-    })
+fn ffi_point_hit(
+    source: &crate::painting::paint_read::PaintSource<'_>,
+    hit: &crate::painting::hit_test::walk::PointHit,
+) -> crate::painting::host::FfiPointHit {
+    use crate::painting::paint_read::GeometryRead;
+    assert!(
+        source.paintable_row_is_populated(hit.item.paintable),
+        "a hit names a paintable that has a row"
+    );
+    crate::painting::host::FfiPointHit {
+        paintable: hit.item.paintable,
+        hit_node: hit.item.hit_node,
+        chrome_widget_kind: hit.item.chrome_widget_kind,
+        local: hit.local_point.into(),
+        resolved: crate::painting::hit_test::resolve::resolve_hit(source, &hit.item, hit.local_point),
+    }
 }
 
+/// Writes the topmost thing under `point` to `out` and answers whether there is one.
+///
 /// # Safety
 ///
 /// `host` must be a live document host, on its document's thread.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_hit_test_find_topmost_item(
+pub unsafe extern "C" fn layout_hit_test_topmost_hit(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
     callbacks: crate::painting::host::FfiHitTestQueryCallbacks,
     point: FfiCssPixelPoint,
-    out: &mut crate::painting::host::FfiTopmostItem,
-) {
-    *out = with_hit_test_list_spatial_indexes_and_visual_context_tree(
-        host,
-        read,
-        false,
-        Default::default(),
-        |list, tree, arena| {
-            let mut sampled = None;
-            let tree = tree_as_the_query_reads_it(tree, &callbacks, &mut sampled);
-            let world = callbacks.build_world_transforms(tree);
-            ffi_topmost(list.find_topmost_item(arena, tree, &callbacks.with_world_transforms(&world), point.into()))
-        },
-    );
+    out: &mut crate::painting::host::FfiPointHit,
+) -> bool {
+    let hit = with_point_query(host, read, &callbacks, point, None, |source, query| {
+        crate::painting::hit_test::walk::topmost_hit(source, query).map(|hit| ffi_point_hit(source, &hit))
+    });
+    match hit {
+        Some(hit) => {
+            *out = hit;
+            true
+        }
+        None => false,
+    }
 }
 
+/// Hands `visit` everything under `point`, topmost first.
+///
 /// # Safety
 ///
-/// `host` must be a live document host, on its document's thread.
+/// `host` must be a live document host, on its document's thread; the sink pointer must stay valid for this
+/// synchronous call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn layout_hit_test_all(
+pub unsafe extern "C" fn layout_hit_test_all_hits(
     host: &crate::render_state::DocumentHost,
     read: &crate::render_state::BegunRead,
     callbacks: crate::painting::host::FfiHitTestQueryCallbacks,
     point: FfiCssPixelPoint,
-    push_context: *mut c_void,
-    push: unsafe extern "C" fn(*mut c_void, usize),
+    sink: *mut c_void,
+    visit: unsafe extern "C" fn(*mut c_void, &crate::painting::host::FfiPointHit),
 ) {
-    let indices = with_hit_test_list_spatial_indexes_and_visual_context_tree(
-        host,
-        read,
-        false,
-        Vec::new(),
-        |list, tree, arena| {
-            let mut sampled = None;
-            let tree = tree_as_the_query_reads_it(tree, &callbacks, &mut sampled);
-            let world = callbacks.build_world_transforms(tree);
-            list.hit_test_all(arena, tree, &callbacks.with_world_transforms(&world), point.into())
-        },
-    );
-    for index in indices {
-        // SAFETY: The C++ sink consumes the index synchronously.
-        unsafe { push(push_context, index) };
+    let hits = with_point_query(host, read, &callbacks, point, Vec::new(), |source, query| {
+        crate::painting::hit_test::walk::all_hits(source, query)
+            .iter()
+            .map(|hit| ffi_point_hit(source, hit))
+            .collect()
+    });
+    for hit in &hits {
+        // SAFETY: The C++ sink consumes the hit synchronously.
+        unsafe { visit(sink, hit) };
     }
 }
 

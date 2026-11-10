@@ -6,7 +6,6 @@
 
 use crate::layout::node_data::NodeSlotId;
 use crate::layout::used_values;
-use crate::painting::display_list::commands::ContextRef;
 use std::ffi::c_void;
 
 #[derive(Clone, Copy)]
@@ -158,12 +157,16 @@ impl FfiCaretPositionQuery {
     }
 }
 
+/// A box, text fragment or chrome widget under a point, with what the host needs to turn it into a hit.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
-pub struct FfiTopmostItem {
-    pub has_item: bool,
-    pub index: usize,
+pub struct FfiPointHit {
+    pub paintable: NodeSlotId,
+    pub hit_node: NodeSlotId,
+    pub chrome_widget_kind: u8,
+    /// The point in the space of what was hit.
     pub local: used_values::FfiCssPixelPoint,
+    pub resolved: FfiResolvedHit,
 }
 
 pub use crate::layout::node_data::FfiNodeIdentity;
@@ -217,15 +220,4 @@ impl FfiCaretAt {
             caret: FfiResolvedCaret::default(),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct FfiHitTestItemExport {
-    pub can_produce_caret_position: bool,
-    pub paintable: NodeSlotId,
-    pub hit_node: NodeSlotId,
-    pub chrome_widget_kind: u8,
-    pub caret_rect: used_values::FfiCssPixelRect,
-    pub context: ContextRef,
 }

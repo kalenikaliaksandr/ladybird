@@ -9,6 +9,7 @@ pub mod geometry;
 pub(crate) mod items;
 pub mod query;
 pub mod resolve;
+pub(crate) mod walk;
 
 use crate::css::css_pixels::CssPixels;
 use crate::css::css_pixels::{CssPixelPoint, CssPixelRect};
