@@ -1456,6 +1456,34 @@ pub extern "C" fn render_state_main_visual_context_tree_retain(
     })
 }
 
+/// A retained handle to the main visual context tree with the compositor's animations sampled at
+/// `sample_time_ns`, as a frame at that time shows them, or to the tree itself where it animates
+/// nothing. Queries of one tree at one time share the sample.
+#[unsafe(no_mangle)]
+pub extern "C" fn render_state_main_visual_context_tree_retain_sampled_at(
+    host: &DocumentHost,
+    read: &crate::render_state::BegunRead,
+    sample_time_ns: i64,
+) -> *const c_void {
+    fn retain_sampled(
+        host: &DocumentHost,
+        tree: Option<&std::sync::Arc<crate::painting::visual_context::VisualContextTree>>,
+        sample_time_ns: i64,
+    ) -> *const c_void {
+        tree.map_or(std::ptr::null(), |tree| {
+            std::sync::Arc::into_raw(host.visual_context_tree_sampled_at(tree, sample_time_ns)).cast()
+        })
+    }
+    if let Some(tree) =
+        host.read_known_rows(|rows, _| retain_sampled(host, rows.visual_context_tree.as_ref(), sample_time_ns))
+    {
+        return tree;
+    }
+    read_arena(host, read, (host, sample_time_ns), |arena, (host, sample_time_ns)| {
+        retain_sampled(host, arena.paint_state().visual_context.tree.as_ref(), sample_time_ns)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn render_state_has_visual_context_tree(
     host: &DocumentHost,

@@ -2898,15 +2898,15 @@ CSSPixelRect Element::bounding_client_rect_assuming_layout_clean() const
     Layout::ForcedReadScope read { document() };
     if (!document().navigable())
         return {};
-    return bounding_client_rect_assuming_layout_clean(read, document().visual_context_tree());
+    return bounding_client_rect_assuming_layout_clean(read, Optional<i64> {});
 }
 
-CSSPixelRect Element::bounding_client_rect_assuming_layout_clean(Layout::BegunRead const& read, Compositing::AccumulatedVisualContextTree const& visual_context_tree) const
+CSSPixelRect Element::bounding_client_rect_assuming_layout_clean(Layout::BegunRead const& read, Optional<i64> visual_animation_sample_time_ns) const
 {
     auto const* layout_node = principal_layout_node(read);
     if (!layout_node)
         return {};
-    return Painting::bounding_client_rect(*layout_node, Painting::viewport_mapping(document(), visual_context_tree));
+    return Painting::bounding_client_rect(*layout_node, Painting::viewport_mapping(document(), visual_animation_sample_time_ns));
 }
 
 int Element::client_top() const

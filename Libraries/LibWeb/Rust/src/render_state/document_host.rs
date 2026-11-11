@@ -43,6 +43,14 @@ pub(super) struct HoverOwed {
     pub(super) target: Option<Option<StyleNodeID>>,
 }
 
+/// A sample of the compositor's animations in the main visual context tree, with the tree and the time it was taken
+/// at.
+struct SampledVisualContextTree {
+    source: std::sync::Weak<crate::painting::visual_context::VisualContextTree>,
+    sample_time_ns: i64,
+    tree: Arc<crate::painting::visual_context::VisualContextTree>,
+}
+
 /// The host's side of one document's render state: the name the render owner holds the state by, the frame that may
 /// fly beside the host, the host tables the host answers layout through, and what the document keeps of its display
 /// list recordings, which are made on the host's thread from the frame the render state publishes. The host's document
@@ -75,6 +83,9 @@ pub struct DocumentHost {
     /// The absolute rects the host's reads of the rows computed, kept for as long as the geometry they were computed
     /// from stays.
     absolute_rects: RefCell<AbsoluteRectMemo>,
+    /// The main visual context tree as the last query sampled the compositor's animations in it, for the next query
+    /// of the same tree at the same time.
+    sampled_visual_context_tree: RefCell<Option<SampledVisualContextTree>>,
     /// What the render state shares with the host.
     shared: SharedWithHost,
     /// The compositor animations the document's effects published in the current update pass, which the host hands
@@ -183,6 +194,36 @@ enum FlownStyle {
 }
 
 impl DocumentHost {
+    /// `tree`, the main visual context tree, with the compositor's animations sampled at `sample_time_ns`, or `tree`
+    /// itself where it animates nothing. A query of the same tree at the same time as the last one gets the same
+    /// sample. The memo holds the tree weakly: the passes write the tree in place through `Arc::make_mut`, which
+    /// leaves a weak reference unable to upgrade, so a write never copies the tree for the memo and the next query
+    /// samples afresh.
+    pub(crate) fn visual_context_tree_sampled_at(
+        &self,
+        tree: &Arc<crate::painting::visual_context::VisualContextTree>,
+        sample_time_ns: i64,
+    ) -> Arc<crate::painting::visual_context::VisualContextTree> {
+        let mut memo = self.sampled_visual_context_tree.borrow_mut();
+        if !tree.has_visual_animations() {
+            *memo = None;
+            return Arc::clone(tree);
+        }
+        if let Some(sample) = memo.as_ref()
+            && sample.sample_time_ns == sample_time_ns
+            && sample.source.upgrade().is_some_and(|source| Arc::ptr_eq(&source, tree))
+        {
+            return Arc::clone(&sample.tree);
+        }
+        let sampled = Arc::new(tree.with_visual_animation_samples(sample_time_ns));
+        *memo = Some(SampledVisualContextTree {
+            source: Arc::downgrade(tree),
+            sample_time_ns,
+            tree: Arc::clone(&sampled),
+        });
+        sampled
+    }
+
     fn new() -> Self {
         let shared = SharedWithHost::new();
         let document = DocumentId::mint();
@@ -199,6 +240,7 @@ impl DocumentHost {
             style_update: RefCell::default(),
             fresh_transition_sample: Cell::default(),
             absolute_rects: RefCell::default(),
+            sampled_visual_context_tree: RefCell::default(),
             compositor_animations: RefCell::default(),
             begun_read: BegunRead::of_host(),
             changes: ChangeQueue::default(),

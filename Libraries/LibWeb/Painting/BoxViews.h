@@ -65,6 +65,8 @@ WEB_API bool is_paintable_with_lines(Layout::Node const&);
 // committed viewport box maps nothing.
 WEB_API Layout::RustFFI::FfiViewportMapping viewport_mapping(DOM::Document const&);
 WEB_API Layout::RustFFI::FfiViewportMapping viewport_mapping(DOM::Document const&, Compositing::AccumulatedVisualContextTree const&);
+// The mapping with the compositor's animations sampled at the time, as a frame at that time shows them.
+WEB_API Layout::RustFFI::FfiViewportMapping viewport_mapping(DOM::Document const&, Optional<i64> visual_animation_sample_time_ns);
 WEB_API CSSPixelRect rect_to_viewport(Layout::Node const&, CSSPixelRect const&, Layout::RustFFI::ViewportSpace);
 // The part of a rect in the viewport that the content clips of the box's containing blocks leave.
 WEB_API CSSPixelRect visible_rect_in_containing_blocks(Layout::Node const&, CSSPixelRect const&, Layout::RustFFI::ViewportSpace);

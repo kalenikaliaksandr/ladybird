@@ -502,6 +502,16 @@ Layout::RustFFI::FfiViewportMapping viewport_mapping(DOM::Document const& docume
     return viewport_mapping(document, document.visual_context_tree());
 }
 
+Layout::RustFFI::FfiViewportMapping viewport_mapping(DOM::Document const& document, Optional<i64> visual_animation_sample_time_ns)
+{
+    if (!visual_animation_sample_time_ns.has_value())
+        return viewport_mapping(document);
+    if (!document.has_committed_viewport_box())
+        return {};
+    // NB: The scroll state's world transforms retain the tree they were built from.
+    return viewport_mapping(document, document.paint_state().visual_context_tree_sampled_at(document, *visual_animation_sample_time_ns));
+}
+
 Layout::RustFFI::FfiViewportMapping viewport_mapping(DOM::Document const& document, Compositing::AccumulatedVisualContextTree const& visual_context_tree)
 {
     if (!document.has_committed_viewport_box())

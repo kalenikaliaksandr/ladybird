@@ -39,6 +39,7 @@ WEB_API Layout::RustFFI::FfiVisualContextUpdateOutcome rust_update_accumulated_v
 WEB_API Vector<u32> rust_owned_visual_context_node_indices(Layout::Node const&, Layout::RustFFI::FfiVisualContextBoxNodeList);
 WEB_API bool rust_background_color_can_be_compositor_animated(Layout::Node const&);
 WEB_API void const* retain_rust_main_visual_context_tree(Layout::BegunRead const&, DOM::Document const&);
+WEB_API void const* retain_rust_main_visual_context_tree_sampled_at(Layout::BegunRead const&, DOM::Document const&, i64 monotonic_time_ns);
 WEB_API Layout::RustFFI::FfiPhysicalOverflowDirections rust_physical_overflow_directions(Layout::Node const&);
 WEB_API void register_geometry_host(Layout::NodeArena&);
 WEB_API Layout::RustFFI::FfiRenderingPreparationOutcome rust_prepare_for_rendering(Layout::BegunRead const&, DOM::Document&, bool visual_context_update_pending);

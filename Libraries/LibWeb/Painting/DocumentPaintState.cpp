@@ -50,6 +50,13 @@ Compositing::AccumulatedVisualContextTree DocumentPaintState::visual_context_tre
     return visual_context_tree_without_update(read, document);
 }
 
+Compositing::AccumulatedVisualContextTree DocumentPaintState::visual_context_tree_sampled_at(DOM::Document const& document, i64 monotonic_time_ns) const
+{
+    ensure_visual_context_tree(document);
+    Layout::ForcedReadScope read { document };
+    return Compositing::AccumulatedVisualContextTree::adopt_rust_handle(retain_rust_main_visual_context_tree_sampled_at(read, document, monotonic_time_ns));
+}
+
 u64 DocumentPaintState::visual_context_tree_structural_epoch_without_update(Layout::BegunRead const& read) const
 {
     return Layout::RustFFI::render_state_visual_context_tree_structural_epoch(m_layout_node_arena->host(), &read);

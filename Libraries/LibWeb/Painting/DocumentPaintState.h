@@ -75,6 +75,8 @@ public:
     Vector<Compositing::RustFFI::NodeSlotId> const& boxes_with_auto_content_visibility() const { return m_boxes_with_auto_content_visibility; }
 
     Compositing::AccumulatedVisualContextTree visual_context_tree(DOM::Document const&) const;
+    // The tree with the compositor's animations sampled at the time, as a frame at that time shows them.
+    Compositing::AccumulatedVisualContextTree visual_context_tree_sampled_at(DOM::Document const&, i64 monotonic_time_ns) const;
     // Passive access for consumers of an already settled recording.
     Compositing::AccumulatedVisualContextTree visual_context_tree_without_update(Layout::BegunRead const& read, DOM::Document const&) const;
     u64 visual_context_tree_structural_epoch_without_update(Layout::BegunRead const& read) const;

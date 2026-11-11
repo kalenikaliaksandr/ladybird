@@ -240,6 +240,13 @@ void const* retain_rust_main_visual_context_tree(Layout::BegunRead const& read, 
     return tree;
 }
 
+void const* retain_rust_main_visual_context_tree_sampled_at(Layout::BegunRead const& read, DOM::Document const& document, i64 monotonic_time_ns)
+{
+    auto const* tree = Layout::RustFFI::render_state_main_visual_context_tree_retain_sampled_at(document_host(document), &read, monotonic_time_ns);
+    VERIFY(tree);
+    return tree;
+}
+
 Layout::RustFFI::FfiPhysicalOverflowDirections rust_physical_overflow_directions(Layout::Node const& box)
 {
     return Layout::RustFFI::render_state_physical_overflow_directions(box.document_host(), committed_row_slot(box));

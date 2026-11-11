@@ -8017,7 +8017,7 @@ void Document::queue_an_intersection_observer_entry(IntersectionObserver::Inters
 }
 
 // https://www.w3.org/TR/intersection-observer/#compute-the-intersection
-static CSSPixelRect compute_intersection(Layout::BegunRead const& read, GC::Ref<Element> target, CSSPixelRect target_rect, IntersectionObserver::IntersectionObserver const& observer, Layout::Box const* root_layout_box, CSSPixelRect const& root_bounds, Compositing::AccumulatedVisualContextTree const& visual_context_tree)
+static CSSPixelRect compute_intersection(Layout::BegunRead const& read, GC::Ref<Element> target, CSSPixelRect target_rect, IntersectionObserver::IntersectionObserver const& observer, Layout::Box const* root_layout_box, CSSPixelRect const& root_bounds, Optional<i64> visual_animation_sample_time_ns)
 {
     auto& document = target->document();
     auto const& scroll_margin = observer.scroll_margin_values();
@@ -8036,7 +8036,7 @@ static CSSPixelRect compute_intersection(Layout::BegunRead const& read, GC::Ref<
     Layout::RustFFI::layout_script_intersection_observer_intersection_rect(
         document.layout_node_arena().host(), Layout::Node::slot_id(target->layout_node(read)), target_rect,
         Layout::Node::slot_id(root_layout_box), root_bounds,
-        Painting::viewport_mapping(document, visual_context_tree),
+        Painting::viewport_mapping(document, visual_animation_sample_time_ns),
         const_cast<Vector<CSS::LengthPercentage>*>(&scroll_margin), inflate_scroll_container_clip_rect_by_scroll_margin, &rect);
     return rect;
 }
@@ -8060,20 +8060,8 @@ void Document::run_the_update_intersection_observations_steps(HighResolutionTime
 
     update_paint_and_hit_testing_properties_if_needed();
 
-    GC::RootHashMap<Document*, Compositing::AccumulatedVisualContextTree> observation_visual_context_trees;
-    auto sample_time_ns = MonotonicTime::now().nanoseconds();
-    auto sampled_visual_context_tree = [&](Document& document) -> Optional<Compositing::AccumulatedVisualContextTree> {
-        if (!document.m_paint_state)
-            return {};
-        if (auto cached_tree = observation_visual_context_trees.get(&document); cached_tree.has_value())
-            return *cached_tree;
-        auto committed_tree = document.paint_state().visual_context_tree(document);
-        auto sampled_tree = committed_tree.has_visual_animations()
-            ? committed_tree.with_visual_animation_samples(sample_time_ns)
-            : committed_tree;
-        observation_visual_context_trees.set(&document, sampled_tree);
-        return sampled_tree;
-    };
+    // The geometry reads the compositor's animations where a frame at this time shows them.
+    auto visual_animation_sample_time_ns = MonotonicTime::now().nanoseconds();
 
     for (auto& observer : intersection_observers) {
         observer->remove_dead_observation_targets();
@@ -8084,10 +8072,9 @@ void Document::run_the_update_intersection_observations_steps(HighResolutionTime
         Layout::ForcedReadScope root_read { intersection_root_node->document() };
 
         // 1. Let rootBounds be observer’s root intersection rectangle.
-        auto root_visual_context_tree = sampled_visual_context_tree(intersection_root_node->document());
-        if (!root_visual_context_tree.has_value())
+        if (!intersection_root_node->document().has_paint_state())
             continue;
-        auto root_bounds = observer->root_intersection_rectangle(root_read, &*root_visual_context_tree);
+        auto root_bounds = observer->root_intersection_rectangle(root_read, visual_animation_sample_time_ns);
 
         // Pre-compute per-observer values to avoid repeated work in the per-target loop.
         // An inline element root has a committed box but no Layout::Box. No containing block chain passes
@@ -8146,16 +8133,12 @@ void Document::run_the_update_intersection_observations_steps(HighResolutionTime
                 }
             }
             if (!root_is_hidden && target_layout_node && (is_implicit_root || &target->document() == &intersection_root_node->document()) && root_contains_target) {
-                auto target_visual_context_tree = sampled_visual_context_tree(target->document());
-                if (!target_visual_context_tree.has_value())
-                    continue;
-
                 // 4. Set targetRect to the DOMRectReadOnly obtained by getting the bounding box for target.
-                target_rect = target->bounding_client_rect_assuming_layout_clean(target_read, *target_visual_context_tree);
+                target_rect = target->bounding_client_rect_assuming_layout_clean(target_read, visual_animation_sample_time_ns);
 
                 // 5. Let intersectionRect be the result of running the compute the intersection algorithm on target and
                 //    observer’s intersection root.
-                intersection_rect = compute_intersection(target_read, target, target_rect, *observer, root_layout_box, root_bounds, *target_visual_context_tree);
+                intersection_rect = compute_intersection(target_read, target, target_rect, *observer, root_layout_box, root_bounds, visual_animation_sample_time_ns);
 
                 // 6. Let targetArea be targetRect’s area.
                 auto target_area = target_rect.width() * target_rect.height();

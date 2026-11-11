@@ -60,7 +60,8 @@ public:
     Variant<GC::Ref<DOM::Element>, GC::Ref<DOM::Document>> intersection_root() const;
     GC::Ref<DOM::Node> intersection_root_node() const;
     bool is_implicit_root() const { return !m_root; }
-    CSSPixelRect root_intersection_rectangle(Layout::BegunRead const& read, Compositing::AccumulatedVisualContextTree const* = nullptr) const;
+    // The rectangle as a frame at the time shows the compositor's animations, or as the main thread holds them.
+    CSSPixelRect root_intersection_rectangle(Layout::BegunRead const& read, Optional<i64> visual_animation_sample_time_ns = {}) const;
 
     void queue_entry(Badge<DOM::Document>, GC::Ref<IntersectionObserverEntry>);
 
