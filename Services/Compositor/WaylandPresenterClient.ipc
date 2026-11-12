@@ -1,0 +1,5 @@
+endpoint WaylandPresenterClient
+{
+    // Once for every frame shown in the buffer, when the desktop's compositor no longer reads it.
+    did_release_buffer(u64 buffer_id) =|
+}

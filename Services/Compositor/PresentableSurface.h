@@ -68,6 +68,7 @@ public:
 
     // Null for a surface that draws into memory the window server cannot read.
     WindowServerSurface const* window_server_surface() const { return m_window_server_surface.ptr(); }
+    WindowServerSurface* window_server_surface() { return m_window_server_surface.ptr(); }
 
     // GPU work in flight on a surface counts as use too, so only a surface handed to the window server is checked.
     void did_hand_to_window_server() { m_was_handed_to_window_server = true; }

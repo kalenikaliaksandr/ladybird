@@ -1,0 +1,13 @@
+#include <AK/Optional.h>
+#include <LibGfx/LinuxDmaBufHandle.h>
+#include <LibGfx/Size.h>
+
+endpoint WaylandPresenterServer
+{
+    create_layer(u64 layer_id) =|
+    destroy_layer(u64 layer_id) =|
+    register_buffer(u64 buffer_id, Gfx::LinuxDmaBufHandle dmabuf) =|
+    forget_buffer(u64 buffer_id) =|
+    show_frame(u64 layer_id, u64 buffer_id, Gfx::IntSize painted_size, double device_pixel_ratio, Optional<Gfx::IntSize> fit_within) =|
+    place_frame(u64 layer_id, Optional<Gfx::IntSize> fit_within) =|
+}

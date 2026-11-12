@@ -37,6 +37,7 @@ private:
     virtual Messages::CompositorControlServer::CreatePresentationConnectionResponse create_presentation_connection(bool synthesizes_scroll_momentum, bool scrolls_elastically, Optional<u64> gpu_presentation_adapter_luid) override;
     virtual void bind_presentation(Web::CompositorContextId, u64 presentation_id) override;
     virtual Messages::CompositorControlServer::CreateRemoteLayerResponse create_remote_layer(u64 presentation_id, u64 remote_layer_id) override;
+    virtual Messages::CompositorControlServer::ConnectWaylandPresenterResponse connect_wayland_presenter(u64 presentation_id) override;
     virtual void destroy_remote_layer(u64 remote_layer_id) override;
     virtual void show_context_in_remote_layer(u64 remote_layer_id, Optional<Web::CompositorContextId>) override;
     virtual void set_remote_layer_fit(u64 remote_layer_id, Optional<Gfx::IntSize> fit_within) override;

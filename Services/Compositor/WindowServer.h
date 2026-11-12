@@ -7,6 +7,7 @@
 #pragma once
 
 #include <AK/Error.h>
+#include <AK/Function.h>
 #include <AK/Noncopyable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/OwnPtr.h>
@@ -51,6 +52,8 @@ public:
     // when released.
     virtual void hold_changes_on_screen() = 0;
     virtual void release_changes_held_off_screen() = 0;
+
+    Function<void()> on_surface_let_go;
 
 protected:
     WindowServer() = default;

@@ -21,6 +21,14 @@
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibGfx/Size.h>
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+namespace Gfx {
+
+struct VulkanImage;
+
+}
+#endif
+
 namespace Compositor {
 
 class BackingStoreManager {
@@ -61,6 +69,9 @@ public:
     // The layouts that the presentation can import shared GPU backing stores in. Any layout the GPU renders to goes
     // while this is empty.
     static void set_presentation_drm_format_modifiers(Vector<u64>);
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    static ErrorOr<NonnullRefPtr<Gfx::VulkanImage>> create_vulkan_image_the_presentation_can_import(Gfx::IntSize, Gfx::SkiaBackendContext&);
+#endif
 
     Optional<Allocation> resize_backing_stores_if_needed(
         Gfx::IntSize viewport_size, Compositing::WindowResizingInProgress, PublicationMode);

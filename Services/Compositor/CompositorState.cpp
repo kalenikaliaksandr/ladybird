@@ -9,6 +9,9 @@
 #include <AK/StdLibExtras.h>
 #include <Compositor/CanvasHost.h>
 #include <Compositor/CompositorState.h>
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <Compositor/WaylandWindowServer.h>
+#endif
 #include <LibCore/EventLoop.h>
 #include <LibCore/StatsLog.h>
 #include <LibCore/Timer.h>
@@ -128,8 +131,35 @@ PresentationId CompositorState::register_presentation(CompositorStateClient& pre
     m_presentations.set(&presentation, capabilities);
     m_presentations_by_id.set(presentation_id, &presentation);
     if (auto window_server = WindowServer::try_create_for_presentation())
-        m_window_servers.set(&presentation, window_server.release_nonnull());
+        set_window_server(presentation, window_server.release_nonnull());
     return presentation_id;
+}
+
+void CompositorState::set_window_server(CompositorStateClient& presentation, NonnullRefPtr<WindowServer> window_server)
+{
+    window_server->on_surface_let_go = [this, window_server = window_server.ptr()] {
+        for (auto& [_, remote_layer] : m_remote_layers) {
+            if (remote_layer.window_server.ptr() != window_server || !remote_layer.shown_context_id.has_value())
+                continue;
+            if (auto* context = presented_context_if_present(*remote_layer.shown_context_id))
+                schedule_pending_present_frame_if_unblocked(*remote_layer.shown_context_id, *context);
+        }
+    };
+    m_window_servers.set(&presentation, move(window_server));
+}
+
+ErrorOr<IPC::TransportHandle> CompositorState::connect_wayland_presenter([[maybe_unused]] CompositorStateClient& presentation)
+{
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    VERIFY(m_presentations.contains(&presentation));
+    if (!m_skia_backend_context)
+        return Error::from_string_literal("The Wayland presenter shows frames only from GPU memory");
+    auto paired_transport = TRY(IPC::Transport::create_paired());
+    set_window_server(presentation, WaylandWindowServer::create(move(paired_transport.local)));
+    return move(paired_transport.remote_handle);
+#else
+    return Error::from_string_literal("This platform has no Wayland presenter");
+#endif
 }
 
 void CompositorState::unregister_presentation(CompositorStateClient& presentation)

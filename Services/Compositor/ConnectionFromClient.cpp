@@ -100,6 +100,19 @@ Messages::CompositorControlServer::CreateRemoteLayerResponse ConnectionFromClien
     return m_compositor_state->create_remote_layer(**connection, remote_layer_id);
 }
 
+Messages::CompositorControlServer::ConnectWaylandPresenterResponse ConnectionFromClient::connect_wayland_presenter(u64 presentation_id)
+{
+    auto connection = m_presentation_connections.get(presentation_id);
+    if (!connection.has_value())
+        return OptionalNone {};
+    auto handle = m_compositor_state->connect_wayland_presenter(**connection);
+    if (handle.is_error()) {
+        dbgln("Compositor: Unable to connect a Wayland presenter: {}", handle.error());
+        return OptionalNone {};
+    }
+    return Optional<IPC::TransportHandle> { handle.release_value() };
+}
+
 void ConnectionFromClient::destroy_remote_layer(u64 remote_layer_id)
 {
     m_compositor_state->destroy_remote_layer(remote_layer_id);

@@ -54,6 +54,8 @@ set(GENERATED_SOURCES
     CompositorWebContentServerEndpoint.h
     RenderClockClientEndpoint.h
     RenderClockServerEndpoint.h
+    WaylandPresenterClientEndpoint.h
+    WaylandPresenterServerEndpoint.h
     ${CMAKE_BINARY_DIR}/Libraries/LibCompositing/WebGL/GLFunctions.cpp
     WebGLCommandReplayer.cpp
 )
@@ -98,7 +100,7 @@ if (HAS_VULKAN)
 endif()
 
 if (USE_VULKAN_DMABUF_IMAGES)
-    target_sources(compositorservice PRIVATE VideoFrameSkiaVulkan.cpp)
+    target_sources(compositorservice PRIVATE VideoFrameSkiaVulkan.cpp WaylandWindowServer.cpp)
 endif()
 
 if (APPLE)

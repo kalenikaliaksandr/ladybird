@@ -89,11 +89,16 @@ static Vector<u64> shared_backing_store_drm_format_modifiers(Gfx::VulkanContext 
     return modifiers;
 }
 
-static ErrorOr<GpuBackingStore> create_shared_gpu_backing_store(Gfx::IntSize size, Gfx::SkiaBackendContext& skia_backend_context)
+ErrorOr<NonnullRefPtr<Gfx::VulkanImage>> BackingStoreManager::create_vulkan_image_the_presentation_can_import(Gfx::IntSize size, Gfx::SkiaBackendContext& skia_backend_context)
 {
     auto const& vulkan_context = skia_backend_context.vulkan_context();
     auto const modifiers = shared_backing_store_drm_format_modifiers(vulkan_context);
-    auto image = TRY(Gfx::create_shared_vulkan_image(vulkan_context, size.width(), size.height(), VK_FORMAT_B8G8R8A8_UNORM, modifiers.span()));
+    return Gfx::create_shared_vulkan_image(vulkan_context, size.width(), size.height(), VK_FORMAT_B8G8R8A8_UNORM, modifiers.span());
+}
+
+static ErrorOr<GpuBackingStore> create_shared_gpu_backing_store(Gfx::IntSize size, Gfx::SkiaBackendContext& skia_backend_context)
+{
+    auto image = TRY(BackingStoreManager::create_vulkan_image_the_presentation_can_import(size, skia_backend_context));
     auto shared_image = Gfx::duplicate_shared_image(*image);
 
     return GpuBackingStore {

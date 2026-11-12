@@ -170,6 +170,7 @@ public:
     // for. Answers how that view finds the layer, whose kind is None where the presentation has no remote layers.
     Compositing::RemoteLayerHostHandle create_remote_layer(CompositorStateClient&, u64 remote_layer_id);
     void destroy_remote_layer(u64 remote_layer_id);
+    ErrorOr<IPC::TransportHandle> connect_wayland_presenter(CompositorStateClient&);
     // The layer keeps the frame it shows until the context it is given next presents one.
     void show_context_in_remote_layer(u64 remote_layer_id, Optional<Web::CompositorContextId>);
     // A view that scales the frames to fit it gives its size, in device pixels.
@@ -351,6 +352,7 @@ private:
     HashMap<PresentationId, CompositorStateClient*> m_presentations_by_id;
     HashMap<Web::CompositorContextId, CompositorStateClient*> m_context_presentations;
 
+    void set_window_server(CompositorStateClient&, NonnullRefPtr<WindowServer>);
     HashMap<CompositorStateClient*, NonnullRefPtr<WindowServer>> m_window_servers;
 
     struct RemoteLayerState {

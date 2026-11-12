@@ -30,6 +30,8 @@ compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorWebContentClien
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/CompositorWebContentServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/CompositorWebContentServerEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/RenderClockClient.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/RenderClockClientEndpoint.h)
 compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/RenderClockServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/RenderClockServerEndpoint.h)
+compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/WaylandPresenterClient.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/WaylandPresenterClientEndpoint.h)
+compile_ipc(${LADYBIRD_SOURCE_DIR}/Services/Compositor/WaylandPresenterServer.ipc ${CMAKE_BINARY_DIR}/Services/Compositor/WaylandPresenterServerEndpoint.h)
 compile_ipc(DisplayList/DisplayListProperties.ipc DisplayList/DisplayListPropertiesCodecs.h)
 compile_ipc(Types.ipc TypesCodecs.h)
 compile_ipc(FontClient.ipc FontClientEndpoint.h)
@@ -45,6 +47,8 @@ set(GENERATED_SOURCES
     ../../Services/Compositor/CompositorWebContentServerEndpoint.h
     ../../Services/Compositor/RenderClockClientEndpoint.h
     ../../Services/Compositor/RenderClockServerEndpoint.h
+    ../../Services/Compositor/WaylandPresenterClientEndpoint.h
+    ../../Services/Compositor/WaylandPresenterServerEndpoint.h
     FontClientEndpoint.h
     FontServerEndpoint.h
 )
