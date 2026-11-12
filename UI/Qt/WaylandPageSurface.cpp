@@ -89,6 +89,7 @@ WaylandPageSurface::~WaylandPageSurface()
     on_backing_store_released = nullptr;
     on_ready_to_present = nullptr;
     destroy_subsurface();
+    m_presenter_layer = nullptr;
     QObject::disconnect(m_parent_surface_created_connection);
     for (auto& buffer : m_buffers)
         destroy_buffer(*buffer);
@@ -147,6 +148,7 @@ void WaylandPageSurface::wait_for_parent_surface(QNativeInterface::Private::QWay
 void WaylandPageSurface::destroy_subsurface()
 {
     QObject::disconnect(m_parent_surface_destroyed_connection);
+    stop_showing_presenter_layer();
     if (m_subsurface) {
         wl_subsurface_destroy(m_subsurface);
         m_subsurface = nullptr;
@@ -413,6 +415,73 @@ void WaylandPageSurface::set_synchronized(bool synchronized)
         wl_subsurface_set_sync(m_subsurface);
     else
         wl_subsurface_set_desync(m_subsurface);
+}
+
+void WaylandPageSurface::set_presenter_layer(RefPtr<WaylandPresenterLayer> layer)
+{
+    if (m_presenter_layer == layer)
+        return;
+    stop_showing_presenter_layer();
+    m_presenter_layer = move(layer);
+}
+
+// NB: The surface is unmapped at once, before the presenter may commit the whole frame to it.
+void WaylandPageSurface::stop_showing_presenter_layer()
+{
+    if (m_presenter_layer_subsurface) {
+        wl_subsurface_destroy(m_presenter_layer_subsurface);
+        m_presenter_layer_subsurface = nullptr;
+    }
+    m_presenter_layer_position.clear();
+    m_presenter_layer_is_synchronized = false;
+    if (m_presenter_layer)
+        m_presenter_layer->place({});
+}
+
+bool WaylandPageSurface::place_presenter_layer(QWindow& parent, QPoint position, Optional<WaylandPresenterLayer::Placement> placement)
+{
+    if (!m_presenter_layer)
+        return false;
+    if (!placement.has_value() || !ensure_subsurface(parent)) {
+        stop_showing_presenter_layer();
+        return false;
+    }
+
+    bool needs_parent_commit = false;
+    if (!m_presenter_layer_subsurface) {
+        // NB: A new subsurface is synchronized, so what the surface shows and where it shows it change together with
+        //     the browser window when it commits next.
+        m_presenter_layer_subsurface = wl_subcompositor_get_subsurface(m_globals.subcompositor, m_presenter_layer->surface(), m_parent_surface);
+        wl_subsurface_place_below(m_presenter_layer_subsurface, m_overlay_surface);
+        m_presenter_layer_is_synchronized = true;
+        ++m_presenter_layer_placement_count;
+        needs_parent_commit = true;
+    }
+    if (m_presenter_layer->placement() != placement) {
+        if (!m_presenter_layer_is_synchronized) {
+            wl_subsurface_set_sync(m_presenter_layer_subsurface);
+            m_presenter_layer_is_synchronized = true;
+        }
+        ++m_presenter_layer_placement_count;
+        m_presenter_layer->place(placement);
+        needs_parent_commit = true;
+    }
+    if (m_presenter_layer_position != position) {
+        wl_subsurface_set_position(m_presenter_layer_subsurface, position.x(), position.y());
+        m_presenter_layer_position = position;
+        needs_parent_commit = true;
+    }
+    return needs_parent_commit;
+}
+
+// NB: The compositor applies what the surface committed while synchronized as soon as it is desynchronized, so that
+//     waits until the browser window has committed the placement it belongs to.
+void WaylandPageSurface::desynchronize_presenter_layer_unless_placed_since(u64 placement_count)
+{
+    if (!m_presenter_layer_subsurface || !m_presenter_layer_is_synchronized || m_presenter_layer_placement_count != placement_count)
+        return;
+    wl_subsurface_set_desync(m_presenter_layer_subsurface);
+    m_presenter_layer_is_synchronized = false;
 }
 
 bool WaylandPageSurface::show_overlay(QWindow& parent, QImage const& image, QPoint position)

@@ -1157,6 +1157,13 @@ void WebContentView::paintEvent(QPaintEvent*)
                 m_page_surface->set_synchronized(false);
         });
     }
+    // NB: The presenter's surface keeps committing frames, which carry the placement that the browser window committed.
+    if (m_page_surface && m_page_surface->presenter_layer_is_synchronized()) {
+        QTimer::singleShot(0, this, [this, placement_count = m_page_surface->presenter_layer_placement_count()] {
+            if (m_page_surface)
+                m_page_surface->desynchronize_presenter_layer_unless_placed_since(placement_count);
+        });
+    }
 #    endif
 
     QPainter painter(this);
@@ -1891,8 +1898,9 @@ void WebContentView::resizeEvent(QResizeEvent* event)
     update_vulkan_window_geometry();
 #endif
 #ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
-    // NB: The page surface would stick out of a browser window that shrinks, so it is cropped to the view.
-    if (m_page_surface && !QRect { QPoint { 0, 0 }, size() * device_pixel_ratio() }.contains(m_page_surface_rect))
+    // NB: The page surface would stick out of a browser window that shrinks, so it is cropped to the view. The
+    //     presenter's surface is cropped to the view as it grows too, as no frame passes through here.
+    if (m_page_surface && (!QRect { QPoint { 0, 0 }, size() * device_pixel_ratio() }.contains(m_page_surface_rect) || (m_presenter_layer && displayed_frame_is_in_remote_layer())))
         update_page_surface(PageSurfaceContent::Unchanged);
 #endif
     // One window resize reaches the view as several resize events in one turn of the event loop
@@ -1913,6 +1921,10 @@ void WebContentView::set_viewport_rect(Gfx::IntRect rect)
 {
     m_viewport_size = rect.size();
     set_device_pixel_ratio_and_viewport(device_pixel_ratio(), viewport_size());
+#ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
+    if (m_page_surface && m_presenter_layer && displayed_frame_is_in_remote_layer())
+        update_page_surface(PageSurfaceContent::Unchanged);
+#endif
 }
 
 // A view in a tab that isn't the current one gets its geometry, but Qt holds the resize event back until the tab is
@@ -2445,7 +2457,7 @@ bool WebContentView::eventFilter(QObject* watched, QEvent* event)
 void WebContentView::place_native_view_again()
 {
     // NB: Presenting the frame again places it, and crops it to what the widgets the view is in still show of it.
-    if (m_page_surface && m_page_surface->is_showing())
+    if (m_page_surface && (m_page_surface->is_showing() || (m_presenter_layer && displayed_frame_is_in_remote_layer())))
         update_page_surface(PageSurfaceContent::Unchanged);
 }
 #endif

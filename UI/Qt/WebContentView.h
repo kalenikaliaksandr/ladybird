@@ -85,6 +85,7 @@ struct WindowsD3DHandle;
 namespace Ladybird {
 
 class WaylandPageSurface;
+class WaylandPresenterLayer;
 
 }
 
@@ -476,6 +477,15 @@ private:
     void release_retired_backing_stores_no_longer_painted();
     void release_all_retired_backing_stores();
     QRect rect_shown_in_window() const;
+
+    // The Compositor sends the page's frames to the presenter thread itself, which shows them in a remote layer that
+    // the page surface places in the browser window.
+    virtual void remote_layer_changed(Compositing::RemoteLayerHostHandle) override;
+    void update_whether_view_hosts_presenter_layer();
+    bool displayed_frame_is_in_remote_layer() const;
+    void place_presenter_layer();
+    RefPtr<WaylandPresenterLayer> m_presenter_layer;
+    bool m_hosts_presenter_layer { false };
 
     // Shows the page's frames on Wayland by handing their dma-bufs to the compositor of the desktop. Without it, the
     // page's window draws them in a swap chain of its own.

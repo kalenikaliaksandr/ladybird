@@ -23,6 +23,7 @@
 #ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
 #    include <UI/Qt/WaylandGpu.h>
 #    include <UI/Qt/WaylandPageSurface.h>
+#    include <UI/Qt/WaylandPresenter.h>
 #endif
 
 #include <QByteArrayList>
@@ -211,6 +212,8 @@ RefPtr<Gfx::Bitmap const> WebContentView::cpu_bitmap_to_paint(Paintable const& p
 
 RefPtr<Gfx::Bitmap const> WebContentView::cpu_bitmap_of(Paintable const& paintable) const
 {
+    if (!paintable.shared_image_buffer)
+        return {};
     if (auto bitmap = paintable.shared_image_buffer->bitmap_if_present())
         return bitmap;
 
@@ -891,6 +894,7 @@ struct WebContentView::VulkanWindowRenderer final : public QVulkanWindowRenderer
 
         auto paintable = m_view.current_paintable();
         bool can_render = paintable.has_value()
+            && paintable->shared_image_buffer
             && !paintable->bitmap_size.is_empty()
             && m_renderer.prepare(m_window);
         if (can_render && !m_renderer.can_render(*paintable->shared_image_buffer)) {
@@ -1121,6 +1125,8 @@ bool WebContentView::vulkan_window_update_would_only_resize() const
 QRect WebContentView::rect_covered_by_page_window() const
 {
 #ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
+    if (m_presenter_layer && displayed_frame_is_in_remote_layer())
+        return m_presenter_layer->covered_rect();
     if (m_page_surface)
         return m_page_surface_rect;
 #endif
@@ -1199,7 +1205,7 @@ void WebContentView::destroy_vulkan_window()
 bool WebContentView::current_paintable_can_use_vulkan_window() const
 {
     auto paintable = current_paintable();
-    if (!paintable.has_value())
+    if (!paintable.has_value() || !paintable->shared_image_buffer)
         return false;
 
     return paintable->shared_image_buffer->linux_dmabuf_handle();
@@ -1209,6 +1215,7 @@ void WebContentView::schedule_vulkan_window_update()
 {
 #ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
     if (m_page_surface) {
+        update_whether_view_hosts_presenter_layer();
         // NB: Qt paints the page itself while an overlay covers it, which is fastest from CPU memory. Switching costs
         //     the page all its backing stores, so a hidden view keeps them, and so does one under a floating surface
         //     such as a hover card, which comes and goes quickly. Qt reads the frame back from GPU memory then.
@@ -1277,6 +1284,7 @@ bool WebContentView::create_page_surface()
     m_page_surface = WaylandPageSurface::create();
     if (!m_page_surface)
         return false;
+    update_whether_view_hosts_presenter_layer();
 
     m_page_surface->on_backing_store_released = [this](u64 page_id, i32 bitmap_id) {
         auto index = m_backing_stores_waiting_for_release.find_first_index_if([&](auto const& store) {
@@ -1307,6 +1315,7 @@ bool WebContentView::page_surface_can_show_frames() const
 
 void WebContentView::hide_page_surface()
 {
+    m_page_surface->stop_showing_presenter_layer();
     m_page_surface->hide();
     if (!m_page_surface_rect.isEmpty()) {
         m_page_surface_rect = {};
@@ -1316,8 +1325,19 @@ void WebContentView::hide_page_surface()
 
 void WebContentView::update_page_surface(PageSurfaceContent content)
 {
+    if (m_presenter_layer && displayed_frame_is_in_remote_layer()) {
+        // NB: The page surface goes away together with the browser window's commit that shows the presenter's surface.
+        if (m_page_surface->is_showing())
+            m_page_surface->set_synchronized(true);
+        m_page_surface->hide();
+        m_page_surface_rect = {};
+        place_presenter_layer();
+        return;
+    }
+    m_page_surface->stop_showing_presenter_layer();
+
     auto paintable = current_paintable();
-    auto const* dmabuf = paintable.has_value() ? paintable->shared_image_buffer->linux_dmabuf_handle() : nullptr;
+    auto const* dmabuf = paintable.has_value() && paintable->shared_image_buffer ? paintable->shared_image_buffer->linux_dmabuf_handle() : nullptr;
     auto* parent = window()->windowHandle();
     if (!page_surface_can_show_frames() || !dmabuf || !parent || paintable->bitmap_size.is_empty() || m_viewport_size.is_empty()) {
         hide_page_surface();
@@ -1400,6 +1420,107 @@ void WebContentView::update_page_surface(PageSurfaceContent content)
         m_page_surface_position = frame.position;
 }
 
+// An overlay or a floating surface has to be above the page, where only Qt paints, so the view shows its backing
+// stores while one is there.
+void WebContentView::update_whether_view_hosts_presenter_layer()
+{
+    auto has_hover_expanded_chrome = m_vertical_tab_overlay_left != 0 || m_vertical_tab_overlay_right != 0 || m_bookmarks_bar_overlay_height != 0;
+    auto should_host = WaylandPresenter::the() && m_page_surface && !m_page_surface_failed
+        && !is_page_covered_by_overlay() && !has_floating_surface_over_page() && !(scales_frames_to_fit() && has_hover_expanded_chrome);
+    if (m_hosts_presenter_layer == should_host)
+        return;
+    m_hosts_presenter_layer = should_host;
+    set_hosts_remote_layer(should_host);
+}
+
+void WebContentView::remote_layer_changed(Compositing::RemoteLayerHostHandle host_handle)
+{
+    RefPtr<WaylandPresenterLayer> layer;
+    if (host_handle.kind == Compositing::RemoteLayerHostKind::WaylandPresenterLayer && m_page_surface) {
+        if (auto* presenter = WaylandPresenter::the())
+            layer = presenter->layer(host_handle.id);
+    }
+    if (m_presenter_layer == layer)
+        return;
+    if (m_presenter_layer) {
+        m_presenter_layer->on_frames_cannot_be_shown = nullptr;
+        m_presenter_layer->on_placement_out_of_date = nullptr;
+        m_presenter_layer->on_covered_rect_shrank = nullptr;
+    }
+    m_presenter_layer = layer;
+    if (m_presenter_layer) {
+        m_presenter_layer->on_frames_cannot_be_shown = [this] {
+            m_page_surface_failed = true;
+            update_whether_view_hosts_presenter_layer();
+            QTimer::singleShot(0, this, [this] { fall_back_from_page_surface(); });
+        };
+        m_presenter_layer->on_placement_out_of_date = [this] {
+            if (m_page_surface && displayed_frame_is_in_remote_layer())
+                update_page_surface(PageSurfaceContent::Unchanged);
+        };
+        m_presenter_layer->on_covered_rect_shrank = [this] {
+            update();
+        };
+    }
+    if (m_page_surface)
+        m_page_surface->set_presenter_layer(m_presenter_layer);
+    schedule_repaint();
+    // NB: The presenter can have found that it cannot show the frames before the view heard of the layer.
+    if (m_presenter_layer && m_presenter_layer->frames_cannot_be_shown())
+        m_presenter_layer->on_frames_cannot_be_shown();
+}
+
+bool WebContentView::displayed_frame_is_in_remote_layer() const
+{
+    auto paintable = current_paintable();
+    return paintable.has_value() && !paintable->shared_image_buffer;
+}
+
+void WebContentView::place_presenter_layer()
+{
+    auto* parent = window()->windowHandle();
+    if (!parent)
+        return;
+
+    Optional<WaylandPresenterLayer::Placement> placement;
+    QPoint position;
+    if (page_surface_can_show_frames() && !m_viewport_size.is_empty()) {
+        auto device_pixel_ratio = this->device_pixel_ratio();
+        auto view_size = size() * device_pixel_ratio;
+        QRect rect;
+        if (scales_frames_to_fit()) {
+            rect = { 0, 0, m_viewport_size.width(), m_viewport_size.height() };
+            if (auto painted_size = m_presenter_layer->painted_size_of_latest_frame(); painted_size.has_value() && !painted_size->is_empty()) {
+                auto fitted = rect_fitting_frame(*painted_size, m_viewport_size);
+                rect = { fitted.x(), fitted.y(), fitted.width(), fitted.height() };
+            }
+        } else {
+            // NB: The view can already be smaller than the viewport the page has, and the compositor doesn't clip the
+            //     page surface to the browser window. Hover-expanded chrome paints in the view over strips of the page.
+            rect = { 0, 0, min(m_viewport_size.width(), view_size.width()), min(m_viewport_size.height(), view_size.height()) };
+            auto left = qRound(m_vertical_tab_overlay_left * device_pixel_ratio);
+            auto right = qRound(m_vertical_tab_overlay_right * device_pixel_ratio);
+            auto top = qRound(m_bookmarks_bar_overlay_height * device_pixel_ratio);
+            rect &= QRect { left, top, view_size.width() - left - right, view_size.height() - top };
+            auto shown = rect_shown_in_window();
+            rect &= QRect { qRound(shown.x() * device_pixel_ratio), qRound(shown.y() * device_pixel_ratio), qRound(shown.width() * device_pixel_ratio), qRound(shown.height() * device_pixel_ratio) };
+        }
+        if (!rect.isEmpty()) {
+            placement = WaylandPresenterLayer::Placement { rect, scales_frames_to_fit(), device_pixel_ratio };
+            position = mapTo(window(), QPoint { 0, 0 }) + QPoint { qRound(rect.x() / device_pixel_ratio), qRound(rect.y() / device_pixel_ratio) };
+        }
+    }
+
+    auto previously_covered_rect = m_presenter_layer->covered_rect();
+    auto needs_parent_commit = m_page_surface->place_presenter_layer(*parent, position, placement);
+    // NB: The view paints what the presenter's surface leaves bare. Otherwise, nothing else may make the browser
+    //     window commit, so have Qt repaint a pixel of it.
+    if (!m_presenter_layer->covered_rect().contains(previously_covered_rect))
+        update();
+    else if (needs_parent_commit)
+        update(QRect { rect_shown_in_window().topLeft(), QSize { 1, 1 } });
+}
+
 // The part of the view that the widgets it is in do not clip away, in its coordinates.
 QRect WebContentView::rect_shown_in_window() const
 {
@@ -1429,6 +1550,12 @@ void WebContentView::hide_image_over_page()
 
 void WebContentView::destroy_page_surface()
 {
+    if (m_presenter_layer) {
+        m_presenter_layer->on_frames_cannot_be_shown = nullptr;
+        m_presenter_layer->on_placement_out_of_date = nullptr;
+        m_presenter_layer->on_covered_rect_shrank = nullptr;
+        m_presenter_layer = nullptr;
+    }
     m_page_surface->retire_buffers([this](WaylandPageSurface::HeldBackingStore const& held) -> Function<void()> {
         bool view_finished_reading = false;
         if (auto index = m_backing_stores_waiting_for_release.find_first_index_if([&](auto const& store) { return store.page_id == held.page_id && store.bitmap_id == held.bitmap_id; }); index.has_value()) {
@@ -1459,7 +1586,7 @@ void WebContentView::release_retired_backing_stores_no_longer_painted()
     // NB: A backup frame has no page/bitmap IDs in Paintable. Its dma-buf identity still identifies the old page's
     //     store, which the view may read after it has switched pages and while the Vulkan fallback shows the backup.
     auto paintable = current_paintable();
-    auto const* dmabuf = paintable.has_value() ? paintable->shared_image_buffer->linux_dmabuf_handle() : nullptr;
+    auto const* dmabuf = paintable.has_value() && paintable->shared_image_buffer ? paintable->shared_image_buffer->linux_dmabuf_handle() : nullptr;
     struct stat object_stat {};
     bool has_identity = dmabuf && !dmabuf->objects.is_empty() && fstat(dmabuf->objects.first().fd(), &object_stat) == 0;
     if (dmabuf && !has_identity)
@@ -1487,6 +1614,7 @@ void WebContentView::fall_back_from_page_surface()
     if (!m_page_surface)
         return;
     destroy_page_surface();
+    update_whether_view_hosts_presenter_layer();
     create_vulkan_window();
     schedule_vulkan_window_update();
     update();

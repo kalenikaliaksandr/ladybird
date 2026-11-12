@@ -58,6 +58,7 @@ public:
 
     // The UI has made its first windows and asked for what they start out showing.
     void ui_did_start();
+    Optional<IPC::TransportHandle> take_wayland_presenter_awaiting_ui() { return exchange(m_wayland_presenter_awaiting_ui, {}); }
     virtual void notify_webdriver_window_created(String const& handle) override;
     void set_ui_info(Hub::UIInfo);
     Hub::UIInfo const* ui_info() const;
@@ -120,6 +121,8 @@ private:
     virtual Vector<String> platform_preferred_languages() const override;
     virtual Optional<Gfx::GpuDeviceIdentity> platform_presentation_gpu_device() const override;
     virtual Vector<u64> platform_presentation_drm_format_modifiers() const override;
+    virtual bool platform_hosts_wayland_presenter() const override;
+    virtual void platform_connect_wayland_presenter(IPC::TransportHandle) override;
 
     ApplicationHost* m_host { nullptr };
     StringView m_encoded_ui_info;
@@ -128,6 +131,7 @@ private:
     HashMap<u64, NonnullOwnPtr<View>> m_views;
     Optional<u64> m_active_view_id;
     bool m_ui_did_start { false };
+    Optional<IPC::TransportHandle> m_wayland_presenter_awaiting_ui;
     Vector<String> m_webdriver_windows_awaiting_ui;
 
     // What the Hub waits to hear from the UI.

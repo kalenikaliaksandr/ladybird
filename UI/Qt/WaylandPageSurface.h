@@ -13,6 +13,7 @@
 #include <AK/kmalloc.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/LinuxDmaBufHandle.h>
+#include <UI/Qt/WaylandPresenter.h>
 
 #include <QMetaObject>
 #include <QPoint>
@@ -113,6 +114,17 @@ public:
     // Keeps the held wl_buffers alive independently of this surface, until their actual release events arrive.
     void retire_buffers(Function<Function<void()>(HeldBackingStore const&)> make_release_callback);
 
+    // The surface that the presenter thread shows the page's remote layer in, between the page's own surface and the
+    // overlay.
+    void set_presenter_layer(RefPtr<WaylandPresenterLayer>);
+    void stop_showing_presenter_layer();
+    // Answers whether the browser window has to commit for the placement to show. A placement that changes holds the
+    // surface's commits back until it does.
+    bool place_presenter_layer(QWindow& parent, QPoint position, Optional<WaylandPresenterLayer::Placement>);
+    bool presenter_layer_is_synchronized() const { return m_presenter_layer_is_synchronized; }
+    u64 presenter_layer_placement_count() const { return m_presenter_layer_placement_count; }
+    void desynchronize_presenter_layer_unless_placed_since(u64 placement_count);
+
     Function<void(u64 page_id, i32 bitmap_id)> on_backing_store_released;
     Function<void()> on_ready_to_present;
 
@@ -190,6 +202,12 @@ private:
     bool m_overlay_is_attached { false };
     // The compositor may read these until it releases them.
     Vector<wl_buffer*> m_overlay_buffers;
+
+    RefPtr<WaylandPresenterLayer> m_presenter_layer;
+    wl_subsurface* m_presenter_layer_subsurface { nullptr };
+    Optional<QPoint> m_presenter_layer_position;
+    bool m_presenter_layer_is_synchronized { false };
+    u64 m_presenter_layer_placement_count { 0 };
 };
 
 }

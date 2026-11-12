@@ -69,6 +69,9 @@
 #include <UI/Qt/VersionPage.h>
 #include <UI/Qt/WebContentView.h>
 #include <UI/Qt/WebUIPage.h>
+#ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
+#    include <UI/Qt/WaylandPresenter.h>
+#endif
 
 #if defined(AK_OS_MACOS)
 #    include <UI/Qt/ApplicationIcon.h>
@@ -764,6 +767,11 @@ Hub::UIInfo Application::current_ui_info() const
     info.preferred_languages = platform_preferred_languages();
     info.presentation_gpu_device = platform_presentation_gpu_device();
     info.presentation_drm_format_modifiers = platform_presentation_drm_format_modifiers();
+#    ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
+    info.hosts_wayland_presenter = WaylandPresenter::the() != nullptr;
+#    else
+    info.hosts_wayland_presenter = false;
+#    endif
     return info;
 }
 

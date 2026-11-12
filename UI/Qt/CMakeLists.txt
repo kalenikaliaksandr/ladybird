@@ -127,6 +127,8 @@ if (LINUX AND NOT ANDROID)
             WaylandGpu.h
             WaylandPageSurface.cpp
             WaylandPageSurface.h
+            WaylandPresenter.cpp
+            WaylandPresenter.h
             WaylandRegistry.cpp
             WaylandRegistry.h
         )

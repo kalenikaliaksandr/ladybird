@@ -29,6 +29,7 @@
 #include <LibGfx/Point.h>
 #include <LibGfx/Size.h>
 #include <LibIPC/Forward.h>
+#include <LibIPC/TransportHandle.h>
 #include <LibMain/Main.h>
 #include <LibRequests/Forward.h>
 #include <LibURL/URL.h>
@@ -155,6 +156,8 @@ public:
     // The DRM format modifiers the platform can present frames in that are shared from that GPU, or empty if it does
     // not say.
     virtual Vector<u64> platform_presentation_drm_format_modifiers() const { return {}; }
+    virtual bool platform_hosts_wayland_presenter() const { return false; }
+    virtual void platform_connect_wayland_presenter(IPC::TransportHandle) { }
 
     virtual OwnPtr<PictureInPictureWindow> create_picture_in_picture_window(WebContentPage& requesting_page, CanonicalTraversable&, Gfx::IntSize video_size);
 

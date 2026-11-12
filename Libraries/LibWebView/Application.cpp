@@ -1913,6 +1913,10 @@ ErrorOr<void> Application::launch_compositor_process()
     m_compositor_presentation_client = adopt_ref(*new CompositorPresentationClient(move(transport)));
     m_compositor_presentation_id = presentation.presentation_id();
     m_compositor_presentation_client->async_set_scrollbar_track_press_jumps(platform_scrollbar_track_press_jumps());
+    if (platform_hosts_wayland_presenter()) {
+        if (auto presenter = m_compositor_client->try_connect_wayland_presenter(m_compositor_presentation_id); !presenter.is_error() && presenter.value().has_value())
+            platform_connect_wayland_presenter(presenter.release_value().release_value());
+    }
     m_compositor_presentation_client->on_death = [this, presentation_client = m_compositor_presentation_client->make_weak_ptr<CompositorPresentationClient>()] {
         // NB: This runs on a later turn, by which time a new Compositor can have replaced the one this belonged to.
         if (!presentation_client || presentation_client.ptr() != m_compositor_presentation_client.ptr())

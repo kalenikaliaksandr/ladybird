@@ -567,4 +567,22 @@ Vector<u64> Application::platform_presentation_drm_format_modifiers() const
     return WebView::Application::platform_presentation_drm_format_modifiers();
 }
 
+bool Application::platform_hosts_wayland_presenter() const
+{
+    if (m_host)
+        return false;
+    auto const* info = ui_info();
+    return info && info->hosts_wayland_presenter;
+}
+
+// The Compositor is launched before the UI connects, so the UI may only get its first presenter once it does.
+void Application::platform_connect_wayland_presenter(IPC::TransportHandle handle)
+{
+    if (auto* ui = ConnectionFromUI::the()) {
+        ui->async_connect_wayland_presenter(move(handle));
+        return;
+    }
+    m_wayland_presenter_awaiting_ui = move(handle);
+}
+
 }

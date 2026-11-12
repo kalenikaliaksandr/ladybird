@@ -17,6 +17,9 @@
 #include <UI/Qt/RemoteView.h>
 #include <UI/Qt/Tab.h>
 #include <UI/Qt/WebUIPage.h>
+#ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
+#    include <UI/Qt/WaylandPresenter.h>
+#endif
 
 namespace Ladybird {
 
@@ -152,6 +155,14 @@ void HubConnection::view_set_remote_layer(u64 view_id, Compositing::RemoteLayerH
 {
     if (auto* view = RemoteView::find(view_id))
         view->did_set_remote_layer(host_handle);
+}
+
+void HubConnection::connect_wayland_presenter([[maybe_unused]] IPC::TransportHandle handle)
+{
+#ifdef LADYBIRD_HAS_WAYLAND_GPU_QUERY
+    if (auto* presenter = WaylandPresenter::the())
+        presenter->connect_to_compositor(move(handle));
+#endif
 }
 
 void HubConnection::view_did_present_frame_in_remote_layer(u64 view_id, Gfx::IntSize size, double device_pixel_ratio)

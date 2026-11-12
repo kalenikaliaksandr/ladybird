@@ -558,6 +558,8 @@ Messages::HubServer::InitializeResponse ConnectionFromUI::initialize()
     state.profile_identifier = profile.identifier();
     state.profile_identity = profile.paths().identity;
     state.profile_is_temporary = profile.is_temporary();
+    if (auto presenter = Application::the().take_wayland_presenter_awaiting_ui(); presenter.has_value())
+        async_connect_wayland_presenter(presenter.release_value());
     return state;
 }
 
