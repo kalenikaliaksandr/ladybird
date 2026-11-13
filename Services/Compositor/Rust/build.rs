@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "src/ffi.rs",
         "src/host.rs",
         "src/frame_inputs.rs",
-        "src/layers.rs",
+        "src/frame_planner/ffi.rs",
         "src/core/mod.rs",
     ] {
         println!("cargo:rerun-if-changed={source}");

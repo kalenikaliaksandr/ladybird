@@ -7,7 +7,6 @@ set(SOURCES
     ColorSpaceSkia.cpp
     CompositorCore.cpp
     CompositorState.cpp
-    ContextLayers.cpp
     ContextPresenter.cpp
     DisplayListPlayer.cpp
     DisplayListPlayerSkia.cpp
@@ -18,6 +17,7 @@ set(SOURCES
     ConnectionFromPresentation.cpp
     ConnectionFromWebContent.cpp
     FramePacer.cpp
+    FramePlanner.cpp
     HostWebGLContext.cpp
     OpenGLContext.cpp
     PaintingSurface.cpp

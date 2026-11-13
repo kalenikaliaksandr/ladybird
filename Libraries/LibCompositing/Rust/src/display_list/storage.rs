@@ -109,6 +109,10 @@ impl DisplayListStorage {
         })
     }
 
+    pub fn from_recorded(recorded: Arc<RecordedDisplayList>) -> Arc<Self> {
+        Self::new(Tape::Recorded(recorded))
+    }
+
     pub fn bytes(&self) -> &[u8] {
         match &self.tape {
             Tape::Empty => &[],
@@ -172,7 +176,7 @@ pub unsafe extern "C" fn display_list_retain_command_storage(recorded: *const c_
 pub unsafe extern "C" fn display_list_storage_adopt_recorded(recorded: *const c_void) -> *const c_void {
     assert!(!recorded.is_null());
     let recorded = unsafe { Arc::from_raw(recorded.cast::<RecordedDisplayList>()) };
-    into_handle(DisplayListStorage::new(Tape::Recorded(recorded)))
+    into_handle(DisplayListStorage::from_recorded(recorded))
 }
 
 /// # Safety

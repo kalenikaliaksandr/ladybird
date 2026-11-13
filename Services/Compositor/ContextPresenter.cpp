@@ -59,7 +59,7 @@ ContextPresenter::~ContextPresenter()
 {
     stop_backing_store_shrink_timer();
     stop_surplus_backing_store_retirement_timer();
-    stop_layer_drop_timer();
+    stop_idle_raster_slot_release_timer();
 }
 
 void ContextPresenter::set_display_list(NonnullRefPtr<Compositing::DisplayList const> display_list)
@@ -307,7 +307,7 @@ Optional<Gfx::IntRect> ContextPresenter::self_present_rect() const
 
 bool ContextPresenter::draws_canvas(Compositing::CanvasId canvas_id) const
 {
-    return m_last_rasterized_frame.has_value() && m_last_rasterized_frame->canvas_content_generations.contains(canvas_id);
+    return m_last_rasterized_frame.has_value() && m_frame_planner.last_frame_drew_canvas(canvas_id);
 }
 
 Optional<PreparedFrame> ContextPresenter::prepare_frame(DisplayListPlayerSkia& display_list_player, PendingFrame pending_frame, Optional<FrameInputs>&& frame_inputs, CompositedContextResolver const* composited_context_resolver)
@@ -323,14 +323,14 @@ Optional<PreparedFrame> ContextPresenter::prepare_frame(DisplayListPlayerSkia& d
     }
     VERIFY(frame_inputs.has_value());
 
-    auto frame_damage = frame_damage_for(pending_frame, *frame_inputs);
-    auto damage_rect = frame_damage.rect;
+    auto plan = plan_frame(pending_frame, *frame_inputs);
+    auto damage_rect = plan.damage_rect;
     // NB: A changed content rect must still reach the client even if the pixels are identical.
     if (damage_rect.is_empty() && m_presented_frame == pending_frame.viewport_rect) {
-        auto only_media_shown_by_window_server_changed = frame_damage.layers.shown_by_window_server && frame_damage.live_media_changed;
-        commit_layer_update(move(frame_damage.layers));
+        auto only_window_server_content_changed = plan.only_window_server_content_changed;
+        commit_frame_plan();
         remember_rasterized_frame(pending_frame.viewport_rect.size(), frame_inputs.release_value());
-        if (!only_media_shown_by_window_server_changed)
+        if (!only_window_server_content_changed)
             return {};
         m_frame_without_store_in_flight = true;
         return PreparedFrame {
@@ -347,10 +347,10 @@ Optional<PreparedFrame> ContextPresenter::prepare_frame(DisplayListPlayerSkia& d
         return {};
     }
     auto& back_store = render_target->surface;
-    auto painted_rect = paint_frame(display_list_player, back_store, *frame_inputs, composited_context_resolver, render_target->damage_rect, frame_damage.layers);
+    auto painted_rect = paint_frame(display_list_player, back_store, *frame_inputs, composited_context_resolver, render_target->damage_rect, plan);
     if (painted_rect != render_target->damage_rect)
         damage_rect = { {}, pending_frame.viewport_rect.size() };
-    commit_layer_update(move(frame_damage.layers));
+    commit_frame_plan();
     remember_rasterized_frame(pending_frame.viewport_rect.size(), frame_inputs.release_value());
 
     return PreparedFrame {
@@ -382,13 +382,13 @@ bool ContextPresenter::present_synchronously(DisplayListPlayerSkia& display_list
     if (!pending_frame.has_value())
         return false;
 
-    auto frame_damage = frame_damage_for(*pending_frame, *frame_inputs);
-    auto render_target = m_backing_store_manager.acquire_render_target(raster_damage_rect(frame_damage.rect));
+    auto plan = plan_frame(*pending_frame, *frame_inputs);
+    auto render_target = m_backing_store_manager.acquire_render_target(raster_damage_rect(plan.damage_rect));
     if (!render_target.has_value())
         return false;
     auto& back_store = render_target->surface;
-    (void)paint_frame(display_list_player, back_store, *frame_inputs, composited_context_resolver, render_target->damage_rect, frame_damage.layers);
-    commit_layer_update(move(frame_damage.layers));
+    (void)paint_frame(display_list_player, back_store, *frame_inputs, composited_context_resolver, render_target->damage_rect, plan);
+    commit_frame_plan();
     remember_rasterized_frame(pending_frame->viewport_rect.size(), frame_inputs.release_value());
     display_list_player.flush(back_store);
     m_backing_store_manager.complete_rendering(render_target->bitmap_id);
@@ -421,7 +421,8 @@ Optional<Gfx::ShareableBitmap> ContextPresenter::snapshot_of_presented_frame(Dis
         return {};
     NonnullRefPtr<Gfx::PaintingSurface> source_surface = *m_latest_rendered_surface;
     // The store then holds only what is under the canvases, videos and overlays that the window server shows above it.
-    if (m_window_server_shows_media && m_layer_plan && m_last_rasterized_frame.has_value()) {
+    auto steps_compositing_window_server_content = m_frame_planner.steps_compositing_presented_frame_into_store();
+    if (!steps_compositing_window_server_content.is_empty() && m_last_rasterized_frame.has_value()) {
         auto composited_or_error = Gfx::PaintingSurface::try_create_with_size(source_surface->size(), Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, source_surface->skia_backend_context());
         if (composited_or_error.is_error())
             return {};
@@ -431,8 +432,7 @@ Optional<Gfx::ShareableBitmap> ContextPresenter::snapshot_of_presented_frame(Dis
         paint.setBlendMode(SkBlendMode::kSrc);
         composited->canvas().drawImage(store_image.get(), 0, 0, SkSamplingOptions {}, &paint);
         auto const& frame_inputs = m_last_rasterized_frame->frame_inputs;
-        composite_layers_above_base(display_list_player, *composited, frame_inputs, nullptr, *m_layer_plan, composited->rect());
-        paint_compositor_overlays(display_list_player, *composited, frame_inputs, PaintUIOverlay::Yes);
+        run_store_steps(display_list_player, *composited, frame_inputs, nullptr, steps_compositing_window_server_content, composited->rect());
         source_surface = composited;
     }
     auto const& source = *source_surface;
@@ -497,12 +497,12 @@ void ContextPresenter::stop_surplus_backing_store_retirement_timer()
     m_surplus_backing_store_retirement_timer->stop();
 }
 
-void ContextPresenter::stop_layer_drop_timer()
+void ContextPresenter::stop_idle_raster_slot_release_timer()
 {
-    if (!m_layer_drop_timer)
+    if (!m_idle_raster_slot_release_timer)
         return;
-    m_layer_drop_timer->on_timeout = {};
-    m_layer_drop_timer->stop();
+    m_idle_raster_slot_release_timer->on_timeout = {};
+    m_idle_raster_slot_release_timer->stop();
 }
 
 bool ContextPresenter::is_present_blocked() const
@@ -541,207 +541,107 @@ Gfx::IntRect ContextPresenter::raster_damage_rect(Gfx::IntRect damage_rect) cons
     return Gfx::enclosing_int_rect(rect).intersected(Gfx::IntRect { {}, raster_size() });
 }
 
-ContextPresenter::FrameDamage ContextPresenter::frame_damage_for(PendingFrame const& pending_frame, FrameInputs const& frame_inputs)
+FramePlan ContextPresenter::plan_frame(PendingFrame const& pending_frame, FrameInputs const& frame_inputs)
 {
-    Gfx::IntRect viewport_rect { {}, pending_frame.viewport_rect.size() };
-    auto forced_damage_rect = pending_frame.forced_damage_rect.intersected(viewport_rect);
-    auto changes = live_content_changes_since_last_raster(viewport_rect.size());
-    auto now = MonotonicTime::now();
-    m_media_activity.note_updates(changes.media_updates, now);
-
-    auto layers = layer_update_for(frame_inputs, viewport_rect, now);
-    auto const* plan = layers.keeps_plan ? m_layer_plan.ptr() : layers.new_plan.ptr();
-    layers.shown_by_window_server = plan && window_server_can_show_media_layers_of(*plan);
-    auto layers_hold_last_frame = m_layer_plan && m_last_rasterized_frame.has_value();
-    auto keeps_layer_rasters = plan && layers_hold_last_frame && plan->has_same_layers_as(*m_layer_plan);
-    auto repaints_everything = changes.repaints_everything || forced_damage_rect.contains(viewport_rect);
-    auto damage = repaints_everything
-        ? DisplayListDamage {}
-        : damage_since_last_raster(viewport_rect.size(), frame_inputs, forced_damage_rect, changes,
-              plan ? plan->media_record_offsets() : ReadonlySpan<u32> {},
-              keeps_layer_rasters ? m_layer_plan.ptr() : nullptr,
-              keeps_layer_rasters ? plan : nullptr);
-    layers.painted_damage = damage.rect.value_or(viewport_rect).intersected(viewport_rect);
-
-    if (!plan) {
-        layers.repaints_everything = layers_hold_last_frame || m_repaint_everything_after_dropping_layers;
-    } else if (!keeps_layer_rasters) {
-        layers.fully_repainted_layer_bits = NumericLimits<u32>::max();
-        layers.repaints_everything = true;
-    } else {
-        for (size_t index = 0; index < plan->layers().size(); ++index) {
-            auto layer_damage = damage.layer_rects.is_empty() ? Optional<Gfx::IntRect> { layers.painted_damage } : damage.layer_rects[index];
-            if (!layer_damage.has_value())
-                layers.fully_repainted_layer_bits |= 1u << index;
-            layers.damage_of_layers.append(layer_damage.value_or(viewport_rect).intersected(viewport_rect));
-        }
+    Optional<LastFrame> last_frame;
+    if (m_last_rasterized_frame.has_value()) {
+        auto const& rasterized_frame = *m_last_rasterized_frame;
+        last_frame = LastFrame {
+            .frame_inputs = &rasterized_frame.frame_inputs,
+            .display_list = rasterized_frame.display_list.ptr(),
+            .viewport_size = rasterized_frame.viewport_size,
+            .is_same_display_list = rasterized_frame.display_list.ptr() == m_display_list.ptr(),
+            .has_other_surface_clear_color = rasterized_frame.display_list->surface_clear_color() != m_display_list->surface_clear_color(),
+        };
     }
-
-    // A frame holds the canvases and videos only while the window server does not show them, so a switch either way
-    // repaints all of it.
-    if (m_last_rasterized_frame.has_value() && layers.shown_by_window_server != m_window_server_shows_media) {
-        layers.repaints_everything = true;
-        layers.fully_repainted_layer_bits = NumericLimits<u32>::max();
-    }
-
-    auto live_media_changed = !changes.canvases.is_empty() || !changes.video_sinks.is_empty();
-    if (layers.repaints_everything)
-        return { viewport_rect, move(layers), live_media_changed };
-    auto damage_rect = layers.painted_damage;
-    if (plan && !layers.shown_by_window_server)
-        damage_rect.unite(plan->rect_of_media_layers_showing(changes.canvases, changes.video_sinks).intersected(viewport_rect));
-    return { damage_rect, move(layers), live_media_changed };
+    FrameRequest request {
+        .viewport_size = pending_frame.viewport_rect.size(),
+        .forced_damage_rect = pending_frame.forced_damage_rect,
+        .now = MonotonicTime::now(),
+        .presents_to_client = presents_to_client(),
+        .window_server_may_show_media = m_window_server_may_show_media,
+        .window_server_may_show_high_dynamic_range = m_window_server_may_show_high_dynamic_range,
+    };
+    return m_frame_planner.plan(request, frame_inputs, *m_display_list, last_frame.has_value() ? &last_frame.value() : nullptr, sample_live_media());
 }
 
-ContextPresenter::LiveContentChangesSinceLastRaster ContextPresenter::live_content_changes_since_last_raster(Gfx::IntSize viewport_size)
+LiveMediaSample ContextPresenter::sample_live_media()
 {
-    LiveContentChangesSinceLastRaster changes;
-    if (!m_last_rasterized_frame.has_value()) {
-        changes.repaints_everything = true;
-        return changes;
+    LiveMediaSample sample;
+    auto sample_canvas = [&](u64 id) {
+        Compositing::CanvasId canvas_id { id };
+        if (any_of(sample.canvases, [&](auto const& canvas) { return canvas.id == canvas_id; }))
+            return;
+        bool has_window_server_surface = false;
+#ifdef AK_OS_MACOS
+        auto surface = m_canvas_surfaces.presentable_canvas_surface(canvas_id);
+        has_window_server_surface = surface && surface->iosurface();
+#endif
+        sample.canvases.append({
+            .id = canvas_id,
+            .content_generation = m_canvas_surfaces.canvas_content_generation(canvas_id),
+            .has_window_server_surface = has_window_server_surface,
+        });
+    };
+    for (auto id : m_display_list->referenced_resource_ids().canvases)
+        sample_canvas(id);
+    if (m_last_rasterized_frame.has_value()) {
+        for (auto id : m_last_rasterized_frame->display_list->referenced_resource_ids().canvases)
+            sample_canvas(id);
     }
-    auto const& last_frame = *m_last_rasterized_frame;
-    if (last_frame.viewport_size != viewport_size || last_frame.display_list->surface_clear_color() != m_display_list->surface_clear_color())
-        changes.repaints_everything = true;
 
-    for (auto const& [canvas_id, content_generation] : last_frame.canvas_content_generations) {
-        auto current_content_generation = m_canvas_surfaces.canvas_content_generation(canvas_id);
-        if (current_content_generation == content_generation)
-            continue;
-        changes.canvases.append(canvas_id);
-        changes.media_updates.append({ { RustFFI::FfiLiveMediaKind::Canvas, canvas_id.value() }, current_content_generation });
-    }
-    auto video_sinks_drawn_by_list = m_display_list->referenced_resource_ids().video_sinks;
-    for (auto const& [video_sink_id, frame_id] : last_frame.video_frame_ids) {
-        auto current_frame_id = current_video_frame_id(video_sink_id);
-        if (current_frame_id == frame_id)
-            continue;
-        changes.media_updates.append({ { RustFFI::FfiLiveMediaKind::Video, video_sink_id.value() }, current_frame_id.value_or(0) });
-        // A video drawn only by a nested display list, such as an SVG image's, has no command in
-        // this list to damage.
-        if (!video_sinks_drawn_by_list.contains_slow(video_sink_id.value()))
-            changes.repaints_everything = true;
-        changes.video_sinks.append(video_sink_id);
-    }
-    auto image_frames_drawn_by_list = m_display_list->referenced_resource_ids().image_frames;
-    for (auto const& [image_frame_id, generation] : m_resource_storage.image_frame_pixel_generations()) {
-        if (last_frame.image_frame_pixel_generations.get(image_frame_id) == generation)
-            continue;
-        // An image drawn only by a nested display list, such as an SVG image's, has no command in this list to damage.
-        if (!image_frames_drawn_by_list.contains_slow(image_frame_id))
-            changes.repaints_everything = true;
-        changes.image_frames.append(Compositing::ImageFrameResourceId { image_frame_id });
-    }
-    return changes;
-}
-
-DisplayListDamage ContextPresenter::damage_since_last_raster(Gfx::IntSize viewport_size, FrameInputs const& frame_inputs, Gfx::IntRect forced_damage_rect, LiveContentChangesSinceLastRaster const& changes, ReadonlySpan<u32> offsets_of_records_composited_as_media_layers, LayerPlan const* last_layer_plan, LayerPlan const* layer_plan)
-{
-    Gfx::IntRect viewport_rect { {}, viewport_size };
-    auto const& last_frame = *m_last_rasterized_frame;
-    auto damage = frame_inputs.damage_since(
-        *m_display_list,
-        last_frame.frame_inputs,
-        *last_frame.display_list,
-        viewport_rect,
-        { .canvases = changes.canvases, .video_sinks = changes.video_sinks, .image_frames = changes.image_frames, .forced_damage_rect = forced_damage_rect, .offsets_of_records_composited_as_media_layers = offsets_of_records_composited_as_media_layers },
-        last_layer_plan ? last_layer_plan->rust_plan() : nullptr,
-        layer_plan ? layer_plan->rust_plan() : nullptr);
-    if (damage.rect.has_value())
-        damage.rect = damage.rect->intersected(viewport_rect);
-    return damage;
-}
-
-ContextPresenter::LayerUpdate ContextPresenter::layer_update_for(FrameInputs const& frame_inputs, Gfx::IntRect viewport_rect, MonotonicTime now)
-{
-    LayerUpdate layers;
-    if (!presents_to_client())
-        return layers;
-    layers.active_media = m_media_activity.active_media(now);
-    // An HDR video is a layer from its first frame for as long as it is drawn, even while paused, so that the window
-    // server keeps showing it brighter than SDR white instead of it going back into the frame, which holds SDR.
-    if (m_window_server_may_show_media && m_window_server_may_show_high_dynamic_range) {
-        for (auto id : m_display_list->referenced_resource_ids().video_sinks) {
-            LiveMedia media { RustFFI::FfiLiveMediaKind::Video, id };
-            auto is_active = any_of(layers.active_media, [&](auto const& active) { return active.kind == media.kind && active.id == media.id; });
-            if (is_active)
-                continue;
-            auto frame = current_video_frame(Compositing::VideoSinkResourceId { id });
-            if (frame && video_frame_holds_high_dynamic_range(*frame))
-                layers.active_media.append(media);
-        }
-    }
-    if (layers.active_media.is_empty())
-        return layers;
-    auto plan_holds_for_frame = m_layer_plan
-        && m_last_rasterized_frame.has_value()
-        && m_last_rasterized_frame->display_list.ptr() == m_display_list.ptr()
-        && m_last_rasterized_frame->viewport_size == viewport_rect.size()
-        && same_media(m_layer_plan_active_media, layers.active_media)
-        && frame_inputs.places_content_like(m_last_rasterized_frame->frame_inputs);
-    if (plan_holds_for_frame)
-        layers.keeps_plan = true;
-    else
-        layers.new_plan = LayerPlan::build(frame_inputs, *m_display_list, viewport_rect, layers.active_media);
-    return layers;
-}
-
-void ContextPresenter::commit_layer_update(LayerUpdate&& layers)
-{
-    m_window_server_shows_media = layers.has_plan() && layers.shown_by_window_server;
-    if (layers.repaints_everything)
-        m_repaint_everything_after_dropping_layers = false;
-    if (!layers.has_plan()) {
-        drop_layers();
-        return;
-    }
-    if (layers.new_plan)
-        m_layer_plan = move(layers.new_plan);
-    m_layer_plan_active_media = move(layers.active_media);
-
-    if (!m_layer_drop_timer) {
-        m_layer_drop_timer = Core::Timer::create_single_shot(MediaActivity::time_media_stays_active_after_an_update, [this] {
-            // While the window server shows the media, the layers cost nothing, and the frame on screen still needs
-            // their plan, as for a snapshot. The next frame without a plan puts the media back into the store.
-            if (!m_layer_plan || m_window_server_shows_media)
-                return;
-            drop_layers();
-            m_repaint_everything_after_dropping_layers = true;
+    for (auto const& [id, handle] : m_resource_storage.video_sink_handles()) {
+        Compositing::VideoSinkResourceId video_sink_id { id };
+        auto frame = current_video_frame(video_sink_id);
+        bool frame_has_window_server_surface = false;
+#ifdef AK_OS_MACOS
+        // A frame that a decoder left in memory has no surface that the window server could read.
+        frame_has_window_server_surface = frame && frame->surface();
+#endif
+        sample.videos.append({
+            .id = video_sink_id,
+            .has_frame = frame != nullptr,
+            .frame_id = frame ? frame->id() : 0,
+            .frame_has_window_server_surface = frame_has_window_server_surface,
+            .frame_holds_high_dynamic_range = frame && video_frame_holds_high_dynamic_range(*frame),
         });
     }
-    m_layer_drop_timer->restart();
+
+    for (auto const& [id, pixel_generation] : m_resource_storage.image_frame_pixel_generations())
+        sample.image_frames.append({ .id = Compositing::ImageFrameResourceId { id }, .pixel_generation = pixel_generation });
+    return sample;
 }
 
-void ContextPresenter::drop_layers()
+void ContextPresenter::commit_frame_plan()
 {
-    m_layer_plan = nullptr;
-    m_layer_plan_active_media.clear();
-    m_layer_surfaces.clear();
-    m_painted_layer_presentations.clear();
-    if (m_layer_drop_timer)
-        m_layer_drop_timer->stop();
+    auto committed_frame = m_frame_planner.commit();
+    if (!committed_frame.keeps_raster_slots) {
+        release_raster_slots();
+        return;
+    }
+    if (!m_idle_raster_slot_release_timer) {
+        m_idle_raster_slot_release_timer = Core::Timer::create_single_shot(committed_frame.release_idle_raster_slots_after, [this] {
+            if (m_frame_planner.release_idle_raster_slots())
+                release_raster_slots();
+        });
+    }
+    m_idle_raster_slot_release_timer->restart();
+}
+
+void ContextPresenter::release_raster_slots()
+{
+    m_raster_slots.clear();
+    m_slot_presentations.clear();
+    if (m_idle_raster_slot_release_timer)
+        m_idle_raster_slot_release_timer->stop();
 }
 
 void ContextPresenter::remember_rasterized_frame(Gfx::IntSize viewport_size, FrameInputs&& frame_inputs)
 {
-    HashMap<Compositing::CanvasId, u64> canvas_content_generations;
-    for (auto id : m_display_list->referenced_resource_ids().canvases) {
-        Compositing::CanvasId canvas_id { id };
-        canvas_content_generations.set(canvas_id, m_canvas_surfaces.canvas_content_generation(canvas_id));
-    }
-    // Every video the context holds is drawn by the list or by a display list it nests.
-    HashMap<Compositing::VideoSinkResourceId, Optional<u64>> video_frame_ids;
-    for (auto const& [id, handle] : m_resource_storage.video_sink_handles()) {
-        Compositing::VideoSinkResourceId video_sink_id { id };
-        video_frame_ids.set(video_sink_id, current_video_frame_id(video_sink_id));
-    }
     m_last_rasterized_frame = RasterizedFrame {
         .display_list = NonnullRefPtr { *m_display_list },
         .frame_inputs = move(frame_inputs),
         .viewport_size = viewport_size,
-        .canvas_content_generations = move(canvas_content_generations),
-        .video_frame_ids = move(video_frame_ids),
-        .image_frame_pixel_generations = m_resource_storage.image_frame_pixel_generations(),
     };
 }
 
@@ -751,14 +651,6 @@ RefPtr<Media::VideoFrame> ContextPresenter::current_video_frame(Compositing::Vid
     if (!sink)
         return {};
     return sink->current_frame();
-}
-
-Optional<u64> ContextPresenter::current_video_frame_id(Compositing::VideoSinkResourceId video_sink_id)
-{
-    auto frame = current_video_frame(video_sink_id);
-    if (!frame)
-        return {};
-    return frame->id();
 }
 
 void ContextPresenter::paint_compositor_overlays(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& target_surface, FrameInputs const& frame_inputs, PaintUIOverlay paint_ui_overlay)
@@ -773,172 +665,149 @@ void ContextPresenter::paint_compositor_overlays(DisplayListPlayerSkia& display_
         paint_picture_in_picture_controls(target_surface, m_viewport_size, m_device_pixel_ratio, *m_ui_overlays.picture_in_picture_controls, opacity);
 }
 
-Gfx::IntRect ContextPresenter::paint_frame(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface, FrameInputs const& frame_inputs, CompositedContextResolver const* composited_context_resolver, Gfx::IntRect damage_rect, LayerUpdate& layers)
+Gfx::IntRect ContextPresenter::paint_frame(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface, FrameInputs const& frame_inputs, CompositedContextResolver const* composited_context_resolver, Gfx::IntRect damage_rect, FramePlan const& plan)
 {
-    if (layers.has_plan()) {
-        if (paint_layered_frame(display_list_player, surface, frame_inputs, composited_context_resolver, damage_rect, layers))
+    if (plan.paints_from_raster_slots) {
+        if (paint_from_raster_slots(display_list_player, surface, frame_inputs, composited_context_resolver, damage_rect, plan))
             return damage_rect;
         // The sublayers that the window server was to show go away with this frame, so the store has to hold all
         // that they showed.
-        if (layers.shown_by_window_server)
+        if (m_frame_planner.did_fail_to_allocate_raster_slot())
             damage_rect = { {}, raster_size() };
-        layers.new_plan = nullptr;
-        layers.keeps_plan = false;
-        layers.shown_by_window_server = false;
-        drop_layers();
-        m_repaint_everything_after_dropping_layers = true;
+        release_raster_slots();
     }
     paint_current_display_list(display_list_player, surface, frame_inputs, composited_context_resolver, damage_rect);
     return damage_rect;
 }
 
-bool ContextPresenter::paint_layered_frame(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface, FrameInputs const& frame_inputs, CompositedContextResolver const* composited_context_resolver, Gfx::IntRect damage_rect, LayerUpdate const& layer_update)
+bool ContextPresenter::paint_from_raster_slots(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface, FrameInputs const& frame_inputs, CompositedContextResolver const* composited_context_resolver, Gfx::IntRect damage_rect, FramePlan const& plan)
 {
     VERIFY(m_display_list);
-    auto const& plan = layer_update.keeps_plan ? *m_layer_plan : *layer_update.new_plan;
-    auto layers = plan.layers();
     auto skia_backend_context = surface.skia_backend_context();
     auto surface_clear_color = Gfx::to_skia_color(m_display_list->surface_clear_color().value_or(Gfx::Color::Transparent));
     m_raster_cache.drop_clip_paths_not_used_since_last_frame();
 
-    m_layer_surfaces.resize(layers.size());
-    for (size_t index = 0; index < layers.size(); ++index) {
-        auto const& layer = layers[index];
-        auto& layer_surface = m_layer_surfaces[index];
-        auto rect = layer.kind == LayerKind::Base ? Gfx::IntRect { {}, m_viewport_size } : layer.rect;
-        if (layer.kind == LayerKind::Media || rect.is_empty()) {
-            layer_surface = {};
+    m_raster_slots.resize(plan.raster_slot_count);
+    for (auto const& step : plan.steps) {
+        if (step.kind == FrameStepKind::ReleaseSlot) {
+            m_raster_slots[step.slot] = {};
             continue;
         }
-        auto repaints_whole_layer = (layer_update.fully_repainted_layer_bits & (1u << index)) != 0;
-        auto surface_fits = layer.kind == LayerKind::Base ? layer_surface.rect == rect : layer_surface.rect.contains(rect);
-        if (!layer_surface.surface || !surface_fits || layer_surface.surface->skia_backend_context() != skia_backend_context) {
+        if (step.kind != FrameStepKind::RasterizeSlot)
+            continue;
+        auto& raster_slot = m_raster_slots[step.slot];
+        auto rect = step.covers_viewport ? Gfx::IntRect { {}, m_viewport_size } : step.rect;
+        if (rect.is_empty()) {
+            raster_slot = {};
+            continue;
+        }
+        auto repaints_whole_slot = step.repaints_whole_slot;
+        auto surface_fits = step.covers_viewport ? raster_slot.rect == rect : raster_slot.rect.contains(rect);
+        if (!raster_slot.surface || !surface_fits || raster_slot.surface->skia_backend_context() != skia_backend_context) {
             auto new_surface = Gfx::PaintingSurface::try_create_with_size(rect.size(), Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, skia_backend_context);
             if (new_surface.is_error())
                 return false;
-            layer_surface = { new_surface.release_value(), rect };
-            repaints_whole_layer = true;
+            raster_slot = { new_surface.release_value(), rect };
+            repaints_whole_slot = true;
         }
-        auto repaint_rect = repaints_whole_layer ? layer_surface.rect : layer_update.damage_of_layers[index].intersected(layer_surface.rect);
+        auto repaint_rect = repaints_whole_slot ? raster_slot.rect : step.repaint_rect.intersected(raster_slot.rect);
         if (repaint_rect.is_empty())
             continue;
-        auto& layer_canvas = layer_surface.surface->canvas();
-        layer_canvas.save();
-        layer_canvas.translate(-layer_surface.rect.x(), -layer_surface.rect.y());
-        layer_canvas.clipIRect(SkIRect::MakeXYWH(repaint_rect.x(), repaint_rect.y(), repaint_rect.width(), repaint_rect.height()));
-        layer_canvas.clear(layer.kind == LayerKind::Base ? surface_clear_color : SK_ColorTRANSPARENT);
-        display_list_player.execute(*m_display_list, frame_inputs.visual_context_tree(), m_resource_storage, m_raster_cache, &frame_inputs, *layer_surface.surface, &m_canvas_surfaces, composited_context_resolver, replaying_only(layer.record_spans));
-        layer_canvas.restore();
-        layer_surface.content_version = ++m_last_layer_content_version;
+        auto& slot_canvas = raster_slot.surface->canvas();
+        slot_canvas.save();
+        slot_canvas.translate(-raster_slot.rect.x(), -raster_slot.rect.y());
+        slot_canvas.clipIRect(SkIRect::MakeXYWH(repaint_rect.x(), repaint_rect.y(), repaint_rect.width(), repaint_rect.height()));
+        slot_canvas.clear(step.covers_viewport ? surface_clear_color : SK_ColorTRANSPARENT);
+        display_list_player.execute(*m_display_list, frame_inputs.visual_context_tree(), m_resource_storage, m_raster_cache, &frame_inputs, *raster_slot.surface, &m_canvas_surfaces, composited_context_resolver, replaying_only(record_spans_of(step), step.skips_root_isolation_layer));
+        slot_canvas.restore();
+        raster_slot.content_version = ++m_last_raster_slot_content_version;
     }
 
     auto& canvas = surface.canvas();
     auto save_count = canvas.save();
     canvas.clipIRect(SkIRect::MakeXYWH(damage_rect.x(), damage_rect.y(), damage_rect.width(), damage_rect.height()));
-    if (auto const& base_surface = m_layer_surfaces[0]; base_surface.surface && base_surface.rect.intersects(damage_rect)) {
-        auto image = base_surface.surface->sk_image_snapshot<sk_sp<SkImage>>();
-        SkPaint paint;
-        paint.setBlendMode(SkBlendMode::kSrc);
-        canvas.drawImage(image.get(), base_surface.rect.x(), base_surface.rect.y(), SkSamplingOptions {}, &paint);
-    }
-    if (!layer_update.shown_by_window_server) {
-        composite_layers_above_base(display_list_player, surface, frame_inputs, composited_context_resolver, plan, damage_rect);
-        paint_compositor_overlays(display_list_player, surface, frame_inputs, PaintUIOverlay::Yes);
-    }
+    run_store_steps(display_list_player, surface, frame_inputs, composited_context_resolver, plan.steps, damage_rect);
     canvas.restoreToCount(save_count);
 
-    // The window server shows everything above the base layer from surfaces of its own.
-    if (layer_update.shown_by_window_server) {
-        if (!present_painted_layers_to_window_server(plan, skia_backend_context))
-            return false;
-        if (!present_compositor_overlays_to_window_server(display_list_player, frame_inputs, skia_backend_context))
-            return false;
+    auto presents_to_window_server = any_of(plan.steps, [](auto const& step) {
+        return step.kind == FrameStepKind::PresentSlotToWindowServer || step.kind == FrameStepKind::WithdrawSlotFromWindowServer;
+    });
+    if (presents_to_window_server)
+        m_slot_presentations.resize(plan.raster_slot_count);
+    for (auto const& step : plan.steps) {
+        switch (step.kind) {
+        case FrameStepKind::PresentSlotToWindowServer:
+            if (!present_slot_to_window_server(step, skia_backend_context))
+                return false;
+            break;
+        case FrameStepKind::WithdrawSlotFromWindowServer:
+            m_slot_presentations[step.slot].latest_surface = nullptr;
+            break;
+        case FrameStepKind::PresentCompositorOverlaysToWindowServer:
+            if (!present_compositor_overlays_to_window_server(display_list_player, frame_inputs, skia_backend_context))
+                return false;
+            break;
+        default:
+            break;
+        }
     }
     return true;
 }
 
-void ContextPresenter::composite_layers_above_base(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface, FrameInputs const& frame_inputs, CompositedContextResolver const* composited_context_resolver, LayerPlan const& plan, Gfx::IntRect damage_rect)
+void ContextPresenter::run_store_steps(DisplayListPlayerSkia& display_list_player, Gfx::PaintingSurface& surface, FrameInputs const& frame_inputs, CompositedContextResolver const* composited_context_resolver, ReadonlySpan<FrameStep> steps, Gfx::IntRect damage_rect)
 {
-    auto layers = plan.layers();
     auto& canvas = surface.canvas();
-    for (size_t index = 1; index < layers.size(); ++index) {
-        auto const& layer = layers[index];
-        if (layer.kind == LayerKind::Media) {
-            if (layer.rect.intersects(damage_rect))
-                display_list_player.execute(*m_display_list, frame_inputs.visual_context_tree(), m_resource_storage, m_raster_cache, &frame_inputs, surface, &m_canvas_surfaces, composited_context_resolver, replaying_only(layer.record_spans, true));
-            continue;
+    for (auto const& step : steps) {
+        switch (step.kind) {
+        case FrameStepKind::DrawSlotIntoStore: {
+            if (step.slot >= m_raster_slots.size())
+                break;
+            auto const& raster_slot = m_raster_slots[step.slot];
+            if (!raster_slot.surface || !raster_slot.rect.intersects(damage_rect))
+                break;
+            auto image = raster_slot.surface->sk_image_snapshot<sk_sp<SkImage>>();
+            SkPaint paint;
+            paint.setBlendMode(step.blend == SlotBlend::Source ? SkBlendMode::kSrc : SkBlendMode::kSrcOver);
+            canvas.drawImage(image.get(), raster_slot.rect.x(), raster_slot.rect.y(), SkSamplingOptions {}, &paint);
+            break;
         }
-        if (index >= m_layer_surfaces.size())
-            continue;
-        auto const& layer_surface = m_layer_surfaces[index];
-        if (!layer_surface.surface || !layer_surface.rect.intersects(damage_rect))
-            continue;
-        auto image = layer_surface.surface->sk_image_snapshot<sk_sp<SkImage>>();
-        SkPaint paint;
-        paint.setBlendMode(SkBlendMode::kSrcOver);
-        canvas.drawImage(image.get(), layer_surface.rect.x(), layer_surface.rect.y(), SkSamplingOptions {}, &paint);
+        case FrameStepKind::ReplaySlotRecordsIntoStore:
+            if (step.rect.intersects(damage_rect))
+                display_list_player.execute(*m_display_list, frame_inputs.visual_context_tree(), m_resource_storage, m_raster_cache, &frame_inputs, surface, &m_canvas_surfaces, composited_context_resolver, replaying_only(record_spans_of(step), step.skips_root_isolation_layer));
+            break;
+        case FrameStepKind::PaintCompositorOverlaysIntoStore:
+            paint_compositor_overlays(display_list_player, surface, frame_inputs, PaintUIOverlay::Yes);
+            break;
+        default:
+            break;
+        }
     }
 }
 
-bool ContextPresenter::window_server_can_show_media_layers_of(LayerPlan const& plan)
+// Each raster slot that the window server shows goes to it as its own surface, which is copied from the slot when the
+// slot changes. The window server may still show the surface of the frame before, so the copy goes into another one.
+bool ContextPresenter::present_slot_to_window_server(FrameStep const& step, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
 {
-#ifdef AK_OS_MACOS
-    if (!m_window_server_may_show_media)
+    auto& presentation = m_slot_presentations[step.slot];
+    auto const* raster_slot = step.slot < m_raster_slots.size() ? &m_raster_slots[step.slot] : nullptr;
+    if (!raster_slot || !raster_slot->surface) {
+        presentation.latest_surface = nullptr;
+        return true;
+    }
+    if (presentation.latest_surface && presentation.rect == step.rect && presentation.content_version == raster_slot->content_version)
+        return true;
+    auto surface_or_error = presentation.surfaces.surface_for_next_content(step.rect.size(), skia_backend_context);
+    if (surface_or_error.is_error())
         return false;
-    for (auto const& layer : plan.layers()) {
-        if (layer.kind != LayerKind::Media)
-            continue;
-        if (!layer.window_server_placement.has_value())
-            return false;
-        if (layer.media.kind == RustFFI::FfiLiveMediaKind::Canvas) {
-            auto surface = m_canvas_surfaces.presentable_canvas_surface(Compositing::CanvasId { layer.media.id });
-            if (!surface || !surface->iosurface())
-                return false;
-        } else {
-            // A frame that a decoder left in memory has no surface that the window server could read.
-            auto frame = current_video_frame(Compositing::VideoSinkResourceId { layer.media.id });
-            if (!frame || !frame->surface())
-                return false;
-            if (!m_window_server_may_show_high_dynamic_range && video_frame_holds_high_dynamic_range(*frame))
-                return false;
-        }
-    }
-    return true;
-#else
-    (void)plan;
-    return false;
-#endif
-}
-
-// Each painted layer goes to the window server as its own surface, which is copied from its raster when the raster
-// changes. The window server may still show the surface of the frame before, so the copy goes into another one.
-bool ContextPresenter::present_painted_layers_to_window_server(LayerPlan const& plan, RefPtr<Gfx::SkiaBackendContext> const& skia_backend_context)
-{
-    auto layers = plan.layers();
-    m_painted_layer_presentations.resize(layers.size());
-    for (size_t index = 0; index < layers.size(); ++index) {
-        auto const& layer = layers[index];
-        auto& presentation = m_painted_layer_presentations[index];
-        auto const* layer_surface = index < m_layer_surfaces.size() ? &m_layer_surfaces[index] : nullptr;
-        if (layer.kind != LayerKind::Painted || layer.rect.is_empty() || !layer_surface || !layer_surface->surface) {
-            presentation.latest_surface = nullptr;
-            continue;
-        }
-        if (presentation.latest_surface && presentation.rect == layer.rect && presentation.content_version == layer_surface->content_version)
-            continue;
-        auto surface_or_error = presentation.surfaces.surface_for_next_content(layer.rect.size(), skia_backend_context);
-        if (surface_or_error.is_error())
-            return false;
-        auto surface = surface_or_error.release_value();
-        auto image = layer_surface->surface->sk_image_snapshot<sk_sp<SkImage>>();
-        auto source_rect = layer.rect.translated(-layer_surface->rect.location());
-        SkPaint paint;
-        paint.setBlendMode(SkBlendMode::kSrc);
-        surface->painting_surface().canvas().drawImageRect(image.get(), Gfx::to_skia_rect(source_rect), SkRect::MakeIWH(layer.rect.width(), layer.rect.height()), SkSamplingOptions {}, &paint, SkCanvas::kStrict_SrcRectConstraint);
-        presentation.latest_surface = move(surface);
-        presentation.rect = layer.rect;
-        presentation.content_version = layer_surface->content_version;
-    }
+    auto surface = surface_or_error.release_value();
+    auto image = raster_slot->surface->sk_image_snapshot<sk_sp<SkImage>>();
+    auto source_rect = step.rect.translated(-raster_slot->rect.location());
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrc);
+    surface->painting_surface().canvas().drawImageRect(image.get(), Gfx::to_skia_rect(source_rect), SkRect::MakeIWH(step.rect.width(), step.rect.height()), SkSamplingOptions {}, &paint, SkCanvas::kStrict_SrcRectConstraint);
+    presentation.latest_surface = move(surface);
+    presentation.rect = step.rect;
+    presentation.content_version = raster_slot->content_version;
     return true;
 }
 
@@ -981,75 +850,69 @@ bool ContextPresenter::present_compositor_overlays_to_window_server(DisplayListP
     return true;
 }
 
-// Sublayers keep their identity from one frame to the next by what they show.
-static constexpr u64 canvas_sublayer_identity_tag = u64 { 1 } << 60;
-static constexpr u64 video_sublayer_identity_tag = u64 { 2 } << 60;
-static constexpr u64 painted_layer_sublayer_identity_tag = u64 { 3 } << 60;
-static constexpr u64 compositor_overlay_sublayer_identity = u64 { 4 } << 60;
-// Canvas and video IDs count up from 1, and stay far below this.
-static constexpr u64 media_drawing_index_shift = 44;
+static RemoteSublayer sublayer_placed_as_described(SublayerDescription const& description, Variant<NonnullRefPtr<Media::VideoFrame>, PresentableSurface::Lease> content)
+{
+    auto const& placement = description.placement;
+    auto const* transform = placement.content_to_viewport;
+    Optional<RemoteSublayer::RoundedClip> rounded_clip;
+    if (placement.has_rounded_clip) {
+        rounded_clip = RemoteSublayer::RoundedClip {
+            .rect = placement.rounded_clip_rect,
+            .radius = placement.rounded_clip_radius,
+            .rounds_top_left = placement.rounds_top_left,
+            .rounds_top_right = placement.rounds_top_right,
+            .rounds_bottom_right = placement.rounds_bottom_right,
+            .rounds_bottom_left = placement.rounds_bottom_left,
+        };
+    }
+    return {
+        .identity = description.identity,
+        .content = move(content),
+        .content_rect = placement.content_rect,
+        .content_to_frame = Gfx::AffineTransform { transform[0], transform[1], transform[2], transform[3], transform[4], transform[5] },
+        .clip_rect = placement.clip_rect,
+        .rounded_clip = rounded_clip,
+        .scaling_mode = placement.scaling_mode,
+    };
+}
+
+static RemoteSublayer sublayer_showing_whole_surface(u64 identity, PresentableSurface::Lease content, Gfx::IntRect rect)
+{
+    return {
+        .identity = identity,
+        .content = move(content),
+        .content_rect = rect,
+        .content_to_frame = {},
+        .clip_rect = rect.to_type<float>(),
+        .rounded_clip = {},
+        .scaling_mode = Gfx::ScalingMode::NearestNeighbor,
+    };
+}
 
 Vector<RemoteSublayer> ContextPresenter::sublayers_shown_by_window_server()
 {
     Vector<RemoteSublayer> sublayers;
-    if (!m_window_server_shows_media || !m_layer_plan)
-        return sublayers;
-    // The same canvas or video can be drawn by more than one record, and each drawing is a sublayer of its own.
-    HashMap<u64, u64> drawings_of_media;
-    auto layers = m_layer_plan->layers();
-    for (size_t index = 1; index < layers.size(); ++index) {
-        auto const& layer = layers[index];
-        if (layer.kind == LayerKind::Media) {
-            auto const& placement = *layer.window_server_placement;
-            Optional<Variant<NonnullRefPtr<Media::VideoFrame>, PresentableSurface::Lease>> content;
-            u64 identity = 0;
-            if (layer.media.kind == RustFFI::FfiLiveMediaKind::Canvas) {
-                if (auto surface = m_canvas_surfaces.presentable_canvas_surface(Compositing::CanvasId { layer.media.id }))
-                    content = surface->lease();
-                identity = canvas_sublayer_identity_tag | layer.media.id;
-            } else {
-                if (auto frame = current_video_frame(Compositing::VideoSinkResourceId { layer.media.id }); frame && frame->surface())
-                    content = frame.release_nonnull();
-                identity = video_sublayer_identity_tag | layer.media.id;
+    for (auto const& description : m_frame_planner.sublayers()) {
+        switch (description.content_kind) {
+        case SublayerContentKind::Canvas:
+            if (auto surface = m_canvas_surfaces.presentable_canvas_surface(Compositing::CanvasId { description.media_id }))
+                sublayers.append(sublayer_placed_as_described(description, surface->lease()));
+            break;
+        case SublayerContentKind::Video:
+            if (auto frame = current_video_frame(Compositing::VideoSinkResourceId { description.media_id }); frame && frame->surface())
+                sublayers.append(sublayer_placed_as_described(description, frame.release_nonnull()));
+            break;
+        case SublayerContentKind::RasterSlot:
+            if (description.raster_slot < m_slot_presentations.size() && m_slot_presentations[description.raster_slot].latest_surface) {
+                auto const& presentation = m_slot_presentations[description.raster_slot];
+                sublayers.append(sublayer_showing_whole_surface(description.identity, presentation.latest_surface->lease(), presentation.rect));
             }
-            if (!content.has_value())
-                continue;
-            auto& earlier_drawings = drawings_of_media.ensure(identity, [] { return 0; });
-            identity |= earlier_drawings++ << media_drawing_index_shift;
-            sublayers.append({
-                .identity = identity,
-                .content = content.release_value(),
-                .content_rect = placement.content_rect,
-                .content_to_frame = placement.content_to_viewport,
-                .clip_rect = placement.clip_rect,
-                .rounded_clip = placement.rounded_clip,
-                .scaling_mode = placement.scaling_mode,
-            });
-            continue;
+            break;
+        case SublayerContentKind::CompositorOverlays:
+            if (m_latest_compositor_overlay_surface)
+                sublayers.append(sublayer_showing_whole_surface(description.identity, m_latest_compositor_overlay_surface->lease(), m_compositor_overlay_rect));
+            break;
         }
-        if (index >= m_painted_layer_presentations.size() || !m_painted_layer_presentations[index].latest_surface)
-            continue;
-        auto const& presentation = m_painted_layer_presentations[index];
-        sublayers.append({
-            .identity = painted_layer_sublayer_identity_tag | index,
-            .content = presentation.latest_surface->lease(),
-            .content_rect = presentation.rect,
-            .content_to_frame = {},
-            .clip_rect = presentation.rect.to_type<float>(),
-            .rounded_clip = {},
-            .scaling_mode = Gfx::ScalingMode::NearestNeighbor,
-        });
-    }
-    if (m_latest_compositor_overlay_surface) {
-        sublayers.append({
-            .identity = compositor_overlay_sublayer_identity,
-            .content = m_latest_compositor_overlay_surface->lease(),
-            .content_rect = m_compositor_overlay_rect,
-            .content_to_frame = {},
-            .clip_rect = m_compositor_overlay_rect.to_type<float>(),
-            .rounded_clip = {},
-            .scaling_mode = Gfx::ScalingMode::NearestNeighbor,
-        });
     }
     return sublayers;
 }
