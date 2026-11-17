@@ -23,7 +23,8 @@
             scroller.appendChild(stripe);
         }
         await presentedFrameStateOnceNothingIsLeftToRasterize();
-        // The scrollport covers two tiles of the document.
+        // The box reads the scroller's layer, which the compositor composites it over, so the scroller keeps its space and
+        // its scroll rasters no tile.
         scroller.scrollTop = 120;
         const state = await presentedFrameState();
         println(layersOfTheDisplayList());

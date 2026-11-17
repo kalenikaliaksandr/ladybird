@@ -1,7 +1,12 @@
 Over the canvas background:
 [L0] base space=viewport
 [L1] painted space=document
+e1 is not composited: it reads only its own layer
 compared: true, matches a direct raster: true
 Over a fixed box behind the page:
 [L0] base space=viewport
+[L1] painted space=document
+[L2] painted space=viewport above band 0 of document
+[L4] painted space=document inside e1
+composited e1 space=document reads=[37,117 126x66]: it reads what its own layer does not hold
 compared: true, matches a direct raster: true

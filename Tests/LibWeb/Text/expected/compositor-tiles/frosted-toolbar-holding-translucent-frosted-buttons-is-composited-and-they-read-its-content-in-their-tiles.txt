@@ -1,0 +1,8 @@
+[L1] base space=document
+[L3] painted space=viewport inside Box<DIV>#toolbar
+composited Box<DIV>#toolbar space=viewport reads=[1,-19 478x158]: it reads what its own layer does not hold
+BlockContainer<DIV>#first.button is not composited: it reads only its own layer
+BlockContainer<DIV>#second.button is not composited: it reads only its own layer
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled, tiles rasterized: 0

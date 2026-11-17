@@ -1,0 +1,3 @@
+[L1] base space=document
+e1 is not composited: it reads only its own layer
+compared: true, matches a direct raster: true

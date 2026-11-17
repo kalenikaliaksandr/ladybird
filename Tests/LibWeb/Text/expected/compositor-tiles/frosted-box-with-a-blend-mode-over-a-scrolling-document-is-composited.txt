@@ -1,0 +1,6 @@
+[L1] base space=document
+[L3] painted space=viewport inside BlockContainer<DIV>#blended
+composited BlockContainer<DIV>#blended space=viewport reads=[87,47 366x226]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled, tiles rasterized: 0

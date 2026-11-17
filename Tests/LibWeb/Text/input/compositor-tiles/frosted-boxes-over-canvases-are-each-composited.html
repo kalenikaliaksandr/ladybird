@@ -7,7 +7,7 @@
     .frosted { position: absolute; width: 100px; height: 60px; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(4px); }
 </style>
 <!-- Each box is over a canvas of its own, in a tile of its own, so that none finds all it reads in the layer it is in,
-     and one more than the four backdrop filters the compositor composites. -->
+     and each canvas keeps its layer below the box the compositor composites over it. -->
 <canvas width="120" height="80" style="left: 10px; top: 10px"></canvas>
 <canvas width="120" height="80" style="left: 266px; top: 10px"></canvas>
 <canvas width="120" height="80" style="left: 522px; top: 10px"></canvas>

@@ -1,0 +1,7 @@
+[L0] base space=viewport
+[L1] canvas #0 space=viewport region=[37,37 306x206] replayed: the compositor composites an effect over what is below it
+[L3] painted space=viewport inside BlockContainer<DIV>#translucent
+composited BlockContainer<DIV>#translucent space=viewport reads=[61,41 278x158]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+canvas redrawn, tiles rasterized: 0

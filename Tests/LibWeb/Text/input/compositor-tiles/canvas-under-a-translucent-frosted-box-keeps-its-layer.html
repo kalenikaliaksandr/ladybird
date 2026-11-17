@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    canvas { position: absolute; left: 40px; top: 40px; }
+    /* It reads the canvas, which is a layer of its own below it, so the compositor composites it over the canvas. */
+    #translucent { position: absolute; left: 100px; top: 80px; width: 200px; height: 80px; opacity: 0.6; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(6px); }
+</style>
+<canvas id="canvas" width="300" height="200"></canvas>
+<div id="translucent">translucent</div>
+<script>
+    function drawStripes(context, offset) {
+        for (let x = 0; x < canvas.width; x += 20) {
+            context.fillStyle = (x / 20 + offset) % 2 ? "navy" : "orange";
+            context.fillRect(x, 0, 20, canvas.height);
+        }
+    }
+
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        drawStripes(context, 0);
+        const drawn = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        drawStripes(context, 1);
+        const redrawn = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(drawn, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+        printPresentedFrameState(redrawn, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+        println(`canvas redrawn, tiles rasterized: ${redrawn.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

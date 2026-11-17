@@ -515,18 +515,24 @@ impl VisualContextTree {
             .is_none_or(|layer| self.root_isolation_effect == Some(layer))
     }
 
-    // The backdrop of an effect whose box's masks draw it is read where the outermost of those masks composites.
-    pub fn effect_backdrop_is_root_group(&self, effect: EffectNodeIndex) -> bool {
+    /// The node whose layer reads the backdrop of an effect: the outermost of the masks of the effect's box that draw
+    /// its filtered backdrop, or the effect itself.
+    pub fn node_reading_the_backdrop_of(&self, effect: EffectNodeIndex) -> EffectNodeIndex {
         let mut reader = effect;
         loop {
             let parent = self.effect_nodes[reader.0 as usize].parent;
             if parent.is_none()
                 || !matches!(&self.effect_nodes[parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop)
             {
-                break;
+                return reader;
             }
             reader = parent;
         }
+    }
+
+    // The backdrop of an effect whose box's masks draw it is read where the outermost of those masks composites.
+    pub fn effect_backdrop_is_root_group(&self, effect: EffectNodeIndex) -> bool {
+        let reader = self.node_reading_the_backdrop_of(effect);
         self.content_under_effect_composites_into_root_group(self.effect_nodes[reader.0 as usize].parent)
     }
 

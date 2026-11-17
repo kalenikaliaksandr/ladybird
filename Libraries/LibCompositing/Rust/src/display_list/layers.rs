@@ -26,9 +26,9 @@ pub use crate::display_list::placement::{
     CompositeClip, RasterSpace, RasterSpaceAnchorKind, VIEWPORT_RASTER_SPACE, raster_space_anchors,
 };
 use crate::display_list::placement::{
-    PlacementTables, RasterSpaces, RunGroups, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space,
-    is_finite_rect, lowest_common_space, raster_scroll_offsets, rect_swept_over_translations,
-    space_is_ancestor_or_self, spaces_with_geometries, spatial_nodes_that_move_on_their_own,
+    PlacementTables, RasterSpaces, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space, is_finite_rect,
+    lowest_common_space, raster_scroll_offsets, rect_swept_over_translations, space_is_ancestor_or_self,
+    spaces_with_geometries, spatial_nodes_that_move_on_their_own,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
@@ -43,8 +43,6 @@ use std::hash::{BuildHasher, Hasher};
 use std::rc::Rc;
 
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
-// Each one is a backdrop layer and a painted layer above it, so four take a third of the most layers a stack keeps.
-pub const MAXIMUM_BACKDROP_LAYER_COUNT: usize = 4;
 // Beyond this, the innermost space that scrolls is rastered in the space around it instead.
 const MAXIMUM_LAYER_COUNT: usize = 24;
 
@@ -88,6 +86,7 @@ impl std::fmt::Display for MediaLayerRejection {
 pub enum WhyEffectIsComposited {
     ItReadsWhatItsOwnLayerDoesNotHold,
     ItsBackdropFilterReadsPastTheEdgeOfTheFrame,
+    ItHoldsAnEffectTheCompositorComposites,
 }
 
 impl std::fmt::Display for WhyEffectIsComposited {
@@ -97,59 +96,9 @@ impl std::fmt::Display for WhyEffectIsComposited {
             WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame => {
                 "its backdrop filter reads past the edge of the frame"
             }
-        })
-    }
-}
-
-/// Why a backdrop filter that reads the root group is applied within the layer of what it reads rather than by the
-/// compositor, which composites its effect over what is composited below it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackdropLayerRejection {
-    OpacityGroupsTheBackdropWithTheContent,
-    BlendModeGroupsTheBackdropWithTheContent,
-    FilterGroupsTheBackdropWithTheContent,
-    MasksApplyToTheBackdrop,
-    ContentReadsTheFilteredBackdrop,
-    InsideGroupEffect,
-    ContentIsNotOneStretchStartingWithTheBackdrop,
-    CompositedWithinClips,
-    RegionIsNotAnAxisAlignedRect,
-    ReachOfFilterIsNotKnown,
-    UnderContentReadingTheRootGroup,
-    MoreBackdropFiltersThanLayersFor,
-    ReadsOnlyItsOwnLayer,
-}
-
-impl std::fmt::Display for BackdropLayerRejection {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent => {
-                "its opacity composites the filtered backdrop and the content as one"
+            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites => {
+                "it holds an effect the compositor composites"
             }
-            BackdropLayerRejection::BlendModeGroupsTheBackdropWithTheContent => {
-                "its blend mode composites the filtered backdrop and the content as one"
-            }
-            BackdropLayerRejection::FilterGroupsTheBackdropWithTheContent => {
-                "its filter applies to the filtered backdrop and the content as one"
-            }
-            BackdropLayerRejection::MasksApplyToTheBackdrop => "its masks apply to the filtered backdrop",
-            BackdropLayerRejection::ContentReadsTheFilteredBackdrop => "content in it reads the filtered backdrop",
-            BackdropLayerRejection::InsideGroupEffect => "inside a group effect",
-            BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop => {
-                "its content is not one stretch of the list that starts where it reads the backdrop"
-            }
-            BackdropLayerRejection::CompositedWithinClips => "composited within clips of another space",
-            BackdropLayerRejection::RegionIsNotAnAxisAlignedRect => {
-                "its region is not an axis-aligned rect in its raster space"
-            }
-            BackdropLayerRejection::ReachOfFilterIsNotKnown => "how far its filter reads is not known",
-            BackdropLayerRejection::UnderContentReadingTheRootGroup => {
-                "under content that reads the root group below it"
-            }
-            BackdropLayerRejection::MoreBackdropFiltersThanLayersFor => {
-                "past the most backdrop filters the compositor composites"
-            }
-            BackdropLayerRejection::ReadsOnlyItsOwnLayer => "it reads only its own layer",
         })
     }
 }
@@ -331,9 +280,9 @@ pub struct LayerStack {
     pub layering_obstacles: LayeringObstacles,
     /// The canvases, videos and nested contexts that were not given layers, and why.
     pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
-    /// The effects whose backdrop filter reads the root group and is applied within the layer of what it reads rather
-    /// than by the compositor, and why.
-    pub rejected_backdrop_filters: Vec<(EffectNodeIndex, BackdropLayerRejection)>,
+    /// The backdrop filters and blend modes that find all they read in the layer they go into, and read it there
+    /// rather than the compositor compositing them, in paint order.
+    pub effects_reading_in_their_tiles: Vec<EffectNodeIndex>,
     /// Where the parts of the list are placed among the spaces of the stack.
     pub placement: ListPlacement,
     /// Where they are placed at every anchor the tree offers, which the stack was worked out from: a later frame
@@ -405,7 +354,7 @@ impl LayerStack {
             unlayered_reason: reason,
             layering_obstacles: LayeringObstacles::default(),
             rejected_media: Vec::new(),
-            rejected_backdrop_filters: Vec::new(),
+            effects_reading_in_their_tiles: Vec::new(),
             placement: ListPlacement::default(),
             placement_at_every_anchor: ListPlacement::default(),
         }
@@ -714,11 +663,11 @@ impl LayerStack {
         })
     }
 
-    /// What the dump says of a backdrop filter that reads the root group and is not composited, and why.
-    pub fn names_of_backdrop_filters_not_composited(&self) -> impl Iterator<Item = String> + '_ {
-        self.rejected_backdrop_filters
+    /// What the dump says of a backdrop filter or blend mode that reads in the layer it goes into.
+    pub fn names_of_effects_reading_in_their_tiles(&self) -> impl Iterator<Item = String> + '_ {
+        self.effects_reading_in_their_tiles
             .iter()
-            .map(|(effect, rejection)| format!("e{} is not composited: {rejection}", effect.0))
+            .map(|effect| format!("e{} is not composited: it reads only its own layer", effect.0))
     }
 
     /// What the dump says of a canvas, video or nested context that was not given a layer, and why.
@@ -775,7 +724,7 @@ impl LayerStack {
         for name in self
             .names_of_composited_effects()
             .chain(self.names_of_media_without_layers())
-            .chain(self.names_of_backdrop_filters_not_composited())
+            .chain(self.names_of_effects_reading_in_their_tiles())
         {
             writeln!(output, "{indent}{name}")?;
         }
@@ -929,38 +878,6 @@ pub fn why_list_is_unlayered(
     None
 }
 
-// Per effect node, whether an effect on its chain blends with the root group, which it reads below it to do so.
-fn blend_reading_root_group_on_chain(tree: &VisualContextTree) -> Vec<bool> {
-    let mut on_chain = vec![false; tree.effect_nodes.len()];
-    tree.visit_effect_nodes_parents_first(|index| {
-        let node = &tree.effect_nodes[index];
-        let own = matches!(&node.data, EffectNodeData::Effects(effects)
-            if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal)
-            && tree.effect_backdrop_is_root_group(EffectNodeIndex(index as u32));
-        on_chain[index] = own || (!node.parent.is_none() && on_chain[node.parent.0 as usize]);
-    });
-    on_chain
-}
-
-// A chain holds at most one such effect, since the layer of its backdrop filter isolates every effect under it.
-fn backdrop_filter_reading_root_group_on_chain(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
-    let mut on_chain = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
-    tree.visit_effect_nodes_parents_first(|index| {
-        let node = &tree.effect_nodes[index];
-        let effect = EffectNodeIndex(index as u32);
-        let own = matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some())
-            && tree.effect_backdrop_is_root_group(effect);
-        on_chain[index] = if own {
-            effect
-        } else if node.parent.is_none() {
-            EffectNodeIndex::NONE
-        } else {
-            on_chain[node.parent.0 as usize]
-        };
-    });
-    on_chain
-}
-
 /// A group of runs, which is placed whole, with where it is placed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedRunGroup {
@@ -975,7 +892,8 @@ pub struct PlacedRunGroup {
     pub moves_within_space: bool,
     /// Whether the group paints within the root group, rather than below it as the canvas background is.
     pub paints_within_the_root_group: bool,
-    /// Where the backdrop filters of the group that read the root group read, in the space's raster coordinates.
+    /// Where records of the group that blend with what the root group holds below them read it, in the space's raster
+    /// coordinates.
     pub root_group_backdrop_read: Reach<IntRect>,
 }
 
@@ -1009,30 +927,37 @@ pub fn backdrop_filter_read_area(
     Reach::Within(libgfx_rust::enclosing_int_rect(region).inflated_edges(reach, reach, reach, reach))
 }
 
-/// A stretch of records of one group that is placed as one: the whole group, or the records of a run between the
-/// canvases, videos and nested contexts that are layers of their own, or one of those.
+/// A stretch of records of one group that is placed as one: the records of the group's runs that are inside the same
+/// effects the compositor can composite, or a record of a run that draws a canvas, video or nested context that is a
+/// layer of its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlacedUnit {
     pub span: ListSpan,
     pub group: usize,
     pub reach: IntRect,
     pub media: Option<usize>,
-    /// The backdrop filter the compositor can composite the whole group inside, for the unit that is the group.
-    pub backdrop: Option<usize>,
+    /// The innermost effect the compositor can composite the unit's records inside.
+    pub effect: Option<usize>,
 }
 
-/// A backdrop filter that reads the root group and that the compositor can composite, placed with the group of its
-/// effect, which holds the effect's records and nothing else.
+/// An effect whose content the compositor composites inside it, or may where the content does not find all it reads
+/// in the layer it goes into, with where it is placed.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlacedBackdrop {
+pub struct PlacedEffect {
     pub effect: EffectNodeIndex,
+    /// The placed effect around it, inside which the compositor composites it.
+    pub around: Option<usize>,
     pub group: usize,
-    /// What the filter reads and draws, in the raster coordinates of the group's space, wherever the effect can show if
-    /// it moves within its space.
-    pub read_area: IntRect,
-    /// Whether the filter reads nothing past each pixel, or mirrors what it reads at an edge, as at the edge of the
-    /// frame, so that read in a tile of its space it reads what it reads in the frame.
-    pub reads_nothing_past_the_edge_it_mirrors_at: bool,
+    /// Where compositing the effect can draw, in the raster coordinates of the group's space, wherever the effect can
+    /// show if it moves within its space.
+    pub region: IntRect,
+    /// What it reads of what is composited below it there.
+    pub read_area: Reach<IntRect>,
+    /// Whether what it reads below it is the content of the root group, which the bands it can read are only known of
+    /// as the stack is cut into them.
+    pub reads_the_root_group: bool,
+    /// Why the compositor composites it, whatever the layer it goes into holds, if it does.
+    pub composited_whatever_its_layer_holds: Option<WhyEffectIsComposited>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1053,11 +978,10 @@ pub struct ListPlacement {
     pub units: Vec<PlacedUnit>,
     pub media: Vec<PlacedMedia>,
     pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
-    /// The backdrop filters that read the root group and can have layers of their own, in paint order. Whether one
-    /// does is decided as the stack is cut into bands.
-    pub backdrops: Vec<PlacedBackdrop>,
-    pub rejected_backdrop_filters: Vec<(EffectNodeIndex, BackdropLayerRejection)>,
-    pub backdrop_filters_reading_the_root_group_in_paint_order: Vec<EffectNodeIndex>,
+    /// In paint order, each after the one around it.
+    pub effects: Vec<PlacedEffect>,
+    /// The nodes that read the backdrop of a backdrop filter or a blend mode, in paint order.
+    pub readers_in_paint_order: Vec<EffectNodeIndex>,
 }
 
 fn canonical_composite_clips(clips: &[CompositeClip]) -> Vec<CompositeClip> {
@@ -1107,137 +1031,46 @@ fn media_layer_rejection(
     None
 }
 
-// Why the backdrop filter of `reader`, which reads the root group, cannot be applied by a layer of its own between what
-// is composited below it and the content of its effect, or where that layer goes. Applying the filter to what is below
-// and then compositing the content over it gives the pixels of a replay only where nothing composites the filtered
-// backdrop and the content as one, and where the effect's records are one group that starts with the record that marks
-// where the replay reads the backdrop.
-#[allow(clippy::too_many_arguments)]
-fn backdrop_layer_of_reader(
-    inputs: &LayerStackInputs<'_>,
-    run_groups: &RunGroups,
-    groups: &[PlacedRunGroup],
-    geometries: &[Rc<SpaceGeometry>],
-    runs_with_destination_blending: &[bool],
-    reader: EffectNodeIndex,
-    runs_under_reader: &[usize],
-) -> Result<PlacedBackdrop, BackdropLayerRejection> {
-    let tree = inputs.tree;
-    let list = inputs.list;
-    let node = &tree.effect_nodes[reader.0 as usize];
-    let EffectNodeData::Effects(effects) = &node.data else {
-        unreachable!("a backdrop filter belongs to an effects node");
-    };
-    let backdrop_filter = effects
-        .backdrop_filter
-        .as_ref()
-        .expect("a reader of the root group's backdrop has a backdrop filter");
-    if effects.opacity < 1.0 {
-        return Err(BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent);
-    }
-    if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
-        return Err(BackdropLayerRejection::BlendModeGroupsTheBackdropWithTheContent);
-    }
-    if effects.filter.is_some() {
-        return Err(BackdropLayerRejection::FilterGroupsTheBackdropWithTheContent);
-    }
-    if !node.parent.is_none()
-        && matches!(&tree.effect_nodes[node.parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop)
-    {
-        return Err(BackdropLayerRejection::MasksApplyToTheBackdrop);
-    }
-    if run_groups.grouping_effect_of(reader) != reader {
-        return Err(BackdropLayerRejection::InsideGroupEffect);
-    }
-    // A replay of the effect draws its content over the filtered backdrop without a layer between them, so whatever in
-    // it reads what is below it reads the filtered backdrop.
-    let reads_the_filtered_backdrop = runs_under_reader.iter().any(|&run_index| {
-        if runs_with_destination_blending[run_index] {
-            return true;
+// A backdrop filter or a blend mode, which reads what is composited below the layer of the node that reads it: the
+// outermost of the masks of a box that draw its filtered backdrop, or the effect itself.
+#[derive(Clone, Copy)]
+struct Reader {
+    backdrop_filter_effect: Option<EffectNodeIndex>,
+}
+
+// Per effect node, the reader it is the node that reads the backdrop of, if any.
+fn readers_of_tree(tree: &VisualContextTree) -> Vec<Option<Reader>> {
+    let mut readers = vec![None; tree.effect_nodes.len()];
+    for (index, node) in tree.effect_nodes.iter().enumerate() {
+        let EffectNodeData::Effects(effects) = &node.data else {
+            continue;
+        };
+        let effect = EffectNodeIndex(index as u32);
+        if effects.backdrop_filter.is_some() {
+            let reading_effect = tree.node_reading_the_backdrop_of(effect);
+            readers[reading_effect.0 as usize] = Some(Reader {
+                backdrop_filter_effect: Some(effect),
+            });
+        } else if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
+            readers[index] = Some(Reader {
+                backdrop_filter_effect: None,
+            });
         }
-        let mut effect = list.run(run_index).context.effect;
-        while effect != reader {
-            let node = &tree.effect_nodes[effect.0 as usize];
-            if matches!(&node.data, EffectNodeData::Effects(effects)
-                if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal
-                    || effects.backdrop_filter.is_some())
-            {
-                return true;
-            }
-            effect = node.parent;
-        }
-        false
-    });
-    if reads_the_filtered_backdrop {
-        return Err(BackdropLayerRejection::ContentReadsTheFilteredBackdrop);
     }
-    let (Some(&first_run), Some(&last_run)) = (runs_under_reader.first(), runs_under_reader.last()) else {
-        unreachable!("a reader of the root group's backdrop has runs");
-    };
-    let group_index = run_groups.group_of_run(first_run);
-    let (chunk, run_in_chunk) = list.chunk_of_run(first_run);
-    let table = list.chunk(chunk).record_table();
-    // Compositor metadata, which draws nothing, may come before the marker: a box records where it takes the wheel
-    // ahead of what it paints.
-    let marker = table
-        .records_of_run(run_in_chunk)
-        .map(|record| &table.records()[record as usize])
-        .find(|record| !record.command_type.is_compositor_metadata());
-    let is_one_stretch_starting_with_the_marker = last_run - first_run + 1 == runs_under_reader.len()
-        && run_groups.ranges()[group_index] == (first_run as u32, last_run as u32)
-        && marker.is_some_and(|marker| marker.command_type == DisplayListCommandType::BackdropFilterRegion);
-    if !is_one_stretch_starting_with_the_marker {
-        return Err(BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop);
-    }
-    let group = &groups[group_index];
-    if !group.composite_clips.is_empty() {
-        return Err(BackdropLayerRejection::CompositedWithinClips);
-    }
-    let geometry = &geometries[group.space];
-    let effect_to_device = geometry.world.draw_matrix(node.spatial);
-    let maps_to_an_axis_aligned_rect = effect_to_device.is_2d_affine() && {
-        let affine = effect_to_device.extract_2d_affine();
-        affine.b() == 0.0 && affine.c() == 0.0
-    };
-    if !maps_to_an_axis_aligned_rect {
-        return Err(BackdropLayerRejection::RegionIsNotAnAxisAlignedRect);
-    }
-    // What moves within its space can read wherever its fixed clips let it show.
-    let read_area = if group.moves_within_space {
-        crate::display_list::tile_keys::backdrop_filter_read_reach_in_device_pixels(
-            &backdrop_filter.filter,
-            &effect_to_device,
-        )
-        .map(|reach| group.device_rect.inflated_edges(reach, reach, reach, reach))
-    } else {
-        match backdrop_filter_read_area(tree, geometry, reader) {
-            Reach::Within(read_area) => Some(read_area),
-            Reach::Nothing | Reach::Anywhere => None,
-        }
-    };
-    let Some(read_area) = read_area else {
-        return Err(BackdropLayerRejection::ReachOfFilterIsNotKnown);
-    };
-    Ok(PlacedBackdrop {
-        effect: reader,
-        group: group_index,
-        read_area,
-        reads_nothing_past_the_edge_it_mirrors_at:
-            crate::display_list::tile_keys::backdrop_filter_reads_nothing_past_the_edge_it_mirrors_at(
-                &backdrop_filter.filter,
-            ),
-    })
+    readers
+}
+
+fn effect_is_inside(tree: &VisualContextTree, effect: EffectNodeIndex, around: EffectNodeIndex) -> bool {
+    effect != around && effect_chain_contains(tree, effect, around)
 }
 
 /// Where each part of the list is placed among `spaces`, given the geometry of each of them, leaving out of the media
-/// layers the drawings at `positions_refused_media_layers`, and out of the backdrop layers the backdrop filters of
-/// `effects_refused_backdrop_layers`, each for the reason given with it.
+/// layers the drawings at `positions_refused_media_layers`.
 pub fn place_list(
     inputs: &LayerStackInputs<'_>,
     spaces: RasterSpaces,
     geometries: &[Rc<SpaceGeometry>],
     positions_refused_media_layers: &[ListPosition],
-    effects_refused_backdrop_layers: &[(EffectNodeIndex, BackdropLayerRejection)],
 ) -> ListPlacement {
     let tree = inputs.tree;
     let list = inputs.list;
@@ -1246,8 +1079,6 @@ pub fn place_list(
     let tables = PlacementTables::new(tree, spaces, geometries);
     let spaces = tables.spaces();
     let runs_reaching_outside = RunsReachingOutsideTheirContext::new(list);
-    let backdrop_filter_reading_root_group_on_chain = backdrop_filter_reading_root_group_on_chain(tree);
-    let blend_reading_root_group_on_chain = blend_reading_root_group_on_chain(tree);
     let mut runs_blending_with_root_group = vec![false; list.run_count()];
     for record in &list.summary().destination_blending_records {
         let effect = list.run(record.run_index as usize).context.effect;
@@ -1255,16 +1086,24 @@ pub fn place_list(
             runs_blending_with_root_group[record.run_index as usize] = true;
         }
     }
-    let mut runs_with_destination_blending = vec![false; list.run_count()];
-    for record in &list.summary().destination_blending_records {
-        runs_with_destination_blending[record.run_index as usize] = true;
-    }
     let mut effect_geometry_of_spaces: Vec<Option<Vec<EffectGeometry>>> = vec![None; spaces.len()];
-    let mut group_rects: std::collections::HashMap<(usize, u32), IntRect> = std::collections::HashMap::new();
+    let mut output_rects_of_effects: std::collections::HashMap<(usize, u32), IntRect> =
+        std::collections::HashMap::new();
+    // Where the output of an effect can show in the raster coordinates of a space, within the clips fixed in it.
+    let mut output_rect_of_effect = |space: usize, effect: EffectNodeIndex| {
+        *output_rects_of_effects.entry((space, effect.0)).or_insert_with(|| {
+            let geometry = &geometries[space];
+            let effect_geometry = effect_geometry_of_spaces[space].get_or_insert_with(|| {
+                let mut effect_geometry = Vec::new();
+                compute_effect_geometry(tree, list.runs(), &geometry.world, &mut effect_geometry);
+                effect_geometry
+            });
+            geometry.group_device_rect(tree, effect, effect_geometry[effect.0 as usize].output, effect_clips)
+        })
+    };
+    let mut rect_of_run = vec![IntRect::default(); list.run_count()];
 
-    // Per group, the backdrop filters on the chains of its runs that read the root group, which are read in the group's
-    // layer unless they get layers of their own.
-    let (mut groups, backdrop_readers_of_groups): (Vec<PlacedRunGroup>, Vec<Vec<EffectNodeIndex>>) = run_groups
+    let groups: Vec<PlacedRunGroup> = run_groups
         .ranges()
         .iter()
         .map(|&(first_run, last_run)| {
@@ -1303,7 +1142,6 @@ pub fn place_list(
                 .any(|run_index| tables.context_moves_within_space(tree, list.run(run_index).context, space));
             let mut device_rect = IntRect::default();
             let mut root_group_backdrop_read = Reach::Nothing;
-            let mut backdrop_readers = Vec::new();
             for run_index in runs {
                 let run = list.run(run_index);
                 let group = run_groups.grouping_effect_of_run(run_index);
@@ -1312,112 +1150,197 @@ pub fn place_list(
                 } else if group.is_none() {
                     geometry.ink_device_rect(run, run.ink_bounds)
                 } else {
-                    *group_rects.entry((space, group.0)).or_insert_with(|| {
-                        let effect_geometry = effect_geometry_of_spaces[space].get_or_insert_with(|| {
-                            let mut effect_geometry = Vec::new();
-                            compute_effect_geometry(tree, list.runs(), &geometry.world, &mut effect_geometry);
-                            effect_geometry
-                        });
-                        geometry.group_device_rect(tree, group, effect_geometry[group.0 as usize].output, effect_clips)
-                    })
+                    output_rect_of_effect(space, group)
                 };
+                rect_of_run[run_index] = run_rect;
                 device_rect = device_rect.united(run_rect);
                 // A blend reads below what it draws.
-                let blends_with_root_group = runs_blending_with_root_group[run_index]
-                    || (!run.context.effect.is_none()
-                        && blend_reading_root_group_on_chain[run.context.effect.0 as usize]);
-                if blends_with_root_group {
+                if runs_blending_with_root_group[run_index] {
                     root_group_backdrop_read = root_group_backdrop_read.united(Reach::Within(run_rect));
-                }
-                if !run.context.effect.is_none() {
-                    let backdrop_filter = backdrop_filter_reading_root_group_on_chain[run.context.effect.0 as usize];
-                    if !backdrop_filter.is_none() && !backdrop_readers.contains(&backdrop_filter) {
-                        backdrop_readers.push(backdrop_filter);
-                    }
                 }
             }
             let paints_within_the_root_group = match tree.root_isolation_effect {
                 None => true,
-                Some(root) => (first_run..=last_run).any(|run_index| {
-                    let mut effect = list.run(run_index as usize).context.effect;
-                    while !effect.is_none() {
-                        if effect == root {
-                            return true;
-                        }
-                        effect = tree.effect_nodes[effect.0 as usize].parent;
-                    }
-                    false
-                }),
+                Some(root) => (first_run..=last_run)
+                    .any(|run_index| effect_chain_contains(tree, list.run(run_index as usize).context.effect, root)),
             };
-            (
-                PlacedRunGroup {
-                    first_run,
-                    last_run,
-                    space,
-                    composite_clips,
-                    device_rect,
-                    moves_within_space,
-                    paints_within_the_root_group,
-                    root_group_backdrop_read,
-                },
-                backdrop_readers,
-            )
+            PlacedRunGroup {
+                first_run,
+                last_run,
+                space,
+                composite_clips,
+                device_rect,
+                moves_within_space,
+                paints_within_the_root_group,
+                root_group_backdrop_read,
+            }
         })
-        .unzip();
+        .collect();
 
-    // The backdrop filters that read the root group and can be applied by layers of their own are placed apart from the
-    // rest of their effects' content, so that each can get a layer where it does not find all it reads in its own.
-    let mut runs_under_readers: Vec<(EffectNodeIndex, Vec<usize>)> = Vec::new();
+    // The effects of the list in paint order of their first run, each after those around it.
+    let mut first_run_of_effect = vec![usize::MAX; tree.effect_nodes.len()];
+    let mut effects_in_paint_order = Vec::new();
     for run_index in 0..list.run_count() {
-        let effect = list.run(run_index).context.effect;
-        if effect.is_none() {
-            continue;
+        let mut effect = list.run(run_index).context.effect;
+        let mut chain = Vec::new();
+        while !effect.is_none() && first_run_of_effect[effect.0 as usize] == usize::MAX {
+            first_run_of_effect[effect.0 as usize] = run_index;
+            chain.push(effect);
+            effect = tree.effect_nodes[effect.0 as usize].parent;
         }
-        let reader = backdrop_filter_reading_root_group_on_chain[effect.0 as usize];
-        if reader.is_none() {
-            continue;
-        }
-        match runs_under_readers.iter_mut().find(|(known, _)| *known == reader) {
-            Some((_, runs)) => runs.push(run_index),
-            None => runs_under_readers.push((reader, vec![run_index])),
-        }
+        effects_in_paint_order.extend(chain.into_iter().rev());
     }
-    let mut backdrops: Vec<PlacedBackdrop> = Vec::new();
-    let mut rejected_backdrop_filters = Vec::new();
-    for (reader, runs_under_reader) in &runs_under_readers {
-        let placed = backdrop_layer_of_reader(
-            inputs,
-            run_groups,
-            &groups,
-            geometries,
-            &runs_with_destination_blending,
-            *reader,
-            runs_under_reader,
-        )
-        .and_then(|placed| {
-            match effects_refused_backdrop_layers
-                .iter()
-                .find(|(refused, _)| refused == reader)
-            {
-                Some(&(_, rejection)) => Err(rejection),
-                None => Ok(placed),
-            }
-        });
-        match placed {
-            Ok(placed) => backdrops.push(placed),
-            Err(rejection) => rejected_backdrop_filters.push((*reader, rejection)),
-        }
+    let group_of_effect = |effect: EffectNodeIndex| run_groups.group_of_run(first_run_of_effect[effect.0 as usize]);
+    // Per effect of the list, where compositing it can draw, which is anywhere its group can show where that moves.
+    let mut regions_of_effects = vec![IntRect::default(); tree.effect_nodes.len()];
+    for &effect in &effects_in_paint_order {
+        let group = &groups[group_of_effect(effect)];
+        regions_of_effects[effect.0 as usize] = if group.moves_within_space {
+            group.device_rect
+        } else {
+            output_rect_of_effect(group.space, effect)
+        };
     }
-    for (group, backdrop_readers) in groups.iter_mut().zip(&backdrop_readers_of_groups) {
+
+    // What each reader reads, and whether the compositor composites it whatever the layer it goes into holds: where its
+    // backdrop filter reads past each pixel without mirroring at the edge of the frame, or where an effect around it
+    // holds what it reads and a barrier painted before it cuts the tiles it reads there. The effects around one that is
+    // composited are composited too, as they hold its barrier.
+    let readers = readers_of_tree(tree);
+    let mut read_areas = vec![Reach::Nothing; tree.effect_nodes.len()];
+    let mut composited_whatever_its_layer_holds: Vec<Option<WhyEffectIsComposited>> =
+        vec![None; tree.effect_nodes.len()];
+    let mut readers_in_paint_order = Vec::new();
+    let mut readers_of_the_root_group = Vec::new();
+    for &effect in &effects_in_paint_order {
+        let Some(reader) = readers[effect.0 as usize] else {
+            continue;
+        };
+        let group = &groups[group_of_effect(effect)];
         let geometry = &geometries[group.space];
-        for &reader in backdrop_readers {
-            if backdrops.iter().all(|backdrop| backdrop.effect != reader) {
-                group.root_group_backdrop_read = group
-                    .root_group_backdrop_read
-                    .united(backdrop_filter_read_area(tree, geometry, reader));
+        let region = regions_of_effects[effect.0 as usize];
+        let (read_area, reads_nothing_past_the_edge_it_mirrors_at) = match reader.backdrop_filter_effect {
+            Some(filter_effect) => {
+                let node = &tree.effect_nodes[filter_effect.0 as usize];
+                let EffectNodeData::Effects(effects) = &node.data else {
+                    unreachable!("a backdrop filter belongs to an effects node");
+                };
+                let backdrop_filter = effects
+                    .backdrop_filter
+                    .as_ref()
+                    .expect("a reader with a backdrop filter has one");
+                // What moves within its space can read wherever its fixed clips let it show.
+                let read_area = if group.moves_within_space {
+                    crate::display_list::tile_keys::backdrop_filter_read_reach_in_device_pixels(
+                        &backdrop_filter.filter,
+                        &geometry.world.draw_matrix(node.spatial),
+                    )
+                    .map_or(Reach::Anywhere, |reach| {
+                        Reach::Within(group.device_rect.inflated_edges(reach, reach, reach, reach))
+                    })
+                } else {
+                    backdrop_filter_read_area(tree, geometry, filter_effect)
+                };
+                (
+                    read_area,
+                    crate::display_list::tile_keys::backdrop_filter_reads_nothing_past_the_edge_it_mirrors_at(
+                        &backdrop_filter.filter,
+                    ),
+                )
             }
+            None => (Reach::Within(region), true),
+        };
+        read_areas[effect.0 as usize] = read_area;
+        let reading_node = &tree.effect_nodes[effect.0 as usize];
+        let backdrop_root = if reading_node.parent.is_none() {
+            None
+        } else {
+            tree.nearest_layer_at_or_above(reading_node.parent)
+                .filter(|root| tree.root_isolation_effect != Some(*root))
+        };
+        let why = if !reads_nothing_past_the_edge_it_mirrors_at {
+            Some(WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame)
+        } else if let Some(backdrop_root) = backdrop_root {
+            let read_tiles = match read_area {
+                Reach::Within(rect) => Reach::Within(expanded_to_tile_grid(rect)),
+                read_area => read_area,
+            };
+            let cut_by_a_barrier = effects_in_paint_order.iter().any(|&other| {
+                other != effect
+                    && composited_whatever_its_layer_holds[other.0 as usize].is_some()
+                    && first_run_of_effect[other.0 as usize] < first_run_of_effect[effect.0 as usize]
+                    && effect_is_inside(tree, other, backdrop_root)
+                    && !effect_is_inside(tree, effect, other)
+                    && read_tiles.meets(Reach::Within(regions_of_effects[other.0 as usize].united(
+                        match read_areas[other.0 as usize] {
+                            Reach::Within(rect) => rect,
+                            _ => IntRect::default(),
+                        },
+                    )))
+            });
+            cut_by_a_barrier.then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+        } else {
+            None
+        };
+        readers_in_paint_order.push(effect);
+        if backdrop_root.is_none() {
+            readers_of_the_root_group.push(effect);
+        }
+        let Some(why) = why else {
+            continue;
+        };
+        composited_whatever_its_layer_holds[effect.0 as usize] = Some(why);
+        let mut around = reading_node.parent;
+        while !around.is_none() && tree.root_isolation_effect != Some(around) {
+            if tree.effect_pushes_layer_at_replay(around)
+                && composited_whatever_its_layer_holds[around.0 as usize].is_none()
+            {
+                composited_whatever_its_layer_holds[around.0 as usize] =
+                    Some(WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites);
+            }
+            around = tree.effect_nodes[around.0 as usize].parent;
         }
     }
+
+    // The effects the compositor composites or may, in paint order, each after the one around it.
+    let mut placed_effect_of_effect: Vec<Option<usize>> = vec![None; tree.effect_nodes.len()];
+    let mut effects: Vec<PlacedEffect> = Vec::new();
+    for &effect in &effects_in_paint_order {
+        let composited = composited_whatever_its_layer_holds[effect.0 as usize];
+        let reads_the_root_group = readers_of_the_root_group.contains(&effect);
+        if composited.is_none() && !reads_the_root_group {
+            continue;
+        }
+        let mut around = tree.effect_nodes[effect.0 as usize].parent;
+        while !around.is_none() && placed_effect_of_effect[around.0 as usize].is_none() {
+            around = tree.effect_nodes[around.0 as usize].parent;
+        }
+        placed_effect_of_effect[effect.0 as usize] = Some(effects.len());
+        effects.push(PlacedEffect {
+            effect,
+            around: if around.is_none() {
+                None
+            } else {
+                placed_effect_of_effect[around.0 as usize]
+            },
+            group: group_of_effect(effect),
+            region: regions_of_effects[effect.0 as usize],
+            read_area: read_areas[effect.0 as usize],
+            reads_the_root_group,
+            composited_whatever_its_layer_holds: composited,
+        });
+    }
+    // Per run, the innermost placed effect its records are inside.
+    let innermost_placed_effect_of_run = |run_index: usize| {
+        let mut effect = list.run(run_index).context.effect;
+        while !effect.is_none() {
+            if let Some(placed) = placed_effect_of_effect[effect.0 as usize] {
+                return Some(placed);
+            }
+            effect = tree.effect_nodes[effect.0 as usize].parent;
+        }
+        None
+    };
 
     // The canvases, videos and nested contexts are layers of their own where they can be, with
     // canvases and videos ahead of nested contexts once there are more than layers for them.
@@ -1468,74 +1391,83 @@ pub fn place_list(
             .count() as u32;
     }
 
-    let mut units = Vec::with_capacity(groups.len() + backdrops.len());
+    let mut units: Vec<PlacedUnit> = Vec::with_capacity(groups.len());
     let mut media_of_records = media.iter().enumerate().peekable();
-    let mut backdrops_of_groups = backdrops.iter().enumerate().peekable();
     for (group_index, group) in groups.iter().enumerate() {
-        let span_of_group = ListSpan {
-            begin: list.start_of_run(group.first_run as usize),
-            end: list.end_of_run(group.last_run as usize),
-        };
-        // The group of an effect the compositor can composite is a unit, which goes into a node of its own where the
-        // effect is composited.
-        if let Some((backdrop_index, _)) = backdrops_of_groups.next_if(|(_, backdrop)| backdrop.group == group_index) {
-            units.push(PlacedUnit {
-                span: span_of_group,
-                group: group_index,
-                reach: group.device_rect,
-                media: None,
-                backdrop: Some(backdrop_index),
-            });
-            continue;
-        }
-        let has_media = media_of_records
-            .peek()
-            .is_some_and(|(_, candidate)| candidate.run_index == group.first_run);
-        if !has_media {
-            units.push(PlacedUnit {
-                span: span_of_group,
-                group: group_index,
-                reach: group.device_rect,
-                media: None,
-                backdrop: None,
-            });
-            continue;
-        }
-        // In a run that draws media, each record is a unit of its own, so content over the media goes above it only
-        // where it reaches.
-        let geometry = &geometries[group.space];
-        let (chunk_index, run_in_chunk) = list.chunk_of_run(group.first_run as usize);
-        let chunk = list.chunk(chunk_index);
-        let run = &chunk.runs()[run_in_chunk];
-        let record_reach = |bounding_rect: IntRect| {
-            if group.moves_within_space {
-                group.device_rect
-            } else {
-                geometry.ink_device_rect(run, bounding_rect)
+        let runs_of_group = group.first_run as usize..=group.last_run as usize;
+        for (run_index, &rect_of_run) in rect_of_run
+            .iter()
+            .enumerate()
+            .take(*runs_of_group.end() + 1)
+            .skip(*runs_of_group.start())
+        {
+            let effect = innermost_placed_effect_of_run(run_index);
+            let has_media = media_of_records
+                .peek()
+                .is_some_and(|(_, candidate)| candidate.run_index as usize == run_index);
+            let span_of_run = ListSpan {
+                begin: list.start_of_run(run_index),
+                end: list.end_of_run(run_index),
+            };
+            if !has_media {
+                // Runs inside the same placed effects make one unit, which reaches where that effect can draw.
+                let reach = match effect {
+                    Some(placed) => effects[placed].region,
+                    None => rect_of_run,
+                };
+                match units.last_mut() {
+                    Some(last) if last.group == group_index && last.effect == effect && last.media.is_none() => {
+                        last.span.end = span_of_run.end;
+                        if effect.is_none() {
+                            last.reach = last.reach.united(reach);
+                        }
+                    }
+                    _ => units.push(PlacedUnit {
+                        span: span_of_run,
+                        group: group_index,
+                        reach,
+                        media: None,
+                        effect,
+                    }),
+                }
+                continue;
             }
-        };
-        let table = chunk.record_table();
-        let records_of_run = table.records_of_run(run_in_chunk);
-        for record in &table.records()[records_of_run.start as usize..records_of_run.end as usize] {
-            let span = ListSpan {
-                begin: ListPosition::new(chunk_index, record.offset),
-                end: ListPosition::new(chunk_index, record.end_offset),
+            // In a run that draws media, each record is a unit of its own, so content over the media goes above it only
+            // where it reaches.
+            let geometry = &geometries[group.space];
+            let (chunk_index, run_in_chunk) = list.chunk_of_run(run_index);
+            let chunk = list.chunk(chunk_index);
+            let run = &chunk.runs()[run_in_chunk];
+            let record_reach = |bounding_rect: IntRect| {
+                if group.moves_within_space {
+                    group.device_rect
+                } else {
+                    geometry.ink_device_rect(run, bounding_rect)
+                }
             };
-            let reach = if record.has_ink {
-                record_reach(record.bounding_rect)
-            } else {
-                IntRect::default()
-            };
-            let media = media_of_records
-                .next_if(|(_, candidate)| candidate.position == span.begin)
-                .map(|(media_index, _)| media_index);
-            units.push(PlacedUnit {
-                span,
-                group: group_index,
-                reach,
-                media,
-                backdrop: None,
-            });
+            let table = chunk.record_table();
+            let records_of_run = table.records_of_run(run_in_chunk);
+            for record in &table.records()[records_of_run.start as usize..records_of_run.end as usize] {
+                let span = ListSpan {
+                    begin: ListPosition::new(chunk_index, record.offset),
+                    end: ListPosition::new(chunk_index, record.end_offset),
+                };
+                let reach = if record.has_ink {
+                    record_reach(record.bounding_rect)
+                } else {
+                    IntRect::default()
+                };
+                let media = media_of_records
+                    .next_if(|(_, candidate)| candidate.position == span.begin)
+                    .map(|(media_index, _)| media_index);
+                units.push(PlacedUnit {
+                    span,
+                    group: group_index,
+                    reach,
+                    media,
+                    effect,
+                });
+            }
         }
     }
 
@@ -1546,12 +1478,8 @@ pub fn place_list(
         units,
         media,
         rejected_media,
-        backdrops,
-        rejected_backdrop_filters,
-        backdrop_filters_reading_the_root_group_in_paint_order: runs_under_readers
-            .into_iter()
-            .map(|(reader, _)| reader)
-            .collect(),
+        effects,
+        readers_in_paint_order,
     }
 }
 
@@ -1592,6 +1520,9 @@ struct StackBeingBuilt<'a> {
     groups: Vec<LayerGroup>,
     // Per band, where content of the root group in it can show so far, in the raster coordinates of its node.
     root_group_reach_of_bands: Vec<Reach<IntRect>>,
+    // Per placed effect, once its first unit is placed: why the compositor composites it, if it does, and its node then.
+    decisions_of_effects: Vec<Option<Option<WhyEffectIsComposited>>>,
+    composited_nodes_of_effects: Vec<Option<usize>>,
     // In paint order.
     composited_effects: Vec<CompositedEffect>,
 }
@@ -1655,13 +1586,28 @@ impl StackBeingBuilt<'_> {
         self.add_node(node)
     }
 
-    // Where a unit can show, or where the backdrop filter of its group reads if the compositor can composite it, as a
-    // node of its own then shows there.
-    fn reach_of_unit_with_what_it_can_read(&self, unit: &PlacedUnit) -> IntRect {
-        match unit.backdrop {
-            Some(backdrop) => unit.reach.united(self.placement.backdrops[backdrop].read_area),
-            None => unit.reach,
-        }
+    // The placed effects a unit is inside, outermost first.
+    fn chain_of_effects(&self, unit: &PlacedUnit) -> Vec<usize> {
+        let mut chain: Vec<usize> =
+            std::iter::successors(unit.effect, |&effect| self.placement.effects[effect].around).collect();
+        chain.reverse();
+        chain
+    }
+
+    // Where a unit can show, and where the effects it is inside that the compositor can composite read, as nodes of
+    // their own then show there.
+    fn reach_of_unit_with_what_it_can_read(&self, unit: &PlacedUnit) -> Reach<IntRect> {
+        self.chain_of_effects(unit)
+            .into_iter()
+            .fold(Reach::Within(unit.reach), |reach, effect| {
+                reach.united(self.placement.effects[effect].read_area)
+            })
+    }
+
+    // Where compositing a placed effect can draw or read, in the raster coordinates of its space.
+    fn region_of_composited_effect(&self, effect: usize) -> Reach<IntRect> {
+        let placed = &self.placement.effects[effect];
+        Reach::Within(placed.region).united(placed.read_area)
     }
 
     // The content of a held sticky box shows in the space around it wherever the box's offset takes it, so the region of
@@ -1669,7 +1615,7 @@ impl StackBeingBuilt<'_> {
     // composited within there.
     fn bound_the_regions_of_held_sticky_boxes(&mut self) {
         let placement = self.placement;
-        let mut reach_of_nodes = vec![IntRect::default(); self.nodes.len()];
+        let mut reach_of_nodes = vec![Reach::Nothing; self.nodes.len()];
         for unit in &placement.units {
             let node = self.node_of_group[unit.group];
             reach_of_nodes[node] = reach_of_nodes[node].united(self.reach_of_unit_with_what_it_can_read(unit));
@@ -1679,6 +1625,9 @@ impl StackBeingBuilt<'_> {
             if !matches!(space.anchor_kind, RasterSpaceAnchorKind::HeldStickyBox { .. }) {
                 continue;
             }
+            let Reach::Within(reach) = reach else {
+                continue;
+            };
             let swept =
                 rect_swept_over_translations(reach, space.lowest_anchor_translation, space.highest_anchor_translation);
             node.region_in_parent = node.region_in_parent.limited_to(swept);
@@ -1766,25 +1715,79 @@ impl StackBeingBuilt<'_> {
         }
     }
 
-    // Why the compositor composites the group of `backdrop`, painted next in `node`, inside its effect, if it does: it
-    // does where the backdrop filter does not find all it reads in the layer it goes into.
-    fn why_backdrop_is_composited(
+    // Why the compositor composites a placed effect, whose first unit is painted next in `node`, if it does: it does
+    // where it is composited whatever its layer holds, and where it reads the root group and does not find all it reads
+    // in the layer it goes into.
+    fn why_effect_is_composited(
         &self,
-        backdrop: &PlacedBackdrop,
+        effect: &PlacedEffect,
         node: usize,
         band_of_node: Option<usize>,
     ) -> Option<WhyEffectIsComposited> {
-        if !backdrop.reads_nothing_past_the_edge_it_mirrors_at {
-            return Some(WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame);
+        if let Some(why) = effect.composited_whatever_its_layer_holds {
+            return Some(why);
         }
-        let read_tiles = expanded_to_tile_grid(backdrop.read_area);
-        (!self.reads_only_its_own_layer(node, band_of_node, read_tiles))
-            .then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+        if !effect.reads_the_root_group {
+            return None;
+        }
+        let reads_only_its_own_layer = match effect.read_area {
+            Reach::Nothing => true,
+            Reach::Within(read_area) => {
+                self.reads_only_its_own_layer(node, band_of_node, expanded_to_tile_grid(read_area))
+            }
+            Reach::Anywhere => false,
+        };
+        (!reads_only_its_own_layer).then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+    }
+
+    // The node a unit goes into: inside the composited nodes of the placed effects around it that the compositor
+    // composites, each worked out as its first unit is placed.
+    fn node_of_unit(
+        &mut self,
+        unit: &PlacedUnit,
+        open_band_of_node: &mut Vec<Option<usize>>,
+        next_band_of_node: &mut Vec<u32>,
+    ) -> usize {
+        let mut node = self.node_of_group[unit.group];
+        for effect in self.chain_of_effects(unit) {
+            let decision = match self.decisions_of_effects[effect] {
+                Some(decision) => decision,
+                None => {
+                    let decision =
+                        self.why_effect_is_composited(&self.placement.effects[effect], node, open_band_of_node[node]);
+                    self.decisions_of_effects[effect] = Some(decision);
+                    decision
+                }
+            };
+            let Some(why) = decision else {
+                break;
+            };
+            node = match self.composited_nodes_of_effects[effect] {
+                Some(composited_node) => composited_node,
+                None => {
+                    let placed = self.placement.effects[effect];
+                    let region = self.region_of_composited_effect(effect);
+                    let composited_node = self.composited_node_inside(node, placed.effect, region);
+                    open_band_of_node.push(None);
+                    next_band_of_node.push(0);
+                    self.composited_nodes_of_effects[effect] = Some(composited_node);
+                    self.composited_effects.push(CompositedEffect {
+                        effect: placed.effect,
+                        node: composited_node,
+                        why,
+                        read_area: placed.read_area,
+                    });
+                    composited_node
+                }
+            };
+        }
+        node
     }
 
     // Walks the units in paint order, giving each node bands within the bands of its parent, and each band its
-    // barriers and its own units. The group of a backdrop filter that does not find all it reads in the layer it goes
-    // into gets a node of its own, which the compositor composites inside the filter's effect.
+    // barriers and its own units. The content of an effect that the compositor composites goes into a node of its own,
+    // whose band ends wherever content outside the effect is painted, as a replay of the list composites the effect
+    // anew there.
     fn cut_into_bands(&mut self) {
         let placement = self.placement;
         let mut open_band_of_node: Vec<Option<usize>> = vec![None; self.nodes.len()];
@@ -1795,26 +1798,13 @@ impl StackBeingBuilt<'_> {
             if unit.reach.is_empty() {
                 continue;
             }
-            let node_of_group = self.node_of_group[unit.group];
-            let mut node_of_unit = node_of_group;
-            if let Some(backdrop_index) = unit.backdrop {
-                let backdrop = &placement.backdrops[backdrop_index];
-                if let Some(why) =
-                    self.why_backdrop_is_composited(backdrop, node_of_group, open_band_of_node[node_of_group])
-                {
-                    let region = Reach::Within(self.reach_of_unit_with_what_it_can_read(unit));
-                    node_of_unit = self.composited_node_inside(node_of_group, backdrop.effect, region);
-                    open_band_of_node.push(None);
-                    next_band_of_node.push(0);
-                    self.composited_effects.push(CompositedEffect {
-                        effect: backdrop.effect,
-                        node: node_of_unit,
-                        why,
-                        read_area: Reach::Within(backdrop.read_area),
-                    });
+            let node_of_unit = self.node_of_unit(unit, &mut open_band_of_node, &mut next_band_of_node);
+            let path = self.path_to(node_of_unit);
+            for &composited_node in self.composited_nodes_of_effects.iter().flatten() {
+                if open_band_of_node[composited_node].is_some() && !path.contains(&composited_node) {
+                    self.close_band_of(composited_node, &mut open_band_of_node);
                 }
             }
-            let path = self.path_to(node_of_unit);
             for level in 0..path.len() {
                 let node = path[level];
                 let band = open_band_of_node[node].expect("the bands along the path of a unit are open");
@@ -2018,17 +2008,10 @@ fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], nod
 }
 
 enum StackConflict {
-    // The compositor composites more backdrop filters than it composites at most: the earliest of them in paint order,
-    // which are to read in the layer of what they read instead, so that no composited effect is under them.
-    BackdropLayersPastTheMost(Vec<EffectNodeIndex>),
-    // Media drawn, and backdrop filters the compositor composites, before content that reads the root group's
-    // backdrop, where the content can show.
-    BarriersUnderBackdrop {
-        media: Vec<ListPosition>,
-        backdrop_filters: Vec<EffectNodeIndex>,
-    },
-    // Content that reads the root group's backdrop would read through the layers of these spaces, which are to be
-    // rastered in the spaces around them instead.
+    // Media drawn before records that blend with the root group below them, where the records can show.
+    MediaUnderBackdrop(Vec<ListPosition>),
+    // Records that blend with the root group below them would read through the layers of these spaces, which are to
+    // be rastered in the spaces around them instead, or through what the compositor composites, which no fold helps.
     BackdropReadThroughSpaces(Vec<usize>),
 }
 
@@ -2050,6 +2033,8 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         layers: Vec::new(),
         groups: Vec::new(),
         root_group_reach_of_bands: Vec::new(),
+        decisions_of_effects: vec![None; placement.effects.len()],
+        composited_nodes_of_effects: vec![None; placement.effects.len()],
         composited_effects: Vec::new(),
     };
     built.node_of(VIEWPORT_RASTER_SPACE, Vec::new());
@@ -2074,23 +2059,12 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         composited_effects,
         ..
     } = built;
-
-    let mut rejected_backdrop_filters = placement.rejected_backdrop_filters.clone();
-    for backdrop in &placement.backdrops {
-        if composited_effects
-            .iter()
-            .all(|composited| composited.effect != backdrop.effect)
-        {
-            rejected_backdrop_filters.push((backdrop.effect, BackdropLayerRejection::ReadsOnlyItsOwnLayer));
-        }
-    }
-    let paint_order_of = |effect: EffectNodeIndex| {
-        placement
-            .backdrop_filters_reading_the_root_group_in_paint_order
-            .iter()
-            .position(|reader| *reader == effect)
-    };
-    rejected_backdrop_filters.sort_by_key(|(effect, _)| paint_order_of(*effect));
+    let effects_reading_in_their_tiles = placement
+        .readers_in_paint_order
+        .iter()
+        .copied()
+        .filter(|reader| composited_effects.iter().all(|composited| composited.effect != *reader))
+        .collect();
 
     let first_layer_with_content = layers.iter().position(|layer| layer.may_hold_content);
     let base_layer = match first_layer_with_content {
@@ -2103,18 +2077,11 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         _ => 0,
     };
 
-    let composited_effects_past_the_most = composited_effects.len().saturating_sub(MAXIMUM_BACKDROP_LAYER_COUNT);
-    let mut conflict = (composited_effects_past_the_most > 0).then(|| {
-        StackConflict::BackdropLayersPastTheMost(
-            composited_effects[..composited_effects_past_the_most]
-                .iter()
-                .map(|composited| composited.effect)
-                .collect(),
-        )
-    });
-    let composited_effect_of_layer = |layer: usize| nodes[layers[layer].node].composited_effect;
-    // Content that reads the root group's backdrop reads what is below it in its own layer only, so no layer below its
-    // own may hold content of the root group, and no barrier painted before it may cut the tiles it reaches.
+    let mut conflict = None;
+    // Records that blend with what the root group holds below them read it in their own layer only, so no layer below
+    // their own may hold content of the root group, and no barrier painted before them may cut the tiles they reach.
+    // Nothing composited may be below them, as no tile holds what the compositor composites.
+    let a_composited_effect_is_read_through = || StackConflict::BackdropReadThroughSpaces(Vec::new());
     for unit in &placement.units {
         if conflict.is_some() {
             break;
@@ -2139,17 +2106,11 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         // of its own space alone are in other bands or behind other clips, which the space around it merges.
         let space = nodes[node].space;
         let layers_read_through = base_layer..layer_group.layer_below_every_cut;
-        // A composited backdrop filter read through goes first, as the spaces around it may then hold what it reads.
-        let mut backdrop_filters_read_through: Vec<EffectNodeIndex> = layers_read_through
+        if layers_read_through
             .clone()
-            .filter_map(composited_effect_of_layer)
-            .collect();
-        backdrop_filters_read_through.dedup();
-        if !backdrop_filters_read_through.is_empty() {
-            conflict = Some(StackConflict::BarriersUnderBackdrop {
-                media: Vec::new(),
-                backdrop_filters: backdrop_filters_read_through,
-            });
+            .any(|layer| nodes[layers[layer].node].composited_effect.is_some())
+        {
+            conflict = Some(a_composited_effect_is_read_through());
             break;
         }
         let spaces_read_through: Vec<usize> = layers_read_through
@@ -2171,7 +2132,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         // What it reads below it has to be in its layer wherever it reads, as must it be wherever it draws.
         let reached_tiles = read_area.map(|read_area| expanded_to_tile_grid(unit.reach.united(read_area)));
         let mut refused_media = Vec::new();
-        let mut refused_backdrop_filters = Vec::new();
+        let mut reads_through_a_composited_effect = false;
         let mut spaces_to_fold = Vec::new();
         for cut in &layer_group.cuts {
             if cut.position > unit.span.begin || reached_tiles.is_some_and(|tiles| !cut.cuts_cell(tiles)) {
@@ -2185,7 +2146,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
                         .find(|candidate| candidate.key == band_node)
                         .expect("a band barrier names a node of the stack");
                     match band_node.composited_effect {
-                        Some(effect) => refused_backdrop_filters.push(effect),
+                        Some(_) => reads_through_a_composited_effect = true,
                         None => spaces_to_fold.extend(spaces_up_to_common_space(
                             &placement.spaces,
                             band_node.space,
@@ -2195,15 +2156,16 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
                 }
             }
         }
+        if reads_through_a_composited_effect {
+            conflict = Some(a_composited_effect_is_read_through());
+            break;
+        }
         if !spaces_to_fold.is_empty() {
             conflict = Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold));
             break;
         }
-        if !refused_media.is_empty() || !refused_backdrop_filters.is_empty() {
-            conflict = Some(StackConflict::BarriersUnderBackdrop {
-                media: refused_media,
-                backdrop_filters: refused_backdrop_filters,
-            });
+        if !refused_media.is_empty() {
+            conflict = Some(StackConflict::MediaUnderBackdrop(refused_media));
             break;
         }
     }
@@ -2218,7 +2180,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         unlayered_reason: None,
         layering_obstacles: placement.layering_obstacles,
         rejected_media: placement.rejected_media.clone(),
-        rejected_backdrop_filters,
+        effects_reading_in_their_tiles,
         placement,
         placement_at_every_anchor: ListPlacement::default(),
     };
@@ -2246,29 +2208,13 @@ pub fn build_layer_stack(
     let mut anchors = anchors.to_vec();
     let mut placement = placement_at_every_anchor.clone();
     let mut positions_refused_media_layers: Vec<ListPosition> = Vec::new();
-    let mut effects_refused_backdrop_layers: Vec<(EffectNodeIndex, BackdropLayerRejection)> = Vec::new();
-    // Each try leaves out at least one more canvas, video or backdrop layer, or the innermost space that scrolls, so
+    // Each try leaves out at least one more canvas, video or nested context, or the innermost space that scrolls, so
     // this ends.
     loop {
-        let (mut stack, conflict) = assemble_stack(placement);
+        let (stack, conflict) = assemble_stack(placement);
         match conflict {
-            Some(StackConflict::BackdropLayersPastTheMost(backdrop_filters)) => {
-                effects_refused_backdrop_layers.extend(
-                    backdrop_filters
-                        .into_iter()
-                        .map(|effect| (effect, BackdropLayerRejection::MoreBackdropFiltersThanLayersFor)),
-                );
-            }
-            Some(StackConflict::BarriersUnderBackdrop {
-                media,
-                backdrop_filters,
-            }) => {
+            Some(StackConflict::MediaUnderBackdrop(media)) => {
                 positions_refused_media_layers.extend(media);
-                effects_refused_backdrop_layers.extend(
-                    backdrop_filters
-                        .into_iter()
-                        .map(|effect| (effect, BackdropLayerRejection::UnderContentReadingTheRootGroup)),
-                );
             }
             Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold))
                 if spaces_to_fold.iter().any(|&space| space != VIEWPORT_RASTER_SPACE) =>
@@ -2286,13 +2232,12 @@ pub fn build_layer_stack(
                 anchors.retain(|anchor| !folded_anchors.contains(anchor));
             }
             Some(StackConflict::BackdropReadThroughSpaces(_)) => {
-                let rejected_backdrop_filters = std::mem::take(&mut stack.rejected_backdrop_filters);
                 let mut stack = single_layer(None);
-                stack.rejected_backdrop_filters = rejected_backdrop_filters;
                 stack.placement_at_every_anchor = placement_at_every_anchor;
                 return stack;
             }
             None => {
+                let mut stack = stack;
                 let layers_with_content = stack
                     .layers
                     .iter()
@@ -2313,13 +2258,7 @@ pub fn build_layer_stack(
             inputs.viewport_rect,
             inputs.raster_transform,
         );
-        placement = place_list(
-            inputs,
-            spaces,
-            &geometries,
-            &positions_refused_media_layers,
-            &effects_refused_backdrop_layers,
-        );
+        placement = place_list(inputs, spaces, &geometries, &positions_refused_media_layers);
     }
 }
 
@@ -2338,7 +2277,7 @@ pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
         inputs.viewport_rect,
         inputs.raster_transform,
     );
-    let placement = place_list(inputs, spaces, &geometries, &[], &[]);
+    let placement = place_list(inputs, spaces, &geometries, &[]);
     let mut stack = build_layer_stack(inputs, &anchors, placement);
     stack.update_window_server_placements(inputs.list, inputs.tree, inputs.scroll_offsets, inputs.viewport_rect);
     stack
@@ -2353,11 +2292,9 @@ mod tests {
     };
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
-        BackdropFilterData, CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, TransformData,
-        TransformDataRole,
+        CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, TransformData, TransformDataRole,
     };
-    use libgfx_rust::filter::Filter;
-    use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatRect, ScalingMode};
+    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatRect, ScalingMode};
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
 
@@ -2561,40 +2498,6 @@ mod tests {
                 "canvas #0 document",
                 "painted document band 0 above L2"
             ]
-        );
-    }
-
-    fn frosted_effect(region: IntRect) -> EffectNodeData {
-        EffectNodeData::Effects(EffectsData {
-            isolation: false,
-            opacity: 1.0,
-            blend_mode: CompositingAndBlendingOperator::Normal,
-            filter: None,
-            backdrop_filter: Some(BackdropFilterData {
-                filter: std::sync::Arc::new(Filter::blur(4.0, 4.0, None).serialize()),
-                region,
-                corner_radii: CornerRadii::default(),
-            }),
-        })
-    }
-
-    // The recorder starts what a box with a backdrop filter paints with the record that marks where it reads its
-    // backdrop, so no page has records that do not.
-    #[test]
-    fn a_backdrop_filter_whose_records_do_not_start_with_its_marker_reads_in_the_layer_of_what_it_reads() {
-        let region = IntRect::new(120, 120, 60, 40);
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
-        let list = TestList::new().with(fill(VIEWPORT), root).with(fill(region), frosted);
-        let stack = list.stack(&tree, &[]);
-        assert!(!stack.has_composited_effects());
-        assert_eq!(
-            stack.rejected_backdrop_filters,
-            [(
-                frosted.effect,
-                BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop
-            )]
         );
     }
 }

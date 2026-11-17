@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: crimson; }
+    .stripe:nth-child(even) { background: gold; }
+    /* Its mask applies to its filtered backdrop too, which the compositor composites inside the mask. */
+    #masked { position: fixed; left: 100px; top: 100px; width: 300px; height: 200px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(6px); mask-image: linear-gradient(to right, black, transparent); }
+</style>
+<div id="stripes"></div>
+<div id="masked">masked</div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const unscrolled = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 40);
+        const scrolled = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(unscrolled);
+        printPresentedFrameState(scrolled);
+        println(`scrolled, tiles rasterized: ${scrolled.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

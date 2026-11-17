@@ -13,7 +13,7 @@
     asyncTest(async done => {
         const overTheCanvasBackground = await presentedFrameStateOnceNothingIsLeftToRasterize();
         const layersOverTheCanvasBackground = layersOfTheDisplayList();
-        // A fixed box is painted within the root group, so the blend reads it through the document's layer.
+        // A fixed box is painted within the root group, so the compositor composites the blend over it.
         document.getElementById("fixed-behind-the-page").style.display = "block";
         const overAFixedBox = await presentedFrameStateOnceNothingIsLeftToRasterize();
         const layersOverAFixedBox = layersOfTheDisplayList();

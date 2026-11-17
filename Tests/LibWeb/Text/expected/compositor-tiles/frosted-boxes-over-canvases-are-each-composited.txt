@@ -1,0 +1,17 @@
+[L0] base space=viewport
+[L1] canvas #0 space=viewport region=[7,7 126x86] replayed: the compositor composites an effect over what is below it
+[L3] canvas #0 space=viewport region=[263,7 126x86] replayed: the compositor composites an effect over what is below it
+[L5] canvas #0 space=viewport region=[519,7 126x86] replayed: the compositor composites an effect over what is below it
+[L7] canvas #0 space=viewport region=[7,263 126x86] replayed: the compositor composites an effect over what is below it
+[L9] canvas #0 space=viewport region=[263,263 126x86] replayed: the compositor composites an effect over what is below it
+[L11] painted space=viewport inside BlockContainer<DIV>#first.frosted
+[L13] painted space=viewport inside BlockContainer<DIV>#second.frosted
+[L15] painted space=viewport inside BlockContainer<DIV>#third.frosted
+[L17] painted space=viewport inside BlockContainer<DIV>#fourth.frosted
+[L19] painted space=viewport inside BlockContainer<DIV>#fifth.frosted
+composited BlockContainer<DIV>#first.frosted space=viewport reads=[-7,-7 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#second.frosted space=viewport reads=[249,-7 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#third.frosted space=viewport reads=[505,-7 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#fourth.frosted space=viewport reads=[-7,249 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#fifth.frosted space=viewport reads=[249,249 154x114]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true

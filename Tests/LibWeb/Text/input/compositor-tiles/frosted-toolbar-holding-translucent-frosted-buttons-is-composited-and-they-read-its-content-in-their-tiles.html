@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: salmon; }
+    .stripe:nth-child(even) { background: teal; }
+    #toolbar { position: fixed; left: 40px; top: 20px; width: 400px; height: 80px; padding: 10px; box-sizing: border-box; display: flex; gap: 10px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(6px); }
+    /* Each reads only the toolbar's own content painted before it, which is in the toolbar's tiles. */
+    .button { width: 120px; height: 60px; opacity: 0.5; background: rgba(0, 0, 128, 0.3); backdrop-filter: invert(1) blur(2px); }
+</style>
+<div id="stripes"></div>
+<div id="toolbar"><div class="button" id="first">first</div><div class="button" id="second">second</div></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            stripes.appendChild(stripe);
+        }
+        const unscrolled = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 60);
+        const scrolled = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(unscrolled);
+        printPresentedFrameState(scrolled);
+        println(`scrolled, tiles rasterized: ${scrolled.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

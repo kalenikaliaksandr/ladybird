@@ -36,7 +36,7 @@
         const scrolled = layersAndCommandsWithoutWhatTheWindowServerShows();
         println(unscrolled);
         println(`the same once scrolled: ${scrolled === unscrolled}`);
-        printPresentedFrameState(state, 2);
+        printPresentedFrameState(state);
         println(`scrolled, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, layers created: ${state.layersCreatedSinceLastCheck}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
         done();
     });

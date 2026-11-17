@@ -724,6 +724,8 @@ struct ReplayDriver<'a, Painter: ReplayPainter + ?Sized> {
     // Per effect and per clip, whether the selection's composited effect leaves it to the compositor. Empty without one.
     effects_left_to_composite_around_the_composited_effect: Vec<bool>,
     clips_left_to_composite_around_the_composited_effect: Vec<bool>,
+    // Per effect, whether content in it reads what its layer holds below it, filled when first needed.
+    effects_whose_content_reads_their_layer: Option<Vec<bool>>,
 }
 
 // The effects that a replay inside `composited_effect` leaves to the compositor, which are the effect and those around
@@ -803,6 +805,24 @@ fn replay_layer_of(
     }
 }
 
+// A layer that composites what is drawn into it as it is.
+fn plain_layer_of_bounds(content_bounds: Option<FloatRect>) -> ReplayLayer {
+    ReplayLayer {
+        opacity: 1.0,
+        blend_mode: libgfx_rust::CompositingAndBlendingOperator::Normal,
+        filter_bytes: std::ptr::null(),
+        filter_bytes_size: 0,
+        backdrop_filter_bytes: std::ptr::null(),
+        backdrop_filter_bytes_size: 0,
+        backdrop_region: IntRect::default(),
+        backdrop_corner_radii: CornerRadii::default(),
+        backdrop_base_color: Color::TRANSPARENT,
+        backdrop_blur_edge: OptionalFloatRect::none(),
+        filter_cache_key: 0,
+        content_bounds: OptionalFloatRect::from(content_bounds),
+    }
+}
+
 // Whether the backdrop of a backdrop-filter effect is drawn by its box's masks rather than by the effect's own layer.
 fn backdrop_is_drawn_by_masks(tree: &VisualContextTree, effect: EffectNodeIndex) -> bool {
     let node = &tree.effect_nodes[effect.0 as usize];
@@ -854,20 +874,53 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
         let spatial = self.tree.effect_nodes[effect.0 as usize].spatial;
         self.ensure_ctm_space(spatial);
         let content_bounds = self.layer_content_bounds(effect, spatial);
-        self.painter.push_layer(&ReplayLayer {
-            opacity: 1.0,
-            blend_mode: libgfx_rust::CompositingAndBlendingOperator::Normal,
-            filter_bytes: std::ptr::null(),
-            filter_bytes_size: 0,
-            backdrop_filter_bytes: std::ptr::null(),
-            backdrop_filter_bytes_size: 0,
-            backdrop_region: IntRect::default(),
-            backdrop_corner_radii: CornerRadii::default(),
-            backdrop_base_color: Color::TRANSPARENT,
-            backdrop_blur_edge: OptionalFloatRect::none(),
-            filter_cache_key: 0,
-            content_bounds: OptionalFloatRect::from(content_bounds),
-        });
+        self.painter.push_layer(&plain_layer_of_bounds(content_bounds));
+    }
+
+    // https://drafts.fxtf.org/filter-effects-2/#BackdropRoot
+    // An element with a backdrop filter is a backdrop root, so what is inside it and reads its backdrop reads only the
+    // element's own content, not the filtered backdrop behind it. The layer of the effect starts with that filtered
+    // backdrop, so its content goes into a layer of its own above it wherever something inside it reads its backdrop.
+    fn effect_isolates_its_content_from_its_filtered_backdrop(&mut self, effect: EffectNodeIndex) -> bool {
+        let tree = self.tree;
+        if !matches!(&tree.effect_nodes[effect.0 as usize].data, EffectNodeData::Effects(effects)
+            if effects.backdrop_filter.is_some())
+            || backdrop_is_drawn_by_masks(tree, effect)
+        {
+            return false;
+        }
+        let display_list = self.display_list;
+        self.effects_whose_content_reads_their_layer.get_or_insert_with(|| {
+            let mut reads_their_layer = vec![false; tree.effect_nodes.len()];
+            let mut note_reader_inside = |effect: EffectNodeIndex| {
+                if let Some(layer) = tree.nearest_layer_at_or_above(effect) {
+                    reads_their_layer[layer.0 as usize] = true;
+                }
+            };
+            for (index, node) in tree.effect_nodes.iter().enumerate() {
+                let EffectNodeData::Effects(effects) = &node.data else {
+                    continue;
+                };
+                let reading_node = if effects.backdrop_filter.is_some() {
+                    tree.node_reading_the_backdrop_of(EffectNodeIndex(index as u32))
+                } else if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
+                    EffectNodeIndex(index as u32)
+                } else {
+                    continue;
+                };
+                let parent = tree.effect_nodes[reading_node.0 as usize].parent;
+                if !parent.is_none() {
+                    note_reader_inside(parent);
+                }
+            }
+            for record in &display_list.summary().destination_blending_records {
+                let effect = display_list.run(record.run_index as usize).context.effect;
+                if !effect.is_none() {
+                    note_reader_inside(effect);
+                }
+            }
+            reads_their_layer
+        })[effect.0 as usize]
     }
 
     fn effect_is_left_to_composite(&self, effect: EffectNodeIndex) -> bool {
@@ -952,20 +1005,26 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
         {
             return None;
         }
-        self.target[target_index + 1..].iter().find_map(|entry| {
-            let Applied::Effect(effect) = *entry else {
-                return None;
-            };
-            match &tree.effect_nodes[effect.0 as usize].data {
-                EffectNodeData::Effects(effects) if backdrop_is_drawn_by_masks(tree, effect) => {
-                    let mut layer = replay_layer_of(effects, layer_filter_cache_key(tree, effect), None);
-                    layer.backdrop_base_color = self.backdrop_base_color(mask_effect);
-                    layer.backdrop_blur_edge = self.backdrop_blur_edge(effect);
-                    Some(layer)
-                }
-                _ => None,
-            }
-        })
+        // The compositor enters the mask without the effect whose backdrop it draws where it composites the mask's
+        // content inside it, so the effect is found in the tree then.
+        let effect_in_target = self.target[target_index + 1..].iter().find_map(|entry| match *entry {
+            Applied::Effect(effect) if backdrop_is_drawn_by_masks(tree, effect) => Some(effect),
+            _ => None,
+        });
+        let effect = effect_in_target.or_else(|| {
+            (0..tree.effect_nodes.len() as u32)
+                .map(EffectNodeIndex)
+                .find(|&effect| {
+                    backdrop_is_drawn_by_masks(tree, effect) && tree.node_reading_the_backdrop_of(effect) == mask_effect
+                })
+        })?;
+        let EffectNodeData::Effects(effects) = &tree.effect_nodes[effect.0 as usize].data else {
+            unreachable!("a backdrop that masks draw is of an effects node");
+        };
+        let mut layer = replay_layer_of(effects, layer_filter_cache_key(tree, effect), None);
+        layer.backdrop_base_color = self.backdrop_base_color(mask_effect);
+        layer.backdrop_blur_edge = self.backdrop_blur_edge(effect);
+        Some(layer)
     }
 
     // https://drafts.csswg.org/filter-effects-2/#backdrop-filter-operation
@@ -1115,6 +1174,9 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                     match &node.data {
                         EffectNodeData::Effects(_) => {
                             if self.effect_layer_is_pushed(effect) {
+                                if self.effect_isolates_its_content_from_its_filtered_backdrop(effect) {
+                                    self.painter.pop();
+                                }
                                 self.painter.pop();
                                 self.current_ctm_space = None;
                             }
@@ -1230,6 +1292,9 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                                     layer.backdrop_blur_edge = self.backdrop_blur_edge(effect);
                                 }
                                 self.painter.push_layer(&layer);
+                                if self.effect_isolates_its_content_from_its_filtered_backdrop(effect) {
+                                    self.painter.push_layer(&plain_layer_of_bounds(content_bounds));
+                                }
                             }
                         }
                         EffectNodeData::Mask(mask) => {
@@ -1462,6 +1527,7 @@ impl<'a, Painter: ReplayPainter + ?Sized> ReplayDriver<'a, Painter> {
             effect_geometry_is_known: false,
             effects_left_to_composite_around_the_composited_effect: effects_left_to_composite,
             clips_left_to_composite_around_the_composited_effect: clips_left_to_composite,
+            effects_whose_content_reads_their_layer: None,
         };
         driver.world.fill(
             tree,

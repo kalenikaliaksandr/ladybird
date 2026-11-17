@@ -25,6 +25,11 @@ async function presentedFrameState() {
 // rounds a channel up to one level away from the same text painted straight over what is below it.
 const ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER = 1;
 
+// The content of a group the compositor composites, such as one with an opacity, is rastered into tiles of its own and
+// composited inside the group from them, which rounds a channel up to one level away from the content painted straight
+// into the group's layer.
+const ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES = 1;
+
 function printPresentedFrameState(state, tolerance = 0) {
     println(`compared: ${state.compared}, matches a direct raster: ${state.maxChannelDifference <= tolerance}`);
 }

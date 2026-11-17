@@ -776,7 +776,7 @@ impl ContextPresenting {
                 })
                 .collect();
             let spaces = raster_spaces.expect("the spaces stay until the list is placed among them");
-            let placement = place_list(&inputs, spaces, &geometries, &[], &[]);
+            let placement = place_list(&inputs, spaces, &geometries, &[]);
             self.layers.placement_of_latest_frame = Some(PlacementOfFrame {
                 display_list: frame.display_list.clone(),
                 tree_copy: tree.copy.number(),
@@ -1291,7 +1291,7 @@ impl ContextPresenting {
             composited_effects_and_what_got_no_layer: stack
                 .names_of_composited_effects()
                 .chain(stack.names_of_media_without_layers())
-                .chain(stack.names_of_backdrop_filters_not_composited())
+                .chain(stack.names_of_effects_reading_in_their_tiles())
                 .collect(),
             counts: FrameCounts {
                 tiles_rastered: self.layers.tiles_rasterized_by_this_frame,

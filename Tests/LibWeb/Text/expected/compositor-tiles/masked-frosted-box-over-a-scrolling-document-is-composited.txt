@@ -1,0 +1,6 @@
+[L1] base space=document
+[L3] painted space=viewport inside BlockContainer<DIV>#masked
+composited BlockContainer<DIV>#masked space=viewport reads=[61,61 378x278]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled, tiles rasterized: 0

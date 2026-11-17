@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    /* Its opacity composites its filtered backdrop and its content as one, as the compositor does inside its effect. */
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 60px; opacity: 0.9; background: rgba(255, 255, 255, 0.4); backdrop-filter: blur(4px); }
+</style>
+<div id="stripes"></div>
+<div id="header">header</div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            stripes.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [20, 100, 40]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        for (const [y, state] of results) {
+            printPresentedFrameState(state, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

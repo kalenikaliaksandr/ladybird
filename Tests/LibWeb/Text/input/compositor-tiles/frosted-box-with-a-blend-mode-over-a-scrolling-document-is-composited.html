@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: orange; }
+    /* Its blend mode composites its filtered backdrop and its content as one over what is below it. */
+    #blended { position: fixed; left: 120px; top: 80px; width: 300px; height: 160px; background: rgba(128, 0, 128, 0.4); backdrop-filter: blur(5px); mix-blend-mode: multiply; }
+</style>
+<div id="stripes"></div>
+<div id="blended">blended</div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const unscrolled = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 50);
+        const scrolled = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(unscrolled, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+        printPresentedFrameState(scrolled, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+        println(`scrolled, tiles rasterized: ${scrolled.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>
