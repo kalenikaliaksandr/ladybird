@@ -776,7 +776,7 @@ impl ContextPresenting {
                 })
                 .collect();
             let spaces = raster_spaces.expect("the spaces stay until the list is placed among them");
-            let placement = place_list(&inputs, spaces, &geometries, &[]);
+            let placement = place_list(&inputs, spaces, &geometries);
             self.layers.placement_of_latest_frame = Some(PlacementOfFrame {
                 display_list: frame.display_list.clone(),
                 tree_copy: tree.copy.number(),

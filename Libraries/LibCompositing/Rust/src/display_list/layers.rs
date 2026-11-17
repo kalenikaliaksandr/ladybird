@@ -27,8 +27,8 @@ pub use crate::display_list::placement::{
 };
 use crate::display_list::placement::{
     PlacementTables, RasterSpaces, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space, is_finite_rect,
-    lowest_common_space, raster_scroll_offsets, rect_swept_over_translations, space_is_ancestor_or_self,
-    spaces_with_geometries, spatial_nodes_that_move_on_their_own,
+    lowest_common_space, raster_scroll_offsets, rect_swept_over_translations, spaces_with_geometries,
+    spatial_nodes_that_move_on_their_own,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
@@ -43,7 +43,8 @@ use std::hash::{BuildHasher, Hasher};
 use std::rc::Rc;
 
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
-// Beyond this, the innermost space that scrolls is rastered in the space around it instead.
+// Beyond this, the list is placed again with the spaces of nested scrollers and held sticky boxes rastered in the spaces
+// around them, once.
 const MAXIMUM_LAYER_COUNT: usize = 24;
 
 pub(crate) fn media_name(content: LiveContent) -> &'static str {
@@ -62,7 +63,6 @@ pub enum MediaLayerRejection {
     UnderTransformThatIsNot2DAffine,
     DrawsNothingVisible,
     BetweenRunsOfOneGroupEffect,
-    UnderContentReadingTheRootGroup,
     MoreMediaThanLayersFor,
 }
 
@@ -74,7 +74,6 @@ impl std::fmt::Display for MediaLayerRejection {
             MediaLayerRejection::UnderTransformThatIsNot2DAffine => "under a transform that is not 2D affine",
             MediaLayerRejection::DrawsNothingVisible => "draws nothing visible",
             MediaLayerRejection::BetweenRunsOfOneGroupEffect => "between the runs of one group effect",
-            MediaLayerRejection::UnderContentReadingTheRootGroup => "under content that reads the root group below it",
             MediaLayerRejection::MoreMediaThanLayersFor => "past the most media that get layers",
         })
     }
@@ -111,6 +110,7 @@ pub enum UnlayeredReason {
     SortingContext3D,
     RootIsolationEffectIsNotPlainGroup,
     MaskDeclaredUnderEffectsItsMaskIsNotUnder,
+    RecordsBlendWithWhatOtherLayersHoldBelowThem,
 }
 
 impl std::fmt::Display for UnlayeredReason {
@@ -122,6 +122,9 @@ impl std::fmt::Display for UnlayeredReason {
             UnlayeredReason::RootIsolationEffectIsNotPlainGroup => "root isolation effect is not a plain group",
             UnlayeredReason::MaskDeclaredUnderEffectsItsMaskIsNotUnder => {
                 "mask content declared under effects its mask is not under"
+            }
+            UnlayeredReason::RecordsBlendWithWhatOtherLayersHoldBelowThem => {
+                "records blend with what other layers hold below them"
             }
         })
     }
@@ -249,9 +252,6 @@ pub struct StackLayer {
     pub content: LayerContent,
     /// Whether any record can go into the layer anywhere; a layer that holds nothing has no tiles.
     pub may_hold_content: bool,
-    /// Whether a record painted within the root group, which what reads the root group below it reads, can go into
-    /// the layer anywhere.
-    pub may_hold_root_group_content: bool,
 }
 
 /// An effect that the compositor composites the layers of its content inside, and why.
@@ -285,9 +285,20 @@ pub struct LayerStack {
     pub effects_reading_in_their_tiles: Vec<EffectNodeIndex>,
     /// Where the parts of the list are placed among the spaces of the stack.
     pub placement: ListPlacement,
+    /// What the layer budget did to the stack.
+    pub layer_budget: LayerBudget,
     /// Where they are placed at every anchor the tree offers, which the stack was worked out from: a later frame
-    /// whose placement there compares equal keeps the stack.
+    /// whose placement there compares equal keeps the stack, even where the layer budget had the list placed again
+    /// without some of those spaces.
     pub placement_at_every_anchor: ListPlacement,
+}
+
+/// How many layers a stack holds content in, from the base layer up, and whether spaces gave way to keep them within
+/// the most a stack holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayerBudget {
+    pub layers_with_content: usize,
+    pub spaces_gave_way: bool,
 }
 
 fn translated(rect: IntRect, offset: IntPoint) -> IntRect {
@@ -337,7 +348,6 @@ impl LayerStack {
                 group_of_band: 0,
                 content: LayerContent::Painted { group: 0 },
                 may_hold_content: true,
-                may_hold_root_group_content: true,
             }],
             groups: vec![LayerGroup {
                 node: 0,
@@ -355,6 +365,7 @@ impl LayerStack {
             layering_obstacles: LayeringObstacles::default(),
             rejected_media: Vec::new(),
             effects_reading_in_their_tiles: Vec::new(),
+            layer_budget: LayerBudget::default(),
             placement: ListPlacement::default(),
             placement_at_every_anchor: ListPlacement::default(),
         }
@@ -362,6 +373,28 @@ impl LayerStack {
 
     pub fn replays_whole_list(&self) -> bool {
         self.unlayered_reason.is_some()
+    }
+
+    fn layers_with_content_from_the_base_layer(&self) -> usize {
+        self.layers
+            .iter()
+            .skip(self.base_layer)
+            .filter(|layer| layer.may_hold_content)
+            .count()
+    }
+
+    /// What the dump says of the layer budget, where the stack holds more layers than it or spaces gave way to it.
+    pub fn names_of_what_the_layer_budget_did(&self) -> impl Iterator<Item = String> + '_ {
+        let spaces_gave_way = self.layer_budget.spaces_gave_way.then(|| {
+            format!("nested scrollers and held sticky boxes have no spaces: past {MAXIMUM_LAYER_COUNT} layers")
+        });
+        let layers_past_the_budget = (self.layer_budget.layers_with_content > MAXIMUM_LAYER_COUNT).then(|| {
+            format!(
+                "{} layers past the most a stack holds, {MAXIMUM_LAYER_COUNT}: composited effects keep theirs",
+                self.layer_budget.layers_with_content
+            )
+        });
+        spaces_gave_way.into_iter().chain(layers_past_the_budget)
     }
 
     pub fn keys(&self) -> impl Iterator<Item = LayerKey> + '_ {
@@ -383,7 +416,6 @@ impl LayerStack {
                 && layer.node == other.node
                 && layer.group_of_band == other.group_of_band
                 && layer.may_hold_content == other.may_hold_content
-                && layer.may_hold_root_group_content == other.may_hold_root_group_content
                 && match (&layer.content, &other.content) {
                     (LayerContent::Painted { group }, LayerContent::Painted { group: other_group }) => {
                         group == other_group
@@ -725,6 +757,7 @@ impl LayerStack {
             .names_of_composited_effects()
             .chain(self.names_of_media_without_layers())
             .chain(self.names_of_effects_reading_in_their_tiles())
+            .chain(self.names_of_what_the_layer_budget_did())
         {
             writeln!(output, "{indent}{name}")?;
         }
@@ -894,7 +927,7 @@ pub struct PlacedRunGroup {
     pub paints_within_the_root_group: bool,
     /// Where records of the group that blend with what the root group holds below them read it, in the space's raster
     /// coordinates.
-    pub root_group_backdrop_read: Reach<IntRect>,
+    pub read_by_records_blending_with_the_root_group: Reach<IntRect>,
 }
 
 /// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
@@ -1064,13 +1097,11 @@ fn effect_is_inside(tree: &VisualContextTree, effect: EffectNodeIndex, around: E
     effect != around && effect_chain_contains(tree, effect, around)
 }
 
-/// Where each part of the list is placed among `spaces`, given the geometry of each of them, leaving out of the media
-/// layers the drawings at `positions_refused_media_layers`.
+/// Where each part of the list is placed among `spaces`, given the geometry of each of them.
 pub fn place_list(
     inputs: &LayerStackInputs<'_>,
     spaces: RasterSpaces,
     geometries: &[Rc<SpaceGeometry>],
-    positions_refused_media_layers: &[ListPosition],
 ) -> ListPlacement {
     let tree = inputs.tree;
     let list = inputs.list;
@@ -1141,7 +1172,7 @@ pub fn place_list(
                 .clone()
                 .any(|run_index| tables.context_moves_within_space(tree, list.run(run_index).context, space));
             let mut device_rect = IntRect::default();
-            let mut root_group_backdrop_read = Reach::Nothing;
+            let mut read_by_records_blending_with_the_root_group = Reach::Nothing;
             for run_index in runs {
                 let run = list.run(run_index);
                 let group = run_groups.grouping_effect_of_run(run_index);
@@ -1156,7 +1187,8 @@ pub fn place_list(
                 device_rect = device_rect.united(run_rect);
                 // A blend reads below what it draws.
                 if runs_blending_with_root_group[run_index] {
-                    root_group_backdrop_read = root_group_backdrop_read.united(Reach::Within(run_rect));
+                    read_by_records_blending_with_the_root_group =
+                        read_by_records_blending_with_the_root_group.united(Reach::Within(run_rect));
                 }
             }
             let paints_within_the_root_group = match tree.root_isolation_effect {
@@ -1172,7 +1204,7 @@ pub fn place_list(
                 device_rect,
                 moves_within_space,
                 paints_within_the_root_group,
-                root_group_backdrop_read,
+                read_by_records_blending_with_the_root_group,
             }
         })
         .collect();
@@ -1354,9 +1386,7 @@ pub fn place_list(
         let record: IndexedRecord = live_content_record.record;
         let (run_index, position) = (record.run_index, record.position());
         let group = &groups[run_groups.group_of_run(run_index as usize)];
-        let rejection = if positions_refused_media_layers.contains(&position) {
-            Some(MediaLayerRejection::UnderContentReadingTheRootGroup)
-        } else if group.moves_within_space && group.device_rect.is_empty() {
+        let rejection = if group.moves_within_space && group.device_rect.is_empty() {
             Some(MediaLayerRejection::DrawsNothingVisible)
         } else {
             media_layer_rejection(
@@ -1525,6 +1555,8 @@ struct StackBeingBuilt<'a> {
     composited_nodes_of_effects: Vec<Option<usize>>,
     // In paint order.
     composited_effects: Vec<CompositedEffect>,
+    // Whether records that blend with what the root group holds below them would read it in other layers.
+    records_blend_with_what_other_layers_hold_below_them: bool,
 }
 
 impl StackBeingBuilt<'_> {
@@ -1799,6 +1831,21 @@ impl StackBeingBuilt<'_> {
                 continue;
             }
             let node_of_unit = self.node_of_unit(unit, &mut open_band_of_node, &mut next_band_of_node);
+            let read_by_records_blending_with_the_root_group =
+                placement.groups[unit.group].read_by_records_blending_with_the_root_group;
+            if read_by_records_blending_with_the_root_group != Reach::Nothing {
+                // What they read below them has to be in their layer wherever they read, as must they be wherever they
+                // draw.
+                let reads_only_its_own_layer = match read_by_records_blending_with_the_root_group {
+                    Reach::Within(read_area) => self.reads_only_its_own_layer(
+                        node_of_unit,
+                        open_band_of_node[node_of_unit],
+                        expanded_to_tile_grid(unit.reach.united(read_area)),
+                    ),
+                    _ => false,
+                };
+                self.records_blend_with_what_other_layers_hold_below_them |= !reads_only_its_own_layer;
+            }
             let path = self.path_to(node_of_unit);
             for &composited_node in self.composited_nodes_of_effects.iter().flatten() {
                 if open_band_of_node[composited_node].is_some() && !path.contains(&composited_node) {
@@ -1876,7 +1923,6 @@ impl StackBeingBuilt<'_> {
             group_of_band: group,
             content: LayerContent::Painted { group },
             may_hold_content: false,
-            may_hold_root_group_content: false,
         });
         let layer_below_every_cut = self.layers.len() - 1;
         let mut cuts = Vec::with_capacity(barriers.len());
@@ -1900,7 +1946,6 @@ impl StackBeingBuilt<'_> {
                             window_server_placement: None,
                         },
                         may_hold_content: true,
-                        may_hold_root_group_content: true,
                     });
                     (
                         BarrierKey::Media {
@@ -1932,7 +1977,6 @@ impl StackBeingBuilt<'_> {
                 group_of_band: group,
                 content: LayerContent::Painted { group },
                 may_hold_content: false,
-                may_hold_root_group_content: false,
             });
             cuts.push(Cut {
                 barrier: key,
@@ -1958,11 +2002,7 @@ impl StackBeingBuilt<'_> {
             let placed_unit = &placement.units[unit];
             let span = placed_unit.span;
             let position = span.begin;
-            let in_root_group = placement.groups[placed_unit.group].paints_within_the_root_group;
-            let mut mark = |layer: usize| {
-                self.layers[layer].may_hold_content = true;
-                self.layers[layer].may_hold_root_group_content |= in_root_group;
-            };
+            let mut mark = |layer: usize| self.layers[layer].may_hold_content = true;
             let cuts_before = group_so_far.cuts.iter().take_while(|cut| cut.position <= position);
             if cuts_before.clone().next().is_none() {
                 mark(layer_below_every_cut);
@@ -2007,23 +2047,9 @@ fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], nod
     }
 }
 
-enum StackConflict {
-    // Media drawn before records that blend with the root group below them, where the records can show.
-    MediaUnderBackdrop(Vec<ListPosition>),
-    // Records that blend with the root group below them would read through the layers of these spaces, which are to
-    // be rastered in the spaces around them instead, or through what the compositor composites, which no fold helps.
-    BackdropReadThroughSpaces(Vec<usize>),
-}
-
-// The spaces on the chain from `space` up to the lowest space it shares with `other`, that one left out.
-fn spaces_up_to_common_space(spaces: &[RasterSpace], space: usize, other: usize) -> Vec<usize> {
-    let common = lowest_common_space(spaces, space, other);
-    chain_of_space(spaces, space)
-        .take_while(|&in_chain| in_chain != common)
-        .collect()
-}
-
-fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict>) {
+// The stack of a placement, or none where records that blend with what the root group holds below them would read
+// what other layers hold, which only a single layer replaying the whole list draws as the list does.
+fn assemble_stack(placement: ListPlacement) -> Option<LayerStack> {
     let mut built = StackBeingBuilt {
         placement: &placement,
         nodes: Vec::new(),
@@ -2036,6 +2062,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         decisions_of_effects: vec![None; placement.effects.len()],
         composited_nodes_of_effects: vec![None; placement.effects.len()],
         composited_effects: Vec::new(),
+        records_blend_with_what_other_layers_hold_below_them: false,
     };
     built.node_of(VIEWPORT_RASTER_SPACE, Vec::new());
     built.node_of_group = placement
@@ -2049,11 +2076,13 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         .collect();
     built.bound_the_regions_of_held_sticky_boxes();
     built.cut_into_bands();
+    if built.records_blend_with_what_other_layers_hold_below_them {
+        return None;
+    }
     built.emit_band(0, None);
 
     let StackBeingBuilt {
         nodes,
-        node_of_group,
         layers,
         groups,
         composited_effects,
@@ -2077,100 +2106,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         _ => 0,
     };
 
-    let mut conflict = None;
-    // Records that blend with what the root group holds below them read it in their own layer only, so no layer below
-    // their own may hold content of the root group, and no barrier painted before them may cut the tiles they reach.
-    // Nothing composited may be below them, as no tile holds what the compositor composites.
-    let a_composited_effect_is_read_through = || StackConflict::BackdropReadThroughSpaces(Vec::new());
-    for unit in &placement.units {
-        if conflict.is_some() {
-            break;
-        }
-        let group_of_unit = &placement.groups[unit.group];
-        let read_area = match group_of_unit.root_group_backdrop_read {
-            Reach::Nothing => continue,
-            Reach::Within(rect) => Some(rect),
-            Reach::Anywhere => None,
-        };
-        if unit.reach.is_empty() {
-            continue;
-        }
-        let node = node_of_group[unit.group];
-        let Some(layer_group) = groups
-            .iter()
-            .find(|group| group.node == node && group.record_spans.iter().any(|span| span.contains(unit.span.begin)))
-        else {
-            continue;
-        };
-        // The content and the layers it would read through go into one space, the lowest one that holds both. Layers
-        // of its own space alone are in other bands or behind other clips, which the space around it merges.
-        let space = nodes[node].space;
-        let layers_read_through = base_layer..layer_group.layer_below_every_cut;
-        if layers_read_through
-            .clone()
-            .any(|layer| nodes[layers[layer].node].composited_effect.is_some())
-        {
-            conflict = Some(a_composited_effect_is_read_through());
-            break;
-        }
-        let spaces_read_through: Vec<usize> = layers_read_through
-            .filter(|&layer| layers[layer].may_hold_root_group_content)
-            .map(|layer| nodes[layers[layer].node].space)
-            .collect();
-        if !spaces_read_through.is_empty() {
-            let mut spaces_to_fold = Vec::new();
-            for &other_space in &spaces_read_through {
-                spaces_to_fold.extend(spaces_up_to_common_space(&placement.spaces, space, other_space));
-                spaces_to_fold.extend(spaces_up_to_common_space(&placement.spaces, other_space, space));
-            }
-            if spaces_to_fold.is_empty() && space != VIEWPORT_RASTER_SPACE {
-                spaces_to_fold.push(space);
-            }
-            conflict = Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold));
-            break;
-        }
-        // What it reads below it has to be in its layer wherever it reads, as must it be wherever it draws.
-        let reached_tiles = read_area.map(|read_area| expanded_to_tile_grid(unit.reach.united(read_area)));
-        let mut refused_media = Vec::new();
-        let mut reads_through_a_composited_effect = false;
-        let mut spaces_to_fold = Vec::new();
-        for cut in &layer_group.cuts {
-            if cut.position > unit.span.begin || reached_tiles.is_some_and(|tiles| !cut.cuts_cell(tiles)) {
-                continue;
-            }
-            match cut.barrier {
-                BarrierKey::Media { .. } => refused_media.push(cut.position),
-                BarrierKey::Band { node: band_node, .. } => {
-                    let band_node = nodes
-                        .iter()
-                        .find(|candidate| candidate.key == band_node)
-                        .expect("a band barrier names a node of the stack");
-                    match band_node.composited_effect {
-                        Some(_) => reads_through_a_composited_effect = true,
-                        None => spaces_to_fold.extend(spaces_up_to_common_space(
-                            &placement.spaces,
-                            band_node.space,
-                            nodes[node].space,
-                        )),
-                    }
-                }
-            }
-        }
-        if reads_through_a_composited_effect {
-            conflict = Some(a_composited_effect_is_read_through());
-            break;
-        }
-        if !spaces_to_fold.is_empty() {
-            conflict = Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold));
-            break;
-        }
-        if !refused_media.is_empty() {
-            conflict = Some(StackConflict::MediaUnderBackdrop(refused_media));
-            break;
-        }
-    }
-
-    let stack = LayerStack {
+    Some(LayerStack {
         spaces: placement.spaces.clone(),
         nodes,
         groups,
@@ -2181,85 +2117,67 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         layering_obstacles: placement.layering_obstacles,
         rejected_media: placement.rejected_media.clone(),
         effects_reading_in_their_tiles,
+        layer_budget: LayerBudget::default(),
         placement,
         placement_at_every_anchor: ListPlacement::default(),
-    };
-    (stack, conflict)
+    })
+}
+
+fn is_the_anchor_of_the_document(tree: &VisualContextTree, anchor: SpatialNodeIndex) -> bool {
+    tree.compositor_scroll_table()
+        .nodes
+        .iter()
+        .any(|record| record.scroll_node_index == anchor && record.is_viewport)
 }
 
 /// Works out the layers of a list from where its parts are placed among the spaces at every anchor the tree offers,
 /// which `place_list` gave for the spaces at `anchors`. Where the window server can show the media of the stack is left
 /// to be worked out for each frame.
+///
+/// A stack holds at most `MAXIMUM_LAYER_COUNT` layers with content where it can: past that, the list is placed once
+/// more without the spaces of nested scrollers and held sticky boxes, which are rastered in the spaces around them,
+/// and that stack is kept whatever it holds. The document keeps its space, and an effect the compositor composites keeps
+/// its layers, as reading in a layer that does not hold what it reads would draw it wrong.
 pub fn build_layer_stack(
     inputs: &LayerStackInputs<'_>,
     anchors: &[SpatialNodeIndex],
     placement_at_every_anchor: ListPlacement,
 ) -> LayerStack {
-    let single_layer = |reason: Option<UnlayeredReason>| {
-        let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), reason);
+    let single_layer = |reason: UnlayeredReason| {
+        let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), Some(reason));
         stack.layering_obstacles = placement_at_every_anchor.layering_obstacles;
+        stack.placement_at_every_anchor = placement_at_every_anchor.clone();
         stack
     };
     if let Some(reason) = why_list_is_unlayered(inputs, &placement_at_every_anchor.layering_obstacles) {
-        let mut stack = single_layer(Some(reason));
-        stack.placement_at_every_anchor = placement_at_every_anchor;
-        return stack;
+        return single_layer(reason);
     }
-    let mut anchors = anchors.to_vec();
-    let mut placement = placement_at_every_anchor.clone();
-    let mut positions_refused_media_layers: Vec<ListPosition> = Vec::new();
-    // Each try leaves out at least one more canvas, video or nested context, or the innermost space that scrolls, so
-    // this ends.
-    loop {
-        let (stack, conflict) = assemble_stack(placement);
-        match conflict {
-            Some(StackConflict::MediaUnderBackdrop(media)) => {
-                positions_refused_media_layers.extend(media);
-            }
-            Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold))
-                if spaces_to_fold.iter().any(|&space| space != VIEWPORT_RASTER_SPACE) =>
-            {
-                // A space folded into its parent takes the spaces inside it along.
-                let stack_spaces = &stack.spaces;
-                let folded_anchors: Vec<SpatialNodeIndex> = (1..stack_spaces.len())
-                    .filter(|&space| {
-                        spaces_to_fold
-                            .iter()
-                            .any(|&folded| space_is_ancestor_or_self(stack_spaces, folded, space))
-                    })
-                    .map(|space| stack_spaces[space].anchor)
-                    .collect();
-                anchors.retain(|anchor| !folded_anchors.contains(anchor));
-            }
-            Some(StackConflict::BackdropReadThroughSpaces(_)) => {
-                let mut stack = single_layer(None);
-                stack.placement_at_every_anchor = placement_at_every_anchor;
-                return stack;
-            }
-            None => {
-                let mut stack = stack;
-                let layers_with_content = stack
-                    .layers
-                    .iter()
-                    .skip(stack.base_layer)
-                    .filter(|layer| layer.may_hold_content)
-                    .count();
-                if layers_with_content <= MAXIMUM_LAYER_COUNT || anchors.is_empty() {
-                    stack.placement_at_every_anchor = placement_at_every_anchor;
-                    return stack;
-                }
-                anchors.pop();
-            }
-        }
+    let Some(mut stack) = assemble_stack(placement_at_every_anchor.clone()) else {
+        return single_layer(UnlayeredReason::RecordsBlendWithWhatOtherLayersHoldBelowThem);
+    };
+    let layers_with_content = stack.layers_with_content_from_the_base_layer();
+    let anchors_of_the_document: Vec<SpatialNodeIndex> = anchors
+        .iter()
+        .copied()
+        .filter(|&anchor| is_the_anchor_of_the_document(inputs.tree, anchor))
+        .collect();
+    if layers_with_content > MAXIMUM_LAYER_COUNT && anchors_of_the_document.len() < anchors.len() {
         let (spaces, geometries) = spaces_with_geometries(
             inputs.tree,
-            &anchors,
+            &anchors_of_the_document,
             inputs.scroll_offsets,
             inputs.viewport_rect,
             inputs.raster_transform,
         );
-        placement = place_list(inputs, spaces, &geometries, &positions_refused_media_layers);
+        let Some(placed_again) = assemble_stack(place_list(inputs, spaces, &geometries)) else {
+            return single_layer(UnlayeredReason::RecordsBlendWithWhatOtherLayersHoldBelowThem);
+        };
+        stack = placed_again;
+        stack.layer_budget.spaces_gave_way = true;
     }
+    stack.layer_budget.layers_with_content = stack.layers_with_content_from_the_base_layer();
+    stack.placement_at_every_anchor = placement_at_every_anchor;
+    stack
 }
 
 /// Works out the layers of a list from scratch, and where the window server can show their media, as a dump or a test
@@ -2277,7 +2195,7 @@ pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
         inputs.viewport_rect,
         inputs.raster_transform,
     );
-    let placement = place_list(inputs, spaces, &geometries, &[]);
+    let placement = place_list(inputs, spaces, &geometries);
     let mut stack = build_layer_stack(inputs, &anchors, placement);
     stack.update_window_server_placements(inputs.list, inputs.tree, inputs.scroll_offsets, inputs.viewport_rect);
     stack

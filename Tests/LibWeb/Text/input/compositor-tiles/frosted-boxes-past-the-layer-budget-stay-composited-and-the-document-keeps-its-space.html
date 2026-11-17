@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    #scroller { position: absolute; left: 20px; top: 420px; width: 200px; height: 150px; overflow: scroll; scrollbar-width: none; }
+    #scroller div { height: 600px; background: linear-gradient(teal, salmon); }
+    /* Each reads the document, which scrolls under it, so the compositor composites each. */
+    .badge { position: fixed; width: 40px; height: 30px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(3px); }
+</style>
+<div id="stripes"></div>
+<div id="scroller"><div></div></div>
+<div id="badges"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            stripes.appendChild(stripe);
+        }
+        for (let index = 0; index < 28; ++index) {
+            const badge = document.createElement("div");
+            badge.className = "badge";
+            badge.style.left = `${20 + (index % 7) * 110}px`;
+            badge.style.top = `${20 + Math.floor(index / 7) * 90}px`;
+            badges.appendChild(badge);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 20);
+        const scrolled = await presentedFrameState();
+        const layers = layersOfTheDisplayList().split("\n");
+        println(`base: ${layers.find(line => line.includes(" base "))}`);
+        println(`composited effects: ${layers.filter(line => line.startsWith("composited ")).length}`);
+        println(`layers of the nested scroller's own space: ${layers.filter(line => line.includes("scroller@")).length}`);
+        for (const line of layers.filter(line => !line.startsWith("[") && !line.startsWith("composited ")))
+            println(line);
+        printPresentedFrameState(scrolled, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+        println(`scrolled the document, tiles rasterized: ${scrolled.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>
