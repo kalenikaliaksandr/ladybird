@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    /* Straddles the tile boundaries at x=256 and y=256, so its blur reads past the cells of the tiles it is in. */
+    #card { position: absolute; left: 100px; top: 150px; width: 300px; height: 180px; border-radius: 20px; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); }
+</style>
+<div id="stripes"></div>
+<div id="card"></div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            stripes.appendChild(stripe);
+        }
+        const unscrolled = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [100, 140, 600]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(unscrolled);
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

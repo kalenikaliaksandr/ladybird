@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    /* It reads the document's layer, which scrolls under it, so what it reads is not in its own layer. */
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 60px; background: rgba(255, 255, 255, 0.4); backdrop-filter: blur(4px); }
+</style>
+<div id="stripes"></div>
+<div id="header"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const unscrolled = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 130);
+        const scrolled = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(unscrolled);
+        printPresentedFrameState(scrolled);
+        done();
+    });
+</script>

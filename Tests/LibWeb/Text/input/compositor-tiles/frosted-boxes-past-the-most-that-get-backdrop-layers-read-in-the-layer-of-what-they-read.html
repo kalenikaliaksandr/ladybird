@@ -3,16 +3,28 @@
 <script src="presented-frame.js"></script>
 <style>
     body { margin: 0; background: lightyellow; }
-    .frosted { position: absolute; top: 100px; width: 100px; height: 60px; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(4px); }
+    canvas { position: absolute; }
+    .frosted { position: absolute; width: 100px; height: 60px; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(4px); }
 </style>
-<!-- One more than the four backdrop filters that get layers. -->
-<div class="frosted" id="first" style="left: 10px"></div>
-<div class="frosted" id="second" style="left: 160px"></div>
-<div class="frosted" id="third" style="left: 310px"></div>
-<div class="frosted" id="fourth" style="left: 460px"></div>
-<div class="frosted" id="fifth" style="left: 610px"></div>
+<!-- Each box is over a canvas of its own, in a tile of its own, so that none finds all it reads in the layer it is in,
+     and one more than the four backdrop filters that get layers. -->
+<canvas width="120" height="80" style="left: 10px; top: 10px"></canvas>
+<canvas width="120" height="80" style="left: 266px; top: 10px"></canvas>
+<canvas width="120" height="80" style="left: 522px; top: 10px"></canvas>
+<canvas width="120" height="80" style="left: 10px; top: 266px"></canvas>
+<canvas width="120" height="80" style="left: 266px; top: 266px"></canvas>
+<div class="frosted" id="first" style="left: 20px; top: 20px"></div>
+<div class="frosted" id="second" style="left: 276px; top: 20px"></div>
+<div class="frosted" id="third" style="left: 532px; top: 20px"></div>
+<div class="frosted" id="fourth" style="left: 20px; top: 276px"></div>
+<div class="frosted" id="fifth" style="left: 276px; top: 276px"></div>
 <script>
     asyncTest(async done => {
+        for (const canvas of document.querySelectorAll("canvas")) {
+            const context = canvas.getContext("2d");
+            context.fillStyle = "navy";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+        }
         const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
         println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
         printPresentedFrameState(state);

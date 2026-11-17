@@ -678,6 +678,10 @@ pub struct ReplaySelection<'a> {
     pub clips_left_to_composite: Option<&'a [bool]>,
     /// Effects whose backdrop filter a layer of its own applies, which their layers then start out without.
     pub backdrop_filters_left_out: &'a [EffectNodeIndex],
+    /// Where the frame is, in the coordinates of the list before the target's own transform, where the target is not
+    /// the frame: a blur of a backdrop mirrors at the edge of the frame there, as it does at the edge of the frame's
+    /// surface in a raster of the frame.
+    pub frame_backdrop_blurs_mirror_at: Option<FloatRect>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -916,6 +920,16 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
             return OptionalFloatRect::none();
         };
         let mut edge = backdrop.region.to_float();
+        if let Some(frame) = self.selection.frame_backdrop_blurs_mirror_at {
+            let effect_to_target = self.world.draw_matrix(node.spatial);
+            if effect_to_target.is_2d_affine()
+                && self.replay_base_matrix.is_2d_affine()
+                && let Some(target_to_effect) = effect_to_target.extract_2d_affine().inverse()
+            {
+                let frame_in_target = self.replay_base_matrix.extract_2d_affine().map_rect(frame);
+                edge = edge.intersected(target_to_effect.map_rect(frame_in_target));
+            }
+        }
         let mut clip = self.effect_clips.output_clip(effect);
         while !clip.is_none() {
             let clip_node = &tree.clip_nodes[clip.0 as usize];
@@ -1749,6 +1763,7 @@ mod tests {
                 skip_root_isolation_layer: false,
                 clips_left_to_composite: None,
                 backdrop_filters_left_out: &[],
+                frame_backdrop_blurs_mirror_at: None,
             },
         );
         assert_eq!(
@@ -1810,6 +1825,7 @@ mod tests {
                     skip_root_isolation_layer: false,
                     clips_left_to_composite: None,
                     backdrop_filters_left_out: &[],
+                    frame_backdrop_blurs_mirror_at: None,
                 },
                 &mut painter,
             );
@@ -1869,6 +1885,7 @@ mod tests {
                 skip_root_isolation_layer: false,
                 clips_left_to_composite: None,
                 backdrop_filters_left_out: &[],
+                frame_backdrop_blurs_mirror_at: None,
             },
         );
         assert_eq!(painter.events, vec![PainterEvent::Run(0), PainterEvent::Run(1)]);
@@ -1900,6 +1917,7 @@ mod tests {
                 skip_root_isolation_layer: true,
                 clips_left_to_composite: None,
                 backdrop_filters_left_out: &[],
+                frame_backdrop_blurs_mirror_at: None,
             },
         );
         assert_eq!(

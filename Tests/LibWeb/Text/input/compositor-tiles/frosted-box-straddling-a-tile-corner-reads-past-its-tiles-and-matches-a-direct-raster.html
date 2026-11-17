@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 2000px; }
+    .stripe { height: 12px; }
+    .stripe:nth-child(odd) { background: black; }
+    .stripe:nth-child(even) { background: white; }
+    .bar { position: absolute; top: 0; width: 6px; height: 2000px; background: crimson; }
+    /* Its blur reads well past the corner where the tiles at 256,256 meet, in all four of them. */
+    #frosted { position: absolute; left: 200px; top: 210px; width: 110px; height: 90px; background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(12px); }
+</style>
+<div id="stripes"></div>
+<div class="bar" style="left: 220px"></div>
+<div class="bar" style="left: 250px"></div>
+<div class="bar" style="left: 262px"></div>
+<div class="bar" style="left: 290px"></div>
+<div id="frosted"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 160; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const unscrolled = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 37);
+        const scrolled = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(unscrolled);
+        printPresentedFrameState(scrolled);
+        done();
+    });
+</script>

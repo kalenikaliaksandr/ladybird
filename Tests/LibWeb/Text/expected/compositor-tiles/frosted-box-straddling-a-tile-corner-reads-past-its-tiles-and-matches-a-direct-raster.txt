@@ -1,0 +1,4 @@
+[L1] base space=document
+no backdrop layer for BlockContainer<DIV>#frosted: reads only its own layer
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true

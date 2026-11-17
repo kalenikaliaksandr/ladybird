@@ -7,6 +7,9 @@
     .stripe:nth-child(odd) { background: teal; }
     .stripe:nth-child(even) { background: salmon; }
     /* Each box reads the tiles of its own, so that none reads another's backdrop layer unless it is meant to. */
+    /* A box that finds all it reads in the layer it is in needs no layer of its own, so a canvas under a box keeps
+       what it reads out of its layer. */
+    canvas { position: absolute; width: 96px; height: 76px; }
     .frosted { position: absolute; width: 80px; height: 60px; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(4px); }
     #plain { left: 88px; top: 98px; }
     #translucent { left: 344px; top: 98px; opacity: 0.5; }
@@ -22,6 +25,8 @@
     #translucent-over-a-frosted-one { left: 380px; top: 530px; opacity: 0.5; }
 </style>
 <div id="stripes"></div>
+<canvas style="left: 80px; top: 90px"></canvas>
+<canvas style="left: 336px; top: 516px"></canvas>
 <div class="frosted" id="plain"></div>
 <div class="frosted" id="translucent"></div>
 <div class="frosted" id="blended"></div>
@@ -37,6 +42,11 @@
             const stripe = document.createElement("div");
             stripe.className = "stripe";
             stripes.appendChild(stripe);
+        }
+        for (const canvas of document.querySelectorAll("canvas")) {
+            const context = canvas.getContext("2d");
+            context.fillStyle = "navy";
+            context.fillRect(0, 0, canvas.width, canvas.height);
         }
         const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
         println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());

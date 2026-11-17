@@ -4,18 +4,23 @@
 <style>
     body { margin: 0; background: lightyellow; }
     div { position: absolute; width: 20px; height: 20px; }
+    /* Once a canvas is painted below the frosted box, what the box reads is not all in the layer it is in, so it gets a
+       layer of its own. */
+    canvas { position: absolute; left: 20px; top: 20px; }
     #below { left: 60px; top: 60px; background: rgb(1, 0, 0); }
     #frosted { left: 40px; top: 40px; width: 100px; height: 60px; background: rgba(0, 0, 2, 0.3); backdrop-filter: blur(4px); }
     /* A transform of their own keeps each box painted after the frosted one apart in the dump. */
     #over-what-the-filter-reads { left: 100px; top: 80px; background: rgb(3, 0, 0); transform: translateX(0px); }
     #far-from-what-the-filter-reads { left: 600px; top: 400px; background: rgb(4, 0, 0); transform: translateX(0px); }
 </style>
+<canvas id="canvas" width="10" height="10"></canvas>
 <div id="below"></div>
 <div id="frosted"></div>
 <div id="over-what-the-filter-reads"></div>
 <div id="far-from-what-the-filter-reads"></div>
 <script>
     asyncTest(async done => {
+        canvas.getContext("2d").fillRect(0, 0, 10, 10);
         await presentedFrameStateOnceNothingIsLeftToRasterize();
         const layersAndCommands = layersAndCommandsOfTheDisplayList();
         below.style.background = "rgb(5, 0, 0)";

@@ -491,6 +491,12 @@ fn rect_shown_of(compositing: &CompositingOfLayer, viewport_rect: IntRect) -> In
     translated(shown_in_viewport, -compositing.offset.x, -compositing.offset.y)
 }
 
+// Where the frame is in the raster coordinates of a space other than the viewport's, which the space's offset in the
+// frame moves.
+fn frame_in_space(space: usize, composite_offset: IntPoint, viewport_rect: IntRect) -> Option<IntRect> {
+    (space != VIEWPORT_RASTER_SPACE).then(|| translated(viewport_rect, -composite_offset.x, -composite_offset.y))
+}
+
 // A layer of a space that scrolls keeps tiles a little past what the viewport shows of it, for scrolls back.
 fn tile_area_of(space: usize, rect_shown: IntRect, viewport_rect: IntRect) -> IntRect {
     if space == VIEWPORT_RASTER_SPACE {
@@ -832,10 +838,8 @@ impl ContextPresenting {
                 continue;
             }
             let space = stack.nodes[group.node].space;
-            let shown_rect = rect_shown_of(
-                &compositing_of_layer(stack, group.layer_below_every_cut, composite_offsets),
-                viewport_rect,
-            );
+            let compositing_of_group = compositing_of_layer(stack, group.layer_below_every_cut, composite_offsets);
+            let shown_rect = rect_shown_of(&compositing_of_group, viewport_rect);
             let known =
                 self.layers.keyed_groups.iter().position(|known| {
                     known.stack_generation == self.layers.stack_generation && known.group == group_index
@@ -866,6 +870,7 @@ impl ContextPresenting {
                 constants_of_layer,
                 shown_rect,
                 tile_area_of(space, shown_rect, viewport_rect),
+                frame_in_space(space, compositing_of_group.offset, viewport_rect),
             );
             self.layers.tiles_binned_since_last_check += keying.cells_binned as u64;
             self.layers.tiles_binned_by_this_frame += keying.cells_binned as u64;
@@ -1489,6 +1494,7 @@ impl ContextPresenting {
             (!geometry.clips_left_to_composite.is_empty()).then_some(&geometry.clips_left_to_composite[..]);
         let (raster_scale, raster_translation) = (self.raster_scale, self.raster_translation);
         let backdrop_filters_applied_by_layers = stack.backdrop_filters_applied_by_layers();
+        let frame_in_space_of_layer = frame_in_space(space, compositing.offset, viewport_rect);
         let replay = |target: &SurfaceHandle, spans: &[ListSpan]| {
             let mut selection = if keyed.keys.replays_whole_list {
                 ReplaySelection::default()
@@ -1497,6 +1503,7 @@ impl ContextPresenting {
             };
             selection.clips_left_to_composite = clips_left_to_composite;
             selection.backdrop_filters_left_out = &backdrop_filters_applied_by_layers;
+            selection.frame_backdrop_blurs_mirror_at = frame_in_space_of_layer.map(IntRect::to_float);
             apply_raster_transform(raster, target, raster_scale, raster_translation);
             replay_with_scroll_offsets(env, target, frame, selection, &geometry.raster_scroll_offsets);
         };

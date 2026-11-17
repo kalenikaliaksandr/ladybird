@@ -1,11 +1,16 @@
 [L0] base space=viewport
-[L1] backdrop #0 of BlockContainer<DIV>#second.frosted space=viewport reads=[133,73 154x114]
-[L2] painted space=viewport above L1
-[L3] backdrop #1 of BlockContainer<DIV>#third.frosted space=viewport reads=[283,73 154x114]
-[L4] painted space=viewport above L3
-[L5] backdrop #2 of BlockContainer<DIV>#fourth.frosted space=viewport reads=[433,73 154x114]
-[L6] painted space=viewport above L5
-[L7] backdrop #3 of BlockContainer<DIV>#fifth.frosted space=viewport reads=[583,73 154x114]
-[L8] painted space=viewport above L7
+[L1] canvas #0 space=viewport region=[263,7 126x86] replayed: a backdrop layer filters what is composited below it
+[L3] canvas #0 space=viewport region=[519,7 126x86] replayed: a backdrop layer filters what is composited below it
+[L5] canvas #0 space=viewport region=[7,263 126x86] replayed: a backdrop layer filters what is composited below it
+[L7] canvas #0 space=viewport region=[263,263 126x86] replayed: a backdrop layer filters what is composited below it
+[L9] backdrop #0 of BlockContainer<DIV>#second.frosted space=viewport reads=[249,-7 154x114]
+[L10] painted space=viewport above L9
+[L11] backdrop #1 of BlockContainer<DIV>#third.frosted space=viewport reads=[505,-7 154x114]
+[L12] painted space=viewport above L11
+[L13] backdrop #2 of BlockContainer<DIV>#fourth.frosted space=viewport reads=[-7,249 154x114]
+[L14] painted space=viewport above L13
+[L15] backdrop #3 of BlockContainer<DIV>#fifth.frosted space=viewport reads=[249,249 154x114]
+[L16] painted space=viewport above L15
+no layer for canvas: under content that reads the root group below it
 no backdrop layer for BlockContainer<DIV>#first.frosted: past the most backdrop filters that get layers
 compared: true, matches a direct raster: true

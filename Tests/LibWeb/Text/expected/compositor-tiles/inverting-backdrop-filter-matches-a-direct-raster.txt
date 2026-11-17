@@ -1,4 +1,5 @@
 [L1] base space=document
-[L2] backdrop #0 of e1 space=document reads=[97,67 256x126]
-[L3] painted space=document above L2
+[L3] backdrop #0 of e2 space=viewport reads=[447,327 256x126]
+[L4] painted space=viewport above L3
+no backdrop layer for e1: reads only its own layer
 compared: true, matches a direct raster: true

@@ -421,6 +421,30 @@ struct BackdropReadInLayer {
     read_rect: Reach<IntRect>,
     read_reach_in_device_pixels: Option<i32>,
     spread_past_region_in_device_pixels: i32,
+    // For a filter that mirrors its blur at the edge of its region, which then stops at the edge of the frame, where
+    // that region is.
+    region_its_blur_mirrors_at: Option<Reach<IntRect>>,
+}
+
+impl BackdropReadInLayer {
+    fn blur_mirrors_at_the_edge_of(&self, frame: IntRect) -> bool {
+        match self.region_its_blur_mirrors_at {
+            None | Some(Reach::Nothing) => false,
+            Some(Reach::Within(region)) => !frame.contains_rect(region),
+            Some(Reach::Anywhere) => true,
+        }
+    }
+}
+
+impl GroupBinding {
+    // Where the frame is, where a backdrop blur that shows in the tile at `cell` mirrors at its edge.
+    fn frame_the_backdrop_blurs_of_cell_mirror_at(&self, cell: IntRect, frame: Option<IntRect>) -> Option<IntRect> {
+        frame.filter(|frame| {
+            self.backdrops
+                .iter()
+                .any(|backdrop| backdrop.region_influence.touches(cell) && backdrop.blur_mirrors_at_the_edge_of(*frame))
+        })
+    }
 }
 
 // Where content painted at `position` can show once the backdrop filters of the layer that read it after it are taken
@@ -581,6 +605,9 @@ pub struct KeyedTile {
     constants_key: TileKey,
     // Whether an entry of the tile reads something outside the list, such as the frame's time or a canvas.
     reads_outside_the_list: bool,
+    // Where the frame was in the space as the tile was keyed, where the region of a backdrop blur that shows in the tile
+    // reaches past it, as the blur then mirrors at the frame's edge, as it does in a raster of the frame.
+    frame_its_backdrop_blurs_mirror_at: Option<IntRect>,
 }
 
 // The tiles of the layers of the group in one cell, binned together, and the digest of what binning them read: the
@@ -801,6 +828,14 @@ pub struct RasterSpaceOfFrame<'a> {
     chunks_placed: Cell<u64>,
 }
 
+/// Whether a backdrop filter reads nothing past each pixel, or only through blurs that mirror at the edge of what they
+/// read, so that what it reads past the edge of the frame does not show.
+pub(crate) fn backdrop_filter_reads_nothing_past_the_edge_it_mirrors_at(filter: &[u8]) -> bool {
+    let probe = FloatRect::new(0.0, 0.0, 1.0, 1.0);
+    let reads_past_each_pixel = crate::filter_bytes::changed_output_bounds(filter, probe) != Some(probe);
+    !reads_past_each_pixel || libgfx_rust::filter::Filter::serialized_has_mirroring_blur(filter)
+}
+
 pub(crate) fn backdrop_filter_read_reach_in_device_pixels(
     filter: &[u8],
     effect_to_device: &FloatMatrix4x4,
@@ -933,12 +968,19 @@ impl<'a> RasterSpaceOfFrame<'a> {
             .fold(0, i32::max),
             _ => 0,
         };
+        let region_its_blur_mirrors_at = libgfx_rust::filter::Filter::serialized_has_mirroring_blur(&backdrop.filter)
+            .then(|| {
+                Some(self.geometry.world.map_rect_to_root(node.spatial, region))
+                    .filter(|rect| is_finite_rect(*rect))
+                    .map_or(Reach::Anywhere, |rect| Reach::Within(enclosing_int_rect(rect)))
+            });
         BackdropReadInLayer {
             first_record_position,
             region_influence,
             read_rect,
             read_reach_in_device_pixels: read_reach.filter(|_| region_in_device_pixels.is_some()),
             spread_past_region_in_device_pixels: spread_past_region,
+            region_its_blur_mirrors_at,
         }
     }
 
@@ -1375,6 +1417,10 @@ impl<'a> RasterSpaceOfFrame<'a> {
         hasher.write_i32(tile.coord.column);
         hasher.write_i32(tile.coord.row);
         hasher.write_bool(self.list.replays_every_record_into_every_tile);
+        match tile.frame_its_backdrop_blurs_mirror_at {
+            Some(frame) => hasher.write_int_rect(frame),
+            None => hasher.write_u32(0),
+        }
         for &entry in &tile.entries {
             hasher.write_key(self.digest_of_tile_entry(binding, entry, tile.reads_outside_the_list));
         }
@@ -1811,8 +1857,10 @@ impl<'a> RasterSpaceOfFrame<'a> {
     /// Keys the tiles of the layers of `group` within `shown_rect` that are not keyed yet: each entry of the group that
     /// reaches a tile goes into the layer of the group its paint position falls in there, and the base layer, if it is
     /// one of the group's, holds every tile. Tiles keyed before are keyed again only where what their entries read
-    /// outside the list or the constants of their layer changed, and those outside `kept_rect` are forgotten. The group
-    /// is bound to the list and the geometry of the frame.
+    /// outside the list, the constants of their layer, or the edge of `frame` that their backdrop blurs mirror at
+    /// changed, and those outside `kept_rect` are forgotten. `frame` is where the frame is in the group's space, where
+    /// that is not the frame's own. The group is bound to the list and the geometry of the frame.
+    #[allow(clippy::too_many_arguments)]
     pub fn key_shown_tiles(
         &self,
         keys: &mut GroupTileKeys,
@@ -1821,6 +1869,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
         constants_of_layer: impl Fn(usize) -> LayerConstants,
         shown_rect: IntRect,
         kept_rect: IntRect,
+        frame: Option<IntRect>,
     ) -> TileKeying {
         let list = self.list;
         let layer_group = &stack.groups[group];
@@ -1844,11 +1893,17 @@ impl<'a> RasterSpaceOfFrame<'a> {
         let live_changed =
             keys.live_stamp != list.live_stamp || std::mem::take(&mut keys.tiles_reading_outside_the_list_are_rebound);
         keys.live_stamp = list.live_stamp;
-        for cell in keys.cells.values_mut() {
+        for (coord, cell) in &mut keys.cells {
+            let frame_backdrop_blurs_mirror_at =
+                binding.frame_the_backdrop_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
             for tile in &mut cell.tiles {
                 let constants_key = constants_key_of(tile.layer);
-                if (live_changed && tile.reads_outside_the_list) || tile.constants_key != constants_key {
+                if (live_changed && tile.reads_outside_the_list)
+                    || tile.constants_key != constants_key
+                    || tile.frame_its_backdrop_blurs_mirror_at != frame_backdrop_blurs_mirror_at
+                {
                     tile.constants_key = constants_key;
+                    tile.frame_its_backdrop_blurs_mirror_at = frame_backdrop_blurs_mirror_at;
                     tile.key = self.key_of_tile(binding, tile);
                     keying.tiles_keyed += 1;
                 }
@@ -1936,6 +1991,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
                     )
                 });
             let cuts = layer_group.cuts_of_cell(cell);
+            let frame_its_backdrop_blurs_mirror_at = binding.frame_the_backdrop_blurs_of_cell_mirror_at(cell, frame);
             let mut tiles = Vec::with_capacity(bin.len());
             for (layer, mut layer_entries) in bin {
                 layer_entries.sort_unstable_by_key(|(position, entry, _)| (*position, *entry));
@@ -1961,6 +2017,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
                     entries,
                     constants_key: constants_key_of(layer),
                     reads_outside_the_list,
+                    frame_its_backdrop_blurs_mirror_at,
                 };
                 tile.key = self.key_of_tile(binding, &tile);
                 tiles.push(tile);
@@ -2128,7 +2185,7 @@ mod tests {
             root_group_color: Color::TRANSPARENT,
             raster_transform: FloatMatrix4x4::identity(),
         };
-        raster_space.key_shown_tiles(&mut keys, &stack, group, constants, VIEWPORT, VIEWPORT);
+        raster_space.key_shown_tiles(&mut keys, &stack, group, constants, VIEWPORT, VIEWPORT, None);
         let tile_with_masked_content = keys
             .tiles_within(TileCoord::new(0, 0).cell_rect())
             .find(|tile| {
@@ -2188,7 +2245,7 @@ mod tests {
         let raster_space = RasterSpaceOfFrame::new(&list_of_frame, &geometry);
         let mut keys = GroupTileKeys::default();
         raster_space.bind_group(&mut keys, stack, 0);
-        raster_space.key_shown_tiles(&mut keys, stack, 0, constants_for_tests, VIEWPORT, VIEWPORT);
+        raster_space.key_shown_tiles(&mut keys, stack, 0, constants_for_tests, VIEWPORT, VIEWPORT, None);
         keyed_tiles(&keys)
     }
 
@@ -2221,7 +2278,8 @@ mod tests {
                 let geometry = SpaceGeometry::new(tree, &spaces, 0, &[], VIEWPORT, FloatMatrix4x4::identity());
                 let raster_space = RasterSpaceOfFrame::new(&list_of_frame, &geometry);
                 raster_space.bind_group(&mut keys, stack, 0);
-                let keying = raster_space.key_shown_tiles(&mut keys, stack, 0, constants_for_tests, VIEWPORT, VIEWPORT);
+                let keying =
+                    raster_space.key_shown_tiles(&mut keys, stack, 0, constants_for_tests, VIEWPORT, VIEWPORT, None);
                 (raster_space.chunks_placed(), keying, keyed_tiles(&keys))
             })
             .collect()

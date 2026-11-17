@@ -1,0 +1,4 @@
+[L0] base space=viewport
+[L1] canvas #0 space=viewport region=[297,117 206x106] shown by the window server: clip=[0,0 800x600]
+no backdrop layer for BlockContainer<DIV>#card: reads only its own layer
+compared: true, matches a direct raster: true

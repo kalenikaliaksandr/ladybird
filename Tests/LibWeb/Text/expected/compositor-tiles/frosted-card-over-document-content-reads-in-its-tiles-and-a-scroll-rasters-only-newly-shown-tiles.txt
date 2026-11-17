@@ -1,0 +1,9 @@
+[L1] base space=document
+no backdrop layer for BlockContainer<DIV>#card: reads only its own layer
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled to 100, tiles rasterized: 0
+compared: true, matches a direct raster: true
+scrolled to 140, tiles rasterized: 0
+compared: true, matches a direct raster: true
+scrolled to 600, tiles rasterized: 8

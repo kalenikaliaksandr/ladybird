@@ -1,12 +1,11 @@
 [L1] base space=document
 [L2] painted space=scroller@2 in document composited within [600,300 120x120] of document
-[L4] backdrop #0 of e1 space=document reads=[9,99 402x282]
-[L5] painted space=document above L4
-[L7] backdrop #0 of e2 space=viewport reads=[-27,-27 854x114]
-[L8] painted space=viewport above L7
+[L5] backdrop #0 of e2 space=viewport reads=[-27,-27 854x114]
+[L6] painted space=viewport above L5
+no backdrop layer for e1: reads only its own layer
 compared: true, matches a direct raster: true
 scrolled to 100, tiles rasterized: 0
 compared: true, matches a direct raster: true
-scrolled to 200, tiles rasterized: 4
+scrolled to 200, tiles rasterized: 8
 compared: true, matches a direct raster: true
-scrolled to 300, tiles rasterized: 0
+scrolled to 300, tiles rasterized: 2
