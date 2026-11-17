@@ -219,7 +219,7 @@ pub unsafe extern "C" fn painting_dump(
         Some(callbacks.debug_description(&main_thread, owner))
     });
     dump_compositor_scroll_table(&mut output, visual_context_tree.compositor_scroll_table());
-    let layer_plan = dump_layers_if_every_canvas_and_video_kept_updating(
+    let layer_plan = dump_layers_if_list_draws_canvas_video_or_nested_context(
         &mut output,
         tape,
         command_runs,
@@ -298,7 +298,7 @@ fn dump_commands(main_thread: &MainThread, output: &mut String, display_list: &D
 }
 
 // A list that draws no canvas, video or nested context gets no section.
-fn dump_layers_if_every_canvas_and_video_kept_updating(
+fn dump_layers_if_list_draws_canvas_video_or_nested_context(
     output: &mut String,
     tape: &[u8],
     command_runs: &[DisplayListCommandRun],
@@ -307,14 +307,11 @@ fn dump_layers_if_every_canvas_and_video_kept_updating(
     device_viewport_rect: IntRect,
 ) -> Option<LayerPlan> {
     let summary = summarize(tape, command_runs);
-    let mut active_media = Vec::new();
-    for live_content_record in &summary.live_content_records {
-        let content = live_content_record.content;
-        if !matches!(content, LiveContent::ImageFrame(_)) && !active_media.contains(&content) {
-            active_media.push(content);
-        }
-    }
-    if active_media.is_empty() {
+    let draws_canvas_video_or_nested_context = summary
+        .live_content_records
+        .iter()
+        .any(|live_content_record| !matches!(live_content_record.content, LiveContent::ImageFrame(_)));
+    if !draws_canvas_video_or_nested_context {
         return None;
     }
     let effect_clips =
@@ -327,7 +324,6 @@ fn dump_layers_if_every_canvas_and_video_kept_updating(
         tree,
         scroll_offsets,
         viewport_rect: device_viewport_rect,
-        active_media: &active_media,
     });
     match layer_plan {
         Ok(layer_plan) => {
