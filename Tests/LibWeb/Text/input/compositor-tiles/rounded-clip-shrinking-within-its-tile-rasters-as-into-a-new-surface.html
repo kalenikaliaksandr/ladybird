@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    /* Starts the root group at the origin of the frame. */
+    #corner { position: absolute; left: 0; top: 0; width: 1px; height: 1px; background: white; }
+    /* Fixed, so it is a layer of its own whose tile holds only the part of its cell the box reaches. */
+    #rounded { position: fixed; left: 28px; top: 40px; width: 207px; height: 150px; overflow: clip; border-radius: 30px; background: lightblue; }
+    #inside { height: 50px; background: navy; }
+</style>
+<div id="corner"></div>
+<div id="rounded"><div id="inside"></div></div>
+<script>
+    asyncTest(async done => {
+        // A color no earlier load drew, so that no tile the compositor still keeps holds the box.
+        inside.style.background = colorUniqueToThisPageLoad();
+        const before = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // The box shrinks from the left, so its tile holds less of its cell than before, and the surface the tile held
+        // is not reused for the part it holds now.
+        rounded.style.left = "35px";
+        rounded.style.width = "200px";
+        const after = await presentedFrameState();
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(before);
+        printPresentedFrameState(after);
+        println(`tiles rasterized: ${after.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

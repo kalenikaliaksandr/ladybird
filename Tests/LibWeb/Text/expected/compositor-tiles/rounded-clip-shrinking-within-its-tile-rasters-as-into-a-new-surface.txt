@@ -1,0 +1,5 @@
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+tiles rasterized: 1

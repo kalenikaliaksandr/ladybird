@@ -1585,19 +1585,23 @@ impl ContextPresenting {
                 Some(tile) if fits(tile) => {}
                 _ => {
                     // The surface of the tile the layer held at the cell takes the new key where no other layer holds
-                    // that tile or shows it now, as its pixels then serve nothing.
+                    // that tile or shows it now, as its pixels then serve nothing, and where it holds the very part
+                    // of the cell a new surface would: the GPU antialiases some content, such as rounded clips, by
+                    // where in its surface the content lands, so a surface holding another part would raster it
+                    // unlike a new one.
                     let surface_held_by_this_layer_alone = held_key
                         .filter(|held_key| {
                             *held_key != key
                                 && holders_of_tiles.get(held_key).copied().unwrap_or(0) <= 1
-                                && tile_pool.get(held_key).is_some_and(fits)
+                                && tile_pool.get(held_key).is_some_and(|held| {
+                                    held.rect == rect_needed && raster.surfaces_share_backend(&held.surface, like)
+                                })
                         })
                         .and_then(|held_key| tile_pool.remove(&held_key))
-                        .map(|tile| (tile.surface, tile.rect));
-                    let surface = surface_held_by_this_layer_alone.or_else(|| {
-                        create_surface_like(raster, size_of(rect_needed), like).map(|surface| (surface, rect_needed))
-                    });
-                    let Some((surface, rect)) = surface else {
+                        .map(|tile| tile.surface);
+                    let surface = surface_held_by_this_layer_alone
+                        .or_else(|| create_surface_like(raster, size_of(rect_needed), like));
+                    let Some(surface) = surface else {
                         state.tiles.remove(&coord);
                         tiles_changed = true;
                         unrastered.push(shown_in_raster(rect_needed));
@@ -1616,7 +1620,7 @@ impl ContextPresenting {
                         key,
                         PooledTile {
                             surface,
-                            rect,
+                            rect: rect_needed,
                             holds_current_pixels: false,
                             last_held_at: env.now,
                         },
