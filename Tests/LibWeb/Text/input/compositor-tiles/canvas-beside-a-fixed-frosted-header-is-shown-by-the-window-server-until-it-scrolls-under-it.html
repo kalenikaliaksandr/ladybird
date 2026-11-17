@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    /* The frame holds the header, which the compositor composites over the document it reads. */
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 60px; background: rgba(255, 255, 255, 0.4); backdrop-filter: blur(4px); }
+    canvas { position: absolute; left: 500px; top: 120px; }
+</style>
+<div id="stripes"></div>
+<canvas id="canvas" width="200" height="100"></canvas>
+<div id="header">header</div>
+<script>
+    function mediaLines() {
+        return layersOfTheDisplayList()
+            .split("\n")
+            .filter(line => line.includes(" canvas "))
+            .join("\n");
+    }
+
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const context = canvas.getContext("2d");
+        context.fillStyle = "navy";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        const beside = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const linesBeside = mediaLines();
+        window.scrollTo(0, 100);
+        const under = await presentedFrameState();
+        const linesUnder = mediaLines();
+        println(`beside the header: ${linesBeside}`);
+        printPresentedFrameState(beside, ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER);
+        println(`under the header: ${linesUnder}`);
+        printPresentedFrameState(under, ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER);
+        done();
+    });
+</script>

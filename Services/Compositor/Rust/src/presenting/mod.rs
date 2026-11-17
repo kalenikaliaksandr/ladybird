@@ -897,7 +897,7 @@ impl ContextPresenting {
                     nested_contexts: &NoCompositedContexts,
                     ..*env
                 };
-                self.composite_layers_above_base(&snapshot_env, &composited, &frame, source_rect);
+                self.composite_layers_shown_by_window_server(&snapshot_env, &composited, &frame, source_rect);
                 paint_overlays(&snapshot_env, &composited, &painted_frame.frame_inputs, true);
                 self.paint_layer_overlay(&snapshot_env, &composited);
                 source = composited;

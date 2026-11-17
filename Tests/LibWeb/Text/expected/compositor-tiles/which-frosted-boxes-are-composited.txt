@@ -1,6 +1,6 @@
 [L1] base space=document
-[L2] canvas #0 space=document region=[77,87 102x82] replayed: the compositor composites an effect over what is below it
-[L4] canvas #0 space=document region=[333,513 102x82] replayed: the compositor composites an effect over what is below it
+[L2] canvas #0 space=document region=[77,87 102x82] replayed: under a layer the frame holds
+[L4] canvas #0 space=document region=[333,513 102x82] replayed: under a layer the frame holds
 [L6] painted space=document inside BlockContainer<DIV>#plain.frosted
 [L8] painted space=document inside BlockContainer<DIV>#below-a-translucent-one.frosted
 [L10] painted space=document inside BlockContainer<DIV>#translucent-over-a-frosted-one.frosted

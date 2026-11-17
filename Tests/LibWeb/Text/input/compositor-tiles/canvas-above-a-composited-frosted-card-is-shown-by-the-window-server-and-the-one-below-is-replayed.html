@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    canvas { position: absolute; }
+    #below { left: 40px; top: 40px; }
+    /* The card reads the canvas below it, so the compositor composites it, and the frame holds both. */
+    #card { position: absolute; left: 100px; top: 80px; width: 200px; height: 80px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(6px); }
+    /* Painted after the card, over part of it, so the window server can show it above the frame. */
+    #above { left: 260px; top: 120px; }
+</style>
+<canvas id="below" width="300" height="200"></canvas>
+<div id="card">card</div>
+<canvas id="above" width="200" height="100"></canvas>
+<script>
+    asyncTest(async done => {
+        for (const canvas of document.querySelectorAll("canvas")) {
+            const context = canvas.getContext("2d");
+            context.fillStyle = canvas.id === "below" ? "orange" : "navy";
+            context.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(state, ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER);
+        done();
+    });
+</script>

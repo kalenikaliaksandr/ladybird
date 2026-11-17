@@ -1,0 +1,6 @@
+[L0] base space=viewport
+[L1] canvas #0 space=viewport region=[37,37 306x206] replayed: under a layer the frame holds
+[L3] painted space=viewport inside BlockContainer<DIV>#card
+[L5] canvas #0 space=viewport region=[257,117 206x106] shown by the window server: clip=[0,0 800x600]
+composited BlockContainer<DIV>#card space=viewport reads=[61,41 278x158]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true

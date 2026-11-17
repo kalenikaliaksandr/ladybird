@@ -1,5 +1,5 @@
 [L1] base space=document
-[L2] canvas #0 space=document region=[497,897 206x106] replayed: the compositor composites an effect over what is below it
+[L2] canvas #0 space=document region=[497,897 206x106] replayed: under a layer the frame holds
 [L3] painted space=document above L2
 [L4] painted space=document inside BlockContainer<DIV>#frosted-card
 [L7] painted space=viewport inside BlockContainer<DIV>#fixed-frosted-header

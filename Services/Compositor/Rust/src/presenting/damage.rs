@@ -280,14 +280,11 @@ impl ContextPresenting {
             TileInvalidation::Nothing
         };
         // Layers that come or go, or move as their spaces scroll, repaint all of the frame. So does a switch of who
-        // shows the layers above the base layer, as the frame holds them only while the window server does not.
+        // shows a layer, as the frame holds it only while the window server does not.
         let composites_like_last_frame = self.painted_frame.is_some()
             && self.layers.compositing_of_latest_frame() == layer_update.compositing.as_slice();
-        let window_server_switched = layer_update.shown_by_window_server != self.layers.window_server_shows_media();
-        let repaints_everything = invalidates_every_tile
-            || !composites_like_last_frame
-            || window_server_switched
-            || self.layer_overlay.repaints_everything();
+        let repaints_everything =
+            invalidates_every_tile || !composites_like_last_frame || self.layer_overlay.repaints_everything();
         let stale_rect = self.prepare_tile_pass(env, frame, live_content, &mut layer_update, raster_rect);
         FrameDamage {
             rect: if repaints_everything {

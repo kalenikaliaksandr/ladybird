@@ -1,9 +1,9 @@
 [L0] base space=viewport
-[L1] canvas #0 space=viewport region=[7,7 126x86] replayed: the compositor composites an effect over what is below it
-[L3] canvas #0 space=viewport region=[263,7 126x86] replayed: the compositor composites an effect over what is below it
-[L5] canvas #0 space=viewport region=[519,7 126x86] replayed: the compositor composites an effect over what is below it
-[L7] canvas #0 space=viewport region=[7,263 126x86] replayed: the compositor composites an effect over what is below it
-[L9] canvas #0 space=viewport region=[263,263 126x86] replayed: the compositor composites an effect over what is below it
+[L1] canvas #0 space=viewport region=[7,7 126x86] replayed: under a layer the frame holds
+[L3] canvas #0 space=viewport region=[263,7 126x86] replayed: under a layer the frame holds
+[L5] canvas #0 space=viewport region=[519,7 126x86] replayed: under a layer the frame holds
+[L7] canvas #0 space=viewport region=[7,263 126x86] replayed: under a layer the frame holds
+[L9] canvas #0 space=viewport region=[263,263 126x86] replayed: under a layer the frame holds
 [L11] painted space=viewport inside BlockContainer<DIV>#first.frosted
 [L13] painted space=viewport inside BlockContainer<DIV>#second.frosted
 [L15] painted space=viewport inside BlockContainer<DIV>#third.frosted

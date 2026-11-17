@@ -139,8 +139,8 @@ enum WhyMediaIsReplayed {
     HighDynamicRangeIsNotShownNow,
     WindowServerCannotShowThePlacement,
     TilesWerePaintedStraightIntoTheFrame,
-    AnotherMediaLayerIsReplayed,
-    CompositorCompositesAnEffectOverWhatIsBelowIt,
+    InsideAnEffectTheCompositorComposites,
+    UnderALayerTheFrameHolds,
 }
 
 impl std::fmt::Display for WhyMediaIsReplayed {
@@ -162,10 +162,10 @@ impl std::fmt::Display for WhyMediaIsReplayed {
             }
             WhyMediaIsReplayed::WindowServerCannotShowThePlacement => "the window server cannot show it where it is",
             WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame => "tiles were painted straight into the frame",
-            WhyMediaIsReplayed::AnotherMediaLayerIsReplayed => "another media layer is replayed",
-            WhyMediaIsReplayed::CompositorCompositesAnEffectOverWhatIsBelowIt => {
-                "the compositor composites an effect over what is below it"
+            WhyMediaIsReplayed::InsideAnEffectTheCompositorComposites => {
+                "it is inside an effect the compositor composites"
             }
+            WhyMediaIsReplayed::UnderALayerTheFrameHolds => "it is under a layer the frame holds",
         })
     }
 }
@@ -207,12 +207,14 @@ impl LiveContentVersions for LiveContentVersionsOfFrame<'_> {
     }
 }
 
-/// Where a frame composites a layer: translated by the scroll offsets of its space's anchors, within its clip.
+/// Where a frame composites a layer: translated by the scroll offsets of its space's anchors, within its clip, and
+/// whether the frame holds it or the window server shows it above the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompositingOfLayer {
     key: LayerKey,
     offset: IntPoint,
     clip: Option<IntRect>,
+    shown_by_window_server: bool,
 }
 
 // The keys of the tiles of a group of a stack, which a frame takes from the context and gives back once painted, bound
@@ -711,6 +713,7 @@ fn compositing_of_layer(stack: &LayerStack, layer: usize, composite_offsets: &[I
         key: stack.layers[layer].key,
         offset: composite_offsets[stack.space_of_layer(layer)],
         clip: stack.composite_clip_in_viewport(layer, composite_offsets),
+        shown_by_window_server: false,
     }
 }
 
@@ -817,12 +820,22 @@ impl ContextPresenting {
         stack.update_window_server_placements(storage, tree, scroll_offsets, viewport_rect);
         let stack = self.layers.stack.as_ref().expect("a frame with layers has a stack");
         let composite_offsets = stack.composite_offsets(scroll_offsets);
+        let shown_by_window_server_of_layers = if self.why_window_server_shows_no_media_of_this_context(env).is_none() {
+            stack.layers_the_window_server_shows(&composite_offsets, |layer| {
+                self.why_window_server_does_not_show(env, &stack.layers[layer], live_content)
+                    .is_none()
+            })
+        } else {
+            vec![false; stack.layers.len()]
+        };
         let compositing: Vec<CompositingOfLayer> = (stack.base_layer..stack.layers.len())
             .filter(|&layer| layer == stack.base_layer || stack.layers[layer].may_hold_content)
-            .map(|layer| compositing_of_layer(stack, layer, &composite_offsets))
+            .map(|layer| CompositingOfLayer {
+                shown_by_window_server: shown_by_window_server_of_layers[layer],
+                ..compositing_of_layer(stack, layer, &composite_offsets)
+            })
             .collect();
-        let shown_by_window_server =
-            compositing.len() > 1 && self.window_server_can_show_media_layers_of(env, stack, live_content);
+        let shown_by_window_server = compositing.iter().any(|compositing| compositing.shown_by_window_server);
         LayerUpdate {
             tile_invalidation: TileInvalidation::Nothing,
             tile_pass: None,
@@ -1074,7 +1087,7 @@ impl ContextPresenting {
             {
                 let space = stack.space_of_layer(layer_index);
                 let digest = raster_spaces[space].digest_of_records_within(*record_span);
-                if !layer_update.shown_by_window_server
+                if !compositing.shown_by_window_server
                     && state.and_then(|state| state.digest_of_replayed_records) != Some(digest)
                 {
                     stale_rect = stale_rect.united(clip_in_viewport(*region));
@@ -1131,21 +1144,6 @@ impl ContextPresenting {
         layer_update.tile_pass = Some(pass);
         layer_update.read_areas_of_composited_effects = read_areas_of_composited_effects;
         stale_rect
-    }
-
-    // The window server shows the layers above the base layer over the frame, where no backdrop layer could filter
-    // them.
-    pub(super) fn window_server_can_show_media_layers_of(
-        &self,
-        env: &PresentingEnvironment<'_>,
-        stack: &LayerStack,
-        live_content: &LiveContent,
-    ) -> bool {
-        self.why_window_server_shows_no_media_of_this_context(env).is_none()
-            && !stack.has_composited_effects()
-            && stack.layers[stack.base_layer..]
-                .iter()
-                .all(|layer| self.why_window_server_does_not_show(env, layer, live_content).is_none())
     }
 
     fn why_window_server_shows_no_media_of_this_context(
@@ -1259,20 +1257,17 @@ impl ContextPresenting {
                     },
                     LayerContent::Media { region, .. } => LayerOfFrameContent::Media {
                         region: *region,
-                        presentation: if shown_by_window_server {
+                        presentation: if shown_by_window_server && compositing.shown_by_window_server {
                             MediaPresentation::ShownByWindowServer
                         } else {
                             let why = context_shows_no_media
                                 .or_else(|| self.why_window_server_does_not_show(env, layer, live_content))
-                                .or_else(|| {
-                                    stack
-                                        .has_composited_effects()
-                                        .then_some(WhyMediaIsReplayed::CompositorCompositesAnEffectOverWhatIsBelowIt)
-                                })
                                 .unwrap_or(if tiles_painted_straight {
                                     WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame
+                                } else if !stack.composited_groups_around_layer(index).is_empty() {
+                                    WhyMediaIsReplayed::InsideAnEffectTheCompositorComposites
                                 } else {
-                                    WhyMediaIsReplayed::AnotherMediaLayerIsReplayed
+                                    WhyMediaIsReplayed::UnderALayerTheFrameHolds
                                 });
                             MediaPresentation::Replayed { why: why.to_string() }
                         },
@@ -1438,14 +1433,17 @@ impl ContextPresenting {
             live_content,
         );
 
-        // The window server shows everything above the base layer from surfaces of its own, unless some could not be
-        // made, when the frame holds all of it instead.
+        // The window server shows the layers it can show from surfaces of its own, and the overlays above them, unless
+        // some could not be made, when the frame holds all of it instead.
         if layer_update.shown_by_window_server {
             let shown = painted_straight.is_empty()
                 && self.present_painted_layers_to_window_server(env, stack, &layer_update.compositing, surface)
                 && self.present_compositor_overlays_to_window_server(env, frame, surface);
             if !shown {
                 layer_update.shown_by_window_server = false;
+                for compositing in &mut layer_update.compositing {
+                    compositing.shown_by_window_server = false;
+                }
                 damage_rect = self.raster_rect();
             }
         }
@@ -1477,15 +1475,16 @@ impl ContextPresenting {
                 base.clip,
             );
         }
+        self.composite_layers_above_base_of_stack(
+            env,
+            surface,
+            frame,
+            damage_rect,
+            stack,
+            &layer_update.compositing,
+            false,
+        );
         if !layer_update.shown_by_window_server {
-            self.composite_layers_above_base_of_stack(
-                env,
-                surface,
-                frame,
-                damage_rect,
-                stack,
-                &layer_update.compositing,
-            );
             for rect in painted_straight {
                 let rect = rect.intersected(damage_rect);
                 if rect.is_empty() {
@@ -1772,9 +1771,9 @@ impl ContextPresenting {
         unrastered
     }
 
-    /// Composites the layers above the base layer into the surface as the latest frame did, as for a snapshot of the
-    /// frame on screen.
-    pub(super) fn composite_layers_above_base(
+    /// Composites the layers above the base layer that the window server showed with the latest frame into the
+    /// surface, which holds the rest of the frame, as for a snapshot of the frame on screen.
+    pub(super) fn composite_layers_shown_by_window_server(
         &self,
         env: &PresentingEnvironment<'_>,
         surface: &SurfaceHandle,
@@ -1791,11 +1790,14 @@ impl ContextPresenting {
             damage_rect,
             stack,
             &self.layers.compositing_of_latest_frame,
+            true,
         );
     }
 
-    // The layers above the base layer go over it in the order of the stack, inside the effects the compositor
-    // composites them inside, which it enters and leaves as the bands of their nodes start and end.
+    // The layers above the base layer that the window server shows, or those the frame holds, go over it in the order
+    // of the stack, inside the effects the compositor composites them inside, which it enters and leaves as the bands
+    // of their nodes start and end.
+    #[allow(clippy::too_many_arguments)]
     fn composite_layers_above_base_of_stack(
         &self,
         env: &PresentingEnvironment<'_>,
@@ -1804,14 +1806,23 @@ impl ContextPresenting {
         damage_rect: IntRect,
         stack: &LayerStack,
         compositing: &[CompositingOfLayer],
+        shown_by_window_server: bool,
     ) {
-        if compositing.len() <= 1 {
+        if compositing
+            .iter()
+            .skip(1)
+            .all(|compositing| compositing.shown_by_window_server != shown_by_window_server)
+        {
             return;
         }
         let tile_pool = &self.layers.tile_pool;
         composite_inside_effects_of_frame(env, surface, frame, self.raster_transform(), |compositing_session| {
             let mut entered_groups: Vec<usize> = Vec::new();
-            for compositing in compositing.iter().skip(1) {
+            for compositing in compositing
+                .iter()
+                .skip(1)
+                .filter(|compositing| compositing.shown_by_window_server == shown_by_window_server)
+            {
                 let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
                     continue;
                 };
@@ -1883,7 +1894,11 @@ impl ContextPresenting {
         let raster = env.raster;
         let viewport_rect = rect_of_size(self.viewport_size);
         let layers = &mut self.layers;
-        for compositing in compositing.iter().skip(1) {
+        for compositing in compositing
+            .iter()
+            .skip(1)
+            .filter(|compositing| compositing.shown_by_window_server)
+        {
             let is_painted = stack
                 .layers
                 .iter()
@@ -1996,7 +2011,12 @@ impl ContextPresenting {
         let Some(stack) = layers.stack.as_ref().filter(|_| layers.window_server_shows_media) else {
             return sublayers;
         };
-        for compositing in layers.compositing_of_latest_frame.iter().skip(1) {
+        for compositing in layers
+            .compositing_of_latest_frame
+            .iter()
+            .skip(1)
+            .filter(|compositing| compositing.shown_by_window_server)
+        {
             let Some(layer) = stack.layers.iter().find(|layer| layer.key == compositing.key) else {
                 continue;
             };

@@ -252,6 +252,11 @@ pub struct StackLayer {
     pub content: LayerContent,
     /// Whether any record can go into the layer anywhere; a layer that holds nothing has no tiles.
     pub may_hold_content: bool,
+    /// Where what the layer holds can show, in the raster coordinates of its space.
+    pub reach: IntRect,
+    /// Whether the window server shows the layer above the frame, as `update_window_server_placements` worked it out,
+    /// where it can show every canvas and video it has a placement for.
+    pub shown_by_the_window_server: bool,
 }
 
 /// An effect that the compositor composites the layers of its content inside, and why.
@@ -351,6 +356,8 @@ impl LayerStack {
                 group_of_band: 0,
                 content: LayerContent::Painted { group: 0 },
                 may_hold_content: true,
+                reach: viewport_rect,
+                shown_by_the_window_server: false,
             }],
             groups: vec![LayerGroup {
                 node: 0,
@@ -547,9 +554,92 @@ impl LayerStack {
         groups
     }
 
+    // Where the frame shows what a layer can show, in the viewport: for a layer inside effects the compositor composites,
+    // all the outermost of them can draw or read.
+    fn reach_of_layer_in_viewport(&self, layer: usize, composite_offsets: &[IntPoint]) -> IntRect {
+        let node = &self.nodes[self.layers[layer].node];
+        let reach = match self.composited_groups_around_layer(layer).first() {
+            Some(&outermost) => match self.nodes[self.groups[outermost].node].region_in_parent {
+                Reach::Nothing => return IntRect::default(),
+                Reach::Within(region) => region,
+                Reach::Anywhere => return self.spaces[VIEWPORT_RASTER_SPACE].extent,
+            },
+            None => self.layers[layer].reach,
+        };
+        let reach = translated(reach, composite_offsets[node.space]);
+        match self.composite_clip_in_viewport(layer, composite_offsets) {
+            Some(clip) => reach.intersected(clip),
+            None => reach,
+        }
+    }
+
+    /// Which layers the window server shows above the frame, rather than the frame holding them, of those from the base
+    /// layer up that can hold content. The frame holds every layer up to the topmost one it has to hold: one inside an
+    /// effect the compositor composites, or a canvas, video or nested context the window server cannot show by itself,
+    /// as `window_server_can_show` says. Below that, the window server still shows a canvas or video it can show where
+    /// no layer above it that the frame holds can show over it.
+    pub fn layers_the_window_server_shows(
+        &self,
+        composite_offsets: &[IntPoint],
+        window_server_can_show: impl Fn(usize) -> bool,
+    ) -> Vec<bool> {
+        let mut shown = vec![false; self.layers.len()];
+        if self.replays_whole_list() {
+            return shown;
+        }
+        let candidates: Vec<usize> = (self.base_layer + 1..self.layers.len())
+            .filter(|&layer| self.layers[layer].may_hold_content)
+            .collect();
+        let is_media = |layer: usize| matches!(self.layers[layer].content, LayerContent::Media { .. });
+        let frame_has_to_hold = |layer: usize| {
+            !self.composited_groups_around_layer(layer).is_empty()
+                || (is_media(layer) && !window_server_can_show(layer))
+        };
+        let topmost_the_frame_holds = candidates.iter().rposition(|&layer| frame_has_to_hold(layer));
+        let held_up_to = topmost_the_frame_holds.map_or(0, |position| position + 1);
+        for &layer in &candidates[held_up_to..] {
+            shown[layer] = true;
+        }
+        let mut reach_of_held_layers_above = IntRect::default();
+        for &layer in candidates[..held_up_to].iter().rev() {
+            let reach = self.reach_of_layer_in_viewport(layer, composite_offsets);
+            if is_media(layer) && !frame_has_to_hold(layer) && reach_of_held_layers_above.intersected(reach).is_empty()
+            {
+                shown[layer] = true;
+                continue;
+            }
+            reach_of_held_layers_above = reach_of_held_layers_above.united(reach);
+        }
+        shown
+    }
+
     /// Works out again where the window server can show the content of each canvas and video layer, under
-    /// `scroll_offsets`, as the stack is kept while its spaces scroll and its media move with them.
+    /// `scroll_offsets`, as the stack is kept while its spaces scroll and its media move with them, and which layers it
+    /// shows where it can show every canvas and video it has a placement for.
     pub fn update_window_server_placements(
+        &mut self,
+        list: &DisplayListStorage,
+        tree: &VisualContextTree,
+        scroll_offsets: &[FloatPoint],
+        viewport_rect: IntRect,
+    ) {
+        self.update_placements_of_media(list, tree, scroll_offsets, viewport_rect);
+        let composite_offsets = self.composite_offsets(scroll_offsets);
+        let shown = self.layers_the_window_server_shows(&composite_offsets, |layer| {
+            matches!(
+                self.layers[layer].content,
+                LayerContent::Media {
+                    window_server_placement: Some(Ok(_)),
+                    ..
+                }
+            )
+        });
+        for (layer, shown) in self.layers.iter_mut().zip(shown) {
+            layer.shown_by_the_window_server = shown;
+        }
+    }
+
+    fn update_placements_of_media(
         &mut self,
         list: &DisplayListStorage,
         tree: &VisualContextTree,
@@ -739,16 +829,19 @@ impl LayerStack {
             }
             match &layer.content {
                 LayerContent::Media {
-                    window_server_placement: Some(Ok(_)),
-                    ..
-                } if self.has_composited_effects() => writeln!(
-                    output,
-                    " replayed: the compositor composites an effect over what is below it"
-                )?,
-                LayerContent::Media {
                     window_server_placement: Some(Ok(placement)),
                     ..
-                } => writeln!(output, " shown by the window server: {placement}")?,
+                } if layer.shown_by_the_window_server => writeln!(output, " shown by the window server: {placement}")?,
+                LayerContent::Media {
+                    window_server_placement: Some(Ok(_)),
+                    ..
+                } if !self.composited_groups_around_layer(index).is_empty() => {
+                    writeln!(output, " replayed: inside an effect the compositor composites")?;
+                }
+                LayerContent::Media {
+                    window_server_placement: Some(Ok(_)),
+                    ..
+                } => writeln!(output, " replayed: under a layer the frame holds")?,
                 LayerContent::Media {
                     window_server_placement: Some(Err(rejection)),
                     ..
@@ -1960,6 +2053,8 @@ impl StackBeingBuilt<'_> {
             group_of_band: group,
             content: LayerContent::Painted { group },
             may_hold_content: false,
+            reach: IntRect::default(),
+            shown_by_the_window_server: false,
         });
         let layer_below_every_cut = self.layers.len() - 1;
         let mut cuts = Vec::with_capacity(barriers.len());
@@ -1983,6 +2078,8 @@ impl StackBeingBuilt<'_> {
                             window_server_placement: None,
                         },
                         may_hold_content: true,
+                        reach: placed_unit.reach,
+                        shown_by_the_window_server: false,
                     });
                     (
                         BarrierKey::Media {
@@ -2014,6 +2111,8 @@ impl StackBeingBuilt<'_> {
                 group_of_band: group,
                 content: LayerContent::Painted { group },
                 may_hold_content: false,
+                reach: IntRect::default(),
+                shown_by_the_window_server: false,
             });
             cuts.push(Cut {
                 barrier: key,
@@ -2039,18 +2138,25 @@ impl StackBeingBuilt<'_> {
             let placed_unit = &placement.units[unit];
             let span = placed_unit.span;
             let position = span.begin;
-            let mut mark = |layer: usize| self.layers[layer].may_hold_content = true;
+            let mut mark = |layer: usize, reach: IntRect| {
+                self.layers[layer].may_hold_content = true;
+                self.layers[layer].reach = self.layers[layer].reach.united(reach);
+            };
             let cuts_before = group_so_far.cuts.iter().take_while(|cut| cut.position <= position);
             if cuts_before.clone().next().is_none() {
-                mark(layer_below_every_cut);
+                mark(layer_below_every_cut, placed_unit.reach);
             } else if reaches_too_many_cells_to_follow_one_by_one(placed_unit.reach) {
-                mark(layer_below_every_cut);
+                mark(layer_below_every_cut, placed_unit.reach);
                 for cut in cuts_before {
-                    mark(cut.layer_above);
+                    mark(cut.layer_above, placed_unit.reach);
                 }
             } else {
                 for coord in tile_coords_touching(placed_unit.reach) {
-                    mark(group_so_far.layer_at(position, coord.cell_rect()));
+                    let cell = coord.cell_rect();
+                    mark(
+                        group_so_far.layer_at(position, cell),
+                        placed_unit.reach.intersected(cell),
+                    );
                 }
             }
             match record_spans.last_mut() {

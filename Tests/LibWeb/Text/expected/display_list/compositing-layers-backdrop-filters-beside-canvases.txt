@@ -9,8 +9,8 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
-  [L1] canvas #0 space=viewport region=[17,17 206x126] replayed: the compositor composites an effect over what is below it
-  [L3] canvas #0 space=viewport region=[397,17 206x126] replayed: the compositor composites an effect over what is below it
+  [L1] canvas #0 space=viewport region=[17,17 206x126] shown by the window server: clip=[0,0 800x600]
+  [L3] canvas #0 space=viewport region=[397,17 206x126] replayed: under a layer the frame holds
   [L5] painted space=viewport inside e1
   [L7] painted space=viewport inside e2
   composited e1 space=viewport reads=[237,57 106x46]: it reads what its own layer does not hold
