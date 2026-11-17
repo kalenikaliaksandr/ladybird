@@ -898,6 +898,68 @@ fn root_isolation_effect_is_plain_group(tree: &VisualContextTree) -> bool {
     }
 }
 
+/// The digest of what placing `list` reads of the values the compositor's animations give the tree, which change from
+/// one sample of them to the next while the main thread publishes nothing: whether each effect an opacity or filter
+/// animates pushes a layer and spreads what it holds, whether the root's effect is a plain group, and where a canvas,
+/// video, nested context or backdrop filter is under a transform that is animated, the matrices of those transforms.
+/// Two samples of a tree with the same digest place `list` alike.
+pub fn digest_of_animated_values_placement_reads(list: &DisplayListStorage, tree: &VisualContextTree) -> u64 {
+    use crate::host::FfiVisualAnimationTargetKind;
+    let mut hasher = crate::fast_hash::fast_hasher();
+    hasher.write_u8(u8::from(root_isolation_effect_is_plain_group(tree)));
+    let mut has_transform_animations = false;
+    for animation in tree.visual_animations() {
+        match animation.target_kind {
+            FfiVisualAnimationTargetKind::Opacity | FfiVisualAnimationTargetKind::Filter => {
+                for &index in &animation.node_indices {
+                    let Some(node) = tree.effect_nodes.get(index as usize) else {
+                        continue;
+                    };
+                    hasher.write_u32(index);
+                    hasher.write_u8(u8::from(tree.effect_pushes_layer_at_replay(EffectNodeIndex(index))));
+                    hasher.write_u8(u8::from(matches!(&node.data, EffectNodeData::Effects(effects)
+                        if effects.filter.as_deref().is_some_and(|filter| crate::filter_bytes::may_affect_output_bounds(filter)))));
+                }
+            }
+            FfiVisualAnimationTargetKind::Transform => has_transform_animations = true,
+            _ => {}
+        }
+    }
+    if !has_transform_animations {
+        return hasher.finish();
+    }
+    let in_animated_subtree = tree.spatial_nodes_in_subtrees_of_transform_animations();
+    let is_animated = |spatial: SpatialNodeIndex| in_animated_subtree.get(spatial.0 as usize).copied().unwrap_or(false);
+    let media_under_animated_transforms = list
+        .summary()
+        .live_content_records
+        .iter()
+        .any(|record| is_animated(list.run(record.record.run_index as usize).context.spatial));
+    let backdrop_filters_under_animated_transforms = tree.effect_nodes.iter().any(|node| {
+        matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some())
+            && is_animated(node.spatial)
+    });
+    if !media_under_animated_transforms && !backdrop_filters_under_animated_transforms {
+        return hasher.finish();
+    }
+    for animation in tree.visual_animations() {
+        if animation.target_kind != FfiVisualAnimationTargetKind::Transform {
+            continue;
+        }
+        for &index in &animation.node_indices {
+            if let Some(SpatialData::Transform(transform)) =
+                tree.spatial_nodes.get(index as usize).map(|node| &node.data)
+            {
+                hasher.write_u32(index);
+                for value in transform.matrix.elements.iter().flatten() {
+                    hasher.write_u32(value.to_bits());
+                }
+            }
+        }
+    }
+    hasher.finish()
+}
+
 fn effect_chain_contains(tree: &VisualContextTree, mut effect: EffectNodeIndex, wanted: EffectNodeIndex) -> bool {
     while !effect.is_none() {
         if effect == wanted {

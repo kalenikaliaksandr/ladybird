@@ -1,0 +1,11 @@
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+[L3] painted space=document band=1
+compared: true, matches a direct raster: true
+faded, placements computed: 3
+faded, rastered tiles of more frames than it placed: true
+compared: true, matches a direct raster: true
+slid, placements computed: 3
+slid, rastered tiles of more frames than it placed: true
+compared: true, matches a direct raster: true
+scrolled: true, placements computed: 0, chunks placed: 0, tiles rasterized: 0

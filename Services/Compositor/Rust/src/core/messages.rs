@@ -582,6 +582,7 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
             layers_created_since_last_check: state.layers_created_since_last_check,
             chunks_placed_since_last_check: state.chunks_placed_since_last_check,
             tiles_binned_since_last_check: state.tiles_binned_since_last_check,
+            placements_computed_since_last_check: state.placements_computed_since_last_check,
         })
     }
 

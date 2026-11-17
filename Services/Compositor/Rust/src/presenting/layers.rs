@@ -26,7 +26,8 @@ use libcompositing_rust::display_list::commands::{
 };
 use libcompositing_rust::display_list::layers::{
     LayerContent, LayerGroup, LayerKey, LayerStack, LayerStackInputs, ListPlacement, PlacementKey, StackLayer,
-    VIEWPORT_RASTER_SPACE, backdrop_filter_read_area, build_layer_stack, place_list, raster_space_anchors,
+    VIEWPORT_RASTER_SPACE, backdrop_filter_read_area, build_layer_stack, digest_of_animated_values_placement_reads,
+    place_list, raster_space_anchors,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaces, SpaceGeometry, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
@@ -342,12 +343,14 @@ struct ViewportRaster {
     transform: FloatMatrix4x4,
 }
 
-// Where the parts of a list were placed for a frame, and what that depended on: the list, the tree copy, the anchors of
-// the spaces, which change as a sticky box starts or stops being held, and the scroll offsets of the nodes that neither
-// anchor a space nor move on their own.
+// Where the parts of a list were placed for a frame, and what that depended on: the list, the tree as the main thread
+// published it and what placing reads of the values the compositor's animations gave it, the anchors of the spaces,
+// which change as a sticky box starts or stops being held, and the scroll offsets of the nodes that neither anchor a
+// space nor move on their own.
 struct PlacementOfFrame {
     display_list: Rc<DisplayList>,
-    tree_copy: u64,
+    tree_copy_without_animation_samples: u64,
+    animated_values_placement_reads: u64,
     viewport_rect: IntRect,
     raster_transform: FloatMatrix4x4,
     scroll_offsets_placement_depends_on: Vec<FloatPoint>,
@@ -373,6 +376,7 @@ pub struct ContextLayers {
     most_tiles_rasterized_by_a_frame_since_last_check: u64,
     tiles_rasterized_by_this_frame: u64,
     layer_stacks_computed_since_last_check: u64,
+    placements_computed_since_last_check: u64,
     layers_created_since_last_check: u64,
     chunks_placed_since_last_check: u64,
     tiles_binned_since_last_check: u64,
@@ -385,6 +389,8 @@ pub struct ContextLayers {
     overlay_rect: IntRect,
     known_space_geometries: Vec<KnownSpaceGeometry>,
     next_presentable_surface_pool: u32,
+    // Which spatial nodes of the tree as the main thread published it move on their own, by the number of that copy.
+    spatial_nodes_that_move_on_their_own: Option<(u64, Rc<Vec<bool>>)>,
     // The keys of the tiles of the groups of the latest frame, kept for the next one.
     keyed_groups: Vec<KeyedGroupOfFrame>,
     // What compositing the nodes of composited effects read of each effect in the latest frame, by node.
@@ -397,6 +403,7 @@ pub struct LayerCountsSinceLastCheck {
     pub tiles_rasterized: u64,
     pub most_tiles_rasterized_by_a_frame: u64,
     pub layer_stacks_computed: u64,
+    pub placements_computed: u64,
     pub layers_created: u64,
     pub chunks_placed: u64,
     pub tiles_binned: u64,
@@ -422,6 +429,7 @@ impl ContextLayers {
                 &mut self.most_tiles_rasterized_by_a_frame_since_last_check,
             ),
             layer_stacks_computed: std::mem::take(&mut self.layer_stacks_computed_since_last_check),
+            placements_computed: std::mem::take(&mut self.placements_computed_since_last_check),
             layers_created: std::mem::take(&mut self.layers_created_since_last_check),
             chunks_placed: std::mem::take(&mut self.chunks_placed_since_last_check),
             tiles_binned: std::mem::take(&mut self.tiles_binned_since_last_check),
@@ -430,6 +438,20 @@ impl ContextLayers {
 
     pub fn spare_tile_eviction_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
         self.evict_spare_tiles(env);
+    }
+
+    // Which spatial nodes move on their own, which the structure of the tree and the animations the main thread
+    // published with it decide, worked out once per published tree.
+    fn spatial_nodes_that_move_on_their_own_of(&mut self, tree: &VisualContextTree) -> Rc<Vec<bool>> {
+        let copy = tree.copy_without_animation_samples();
+        if let Some((known_copy, moves)) = &self.spatial_nodes_that_move_on_their_own
+            && *known_copy == copy
+        {
+            return moves.clone();
+        }
+        let moves = Rc::new(spatial_nodes_that_move_on_their_own(tree));
+        self.spatial_nodes_that_move_on_their_own = Some((copy, moves.clone()));
+        moves
     }
 
     // Drops from the pool the tiles that no layer has held for long enough, or whose pixels are not current, and then
@@ -779,18 +801,21 @@ impl ContextPresenting {
             raster_transform,
         };
 
-        let moves_on_its_own = spatial_nodes_that_move_on_their_own(tree);
+        let moves_on_its_own = self.layers.spatial_nodes_that_move_on_their_own_of(tree);
+        let animated_values_placement_reads = digest_of_animated_values_placement_reads(storage, tree);
         // A space that scrolls composites at whole device pixels of the viewport, which a raster that scales them or
         // shifts them by a fraction does not have, so such a raster has the viewport's space alone.
         let anchors = if raster_transform == FloatMatrix4x4::identity() {
-            raster_space_anchors(tree, scroll_offsets, &moves_on_its_own)
+            raster_space_anchors(tree, scroll_offsets, moves_on_its_own.as_slice())
         } else {
             Vec::new()
         };
-        let offsets_placement_depends_on = scroll_offsets_placement_depends_on(tree, scroll_offsets, &moves_on_its_own);
+        let offsets_placement_depends_on =
+            scroll_offsets_placement_depends_on(tree, scroll_offsets, moves_on_its_own.as_slice());
         let placement_is_known = self.layers.placement_of_latest_frame.as_ref().is_some_and(|known| {
             Rc::ptr_eq(&known.display_list, frame.display_list)
-                && known.tree_copy == tree.copy.number()
+                && known.tree_copy_without_animation_samples == tree.copy_without_animation_samples()
+                && known.animated_values_placement_reads == animated_values_placement_reads
                 && known.viewport_rect == viewport_rect
                 && known.raster_transform == raster_transform
                 && known.anchors == anchors
@@ -817,9 +842,11 @@ impl ContextPresenting {
                 .collect();
             let spaces = raster_spaces.expect("the spaces stay until the list is placed among them");
             let placement = place_list(&inputs, spaces, &geometries);
+            self.layers.placements_computed_since_last_check += 1;
             self.layers.placement_of_latest_frame = Some(PlacementOfFrame {
                 display_list: frame.display_list.clone(),
-                tree_copy: tree.copy.number(),
+                tree_copy_without_animation_samples: tree.copy_without_animation_samples(),
+                animated_values_placement_reads,
                 viewport_rect,
                 raster_transform,
                 scroll_offsets_placement_depends_on: offsets_placement_depends_on,

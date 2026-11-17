@@ -694,6 +694,7 @@ GC::Ref<JS::Object> Internals::presented_frame_state()
     object->define_direct_property("layersCreatedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.layers_created_since_last_check)), JS::default_attributes);
     object->define_direct_property("chunksPlacedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.chunks_placed_since_last_check)), JS::default_attributes);
     object->define_direct_property("tilesBinnedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.tiles_binned_since_last_check)), JS::default_attributes);
+    object->define_direct_property("placementsComputedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.placements_computed_since_last_check)), JS::default_attributes);
     return object;
 }
 

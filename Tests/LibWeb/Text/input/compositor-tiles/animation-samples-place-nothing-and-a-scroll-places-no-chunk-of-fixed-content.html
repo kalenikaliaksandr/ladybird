@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .badge { position: fixed; width: 20px; height: 20px; background: navy; }
+    #fading { position: absolute; left: 100px; top: 100px; width: 100px; height: 100px; background: orange; }
+    #sliding { position: absolute; left: 100px; top: 300px; width: 100px; height: 100px; background: green; }
+</style>
+<div id="stripes"></div>
+<div id="badges"></div>
+<div id="fading"></div>
+<div id="sliding"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        for (let index = 0; index < 28; ++index) {
+            const badge = document.createElement("div");
+            badge.className = "badge";
+            badge.style.left = `${20 + (index % 7) * 100}px`;
+            badge.style.top = `${20 + Math.floor(index / 7) * 140}px`;
+            badges.appendChild(badge);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+
+        // The compositor samples the animations on every frame, which places the list only as the page publishes it:
+        // as an animation starts, as its first frame lands and as it ends.
+        const fade = fading.animate([{ opacity: 0.2 }, { opacity: 0.9 }], { duration: 600, fill: "forwards" });
+        await fade.finished;
+        const faded = await presentedFrameState();
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const slide = sliding.animate([{ transform: "translateX(0)" }, { transform: "translateX(200px)" }], { duration: 600, fill: "forwards" });
+        await slide.finished;
+        const slid = await presentedFrameState();
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+
+        // The compositor scrolls the document, which moves no fixed badge.
+        const scrollEnded = new Promise(resolve => window.addEventListener("scrollend", resolve, { once: true }));
+        await internals.wheelThroughUIProcess(400, 300, 0, 20);
+        await scrollEnded;
+        const scrolled = await presentedFrameState();
+
+        println(layersOfTheDisplayList());
+        for (const [what, state] of [["faded", faded], ["slid", slid]]) {
+            printPresentedFrameState(state);
+            println(`${what}, placements computed: ${state.placementsComputedSinceLastCheck}`);
+            println(`${what}, rastered tiles of more frames than it placed: ${state.tilesRasterizedSinceLastCheck > 2 * state.placementsComputedSinceLastCheck}`);
+        }
+        printPresentedFrameState(scrolled);
+        println(`scrolled: ${window.scrollY > 0}, placements computed: ${scrolled.placementsComputedSinceLastCheck}, chunks placed: ${scrolled.chunksPlacedSinceLastCheck}, tiles rasterized: ${scrolled.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

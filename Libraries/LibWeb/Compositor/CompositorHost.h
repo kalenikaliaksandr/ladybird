@@ -85,6 +85,7 @@ struct PresentedFrameStateForTesting {
     u64 layers_created_since_last_check { 0 };
     u64 chunks_placed_since_last_check { 0 };
     u64 tiles_binned_since_last_check { 0 };
+    u64 placements_computed_since_last_check { 0 };
 };
 
 class WEB_API CompositorContextHandle {

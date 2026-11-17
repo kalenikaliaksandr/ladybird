@@ -84,6 +84,7 @@ pub struct PresentedFrameStateForTesting {
     pub layers_created_since_last_check: u64,
     pub chunks_placed_since_last_check: u64,
     pub tiles_binned_since_last_check: u64,
+    pub placements_computed_since_last_check: u64,
     // How many pixels differ by more than compositing rasters of one list can round them to, and where.
     pub pixels_differing_past_rounding: u64,
     pub bounds_of_pixels_differing_past_rounding: IntRect,
@@ -783,6 +784,7 @@ impl ContextPresenting {
             state.layers_created_since_last_check = counts.layers_created;
             state.chunks_placed_since_last_check = counts.chunks_placed;
             state.tiles_binned_since_last_check = counts.tiles_binned;
+            state.placements_computed_since_last_check = counts.placements_computed;
         }
         state
     }

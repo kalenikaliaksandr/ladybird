@@ -728,9 +728,21 @@ impl Clone for VisualContextTreeCopy {
     }
 }
 
+/// For a tree that holds the values the compositor's animations take at a time, the number of the copy it took them
+/// from. A copy of it takes no number, as anything written to the copy makes it a tree of its own.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AnimationSamplesOfCopy(Option<u64>);
+
+impl Clone for AnimationSamplesOfCopy {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
 #[derive(Clone)]
 pub struct VisualContextTree {
     pub copy: VisualContextTreeCopy,
+    pub animation_samples_of_copy: AnimationSamplesOfCopy,
     pub spatial_nodes: Vec<SpatialNode>,
     pub clip_nodes: Vec<ClipNode>,
     pub effect_nodes: Vec<EffectNode>,
@@ -893,6 +905,7 @@ impl VisualContextTree {
             effect_nodes: Vec::new(),
             root_isolation_effect: None,
             copy: VisualContextTreeCopy::new(),
+            animation_samples_of_copy: AnimationSamplesOfCopy::default(),
             structural_epoch: allocate_structural_epoch(),
             spatial_slots: SlotAccounting {
                 live_count: 1,
@@ -943,11 +956,18 @@ impl VisualContextTree {
             effect_nodes,
             root_isolation_effect,
             copy: VisualContextTreeCopy::new(),
+            animation_samples_of_copy: AnimationSamplesOfCopy::default(),
             structural_epoch,
             sampled_background_colors: HashMap::new(),
             visual_animations: std::sync::Arc::from(Vec::new()),
             compositor_scroll_table: CompositorScrollTable::default(),
         }
+    }
+
+    /// The number of the copy of the tree without the samples of the compositor's animations, which changes only as the
+    /// main thread publishes a tree or the compositor writes to the tree other than by sampling its animations.
+    pub fn copy_without_animation_samples(&self) -> u64 {
+        self.animation_samples_of_copy.0.unwrap_or(self.copy.number())
     }
 
     pub fn compositor_scroll_table(&self) -> &CompositorScrollTable {
