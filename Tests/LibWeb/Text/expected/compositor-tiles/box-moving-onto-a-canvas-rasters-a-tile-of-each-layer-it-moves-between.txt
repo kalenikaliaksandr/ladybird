@@ -4,4 +4,4 @@
 moving box away from the canvas: [L0] base space=viewport
 moving box over the canvas: [L2] painted space=viewport above L1
 compared: true, matches a direct raster: true
-moved the box, layer stacks computed: 0, layers created: 0, tiles rasterized: 2
+moved the box, layer stacks computed: 1, layers created: 0, tiles rasterized: 2

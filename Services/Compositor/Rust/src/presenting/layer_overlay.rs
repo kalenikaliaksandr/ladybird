@@ -99,7 +99,7 @@ pub struct FrameCounts {
     pub tiles_rastered: u64,
     pub tiles_binned: u64,
     pub chunks_placed: u64,
-    pub stack_changed_shape: bool,
+    pub stack_was_computed: bool,
 }
 
 /// A layer as a frame composites it, which the overlay is worked out from.
@@ -274,10 +274,10 @@ impl LayerOverlayModel {
             plural(counts.tiles_rastered, "tile", "tiles"),
             plural(counts.tiles_binned, "tile", "tiles"),
             plural(counts.chunks_placed, "chunk", "chunks"),
-            if counts.stack_changed_shape {
-                "the stack changed shape"
+            if counts.stack_was_computed {
+                "the stack was computed again"
             } else {
-                "the stack kept its shape"
+                "the stack was kept"
             }
         )
     }
@@ -1239,7 +1239,7 @@ mod tests {
              \x20   tile 1,0: rastered 1 time, last key changed over [256,0 256x256]\n\
              [L1] canvas #0 space=document region=[8,8 300x150]: replayed: the context is not shown in a remote layer\n\
              no layer for video: inside a group effect\n\
-             last frame: 1 tile rastered, 0 tiles binned, 0 chunks placed, the stack kept its shape\n\
+             last frame: 1 tile rastered, 0 tiles binned, 0 chunks placed, the stack was kept\n\
              highlighted: [L0] tile 1,0: key changed, 10 ms old\n"
         );
     }

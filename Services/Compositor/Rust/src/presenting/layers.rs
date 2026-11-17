@@ -25,7 +25,7 @@ use libcompositing_rust::display_list::commands::{
     CanvasId, CompositorContextId, ImageFrameResourceId, SpatialNodeIndex, VideoSinkHandle,
 };
 use libcompositing_rust::display_list::layers::{
-    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, PlacementKey, StackLayer,
+    LayerContent, LayerGroup, LayerKey, LayerStack, LayerStackInputs, ListPlacement, PlacementKey, StackLayer,
     VIEWPORT_RASTER_SPACE, backdrop_filter_read_area, build_layer_stack, place_list, raster_space_anchors,
 };
 use libcompositing_rust::display_list::placement::{
@@ -33,7 +33,7 @@ use libcompositing_rust::display_list::placement::{
 };
 use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::ReplaySelection;
-use libcompositing_rust::display_list::storage::ListSpan;
+use libcompositing_rust::display_list::storage::{ChunkName, ListSpan};
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
 use libcompositing_rust::display_list::tile_keys::{
     GroupTileKeys, KeyedTile, LayerConstants, ListOfFrame, LiveContentVersions, RasterSpaceOfFrame,
@@ -41,11 +41,13 @@ use libcompositing_rust::display_list::tile_keys::{
 };
 use libcompositing_rust::display_list::tiles::TileCoord;
 use libcompositing_rust::display_list::window_server_placement::{WindowServerPlacement, WindowServerRejection};
+use libcompositing_rust::fast_hash::fast_hasher;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libcompositing_rust::visual_context::VisualContextTree;
 use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, IntSize, ScalingMode};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::Hasher;
 use std::rc::Rc;
 
 const TILE_RASTER_SURFACE_RELEASE_DELAY: Duration = Duration::from_milliseconds(3000);
@@ -218,15 +220,52 @@ pub struct CompositingOfLayer {
 }
 
 // The keys of the tiles of a group of a stack, which a frame takes from the context and gives back once painted, bound
-// to the list and the geometry of the group's space they were binned against last.
+// to the list, the geometry of the group's space and the group they were binned against last. A later stack finds them
+// by the names of its groups.
 struct KeyedGroupOfFrame {
-    stack_generation: u64,
+    names: NamesOfGroup,
     group: usize,
     display_list: Rc<DisplayList>,
     geometry: Rc<SpaceGeometry>,
+    group_bound_to: LayerGroup,
+    base_layer_bound_to: usize,
     keys: GroupTileKeys,
     // The tiles the frame shows, by their cell and their layer.
     shown_tiles: Vec<(TileCoord, usize)>,
+}
+
+// What names a group of a stack in the stacks after it: its node and where its band starts, which hold while bands of the
+// node painted before it come or go, and its node and its band's ordinal, which hold while the records the band starts
+// with change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NamesOfGroup {
+    by_first_record: u64,
+    by_band: u64,
+}
+
+impl NamesOfGroup {
+    fn of(stack: &LayerStack, group: usize, chunk_names: &[ChunkName]) -> Self {
+        let layer_group = &stack.groups[group];
+        let node = stack.nodes[layer_group.node].key.0;
+        let first_record = layer_group.first_position;
+        let mut by_first_record = fast_hasher();
+        by_first_record.write_u8(1);
+        by_first_record.write_u64(node);
+        if let Some(chunk_name) = chunk_names.get(first_record.chunk as usize) {
+            by_first_record.write_u64(chunk_name.id.0[0]);
+            by_first_record.write_u64(chunk_name.id.0[1]);
+            by_first_record.write_u32(chunk_name.occurrence);
+        }
+        by_first_record.write_u32(first_record.offset);
+        let mut by_band = fast_hasher();
+        by_band.write_u8(2);
+        by_band.write_u64(node);
+        by_band.write_u32(layer_group.band);
+        Self {
+            by_first_record: by_first_record.finish(),
+            by_band: by_band.finish(),
+        }
+    }
 }
 
 impl KeyedGroupOfFrame {
@@ -339,15 +378,13 @@ pub struct ContextLayers {
     tiles_binned_since_last_check: u64,
     chunks_placed_by_this_frame: u64,
     tiles_binned_by_this_frame: u64,
-    stack_changed_shape_with_this_frame: bool,
+    stack_was_computed_for_this_frame: bool,
     // Whether the window server shows the layers above the base layer of the latest frame.
     window_server_shows_media: bool,
     latest_overlay_surface: Option<PresentableSurfaceHandle>,
     overlay_rect: IntRect,
     known_space_geometries: Vec<KnownSpaceGeometry>,
     next_presentable_surface_pool: u32,
-    // Counts the stacks of another shape worked out, so that what was keyed against one is not taken for another.
-    stack_generation: u64,
     // The keys of the tiles of the groups of the latest frame, kept for the next one.
     keyed_groups: Vec<KeyedGroupOfFrame>,
     // What compositing the nodes of composited effects read of each effect in the latest frame, by node.
@@ -733,7 +770,7 @@ impl ContextPresenting {
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         self.layers.chunks_placed_by_this_frame = 0;
         self.layers.tiles_binned_by_this_frame = 0;
-        self.layers.stack_changed_shape_with_this_frame = false;
+        self.layers.stack_was_computed_for_this_frame = false;
         let inputs = LayerStackInputs {
             list: storage,
             tree,
@@ -801,20 +838,9 @@ impl ContextPresenting {
             .as_ref()
             .is_some_and(|stack| stack.placement_at_every_anchor == known.placement);
         if !stack_still_holds {
-            let stack = build_layer_stack(&inputs, &known.anchors, known.placement.clone());
-            // A stack of the same shape keeps what was keyed against the one it replaces, as where the list's records
-            // are is bound anew to every list.
-            let keeps_its_shape = self
-                .layers
-                .stack
-                .as_ref()
-                .is_some_and(|current| current.has_the_shape_of(&stack));
-            if !keeps_its_shape {
-                self.layers.stack_generation += 1;
-                self.layers.layer_stacks_computed_since_last_check += 1;
-                self.layers.stack_changed_shape_with_this_frame = true;
-            }
-            self.layers.stack = Some(stack);
+            self.layers.stack = Some(build_layer_stack(&inputs, &known.anchors, known.placement.clone()));
+            self.layers.layer_stacks_computed_since_last_check += 1;
+            self.layers.stack_was_computed_for_this_frame = true;
         }
         let stack = self.layers.stack.as_mut().expect("a frame with layers has a stack");
         stack.update_window_server_placements(storage, tree, scroll_offsets, viewport_rect);
@@ -908,6 +934,7 @@ impl ContextPresenting {
                 )
             })
             .collect();
+        let chunk_names = storage.chunk_names();
         let scrollbars = frame.frame_inputs.scrollbars_shown_for_the_page();
         let live_content_versions = LiveContentVersionsOfFrame {
             live_content,
@@ -946,6 +973,36 @@ impl ContextPresenting {
             digests_of_replayed_records: vec![None; stack.layers.len()],
             ..TilePass::default()
         };
+        // The groups of the latest frame that each group of this one takes over, found by the name of its band's start
+        // first and by its band's ordinal where none is, each taken by one group at most.
+        let names_of_groups: Vec<NamesOfGroup> = (0..stack.groups.len())
+            .map(|group| NamesOfGroup::of(stack, group, &chunk_names))
+            .collect();
+        let mut keyed_groups_taken_over: Vec<Option<KeyedGroupOfFrame>> =
+            (0..stack.groups.len()).map(|_| None).collect();
+        for (taken_over, names) in keyed_groups_taken_over.iter_mut().zip(&names_of_groups) {
+            if let Some(index) = self
+                .layers
+                .keyed_groups
+                .iter()
+                .position(|known| known.names.by_first_record == names.by_first_record)
+            {
+                *taken_over = Some(self.layers.keyed_groups.swap_remove(index));
+            }
+        }
+        for (taken_over, names) in keyed_groups_taken_over.iter_mut().zip(&names_of_groups) {
+            if taken_over.is_some() {
+                continue;
+            }
+            if let Some(index) = self
+                .layers
+                .keyed_groups
+                .iter()
+                .position(|known| known.names.by_band == names.by_band)
+            {
+                *taken_over = Some(self.layers.keyed_groups.swap_remove(index));
+            }
+        }
         for (group_index, group) in stack.groups.iter().enumerate() {
             // A group whose layers are all below the base layer holds nothing.
             let has_layer_from_base_up = (stack.base_layer..stack.layers.len()).any(
@@ -957,29 +1014,36 @@ impl ContextPresenting {
             let space = stack.nodes[group.node].space;
             let compositing_of_group = compositing_of_layer(stack, group.layer_below_every_cut, composite_offsets);
             let shown_rect = rect_shown_of(&compositing_of_group, viewport_rect);
-            let known =
-                self.layers.keyed_groups.iter().position(|known| {
-                    known.stack_generation == self.layers.stack_generation && known.group == group_index
-                });
+            let names = names_of_groups[group_index];
+            let known = keyed_groups_taken_over[group_index].take();
+            let known_before = known.is_some();
             let mut keyed = match known {
-                Some(index) => self.layers.keyed_groups.swap_remove(index),
+                Some(keyed) => keyed,
                 None => KeyedGroupOfFrame {
-                    stack_generation: self.layers.stack_generation,
+                    names,
                     group: group_index,
                     display_list: frame.display_list.clone(),
                     geometry: geometries[space].clone(),
+                    group_bound_to: group.clone(),
+                    base_layer_bound_to: stack.base_layer,
                     keys: GroupTileKeys::default(),
                     shown_tiles: Vec::new(),
                 },
             };
-            if known.is_none()
+            if !known_before
                 || !Rc::ptr_eq(&keyed.display_list, frame.display_list)
                 || !Rc::ptr_eq(&keyed.geometry, &geometries[space])
+                || keyed.group_bound_to != *group
+                || keyed.base_layer_bound_to != stack.base_layer
             {
                 raster_spaces[space].bind_group(&mut keyed.keys, stack, group_index);
                 keyed.display_list = frame.display_list.clone();
                 keyed.geometry = geometries[space].clone();
+                keyed.group_bound_to = group.clone();
+                keyed.base_layer_bound_to = stack.base_layer;
             }
+            keyed.names = names;
+            keyed.group = group_index;
             let keying = raster_spaces[space].key_shown_tiles(
                 &mut keyed.keys,
                 stack,
@@ -1296,7 +1360,7 @@ impl ContextPresenting {
                 tiles_rastered: self.layers.tiles_rasterized_by_this_frame,
                 tiles_binned: self.layers.tiles_binned_by_this_frame,
                 chunks_placed: self.layers.chunks_placed_by_this_frame,
-                stack_changed_shape: self.layers.stack_changed_shape_with_this_frame,
+                stack_was_computed: self.layers.stack_was_computed_for_this_frame,
             },
         };
         let device_pixel_ratio = self.device_pixel_ratio;

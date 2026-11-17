@@ -8,7 +8,7 @@ composited BlockContainer<DIV>#fixed-frosted-header space=viewport reads=[-27,-2
 fixed frosted header: [L7] painted space=viewport inside e2
 the layers and the commands drawn into them are the same once scrolled: true
 compared: true, matches a direct raster: true
-scrolled, layer stacks computed: 0, layers created: 0
+scrolled, layer stacks computed: 1, layers created: 0
 the layers are the same once the box moved: true
 compared: true, matches a direct raster: true
-moved the box, layer stacks computed: 0, layers created: 0
+moved the box, layer stacks computed: 1, layers created: 0

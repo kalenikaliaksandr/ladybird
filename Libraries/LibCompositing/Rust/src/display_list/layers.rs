@@ -196,6 +196,9 @@ impl Cut {
 pub struct LayerGroup {
     pub node: usize,
     pub band: u32,
+    /// Where the first record painted in the band is, of the node or of a node inside it, which names the band from one
+    /// list to the next where bands of the node painted before it come or go.
+    pub first_position: ListPosition,
     /// The group of the band of the parent node that this band is a barrier in.
     pub group_it_is_a_barrier_in: Option<usize>,
     /// In paint order.
@@ -215,6 +218,30 @@ impl LayerGroup {
             .filter(|cut| cut.cuts_cell(cell))
             .last()
             .map_or(self.layer_below_every_cut, |cut| cut.layer_above)
+    }
+
+    /// The layer of the group above the first `count` of the barriers that cut the tile at `cell`, in paint order, or
+    /// none where fewer cut it.
+    pub fn layer_above_cuts_of_cell(&self, cell: IntRect, count: usize) -> Option<usize> {
+        match count {
+            0 => Some(self.layer_below_every_cut),
+            count => self
+                .cuts
+                .iter()
+                .filter(|cut| cut.cuts_cell(cell))
+                .nth(count - 1)
+                .map(|cut| cut.layer_above),
+        }
+    }
+
+    /// How many of the barriers that cut the tile at `cell` are below `layer` of the group there, as
+    /// `layer_above_cuts_of_cell` counts them.
+    pub fn cuts_of_cell_below_layer(&self, cell: IntRect, layer: usize) -> usize {
+        self.cuts
+            .iter()
+            .filter(|cut| cut.cuts_cell(cell))
+            .position(|cut| cut.layer_above == layer)
+            .map_or(0, |position| position + 1)
     }
 
     /// Which barriers cut the tile at `cell`, one bit each, up to as many as a word holds and every further one alike:
@@ -362,6 +389,7 @@ impl LayerStack {
             groups: vec![LayerGroup {
                 node: 0,
                 band: 0,
+                first_position: whole_list.begin,
                 group_it_is_a_barrier_in: None,
                 record_spans: vec![whole_list],
                 cuts: Vec::new(),
@@ -409,71 +437,6 @@ impl LayerStack {
 
     pub fn keys(&self) -> impl Iterator<Item = LayerKey> + '_ {
         self.layers.iter().map(|layer| layer.key)
-    }
-
-    /// Whether the stack has the shape of `other`: the same spaces, placement nodes and layers, which can hold content
-    /// where those of `other` can, and the same barriers cutting the same regions, wherever the records of the two
-    /// lists are. What is keyed against a stack holds for any stack of its shape.
-    pub fn has_the_shape_of(&self, other: &LayerStack) -> bool {
-        let space_is_alike = |space: &RasterSpace, other: &RasterSpace| {
-            space.anchor == other.anchor
-                && space.identity == other.identity
-                && space.parent == other.parent
-                && space.anchor_kind == other.anchor_kind
-        };
-        let layer_is_alike = |layer: &StackLayer, other: &StackLayer| {
-            layer.key == other.key
-                && layer.node == other.node
-                && layer.group_of_band == other.group_of_band
-                && layer.may_hold_content == other.may_hold_content
-                && match (&layer.content, &other.content) {
-                    (LayerContent::Painted { group }, LayerContent::Painted { group: other_group }) => {
-                        group == other_group
-                    }
-                    (
-                        LayerContent::Media { content, region, .. },
-                        LayerContent::Media {
-                            content: other_content,
-                            region: other_region,
-                            ..
-                        },
-                    ) => content == other_content && region == other_region,
-                    _ => false,
-                }
-        };
-        let group_is_alike = |group: &LayerGroup, other: &LayerGroup| {
-            group.node == other.node
-                && group.band == other.band
-                && group.group_it_is_a_barrier_in == other.group_it_is_a_barrier_in
-                && group.layer_below_every_cut == other.layer_below_every_cut
-                && group.cuts.len() == other.cuts.len()
-                && group.cuts.iter().zip(&other.cuts).all(|(cut, other)| {
-                    cut.barrier == other.barrier && cut.region == other.region && cut.layer_above == other.layer_above
-                })
-        };
-        self.unlayered_reason == other.unlayered_reason
-            && self.layering_obstacles == other.layering_obstacles
-            && self.base_layer == other.base_layer
-            && self.nodes == other.nodes
-            && self.composited_effects == other.composited_effects
-            && self.spaces.len() == other.spaces.len()
-            && self
-                .spaces
-                .iter()
-                .zip(&other.spaces)
-                .all(|(space, other)| space_is_alike(space, other))
-            && self.layers.len() == other.layers.len()
-            && self
-                .layers
-                .iter()
-                .zip(&other.layers)
-                .all(|(layer, other)| layer_is_alike(layer, other))
-            && self.groups.len() == other.groups.len()
-            && self
-                .groups
-                .iter()
-                .zip(&other.groups)
-                .all(|(group, other)| group_is_alike(group, other))
     }
 
     pub fn space_of_layer(&self, layer: usize) -> usize {
@@ -2034,10 +1997,15 @@ impl StackBeingBuilt<'_> {
         let barriers = std::mem::take(&mut self.bands[band_index].barriers);
         let unit_position = |unit: usize| placement.units[unit].span.begin;
 
+        let first_position = placement
+            .units
+            .get(self.bands[band_index].first_unit)
+            .map_or(ListPosition::default(), |unit| unit.span.begin);
         let group = self.groups.len();
         self.groups.push(LayerGroup {
             node,
             band: ordinal,
+            first_position,
             group_it_is_a_barrier_in,
             record_spans: Vec::new(),
             cuts: Vec::new(),
@@ -2129,6 +2097,7 @@ impl StackBeingBuilt<'_> {
         let group_so_far = LayerGroup {
             node,
             band: ordinal,
+            first_position,
             group_it_is_a_barrier_in,
             record_spans: Vec::new(),
             cuts,

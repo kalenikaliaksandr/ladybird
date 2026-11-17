@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    canvas { position: absolute; left: 20px; top: 20px; }
+    .box { position: absolute; width: 40px; height: 40px; background: green; }
+    #inserted { position: fixed; left: 600px; top: 420px; width: 40px; height: 40px; }
+</style>
+<div id="stripes"></div>
+<canvas id="canvas" width="100" height="60"></canvas>
+<div class="box" style="left: 300px; top: 120px"></div>
+<div class="box" id="before-the-header" style="left: 680px; top: 460px"></div>
+<div id="header" style="position: fixed; left: 0; top: 540px; width: 800px; height: 30px; background: navy"></div>
+<div class="box" style="left: 300px; top: 300px; background: orange"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        canvas.getContext("2d").fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersBefore = layersOfTheDisplayList();
+
+        // The canvas moves from the first cell into the one right of it as well, which its barrier now cuts too.
+        canvas.style.left = "200px";
+        const canvasMoved = await presentedFrameState();
+        const layersOnceTheCanvasMoved = layersOfTheDisplayList();
+
+        // A fixed box painted before content of the document that is painted before the header starts a band of the
+        // document above it, and the bands of the document after it count one more.
+        const inserted = document.createElement("div");
+        inserted.id = "inserted";
+        inserted.style.background = colorUniqueToThisPageLoad();
+        document.body.insertBefore(inserted, document.getElementById("before-the-header"));
+        const bandInserted = await presentedFrameState();
+
+        println("before:");
+        println(layersBefore);
+        println("once the canvas moved:");
+        println(layersOnceTheCanvasMoved);
+        println("once the fixed box is in:");
+        println(layersOfTheDisplayList());
+        for (const [what, state] of [
+            ["moved the canvas", canvasMoved],
+            ["inserted the fixed box", bandInserted],
+        ]) {
+            printPresentedFrameState(state);
+            println(`${what}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, tiles binned: ${state.tilesBinnedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

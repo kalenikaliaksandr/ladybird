@@ -727,6 +727,9 @@ pub struct KeyedTile {
     pub cuts: u64,
     /// The part of the tile's cell that what it holds can reach.
     pub content_bounds: IntRect,
+    // How many of the barriers that cut the cell are below the tile's layer, which names the layer in any stack whose
+    // group cuts the cell alike.
+    cuts_of_its_cell_below_it: usize,
     // In paint order.
     entries: Vec<TileEntry>,
     constants_key: TileKey,
@@ -864,39 +867,33 @@ impl GroupBinding {
     // What binning the cell at `cell` reads: the chunks that can reach it and the barriers that cut it, in paint order.
     fn signature_of_cell(&self, layer_group: &LayerGroup, cell: IntRect, chunks: &[usize]) -> TileKey {
         let mut hasher = KeyHasher::new();
-        let mut cuts = layer_group
-            .cuts
-            .iter()
-            .enumerate()
-            .filter(|(_, cut)| cut.cuts_cell(cell))
-            .peekable();
+        let mut cuts = layer_group.cuts.iter().filter(|cut| cut.cuts_cell(cell)).peekable();
         // What decides the layer of an entry is which cuts are painted before it, so a cut is told by where it is among
-        // the chunks that reach the cell, and by its offset where it is in one of those.
-        let write_cut = |hasher: &mut KeyHasher, index: usize, offset_in_chunk_reaching_cell: Option<u32>| {
+        // the chunks that reach the cell, and by its offset where it is in one of those. Which barrier a cut is does not
+        // matter, as the tiles of the cell name their layers by how many of the cuts of the cell are below them, and
+        // neither do the cuts painted after every chunk that reaches the cell.
+        let write_cut = |hasher: &mut KeyHasher, offset_in_chunk_reaching_cell: Option<u32>| {
             hasher.write_u32(2);
-            hasher.write_u32(index as u32);
             hasher.write_u32(offset_in_chunk_reaching_cell.unwrap_or(u32::MAX));
         };
         for &index in chunks {
             let chunk = &self.chunks[index];
-            while let Some((cut_index, _)) = cuts.next_if(|(_, cut)| cut.position.chunk < chunk.position) {
-                write_cut(&mut hasher, cut_index, None);
+            while cuts.next_if(|cut| cut.position.chunk < chunk.position).is_some() {
+                write_cut(&mut hasher, None);
             }
             hasher.write_u32(1);
             hasher.write_key(chunk.digest);
-            while let Some((cut_index, cut)) = cuts.next_if(|(_, cut)| cut.position.chunk == chunk.position) {
-                write_cut(&mut hasher, cut_index, Some(cut.position.offset));
+            while let Some(cut) = cuts.next_if(|cut| cut.position.chunk == chunk.position) {
+                write_cut(&mut hasher, Some(cut.position.offset));
             }
         }
-        for (cut_index, _) in cuts {
-            write_cut(&mut hasher, cut_index, None);
-        }
+        // A cut painted after every chunk that reaches the cell has nothing above it there.
         hasher.finish()
     }
 }
 
-/// What the tiles of the layers of one group hold, kept from frame to frame and from list to list while the stack
-/// keeps its shape: the tiles keyed so far, binned against the list and the geometry the group is bound to. A tile is
+/// What the tiles of the layers of one group hold, kept from frame to frame, from list to list and from stack to stack:
+/// the tiles keyed so far, binned against the list, the geometry and the group of the stack they are bound to. A tile is
 /// binned again only where a chunk that can reach it or a barrier that cuts it changed, and keyed again only where
 /// what it reads outside the list or the constants of its layer changed.
 #[derive(Default)]
@@ -914,6 +911,7 @@ pub struct GroupTileKeys {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TileKeying {
     pub tiles_keyed: usize,
+    /// The cells binned anew where the group holds something.
     pub cells_binned: usize,
 }
 
@@ -1789,7 +1787,6 @@ impl<'a> RasterSpaceOfFrame<'a> {
             }
         }
         let mut digest_hasher = KeyHasher::new();
-        digest_hasher.write_u32(layer_group.layer_below_every_cut as u32);
         digest_hasher.write_bool(stack.base_layer == layer_group.layer_below_every_cut);
         let chunk_names = display_list.chunk_names();
         if list.replays_every_record_into_every_tile {
@@ -2115,9 +2112,9 @@ impl<'a> RasterSpaceOfFrame<'a> {
         }
     }
 
-    /// Binds the tiles of `group` to the list and the geometry of the frame. A tile keyed before keeps its bin and its
-    /// key where the chunks that can reach it and the barriers that cut it are as they were, in the same order, and is
-    /// forgotten otherwise.
+    /// Binds the tiles of `group` to the list and the geometry of the frame and to the group in `stack`. A tile keyed
+    /// before keeps its bin and its key where the chunks that can reach it and the barriers that cut it are as they
+    /// were, in the same order, whatever barriers they are, and is forgotten otherwise.
     pub fn bind_group(&self, keys: &mut GroupTileKeys, stack: &LayerStack, group: usize) {
         let binding = self.binding_of_group(stack, group);
         keys.replays_whole_list = stack.replays_whole_list() && self.list.tree_has_sorting_contexts;
@@ -2143,11 +2140,18 @@ impl<'a> RasterSpaceOfFrame<'a> {
             .map(|(position, name)| (*name, position as u32))
             .collect();
         keys.cells.retain(|coord, cell| {
-            let signature = binding.signature_of_cell(layer_group, coord.cell_rect(), &chunks_reaching[coord]);
+            let cell_rect = coord.cell_rect();
+            let signature = binding.signature_of_cell(layer_group, cell_rect, &chunks_reaching[coord]);
             if signature != cell.signature {
                 return false;
             }
             for tile in &mut cell.tiles {
+                let Some(layer) = layer_group.layer_above_cuts_of_cell(cell_rect, tile.cuts_of_its_cell_below_it)
+                else {
+                    return false;
+                };
+                tile.layer = layer;
+                tile.cuts = layer_group.cuts_of_cell(cell_rect);
                 for entry in &mut tile.entries {
                     let name = old_binding.chunk_names[entry.chunk() as usize];
                     let Some(&position) = positions_of_names.get(&name) else {
@@ -2320,6 +2324,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
                     raster_margin_in_device_pixels,
                     cuts,
                     content_bounds,
+                    cuts_of_its_cell_below_it: layer_group.cuts_of_cell_below_layer(cell, layer),
                     entries,
                     constants_key: constants_key_of(layer),
                     reads_outside_the_list,
@@ -2329,9 +2334,12 @@ impl<'a> RasterSpaceOfFrame<'a> {
                 tiles.push(tile);
                 keying.tiles_keyed += 1;
             }
+            // A cell that nothing of the group reaches is noted as holding nothing, which is not binning it.
+            if !tiles.is_empty() {
+                keying.cells_binned += 1;
+            }
             let signature = binding.signature_of_cell(layer_group, cell, &chunks_reaching[&coord]);
             keys.cells.insert(coord, BinnedCell { signature, tiles });
-            keying.cells_binned += 1;
         }
         keying
     }
@@ -2644,7 +2652,7 @@ mod tests {
         let at_start = tree.with_visual_animation_samples(0);
         let halfway = tree.with_visual_animation_samples(500_000_000);
         let stack = stack_of(&display_list, &at_start);
-        assert!(stack_of(&display_list, &halfway).has_the_shape_of(&stack));
+        assert_eq!(stack_of(&display_list, &halfway).layers, stack.layers);
 
         let turns = keyed_in_turn(&[(&display_list, &at_start, &stack), (&display_list, &halfway, &stack)]);
         assert_eq!(turns[0].0, 3);

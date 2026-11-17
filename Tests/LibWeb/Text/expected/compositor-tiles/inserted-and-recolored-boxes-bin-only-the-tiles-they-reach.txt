@@ -1,5 +1,5 @@
 compared: true, matches a direct raster: true
-layer stacks computed: 0
+layer stacks computed: 1
 layers created: 0
 tiles binned: 2
 tiles rasterized: 2
