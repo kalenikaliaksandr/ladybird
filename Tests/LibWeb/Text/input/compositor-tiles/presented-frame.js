@@ -21,6 +21,10 @@ async function presentedFrameState() {
     }
 }
 
+// Antialiased text over a translucent background, rastered into a layer above other layers and composited over them,
+// rounds a channel up to one level away from the same text painted straight over what is below it.
+const ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER = 1;
+
 function printPresentedFrameState(state, tolerance = 0) {
     println(`compared: ${state.compared}, matches a direct raster: ${state.maxChannelDifference <= tolerance}`);
 }
@@ -30,6 +34,17 @@ async function presentedFrameStateOnceNothingIsLeftToRasterize() {
     for (let attempt = 0; attempt < 10 && state.tilesRasterizedSinceLastCheck !== 0; ++attempt)
         state = await presentedFrameState();
     return state;
+}
+
+// The layers the display list dump names, one per line, with the media and backdrop filters that got no layer.
+function layersOfTheDisplayList() {
+    const dump = internals.dumpDisplayList();
+    const start = dump.indexOf("Layers:\n") + "Layers:\n".length;
+    return dump
+        .slice(start, dump.indexOf("\n\n", start))
+        .split("\n")
+        .map(line => line.trim())
+        .join("\n");
 }
 
 // The compositor layers overlay of the frame painted last, without the lines that depend on when it was painted.

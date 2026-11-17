@@ -26,6 +26,7 @@ const LABEL_TEXT_COLOR: Color = Color::from_rgba(255, 255, 255, 255);
 const PANEL_BACKGROUND_COLOR: Color = Color::from_rgba(16, 18, 24, 175);
 // Drawn around each outline, so that it shows over light and dark pages alike.
 const OUTLINE_HALO_COLOR: Color = Color::from_rgba(0, 0, 0, 150);
+const BACKDROP_LAYER_TEXT: &str = "filters what is composited below it";
 
 /// Why a tile was rastered, as the compositor tells the cases apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +122,8 @@ pub enum LayerOfFrameContent {
         region: IntRect,
         presentation: MediaPresentation,
     },
+    /// What a backdrop layer reads and draws, in the raster coordinates of its space.
+    Backdrop { region: IntRect },
 }
 
 /// What the overlay is worked out from for a frame.
@@ -132,7 +135,7 @@ pub struct FrameOfLayerOverlay {
     /// Layers out of the stack that keep their tiles for when they come back.
     pub layers_kept_out_of_the_stack: Vec<LayerKey>,
     pub single_layer_reason: Option<String>,
-    pub media_without_layers: Vec<String>,
+    pub media_and_backdrop_filters_without_layers: Vec<String>,
     pub counts: FrameCounts,
 }
 
@@ -178,6 +181,9 @@ pub enum ModelLayerContent {
         region: IntRect,
         presentation: MediaPresentation,
     },
+    Backdrop {
+        region: IntRect,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,7 +213,7 @@ impl ModelLayer {
                 .iter()
                 .filter_map(|tile| tile.held_rect)
                 .fold(IntRect::default(), IntRect::united),
-            ModelLayerContent::Media { region, .. } => *region,
+            ModelLayerContent::Media { region, .. } | ModelLayerContent::Backdrop { region } => *region,
         }
     }
 
@@ -223,7 +229,7 @@ pub struct LayerOverlayModel {
     /// From the base layer up.
     pub layers: Vec<ModelLayer>,
     pub single_layer_reason: Option<String>,
-    pub media_without_layers: Vec<String>,
+    pub media_and_backdrop_filters_without_layers: Vec<String>,
     pub last_frame: FrameCounts,
     /// Until when some tile stays highlighted.
     pub highlights_fade_until: Option<MonotonicTime>,
@@ -266,6 +272,7 @@ impl LayerOverlayModel {
                 )
             }
             ModelLayerContent::Media { presentation, .. } => format!("{}: {presentation}", layer.name),
+            ModelLayerContent::Backdrop { .. } => format!("{}: {BACKDROP_LAYER_TEXT}", layer.name),
         }
     }
 
@@ -293,7 +300,11 @@ impl LayerOverlayModel {
         if let Some(reason) = &self.single_layer_reason {
             rows.push(vec![(None, format!("single layer: {reason}"))]);
         }
-        rows.extend(self.media_without_layers.iter().map(|name| vec![(None, name.clone())]));
+        rows.extend(
+            self.media_and_backdrop_filters_without_layers
+                .iter()
+                .map(|name| vec![(None, name.clone())]),
+        );
         rows.push(vec![(None, self.last_frame_text())]);
         for causes in RasterCause::ALL.chunks(3) {
             rows.push(
@@ -318,6 +329,7 @@ fn layer_label_text(layer: &ModelLayer) -> String {
     match &layer.content {
         ModelLayerContent::Painted { .. } => layer.name.clone(),
         ModelLayerContent::Media { presentation, .. } => format!("{}: {presentation}", layer.name),
+        ModelLayerContent::Backdrop { .. } => format!("{}: {BACKDROP_LAYER_TEXT}", layer.name),
     }
 }
 
@@ -346,7 +358,7 @@ impl std::fmt::Display for LayerOverlayModel {
                 )?;
             }
         }
-        for name in &self.media_without_layers {
+        for name in &self.media_and_backdrop_filters_without_layers {
             writeln!(formatter, "{name}")?;
         }
         if let Some(reason) = &self.single_layer_reason {
@@ -564,6 +576,7 @@ impl LayerOverlay {
                     LayerOfFrameContent::Media { region, presentation } => {
                         ModelLayerContent::Media { region, presentation }
                     }
+                    LayerOfFrameContent::Backdrop { region } => ModelLayerContent::Backdrop { region },
                 };
                 ModelLayer {
                     name: layer.name,
@@ -578,7 +591,7 @@ impl LayerOverlay {
             viewport_rect: frame.viewport_rect,
             layers,
             single_layer_reason: frame.single_layer_reason,
-            media_without_layers: frame.media_without_layers,
+            media_and_backdrop_filters_without_layers: frame.media_and_backdrop_filters_without_layers,
             last_frame: frame.counts,
             highlights_fade_until,
         }
@@ -966,7 +979,7 @@ mod tests {
             layers,
             layers_kept_out_of_the_stack: Vec::new(),
             single_layer_reason: None,
-            media_without_layers: Vec::new(),
+            media_and_backdrop_filters_without_layers: Vec::new(),
             counts: FrameCounts::default(),
         }
     }
@@ -974,7 +987,7 @@ mod tests {
     fn tiles_of(model: &LayerOverlayModel, layer: usize) -> &[ModelTile] {
         match &model.layers[layer].content {
             ModelLayerContent::Painted { tiles, .. } => tiles,
-            ModelLayerContent::Media { .. } => panic!("a painted layer"),
+            ModelLayerContent::Media { .. } | ModelLayerContent::Backdrop { .. } => panic!("a painted layer"),
         }
     }
 
@@ -1230,7 +1243,7 @@ mod tests {
             ],
         );
         frame.counts.tiles_rastered = 1;
-        frame.media_without_layers = vec!["no layer for video: inside a group effect".into()];
+        frame.media_and_backdrop_filters_without_layers = vec!["no layer for video: inside a group effect".into()];
         assert_eq!(
             overlay.model_of_frame(frame).to_string(),
             "[L0] base space=document: 2 tiles, 512 KiB\n\

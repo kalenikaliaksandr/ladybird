@@ -8,20 +8,21 @@
 //!
 //! Content is rastered in the space of the scroll node it moves with, and its raster is composited within the clips it
 //! leaves to apply then: content of one space and one set of such clips makes a placement node. Within a node, a
-//! canvas, video or nested context that is a layer of its own, and each band of content of a node inside it, sits
-//! between the node's records as a barrier. A barrier cuts the tiles of the node it can show in at its paint position:
-//! there, the node's records painted before it go into the node's layer below it and those painted after it into the
-//! node's layer above it. Elsewhere it cuts nothing. A band of a node inside ends where content outside it that can
-//! show where the band can is painted, so the layers stacked in paint order of their barriers paint every pixel in the
-//! order the list does, as long as nothing between them reads what is below it.
+//! canvas, video or nested context that is a layer of its own, a backdrop filter that filters what is composited below
+//! it, and each band of content of a node inside it, sits between the node's records as a barrier. A barrier cuts the
+//! tiles of the node it can show in, or for a backdrop filter that it reads, at its paint position: there, the node's
+//! records painted before it go into the node's layer below it and those painted after it into the node's layer above
+//! it. Elsewhere it cuts nothing. A band of a node inside ends where content outside it that can show where the band
+//! can is painted, so the layers stacked in paint order of their barriers paint every pixel in the order the list does,
+//! as long as nothing within a layer reads what is below the layer.
 
 use crate::display_list::builder::read_command;
 use crate::display_list::commands::{DeclareMaskContent, DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{EffectGeometry, compute_effect_geometry};
 pub use crate::display_list::placement::{CompositeClip, RasterSpace, VIEWPORT_RASTER_SPACE, raster_space_anchors};
 use crate::display_list::placement::{
-    PlacementTables, RasterSpaces, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space, lowest_common_space,
-    raster_scroll_offsets, space_is_ancestor_or_self, spaces_with_geometries,
+    PlacementTables, RasterSpaces, RunGroups, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space,
+    lowest_common_space, raster_scroll_offsets, space_is_ancestor_or_self, spaces_with_geometries,
 };
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
@@ -33,6 +34,8 @@ use std::hash::{BuildHasher, Hasher};
 use std::rc::Rc;
 
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
+// Each one is a backdrop layer and a painted layer above it, so four take a third of the most layers a stack keeps.
+pub const MAXIMUM_BACKDROP_LAYER_COUNT: usize = 4;
 // Beyond this, the innermost space that scrolls is rastered in the space around it instead.
 const MAXIMUM_LAYER_COUNT: usize = 24;
 // Beyond this, a unit is taken to reach every layer of its band painted before it, rather than followed tile by tile.
@@ -72,6 +75,57 @@ impl std::fmt::Display for MediaLayerRejection {
     }
 }
 
+/// Why a backdrop filter that reads the root group is applied within the layer of what it reads rather than by a layer
+/// of its own, which filters what is composited below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackdropLayerRejection {
+    OpacityGroupsTheBackdropWithTheContent,
+    BlendModeGroupsTheBackdropWithTheContent,
+    FilterGroupsTheBackdropWithTheContent,
+    MasksApplyToTheBackdrop,
+    ContentReadsTheFilteredBackdrop,
+    InsideGroupEffect,
+    ContentIsNotOneStretchStartingWithTheBackdrop,
+    CompositedWithinClips,
+    RegionIsNotAnAxisAlignedRect,
+    ReachOfFilterIsNotKnown,
+    UnderContentReadingTheRootGroup,
+    MoreBackdropFiltersThanLayersFor,
+}
+
+impl std::fmt::Display for BackdropLayerRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent => {
+                "its opacity composites the filtered backdrop and the content as one"
+            }
+            BackdropLayerRejection::BlendModeGroupsTheBackdropWithTheContent => {
+                "its blend mode composites the filtered backdrop and the content as one"
+            }
+            BackdropLayerRejection::FilterGroupsTheBackdropWithTheContent => {
+                "its filter applies to the filtered backdrop and the content as one"
+            }
+            BackdropLayerRejection::MasksApplyToTheBackdrop => "its masks apply to the filtered backdrop",
+            BackdropLayerRejection::ContentReadsTheFilteredBackdrop => "content in it reads the filtered backdrop",
+            BackdropLayerRejection::InsideGroupEffect => "inside a group effect",
+            BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop => {
+                "its content is not one stretch of the list that starts where it reads the backdrop"
+            }
+            BackdropLayerRejection::CompositedWithinClips => "composited within clips of another space",
+            BackdropLayerRejection::RegionIsNotAnAxisAlignedRect => {
+                "its region is not an axis-aligned rect in its raster space"
+            }
+            BackdropLayerRejection::ReachOfFilterIsNotKnown => "how far its filter reads is not known",
+            BackdropLayerRejection::UnderContentReadingTheRootGroup => {
+                "under content that reads the root group below it"
+            }
+            BackdropLayerRejection::MoreBackdropFiltersThanLayersFor => {
+                "past the most backdrop filters that get layers"
+            }
+        })
+    }
+}
+
 /// Why a list is painted in a single layer that replays all of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnlayeredReason {
@@ -107,6 +161,8 @@ pub enum BarrierKey {
     Media { content: LiveContent, ordinal: u32 },
     /// The `band`th band of content of a node, counted over the whole list.
     Band { node: PlacementKey, band: u32 },
+    /// The `ordinal`th backdrop filter of a node that has a layer of its own, counted over the whole list.
+    Backdrop { node: PlacementKey, ordinal: u32 },
 }
 
 /// Names a layer from one list to the next, so that its tiles outlive both.
@@ -119,6 +175,10 @@ pub enum LayerKey {
     },
     Media {
         content: LiveContent,
+        ordinal: u32,
+    },
+    Backdrop {
+        node: PlacementKey,
         ordinal: u32,
     },
 }
@@ -201,6 +261,14 @@ pub enum LayerContent {
         /// For a canvas or a video, where the window server can show its content by itself, or why it cannot.
         window_server_placement: Option<Result<WindowServerPlacement, WindowServerRejection>>,
     },
+    /// The backdrop filter of an effect, which filters what is composited below the layer when the record that marks
+    /// where the effect reads its backdrop is replayed over it. The effect's content goes into the layers above it.
+    Backdrop {
+        effect: EffectNodeIndex,
+        marker_span: ListSpan,
+        /// What the filter reads and draws, in the raster coordinates of the node's space.
+        read_area: IntRect,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -228,6 +296,9 @@ pub struct LayerStack {
     pub unlayered_reason: Option<UnlayeredReason>,
     /// The canvases, videos and nested contexts that were not given layers, and why.
     pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
+    /// The effects whose backdrop filter reads the root group and is applied within the layer of what it reads, and
+    /// why.
+    pub rejected_backdrop_filters: Vec<(EffectNodeIndex, BackdropLayerRejection)>,
     /// Where the parts of the list are placed among the spaces of the stack.
     pub placement: ListPlacement,
     /// Where they are placed at every anchor the tree offers, which the stack was worked out from: a later frame
@@ -286,6 +357,7 @@ impl LayerStack {
             base_layer: 0,
             unlayered_reason: reason,
             rejected_media: Vec::new(),
+            rejected_backdrop_filters: Vec::new(),
             placement: ListPlacement::default(),
             placement_at_every_anchor: ListPlacement::default(),
         }
@@ -326,6 +398,14 @@ impl LayerStack {
                             ..
                         },
                     ) => content == other_content && region == other_region,
+                    (
+                        LayerContent::Backdrop { effect, read_area, .. },
+                        LayerContent::Backdrop {
+                            effect: other_effect,
+                            read_area: other_read_area,
+                            ..
+                        },
+                    ) => effect == other_effect && read_area == other_read_area,
                     _ => false,
                 }
         };
@@ -404,6 +484,25 @@ impl LayerStack {
             .any(|layer| matches!(layer.content, LayerContent::Media { .. }))
     }
 
+    /// Whether a layer of the stack filters what is composited below it, which then has to be composited by the
+    /// compositor rather than shown above the frame by the window server.
+    pub fn has_backdrop_layers(&self) -> bool {
+        self.layers[self.base_layer..]
+            .iter()
+            .any(|layer| matches!(layer.content, LayerContent::Backdrop { .. }))
+    }
+
+    /// The effects whose backdrop filter a layer of the stack applies, which rasters of the effects' content leave out.
+    pub fn backdrop_filters_applied_by_layers(&self) -> Vec<EffectNodeIndex> {
+        self.layers
+            .iter()
+            .filter_map(|layer| match layer.content {
+                LayerContent::Backdrop { effect, .. } => Some(effect),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Works out again where the window server can show the content of each canvas and video layer, under
     /// `scroll_offsets`, as the stack is kept while its spaces scroll and its media move with them.
     pub fn update_window_server_placements(
@@ -465,21 +564,23 @@ impl LayerStack {
     }
 
     fn name_of_barrier(&self, barrier: &BarrierKey) -> String {
+        let name_of_barrier_layer = |key: LayerKey| {
+            let layer = self
+                .layers
+                .iter()
+                .position(|layer| layer.key == key)
+                .expect("a media or backdrop barrier is a layer of the stack");
+            format!("L{layer}")
+        };
         match barrier {
-            BarrierKey::Media { content, ordinal } => {
-                let layer = self
-                    .layers
-                    .iter()
-                    .position(|layer| {
-                        layer.key
-                            == LayerKey::Media {
-                                content: *content,
-                                ordinal: *ordinal,
-                            }
-                    })
-                    .expect("a media barrier is a layer of the stack");
-                format!("L{layer}")
-            }
+            BarrierKey::Media { content, ordinal } => name_of_barrier_layer(LayerKey::Media {
+                content: *content,
+                ordinal: *ordinal,
+            }),
+            BarrierKey::Backdrop { node, ordinal } => name_of_barrier_layer(LayerKey::Backdrop {
+                node: *node,
+                ordinal: *ordinal,
+            }),
             BarrierKey::Band { node, band } => {
                 let node = self
                     .nodes
@@ -518,8 +619,21 @@ impl LayerStack {
                 region.width,
                 region.height
             ),
-            (LayerKey::Media { .. }, LayerContent::Painted { .. }) => unreachable!("a media key names media"),
+            (LayerKey::Backdrop { ordinal, .. }, LayerContent::Backdrop { effect, read_area, .. }) => format!(
+                "[L{index}] backdrop #{ordinal} of e{} space={space} reads=[{},{} {}x{}]",
+                effect.0, read_area.x, read_area.y, read_area.width, read_area.height
+            ),
+            (LayerKey::Media { .. } | LayerKey::Backdrop { .. }, _) => {
+                unreachable!("a media or backdrop key names a layer of its kind")
+            }
         }
+    }
+
+    /// What the dump says of a backdrop filter that reads the root group and has no layer of its own, and why.
+    pub fn names_of_backdrop_filters_without_layers(&self) -> impl Iterator<Item = String> + '_ {
+        self.rejected_backdrop_filters
+            .iter()
+            .map(|(effect, rejection)| format!("no backdrop layer for e{}: {rejection}", effect.0))
     }
 
     /// What the dump says of a canvas, video or nested context that was not given a layer, and why.
@@ -556,6 +670,13 @@ impl LayerStack {
             }
             match &layer.content {
                 LayerContent::Media {
+                    window_server_placement: Some(Ok(_)),
+                    ..
+                } if self.has_backdrop_layers() => writeln!(
+                    output,
+                    " replayed: a backdrop layer filters what is composited below it"
+                )?,
+                LayerContent::Media {
                     window_server_placement: Some(Ok(placement)),
                     ..
                 } => writeln!(output, " shown by the window server: {placement}")?,
@@ -566,7 +687,10 @@ impl LayerStack {
                 _ => writeln!(output)?,
             }
         }
-        for name in self.names_of_media_without_layers() {
+        for name in self
+            .names_of_media_without_layers()
+            .chain(self.names_of_backdrop_filters_without_layers())
+        {
             writeln!(output, "{indent}{name}")?;
         }
         Ok(())
@@ -578,9 +702,18 @@ impl LayerStack {
             return vec![0];
         }
         for (index, layer) in self.layers.iter().enumerate() {
-            if let LayerContent::Media { record_span, .. } = &layer.content
-                && record_span.begin == position
-            {
+            let (LayerContent::Media {
+                record_span: barrier_span,
+                ..
+            }
+            | LayerContent::Backdrop {
+                marker_span: barrier_span,
+                ..
+            }) = &layer.content
+            else {
+                continue;
+            };
+            if barrier_span.begin == position {
                 return vec![index];
             }
         }
@@ -760,9 +893,9 @@ impl RootGroupBackdropRead {
     }
 }
 
-// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
-// past it.
-fn backdrop_filter_read_area(
+/// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
+/// past it.
+pub fn backdrop_filter_read_area(
     tree: &VisualContextTree,
     geometry: &SpaceGeometry,
     effect: EffectNodeIndex,
@@ -791,13 +924,28 @@ fn backdrop_filter_read_area(
 }
 
 /// A stretch of records of one group that is placed as one: the whole group, or the records of a run between the
-/// canvases, videos and nested contexts that are layers of their own, or one of those.
+/// canvases, videos and nested contexts that are layers of their own, or one of those, or the record that marks where
+/// an effect with a backdrop layer reads its backdrop, or the rest of that effect's records.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlacedUnit {
     pub span: ListSpan,
     pub group: usize,
     pub reach: IntRect,
     pub media: Option<usize>,
+    pub backdrop: Option<usize>,
+}
+
+/// A backdrop filter that reads the root group and gets a layer of its own, placed with the group of its effect, which
+/// holds the effect's records and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedBackdrop {
+    pub effect: EffectNodeIndex,
+    pub group: usize,
+    /// The record that marks where the effect reads its backdrop, the first of its group.
+    pub marker_span: ListSpan,
+    /// What the filter reads and draws, in the raster coordinates of the group's space, wherever the effect can show if
+    /// it moves within its space.
+    pub read_area: IntRect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -817,6 +965,9 @@ pub struct ListPlacement {
     pub units: Vec<PlacedUnit>,
     pub media: Vec<PlacedMedia>,
     pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
+    /// In paint order.
+    pub backdrops: Vec<PlacedBackdrop>,
+    pub rejected_backdrop_filters: Vec<(EffectNodeIndex, BackdropLayerRejection)>,
 }
 
 fn canonical_composite_clips(clips: &[CompositeClip]) -> Vec<CompositeClip> {
@@ -866,13 +1017,136 @@ fn media_layer_rejection(
     None
 }
 
+// Why the backdrop filter of `reader`, which reads the root group, cannot be applied by a layer of its own between what
+// is composited below it and the content of its effect, or where that layer goes. Applying the filter to what is below
+// and then compositing the content over it gives the pixels of a replay only where nothing composites the filtered
+// backdrop and the content as one, and where the effect's records are one group that starts with the record that marks
+// where the replay reads the backdrop.
+#[allow(clippy::too_many_arguments)]
+fn backdrop_layer_of_reader(
+    inputs: &LayerStackInputs<'_>,
+    run_groups: &RunGroups,
+    groups: &[PlacedRunGroup],
+    geometries: &[Rc<SpaceGeometry>],
+    runs_with_destination_blending: &[bool],
+    reader: EffectNodeIndex,
+    runs_under_reader: &[usize],
+) -> Result<PlacedBackdrop, BackdropLayerRejection> {
+    let tree = inputs.tree;
+    let list = inputs.list;
+    let node = &tree.effect_nodes[reader.0 as usize];
+    let EffectNodeData::Effects(effects) = &node.data else {
+        unreachable!("a backdrop filter belongs to an effects node");
+    };
+    let backdrop_filter = effects
+        .backdrop_filter
+        .as_ref()
+        .expect("a reader of the root group's backdrop has a backdrop filter");
+    if effects.opacity < 1.0 {
+        return Err(BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent);
+    }
+    if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
+        return Err(BackdropLayerRejection::BlendModeGroupsTheBackdropWithTheContent);
+    }
+    if effects.filter.is_some() {
+        return Err(BackdropLayerRejection::FilterGroupsTheBackdropWithTheContent);
+    }
+    if !node.parent.is_none()
+        && matches!(&tree.effect_nodes[node.parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop)
+    {
+        return Err(BackdropLayerRejection::MasksApplyToTheBackdrop);
+    }
+    if run_groups.grouping_effect_of(reader) != reader {
+        return Err(BackdropLayerRejection::InsideGroupEffect);
+    }
+    // A replay of the effect draws its content over the filtered backdrop without a layer between them, so whatever in
+    // it reads what is below it reads the filtered backdrop.
+    let reads_the_filtered_backdrop = runs_under_reader.iter().any(|&run_index| {
+        if runs_with_destination_blending[run_index] {
+            return true;
+        }
+        let mut effect = list.run(run_index).context.effect;
+        while effect != reader {
+            let node = &tree.effect_nodes[effect.0 as usize];
+            if matches!(&node.data, EffectNodeData::Effects(effects)
+                if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal
+                    || effects.backdrop_filter.is_some())
+            {
+                return true;
+            }
+            effect = node.parent;
+        }
+        false
+    });
+    if reads_the_filtered_backdrop {
+        return Err(BackdropLayerRejection::ContentReadsTheFilteredBackdrop);
+    }
+    let (Some(&first_run), Some(&last_run)) = (runs_under_reader.first(), runs_under_reader.last()) else {
+        unreachable!("a reader of the root group's backdrop has runs");
+    };
+    let group_index = run_groups.group_of_run(first_run);
+    let (chunk, run_in_chunk) = list.chunk_of_run(first_run);
+    let table = list.chunk(chunk).record_table();
+    let marker = table
+        .records_of_run(run_in_chunk)
+        .next()
+        .map(|record| &table.records()[record as usize]);
+    let is_one_stretch_starting_with_the_marker = last_run - first_run + 1 == runs_under_reader.len()
+        && run_groups.ranges()[group_index] == (first_run as u32, last_run as u32)
+        && marker.is_some_and(|marker| marker.command_type == DisplayListCommandType::BackdropFilterRegion);
+    if !is_one_stretch_starting_with_the_marker {
+        return Err(BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop);
+    }
+    let marker = marker.expect("the stretch starts with the marker");
+    let group = &groups[group_index];
+    if !group.composite_clips.is_empty() {
+        return Err(BackdropLayerRejection::CompositedWithinClips);
+    }
+    let geometry = &geometries[group.space];
+    let effect_to_device = geometry.world.draw_matrix(node.spatial);
+    let maps_to_an_axis_aligned_rect = effect_to_device.is_2d_affine() && {
+        let affine = effect_to_device.extract_2d_affine();
+        affine.b() == 0.0 && affine.c() == 0.0
+    };
+    if !maps_to_an_axis_aligned_rect {
+        return Err(BackdropLayerRejection::RegionIsNotAnAxisAlignedRect);
+    }
+    // What moves within its space can read wherever its fixed clips let it show.
+    let read_area = if group.moves_within_space {
+        crate::display_list::tile_keys::backdrop_filter_read_reach_in_device_pixels(
+            &backdrop_filter.filter,
+            &effect_to_device,
+        )
+        .map(|reach| group.device_rect.inflated_edges(reach, reach, reach, reach))
+    } else {
+        match backdrop_filter_read_area(tree, geometry, reader) {
+            RootGroupBackdropRead::Within(read_area) => Some(read_area),
+            RootGroupBackdropRead::Nothing | RootGroupBackdropRead::Anywhere => None,
+        }
+    };
+    let Some(read_area) = read_area else {
+        return Err(BackdropLayerRejection::ReachOfFilterIsNotKnown);
+    };
+    Ok(PlacedBackdrop {
+        effect: reader,
+        group: group_index,
+        marker_span: ListSpan {
+            begin: ListPosition::new(chunk, marker.offset),
+            end: ListPosition::new(chunk, marker.end_offset),
+        },
+        read_area,
+    })
+}
+
 /// Where each part of the list is placed among the spaces at `anchors`, given the geometry of each of those spaces,
-/// leaving out of the media layers the drawings at `positions_refused_media_layers`.
+/// leaving out of the media layers the drawings at `positions_refused_media_layers`, and out of the backdrop layers the
+/// backdrop filters of `effects_refused_backdrop_layers`.
 pub fn place_list(
     inputs: &LayerStackInputs<'_>,
     anchors: &[SpatialNodeIndex],
     geometries: &[Rc<SpaceGeometry>],
     positions_refused_media_layers: &[ListPosition],
+    effects_refused_backdrop_layers: &[EffectNodeIndex],
 ) -> ListPlacement {
     let tree = inputs.tree;
     let list = inputs.list;
@@ -891,10 +1165,16 @@ pub fn place_list(
             runs_blending_with_root_group[record.run_index as usize] = true;
         }
     }
+    let mut runs_with_destination_blending = vec![false; list.run_count()];
+    for record in &list.summary().destination_blending_records {
+        runs_with_destination_blending[record.run_index as usize] = true;
+    }
     let mut effect_geometry_of_spaces: Vec<Option<Vec<EffectGeometry>>> = vec![None; spaces.len()];
     let mut group_rects: std::collections::HashMap<(usize, u32), IntRect> = std::collections::HashMap::new();
 
-    let groups: Vec<PlacedRunGroup> = run_groups
+    // Per group, the backdrop filters on the chains of its runs that read the root group, which are read in the group's
+    // layer unless they get layers of their own.
+    let (mut groups, backdrop_readers_of_groups): (Vec<PlacedRunGroup>, Vec<Vec<EffectNodeIndex>>) = run_groups
         .ranges()
         .iter()
         .map(|&(first_run, last_run)| {
@@ -933,6 +1213,7 @@ pub fn place_list(
                 .any(|run_index| tables.context_moves_within_space(tree, list.run(run_index).context, space));
             let mut device_rect = IntRect::default();
             let mut root_group_backdrop_read = RootGroupBackdropRead::Nothing;
+            let mut backdrop_readers = Vec::new();
             for run_index in runs {
                 let run = list.run(run_index);
                 let group = run_groups.grouping_effect_of_run(run_index);
@@ -960,9 +1241,8 @@ pub fn place_list(
                 }
                 if !run.context.effect.is_none() {
                     let backdrop_filter = backdrop_filter_reading_root_group_on_chain[run.context.effect.0 as usize];
-                    if !backdrop_filter.is_none() {
-                        root_group_backdrop_read =
-                            root_group_backdrop_read.united(backdrop_filter_read_area(tree, geometry, backdrop_filter));
+                    if !backdrop_filter.is_none() && !backdrop_readers.contains(&backdrop_filter) {
+                        backdrop_readers.push(backdrop_filter);
                     }
                 }
             }
@@ -979,18 +1259,92 @@ pub fn place_list(
                     false
                 }),
             };
-            PlacedRunGroup {
-                first_run,
-                last_run,
-                space,
-                composite_clips,
-                device_rect,
-                moves_within_space,
-                paints_within_the_root_group,
-                root_group_backdrop_read,
-            }
+            (
+                PlacedRunGroup {
+                    first_run,
+                    last_run,
+                    space,
+                    composite_clips,
+                    device_rect,
+                    moves_within_space,
+                    paints_within_the_root_group,
+                    root_group_backdrop_read,
+                },
+                backdrop_readers,
+            )
         })
-        .collect();
+        .unzip();
+
+    // The backdrop filters that read the root group get layers of their own where they can, the last ones in paint order
+    // once there are more than layers for them: one that reads in the layer of what it reads needs no backdrop layer
+    // below it where it reads, so those left out go first.
+    let mut runs_under_readers: Vec<(EffectNodeIndex, Vec<usize>)> = Vec::new();
+    for run_index in 0..list.run_count() {
+        let effect = list.run(run_index).context.effect;
+        if effect.is_none() {
+            continue;
+        }
+        let reader = backdrop_filter_reading_root_group_on_chain[effect.0 as usize];
+        if reader.is_none() {
+            continue;
+        }
+        match runs_under_readers.iter_mut().find(|(known, _)| *known == reader) {
+            Some((_, runs)) => runs.push(run_index),
+            None => runs_under_readers.push((reader, vec![run_index])),
+        }
+    }
+    let mut backdrop_layers_of_readers: Vec<(EffectNodeIndex, Result<PlacedBackdrop, BackdropLayerRejection>)> =
+        runs_under_readers
+            .iter()
+            .map(|(reader, runs_under_reader)| {
+                let placed = backdrop_layer_of_reader(
+                    inputs,
+                    run_groups,
+                    &groups,
+                    geometries,
+                    &runs_with_destination_blending,
+                    *reader,
+                    runs_under_reader,
+                )
+                .and_then(|placed| {
+                    if effects_refused_backdrop_layers.contains(reader) {
+                        Err(BackdropLayerRejection::UnderContentReadingTheRootGroup)
+                    } else {
+                        Ok(placed)
+                    }
+                });
+                (*reader, placed)
+            })
+            .collect();
+    let mut backdrop_layers_past_the_most = backdrop_layers_of_readers
+        .iter()
+        .filter(|(_, placed)| placed.is_ok())
+        .count()
+        .saturating_sub(MAXIMUM_BACKDROP_LAYER_COUNT);
+    for (_, placed) in &mut backdrop_layers_of_readers {
+        if backdrop_layers_past_the_most > 0 && placed.is_ok() {
+            *placed = Err(BackdropLayerRejection::MoreBackdropFiltersThanLayersFor);
+            backdrop_layers_past_the_most -= 1;
+        }
+    }
+    let mut backdrops: Vec<PlacedBackdrop> = Vec::new();
+    let mut rejected_backdrop_filters = Vec::new();
+    for (reader, placed) in backdrop_layers_of_readers {
+        match placed {
+            Ok(placed) => backdrops.push(placed),
+            Err(rejection) => rejected_backdrop_filters.push((reader, rejection)),
+        }
+    }
+    for (group, backdrop_readers) in groups.iter_mut().zip(&backdrop_readers_of_groups) {
+        let geometry = &geometries[group.space];
+        for &reader in backdrop_readers {
+            if backdrops.iter().all(|backdrop| backdrop.effect != reader) {
+                group.root_group_backdrop_read = group
+                    .root_group_backdrop_read
+                    .united(backdrop_filter_read_area(tree, geometry, reader));
+            }
+        }
+    }
 
     // The canvases, videos and nested contexts are layers of their own where they can be, with
     // canvases and videos ahead of nested contexts once there are more than layers for them.
@@ -1041,21 +1395,49 @@ pub fn place_list(
             .count() as u32;
     }
 
-    let mut units = Vec::with_capacity(groups.len());
+    let mut units = Vec::with_capacity(groups.len() + backdrops.len());
     let mut media_of_records = media.iter().enumerate().peekable();
+    let mut backdrops_of_groups = backdrops.iter().enumerate().peekable();
     for (group_index, group) in groups.iter().enumerate() {
+        let span_of_group = ListSpan {
+            begin: list.start_of_run(group.first_run as usize),
+            end: list.end_of_run(group.last_run as usize),
+        };
+        // The marker of a backdrop layer is a barrier, and the rest of its effect's records go above it where it reads.
+        if let Some((backdrop_index, backdrop)) =
+            backdrops_of_groups.next_if(|(_, backdrop)| backdrop.group == group_index)
+        {
+            units.push(PlacedUnit {
+                span: backdrop.marker_span,
+                group: group_index,
+                reach: backdrop.read_area,
+                media: None,
+                backdrop: Some(backdrop_index),
+            });
+            if backdrop.marker_span.end < span_of_group.end {
+                units.push(PlacedUnit {
+                    span: ListSpan {
+                        begin: backdrop.marker_span.end,
+                        end: span_of_group.end,
+                    },
+                    group: group_index,
+                    reach: group.device_rect,
+                    media: None,
+                    backdrop: None,
+                });
+            }
+            continue;
+        }
         let has_media = media_of_records
             .peek()
             .is_some_and(|(_, candidate)| candidate.run_index == group.first_run);
         if !has_media {
             units.push(PlacedUnit {
-                span: ListSpan {
-                    begin: list.start_of_run(group.first_run as usize),
-                    end: list.end_of_run(group.last_run as usize),
-                },
+                span: span_of_group,
                 group: group_index,
                 reach: group.device_rect,
                 media: None,
+                backdrop: None,
             });
             continue;
         }
@@ -1092,6 +1474,7 @@ pub fn place_list(
                 group: group_index,
                 reach,
                 media,
+                backdrop: None,
             });
         }
     }
@@ -1102,6 +1485,8 @@ pub fn place_list(
         units,
         media,
         rejected_media,
+        backdrops,
+        rejected_backdrop_filters,
     }
 }
 
@@ -1118,6 +1503,7 @@ struct BandBeingBuilt {
 enum BarrierBeingBuilt {
     Media { unit: usize },
     Band { band: usize },
+    Backdrop { unit: usize },
 }
 
 fn regions_meet(first: Option<IntRect>, second: Option<IntRect>) -> bool {
@@ -1148,6 +1534,8 @@ struct StackBeingBuilt<'a> {
     bands: Vec<BandBeingBuilt>,
     layers: Vec<StackLayer>,
     groups: Vec<LayerGroup>,
+    // Per backdrop of the placement, how many backdrops of its node are painted before it.
+    ordinals_of_backdrops: Vec<u32>,
 }
 
 impl StackBeingBuilt<'_> {
@@ -1265,6 +1653,11 @@ impl StackBeingBuilt<'_> {
                             .barriers
                             .push(BarrierBeingBuilt::Media { unit: unit_index });
                     }
+                    None if unit.backdrop.is_some() => {
+                        self.bands[band]
+                            .barriers
+                            .push(BarrierBeingBuilt::Backdrop { unit: unit_index });
+                    }
                     None => self.bands[band].own_units.push(unit_index),
                 }
             }
@@ -1341,6 +1734,34 @@ impl StackBeingBuilt<'_> {
                     let position = unit_position(self.bands[band].first_unit);
                     self.emit_band(band);
                     (key, position, self.nodes[child_node].region_in_parent)
+                }
+                BarrierBeingBuilt::Backdrop { unit } => {
+                    let placed_unit = &placement.units[unit];
+                    let backdrop_index = placed_unit.backdrop.expect("a backdrop barrier is a backdrop unit");
+                    let backdrop = &placement.backdrops[backdrop_index];
+                    let ordinal = self.ordinals_of_backdrops[backdrop_index];
+                    self.layers.push(StackLayer {
+                        key: LayerKey::Backdrop {
+                            node: node_key,
+                            ordinal,
+                        },
+                        node,
+                        content: LayerContent::Backdrop {
+                            effect: backdrop.effect,
+                            marker_span: backdrop.marker_span,
+                            read_area: backdrop.read_area,
+                        },
+                        may_hold_content: true,
+                        may_hold_root_group_content: true,
+                    });
+                    (
+                        BarrierKey::Backdrop {
+                            node: node_key,
+                            ordinal,
+                        },
+                        unit_position(unit),
+                        Some(backdrop.read_area),
+                    )
                 }
             };
             self.layers.push(StackLayer {
@@ -1423,8 +1844,12 @@ fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], nod
 }
 
 enum StackConflict {
-    // Media drawn before content that reads the root group's backdrop, where the content can show.
-    MediaUnderBackdrop(Vec<ListPosition>),
+    // Media drawn, and backdrop filters applied by layers of their own, before content that reads the root group's
+    // backdrop, where the content can show.
+    BarriersUnderBackdrop {
+        media: Vec<ListPosition>,
+        backdrop_filters: Vec<EffectNodeIndex>,
+    },
     // Content that reads the root group's backdrop would read through the layers of these spaces, which are to be
     // rastered in the spaces around them instead.
     BackdropReadThroughSpaces(Vec<usize>),
@@ -1447,6 +1872,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         bands: Vec::new(),
         layers: Vec::new(),
         groups: Vec::new(),
+        ordinals_of_backdrops: Vec::new(),
     };
     built.node_of(VIEWPORT_RASTER_SPACE, Vec::new());
     built.node_of_group = placement
@@ -1457,6 +1883,16 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         .collect::<Vec<_>>()
         .into_iter()
         .map(|(clips, space)| built.node_of(space, clips))
+        .collect();
+    let mut backdrops_of_nodes = vec![0u32; built.nodes.len()];
+    built.ordinals_of_backdrops = placement
+        .backdrops
+        .iter()
+        .map(|backdrop| {
+            let backdrops_of_node = &mut backdrops_of_nodes[built.node_of_group[backdrop.group]];
+            *backdrops_of_node += 1;
+            *backdrops_of_node - 1
+        })
         .collect();
     built.cut_into_bands();
     built.emit_band(0);
@@ -1503,7 +1939,23 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         // The content and the layers it would read through go into one space, the lowest one that holds both. Layers
         // of its own space alone are in other bands or behind other clips, which the space around it merges.
         let space = nodes[node].space;
-        let spaces_read_through: Vec<usize> = (base_layer..layer_group.layer_below_every_cut)
+        let layers_read_through = base_layer..layer_group.layer_below_every_cut;
+        // A backdrop layer read through goes first, as the spaces around it may then hold what it reads.
+        let backdrop_filters_read_through: Vec<EffectNodeIndex> = layers_read_through
+            .clone()
+            .filter_map(|layer| match layers[layer].content {
+                LayerContent::Backdrop { effect, .. } => Some(effect),
+                _ => None,
+            })
+            .collect();
+        if !backdrop_filters_read_through.is_empty() {
+            conflict = Some(StackConflict::BarriersUnderBackdrop {
+                media: Vec::new(),
+                backdrop_filters: backdrop_filters_read_through,
+            });
+            break;
+        }
+        let spaces_read_through: Vec<usize> = layers_read_through
             .filter(|&layer| layers[layer].may_hold_root_group_content)
             .map(|layer| nodes[layers[layer].node].space)
             .collect();
@@ -1522,6 +1974,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         // What it reads below it has to be in its layer wherever it reads, as must it be wherever it draws.
         let reached_tiles = read_area.map(|read_area| expanded_to_tile_grid(unit.reach.united(read_area)));
         let mut refused_media = Vec::new();
+        let mut refused_backdrop_filters = Vec::new();
         let mut spaces_to_fold = Vec::new();
         for cut in &layer_group.cuts {
             if cut.position > unit.span.begin || reached_tiles.is_some_and(|tiles| !cut.cuts_cell(tiles)) {
@@ -1529,6 +1982,16 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
             }
             match cut.barrier {
                 BarrierKey::Media { .. } => refused_media.push(cut.position),
+                BarrierKey::Backdrop { node, ordinal } => {
+                    let backdrop_layer = layers
+                        .iter()
+                        .find(|layer| layer.key == LayerKey::Backdrop { node, ordinal })
+                        .expect("a backdrop barrier is a layer of the stack");
+                    let LayerContent::Backdrop { effect, .. } = backdrop_layer.content else {
+                        unreachable!("a backdrop key names a backdrop layer");
+                    };
+                    refused_backdrop_filters.push(effect);
+                }
                 BarrierKey::Band { node: band_node, .. } => {
                     let band_space = nodes
                         .iter()
@@ -1547,8 +2010,11 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
             conflict = Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold));
             break;
         }
-        if !refused_media.is_empty() {
-            conflict = Some(StackConflict::MediaUnderBackdrop(refused_media));
+        if !refused_media.is_empty() || !refused_backdrop_filters.is_empty() {
+            conflict = Some(StackConflict::BarriersUnderBackdrop {
+                media: refused_media,
+                backdrop_filters: refused_backdrop_filters,
+            });
             break;
         }
     }
@@ -1561,6 +2027,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         base_layer,
         unlayered_reason: None,
         rejected_media: placement.rejected_media.clone(),
+        rejected_backdrop_filters: placement.rejected_backdrop_filters.clone(),
         placement,
         placement_at_every_anchor: ListPlacement::default(),
     };
@@ -1582,12 +2049,18 @@ pub fn build_layer_stack(
     let mut anchors = anchors.to_vec();
     let mut placement = placement_at_every_anchor.clone();
     let mut positions_refused_media_layers: Vec<ListPosition> = Vec::new();
-    // Each try leaves out at least one more canvas or video, or the innermost space that scrolls, so this ends.
+    let mut effects_refused_backdrop_layers: Vec<EffectNodeIndex> = Vec::new();
+    // Each try leaves out at least one more canvas, video or backdrop layer, or the innermost space that scrolls, so
+    // this ends.
     loop {
         let (mut stack, conflict) = assemble_stack(placement);
         match conflict {
-            Some(StackConflict::MediaUnderBackdrop(positions)) => {
-                positions_refused_media_layers.extend(positions);
+            Some(StackConflict::BarriersUnderBackdrop {
+                media,
+                backdrop_filters,
+            }) => {
+                positions_refused_media_layers.extend(media);
+                effects_refused_backdrop_layers.extend(backdrop_filters);
             }
             Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold))
                 if spaces_to_fold.iter().any(|&space| space != VIEWPORT_RASTER_SPACE) =>
@@ -1605,7 +2078,9 @@ pub fn build_layer_stack(
                 anchors.retain(|anchor| !folded_anchors.contains(anchor));
             }
             Some(StackConflict::BackdropReadThroughSpaces(_)) => {
+                let rejected_backdrop_filters = std::mem::take(&mut stack.rejected_backdrop_filters);
                 let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), None);
+                stack.rejected_backdrop_filters = rejected_backdrop_filters;
                 stack.placement_at_every_anchor = placement_at_every_anchor;
                 return stack;
             }
@@ -1636,7 +2111,13 @@ pub fn build_layer_stack(
             inputs.viewport_rect,
             inputs.raster_transform,
         );
-        placement = place_list(inputs, &anchors, &geometries, &positions_refused_media_layers);
+        placement = place_list(
+            inputs,
+            &anchors,
+            &geometries,
+            &positions_refused_media_layers,
+            &effects_refused_backdrop_layers,
+        );
     }
 }
 
@@ -1650,7 +2131,7 @@ pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
         inputs.viewport_rect,
         inputs.raster_transform,
     );
-    let placement = place_list(inputs, &anchors, &geometries, &[]);
+    let placement = place_list(inputs, &anchors, &geometries, &[], &[]);
     build_layer_stack(inputs, &anchors, placement)
 }
 
@@ -1659,7 +2140,7 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
-        CanvasId, ClipNodeIndex, CompositorContextId, ContextRef, DisplayListCommand, DrawCanvas,
+        BackdropFilterRegion, CanvasId, ClipNodeIndex, CompositorContextId, ContextRef, DisplayListCommand, DrawCanvas,
         DrawCompositedContext, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::tiles::TileCoord;
@@ -1798,6 +2279,7 @@ mod tests {
                         format!("{kind} {space} band {band}{above}")
                     }
                     LayerKey::Media { content, ordinal } => format!("{} #{ordinal} {space}", media_name(content)),
+                    LayerKey::Backdrop { ordinal, .. } => format!("backdrop #{ordinal} {space}"),
                 }
             })
             .collect()
@@ -1872,13 +2354,14 @@ mod tests {
     }
 
     #[test]
-    fn a_backdrop_filter_reading_through_a_nested_scroller_folds_only_that_scroller() {
+    fn a_translucent_backdrop_filter_reading_through_a_nested_scroller_folds_only_that_scroller() {
         let (mut tree, _, document) = tree_with_document_scroll();
         let scrolled = add_nested_scroller(&mut tree, document);
-        let frosted = tree.append_effect_node_under(document, backdrop_filter_effect());
+        let frosted = tree.append_effect_node_under(document, translucent_backdrop_filter_effect());
         let list = TestList::new()
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
             .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
+            .with(backdrop_marker(IntRect::new(120, 400, 60, 40)), frosted)
             .with(fill(IntRect::new(120, 400, 60, 40)), frosted);
         let stack = list.stack(&tree, &[]);
         assert_eq!(stack.spaces.len(), 2);
@@ -1924,7 +2407,7 @@ mod tests {
             .iter()
             .filter_map(|layer| match layer.key {
                 LayerKey::Media { content, .. } => Some(content),
-                LayerKey::Painted { .. } => None,
+                LayerKey::Painted { .. } | LayerKey::Backdrop { .. } => None,
             })
             .collect();
         assert_eq!(media.len(), MAXIMUM_MEDIA_LAYER_COUNT);
@@ -1962,7 +2445,7 @@ mod tests {
                     window_server_placement,
                     ..
                 } => Some(window_server_placement.is_some()),
-                LayerContent::Painted { .. } => None,
+                LayerContent::Painted { .. } | LayerContent::Backdrop { .. } => None,
             })
             .collect();
         assert_eq!(placements, [false, true]);
@@ -2236,35 +2719,60 @@ mod tests {
         );
     }
 
-    fn backdrop_filter_effect() -> EffectNodeData {
+    fn backdrop_filter_effect_with(opacity: f32, region: IntRect) -> EffectNodeData {
         EffectNodeData::Effects(EffectsData {
             isolation: false,
-            opacity: 1.0,
+            opacity,
             blend_mode: CompositingAndBlendingOperator::Normal,
             filter: None,
             backdrop_filter: Some(BackdropFilterData {
                 filter: std::sync::Arc::new(Filter::blur(4.0, 4.0, None).serialize()),
-                region: IntRect::new(120, 120, 60, 40),
+                region,
                 corner_radii: CornerRadii::default(),
             }),
         })
     }
 
+    // Its opacity composites the filtered backdrop and its content as one, so it reads in the layer of what it reads.
+    fn translucent_backdrop_filter_effect() -> EffectNodeData {
+        backdrop_filter_effect_with(0.5, IntRect::new(120, 120, 60, 40))
+    }
+
+    fn frosted_effect(region: IntRect) -> EffectNodeData {
+        backdrop_filter_effect_with(1.0, region)
+    }
+
+    fn backdrop_marker(region: IntRect) -> BackdropFilterRegion {
+        BackdropFilterRegion { rect: region }
+    }
+
+    fn backdrop_effects_of(stack: &LayerStack) -> Vec<EffectNodeIndex> {
+        stack.backdrop_filters_applied_by_layers()
+    }
+
     #[test]
-    fn a_canvas_under_a_backdrop_filter_reading_the_root_group_gets_no_layer() {
+    fn a_canvas_under_a_translucent_backdrop_filter_gets_no_layer() {
         let mut tree = tree_with_root_isolation_effect();
         let root = root_context(&tree);
-        let frosted = tree.append_effect_node_under(root, backdrop_filter_effect());
+        let frosted = tree.append_effect_node_under(root, translucent_backdrop_filter_effect());
         let list = TestList::new()
             .with(fill(VIEWPORT), root)
             .with(canvas(IntRect::new(100, 100, 200, 100)), root)
             .with(canvas(IntRect::new(500, 400, 200, 100)), root)
+            .with(backdrop_marker(IntRect::new(120, 120, 60, 40)), frosted)
             .with(fill(IntRect::new(120, 120, 60, 40)), frosted);
         let stack = list.stack(&tree, &[]);
         assert_eq!(shape(&stack), ["base viewport band 0", "canvas #0 viewport"]);
         assert_eq!(
             stack.rejected_media,
             [(CANVAS, MediaLayerRejection::UnderContentReadingTheRootGroup)]
+        );
+        assert_eq!(
+            stack.rejected_backdrop_filters,
+            [(
+                frosted.effect,
+                BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent
+            )]
         );
         let LayerContent::Media { record_span, .. } = &stack.layers[1].content else {
             panic!("the second layer is the canvas");
@@ -2275,11 +2783,12 @@ mod tests {
     #[test]
     fn content_of_a_scroller_that_is_not_a_raster_space_is_placed_wherever_it_can_scroll_to() {
         let (mut tree, viewport, document) = tree_with_document_scroll();
-        let frosted = tree.append_effect_node_under(viewport, backdrop_filter_effect());
+        let frosted = tree.append_effect_node_under(viewport, translucent_backdrop_filter_effect());
         let list = TestList::new()
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
             .with(canvas(IntRect::new(100, 300, 200, 100)), document)
             .with(fill(IntRect::new(120, 320, 20, 20)), document)
+            .with(backdrop_marker(IntRect::new(600, 10, 60, 40)), frosted)
             .with(fill(IntRect::new(600, 10, 60, 40)), frosted);
         let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
         let scrolled = list.stack(&tree, &document_offsets(&tree, document, -250.0));
@@ -2292,14 +2801,344 @@ mod tests {
     }
 
     #[test]
-    fn a_fixed_backdrop_filter_over_the_document_rasters_everything_in_the_viewport() {
+    fn a_translucent_fixed_backdrop_filter_over_the_document_rasters_everything_in_the_viewport() {
         let (mut tree, viewport, document) = tree_with_document_scroll();
-        let frosted = tree.append_effect_node_under(viewport, backdrop_filter_effect());
+        let frosted = tree.append_effect_node_under(viewport, translucent_backdrop_filter_effect());
         let list = TestList::new()
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(backdrop_marker(IntRect::new(120, 120, 60, 40)), frosted)
             .with(fill(IntRect::new(120, 120, 60, 40)), frosted);
         let stack = list.stack(&tree, &[]);
         assert_eq!(shape(&stack), ["base viewport band 0"]);
         assert_eq!(stack.spaces.len(), 1);
+    }
+
+    #[test]
+    fn a_fixed_frosted_header_is_a_backdrop_layer_between_the_document_and_its_content() {
+        let (mut tree, viewport, document) = tree_with_document_scroll();
+        let header_region = IntRect::new(0, 0, 800, 40);
+        let header = tree.append_effect_node_under(viewport, frosted_effect(header_region));
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(backdrop_marker(header_region), header)
+            .with(fill(IntRect::new(10, 10, 100, 20)), header);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(stack.spaces.len(), 2);
+        assert_eq!(
+            shape(&stack),
+            [
+                "base document band 0",
+                "backdrop #0 viewport",
+                "painted viewport band 0 above L3"
+            ]
+        );
+        assert_eq!(list.layers_of(&stack, 1), [3]);
+        assert_eq!(list.layers_of(&stack, 2), [4]);
+        assert_eq!(backdrop_effects_of(&stack), [header.effect]);
+        let LayerContent::Backdrop { read_area, .. } = stack.layers[3].content else {
+            panic!("the fourth layer is the backdrop layer");
+        };
+        assert!(read_area.contains_rect(header_region));
+        assert!(stack.rejected_backdrop_filters.is_empty());
+    }
+
+    #[test]
+    fn a_backdrop_layer_cuts_only_the_tiles_its_filter_reads() {
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let region = IntRect::new(40, 40, 100, 60);
+        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
+        let list = TestList::new()
+            .with(fill(VIEWPORT), root)
+            .with(fill(IntRect::new(60, 60, 20, 20)), root)
+            .with(backdrop_marker(region), frosted)
+            .with(fill(region), frosted)
+            .with(fill(IntRect::new(100, 80, 20, 20)), root)
+            .with(fill(IntRect::new(600, 400, 20, 20)), root);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(
+            shape(&stack),
+            [
+                "base viewport band 0",
+                "backdrop #0 viewport",
+                "painted viewport band 0 above L1"
+            ]
+        );
+        let (base, backdrop, above_backdrop) = (0, 1, 2);
+        // What is painted before the box is what its filter reads, and what is painted after it goes above it, but only
+        // in the tiles that the filter reads.
+        assert_eq!(list.layers_of(&stack, 1), [base]);
+        assert_eq!(list.layers_of(&stack, 2), [backdrop]);
+        assert_eq!(list.layers_of(&stack, 3), [above_backdrop]);
+        assert_eq!(list.layers_of(&stack, 4), [base, above_backdrop]);
+        assert_eq!(
+            stack.groups[0].layer_at(list.positions[4], TileCoord::new(0, 0).cell_rect()),
+            above_backdrop
+        );
+        assert_eq!(
+            stack.groups[0].layer_at(list.positions[4], TileCoord::new(2, 1).cell_rect()),
+            base
+        );
+    }
+
+    #[test]
+    fn which_backdrop_filters_get_layers_of_their_own() {
+        let region = IntRect::new(120, 120, 60, 40);
+        let rejection_of = |reader: EffectNodeData, inner: Option<EffectNodeData>, marker_first: bool| {
+            let mut tree = tree_with_root_isolation_effect();
+            let root = root_context(&tree);
+            let reader = tree.append_effect_node_under(root, reader);
+            let content = match inner {
+                Some(inner) => tree.append_effect_node_under(reader, inner),
+                None => reader,
+            };
+            let mut list = TestList::new().with(fill(VIEWPORT), root);
+            if marker_first {
+                list = list.with(backdrop_marker(region), reader);
+            }
+            list = list.with(fill(region), content);
+            let stack = list.stack(&tree, &[]);
+            assert_eq!(
+                backdrop_effects_of(&stack).len() + stack.rejected_backdrop_filters.len(),
+                1
+            );
+            stack.rejected_backdrop_filters.first().map(|(_, rejection)| *rejection)
+        };
+        let with = |change: &dyn Fn(&mut EffectsData)| {
+            let EffectNodeData::Effects(mut effects) = frosted_effect(region) else {
+                unreachable!();
+            };
+            change(&mut effects);
+            EffectNodeData::Effects(effects)
+        };
+        assert_eq!(rejection_of(frosted_effect(region), None, true), None);
+        assert_eq!(
+            rejection_of(translucent_backdrop_filter_effect(), None, true),
+            Some(BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent)
+        );
+        assert_eq!(
+            rejection_of(
+                with(&|effects| effects.blend_mode = CompositingAndBlendingOperator::Multiply),
+                None,
+                true
+            ),
+            Some(BackdropLayerRejection::BlendModeGroupsTheBackdropWithTheContent)
+        );
+        assert_eq!(
+            rejection_of(
+                with(&|effects| effects.filter = Some(std::sync::Arc::new(Filter::blur(2.0, 2.0, None).serialize()))),
+                None,
+                true
+            ),
+            Some(BackdropLayerRejection::FilterGroupsTheBackdropWithTheContent)
+        );
+        assert_eq!(
+            rejection_of(
+                frosted_effect(region),
+                Some(effects(1.0, CompositingAndBlendingOperator::Multiply)),
+                true
+            ),
+            Some(BackdropLayerRejection::ContentReadsTheFilteredBackdrop)
+        );
+        assert_eq!(
+            rejection_of(frosted_effect(region), None, false),
+            Some(BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop)
+        );
+    }
+
+    #[test]
+    fn a_backdrop_filter_inside_a_group_effect_or_under_a_rotation_reads_in_the_layer_of_what_it_reads() {
+        let region = IntRect::new(120, 120, 60, 40);
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        // An effects node that pushes no layer, as will-change makes, groups its content all the same.
+        let will_change = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal));
+        let grouped = tree.append_effect_node_under(will_change, frosted_effect(region));
+        let (cos, sin) = (0.5f32.cos(), 0.5f32.sin());
+        let rotation = tree.append_spatial(
+            SpatialData::Transform(TransformData {
+                matrix: FloatMatrix4x4 {
+                    elements: [
+                        [cos, -sin, 0.0, 0.0],
+                        [sin, cos, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ],
+                },
+                origin: FloatPoint::default(),
+                sorting_context_root_index: None,
+                flattens_inherited_transform: false,
+                role: TransformDataRole::CssTransform,
+                synthetic_plane: false,
+                establishes_sorting_context: false,
+                bounds: FloatRect::new(0.0, 0.0, 800.0, 600.0),
+            }),
+            VISUAL_VIEWPORT_NODE_INDEX,
+        );
+        let rotated = tree.append_effect_node_under(
+            ContextRef {
+                spatial: rotation,
+                ..root
+            },
+            frosted_effect(region),
+        );
+        let list = TestList::new()
+            .with(fill(VIEWPORT), root)
+            .with(backdrop_marker(region), grouped)
+            .with(fill(region), grouped)
+            .with(backdrop_marker(region), rotated)
+            .with(fill(region), rotated);
+        let stack = list.stack(&tree, &[]);
+        assert!(backdrop_effects_of(&stack).is_empty());
+        assert_eq!(
+            stack.rejected_backdrop_filters,
+            [
+                (grouped.effect, BackdropLayerRejection::InsideGroupEffect),
+                (rotated.effect, BackdropLayerRejection::RegionIsNotAnAxisAlignedRect)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_canvas_under_a_frosted_box_keeps_its_layer() {
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let region = IntRect::new(120, 120, 60, 40);
+        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
+        let list = TestList::new()
+            .with(fill(VIEWPORT), root)
+            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
+            .with(backdrop_marker(region), frosted)
+            .with(fill(region), frosted);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(
+            shape(&stack),
+            [
+                "base viewport band 0",
+                "canvas #0 viewport",
+                "backdrop #0 viewport",
+                "painted viewport band 0 above L3"
+            ]
+        );
+        assert!(stack.rejected_media.is_empty());
+    }
+
+    #[test]
+    fn a_translucent_backdrop_filter_over_a_backdrop_layer_takes_it_back_into_the_layer_of_what_it_reads() {
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let region = IntRect::new(120, 120, 60, 40);
+        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
+        let translucent = tree.append_effect_node_under(root, translucent_backdrop_filter_effect());
+        let list = TestList::new()
+            .with(fill(VIEWPORT), root)
+            .with(backdrop_marker(region), frosted)
+            .with(fill(region), frosted)
+            .with(backdrop_marker(region), translucent)
+            .with(fill(region), translucent);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(shape(&stack), ["base viewport band 0"]);
+        assert_eq!(
+            stack.rejected_backdrop_filters,
+            [
+                (frosted.effect, BackdropLayerRejection::UnderContentReadingTheRootGroup),
+                (
+                    translucent.effect,
+                    BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn backdrop_filters_past_the_most_that_get_layers_read_in_the_layer_of_what_they_read() {
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let mut list = TestList::new().with(fill(VIEWPORT), root);
+        let mut readers = Vec::new();
+        for index in 0..=MAXIMUM_BACKDROP_LAYER_COUNT {
+            let region = IntRect::new(10 + index as i32 * 150, 10, 100, 40);
+            let reader = tree.append_effect_node_under(root, frosted_effect(region));
+            list = list.with(backdrop_marker(region), reader).with(fill(region), reader);
+            readers.push(reader.effect);
+        }
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(backdrop_effects_of(&stack), readers[1..]);
+        assert_eq!(
+            stack.rejected_backdrop_filters,
+            [(readers[0], BackdropLayerRejection::MoreBackdropFiltersThanLayersFor)]
+        );
+    }
+
+    #[test]
+    fn backdrop_layers_keep_their_keys_as_the_document_scrolls_and_the_list_changes() {
+        let (mut tree, viewport, document) = tree_with_document_scroll();
+        let header_region = IntRect::new(0, 0, 800, 40);
+        let header = tree.append_effect_node_under(viewport, frosted_effect(header_region));
+        let card_region = IntRect::new(100, 900, 200, 100);
+        let card = tree.append_effect_node_under(document, frosted_effect(card_region));
+        let list_with_box_at = |box_rect: IntRect| {
+            TestList::new()
+                .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+                .with(fill(box_rect), document)
+                .with(backdrop_marker(card_region), card)
+                .with(fill(card_region), card)
+                .with(backdrop_marker(header_region), header)
+                .with(fill(IntRect::new(10, 10, 100, 20)), header)
+        };
+        let list = list_with_box_at(IntRect::new(400, 300, 20, 20));
+        let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
+        let scrolled = list.stack(&tree, &document_offsets(&tree, document, -700.0));
+        let changed =
+            list_with_box_at(IntRect::new(500, 1700, 40, 40)).stack(&tree, &document_offsets(&tree, document, -700.0));
+        let keys = |stack: &LayerStack| stack.keys().collect::<Vec<_>>();
+        assert_eq!(backdrop_effects_of(&unscrolled), [card.effect, header.effect]);
+        assert_eq!(keys(&unscrolled), keys(&scrolled));
+        assert_eq!(keys(&unscrolled), keys(&changed));
+        assert_eq!(unscrolled.placement_at_every_anchor, scrolled.placement_at_every_anchor);
+        assert!(unscrolled.has_the_shape_of(&changed));
+    }
+
+    #[test]
+    fn a_sticky_frosted_box_cuts_wherever_it_can_stick() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let sticky_node = tree.append_spatial(
+            SpatialData::Sticky(StickyData::unconstrained(
+                document.spatial,
+                None,
+                1,
+                NodeSlotId::INVALID,
+            )),
+            document.spatial,
+        );
+        let region = IntRect::new(0, 0, 800, 50);
+        let sticky = tree.append_effect_node_under(
+            ContextRef {
+                spatial: sticky_node,
+                ..document
+            },
+            frosted_effect(region),
+        );
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(backdrop_marker(region), sticky)
+            .with(fill(region), sticky);
+        let mut offsets = document_offsets(&tree, document, -700.0);
+        let unstuck = list.stack(&tree, &offsets);
+        offsets[sticky_node.0 as usize] = FloatPoint { x: 0.0, y: 700.0 };
+        let stuck = list.stack(&tree, &offsets);
+        assert_eq!(unstuck.placement_at_every_anchor, stuck.placement_at_every_anchor);
+        assert_eq!(
+            shape(&stuck),
+            [
+                "base document band 0",
+                "backdrop #0 document",
+                "painted document band 0 above L2"
+            ]
+        );
+        let LayerContent::Backdrop { read_area, .. } = stuck.layers[2].content else {
+            panic!("the third layer is the backdrop layer");
+        };
+        assert!(read_area.contains_rect(IntRect::new(0, 700, 800, 50)));
     }
 }

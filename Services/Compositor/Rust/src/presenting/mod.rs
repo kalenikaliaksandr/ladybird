@@ -1044,7 +1044,7 @@ pub(crate) fn replaying_only(record_spans: &[ListSpan], skip_root_isolation_laye
     ReplaySelection {
         record_spans: Some(record_spans),
         skip_root_isolation_layer,
-        clips_left_to_composite: None,
+        ..ReplaySelection::default()
     }
 }
 

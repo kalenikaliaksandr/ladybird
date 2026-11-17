@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 50px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    #translucent { position: absolute; left: 80px; top: 60px; width: 260px; height: 140px; opacity: 0.8; background: rgba(0, 0, 128, 0.3); backdrop-filter: blur(6px); }
+</style>
+<div id="stripes"></div>
+<div id="translucent">translucent</div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 20; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            stripes.appendChild(stripe);
+        }
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

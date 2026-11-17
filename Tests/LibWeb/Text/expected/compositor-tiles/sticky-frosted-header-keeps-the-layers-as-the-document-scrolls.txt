@@ -1,0 +1,7 @@
+[L1] base space=document
+[L2] backdrop #0 of e1 space=document reads=[-33,-33 866x3229]
+[L3] painted space=document above L2
+compared: true, matches a direct raster: true
+scrolled to 200, layer stacks computed: 0, layers created: 0
+compared: true, matches a direct raster: true
+scrolled to 400, layer stacks computed: 0, layers created: 0

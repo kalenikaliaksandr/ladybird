@@ -1,0 +1,3 @@
+[L1] base space=document
+no backdrop layer for e1: its opacity composites the filtered backdrop and the content as one
+compared: true, matches a direct raster: true

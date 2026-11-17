@@ -14,9 +14,11 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
+  [L1] backdrop #0 of e3 space=viewport reads=[385,5 80x80]
+  no backdrop layer for e1: its opacity composites the filtered backdrop and the content as one
 
 DisplayList:
 L0 BackdropFilterRegion@s2/c0/e1 rect=[20,20 100x100]
 L0 FillRect@s3/e2 rect=[200,20 100x100] color=rgb(0, 128, 0)
-L0 BackdropFilterRegion@s1/e3 rect=[400,20 50x50]
+L1 BackdropFilterRegion@s1/e3 rect=[400,20 50x50]
 

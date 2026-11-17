@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 40px; }
+    .stripe:nth-child(odd) { background: crimson; }
+    .stripe:nth-child(even) { background: gold; }
+    #frosted { position: absolute; left: 60px; top: 50px; width: 300px; height: 180px; border-radius: 40px 10px 60px 20px; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); }
+</style>
+<div id="stripes"></div>
+<div id="frosted"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 20; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

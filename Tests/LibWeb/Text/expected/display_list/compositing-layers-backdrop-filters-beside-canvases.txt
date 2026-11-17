@@ -9,12 +9,14 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
-  no layer for canvas: under content that reads the root group below it
-  no layer for canvas: under content that reads the root group below it
+  [L1] canvas #0 space=viewport region=[17,17 206x126] replayed: a backdrop layer filters what is composited below it
+  [L3] canvas #0 space=viewport region=[397,17 206x126] replayed: a backdrop layer filters what is composited below it
+  [L5] backdrop #0 of e1 space=viewport reads=[237,57 106x46]
+  [L7] backdrop #1 of e2 space=viewport reads=[559,9 202x142]
 
 DisplayList:
-L0 DrawCanvas@s1/e0 dst_rect=[20,20 200x120]
-L0 DrawCanvas@s1/e0 dst_rect=[400,20 200x120]
-L0 BackdropFilterRegion@s1/e1 rect=[240,60 100x40]
-L0 BackdropFilterRegion@s1/e2 rect=[610,60 100x40]
+L1 DrawCanvas@s1/e0 dst_rect=[20,20 200x120]
+L3 DrawCanvas@s1/e0 dst_rect=[400,20 200x120]
+L5 BackdropFilterRegion@s1/e1 rect=[240,60 100x40]
+L7 BackdropFilterRegion@s1/e2 rect=[610,60 100x40]
 

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 50px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: darkolivegreen; }
+    #inverting { position: absolute; left: 100px; top: 70px; width: 250px; height: 120px; backdrop-filter: invert(1); }
+</style>
+<div id="stripes"></div>
+<div id="inverting">inverted</div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 20; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            stripes.appendChild(stripe);
+        }
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

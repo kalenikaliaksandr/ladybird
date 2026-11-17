@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 30px; }
+    .stripe:nth-child(odd) { background: teal; }
+    .stripe:nth-child(even) { background: salmon; }
+    .frosted { position: absolute; width: 240px; height: 160px; background: rgba(255, 255, 255, 0.25); }
+    #below { left: 40px; top: 40px; backdrop-filter: blur(6px); }
+    #above { left: 180px; top: 120px; backdrop-filter: grayscale(1) blur(3px); }
+</style>
+<div id="stripes"></div>
+<div class="frosted" id="below">below</div>
+<div class="frosted" id="above">above</div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 20; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state, ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER);
+        done();
+    });
+</script>

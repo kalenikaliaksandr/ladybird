@@ -676,6 +676,8 @@ pub struct ReplaySelection<'a> {
     pub record_spans: Option<&'a [ListSpan]>,
     pub skip_root_isolation_layer: bool,
     pub clips_left_to_composite: Option<&'a [bool]>,
+    /// Effects whose backdrop filter a layer of its own applies, which their layers then start out without.
+    pub backdrop_filters_left_out: &'a [EffectNodeIndex],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1131,6 +1133,9 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                                     layer.backdrop_filter_bytes_size = 0;
                                     layer.opacity = 1.0;
                                     layer.blend_mode = libgfx_rust::CompositingAndBlendingOperator::Normal;
+                                } else if self.selection.backdrop_filters_left_out.contains(&effect) {
+                                    layer.backdrop_filter_bytes = std::ptr::null();
+                                    layer.backdrop_filter_bytes_size = 0;
                                 } else if effects.backdrop_filter.is_some() {
                                     layer.backdrop_base_color = self.backdrop_base_color(effect);
                                     layer.backdrop_blur_edge = self.backdrop_blur_edge(effect);
@@ -1743,6 +1748,7 @@ mod tests {
                 record_spans: Some(&spans),
                 skip_root_isolation_layer: false,
                 clips_left_to_composite: None,
+                backdrop_filters_left_out: &[],
             },
         );
         assert_eq!(
@@ -1803,6 +1809,7 @@ mod tests {
                     record_spans: spans,
                     skip_root_isolation_layer: false,
                     clips_left_to_composite: None,
+                    backdrop_filters_left_out: &[],
                 },
                 &mut painter,
             );
@@ -1861,6 +1868,7 @@ mod tests {
                 record_spans: Some(&spans),
                 skip_root_isolation_layer: false,
                 clips_left_to_composite: None,
+                backdrop_filters_left_out: &[],
             },
         );
         assert_eq!(painter.events, vec![PainterEvent::Run(0), PainterEvent::Run(1)]);
@@ -1891,6 +1899,7 @@ mod tests {
                 record_spans: None,
                 skip_root_isolation_layer: true,
                 clips_left_to_composite: None,
+                backdrop_filters_left_out: &[],
             },
         );
         assert_eq!(
@@ -2675,6 +2684,62 @@ mod tests {
             &mut painter,
         );
         assert_eq!(painter.backdrop_base_colors, vec![white, Color::TRANSPARENT]);
+    }
+
+    #[test]
+    fn a_replay_leaves_out_the_backdrop_filters_that_layers_of_their_own_apply() {
+        let mut tree = identity_tree();
+        let root = effect_under(&mut tree, effects(1.0), EffectNodeIndex::NONE, ClipNodeIndex::NONE);
+        tree.root_isolation_effect = Some(root);
+        let backdrop = || {
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(BackdropFilterData {
+                    filter: std::sync::Arc::new(vec![1]),
+                    region: visible_bounds(),
+                    corner_radii: CornerRadii::default(),
+                }),
+            })
+        };
+        let left_out = effect_under(&mut tree, backdrop(), root, ClipNodeIndex::NONE);
+        let kept = effect_under(&mut tree, backdrop(), root, ClipNodeIndex::NONE);
+        let runs = [left_out, kept].map(|effect| {
+            run(
+                VISUAL_VIEWPORT_NODE_INDEX,
+                ContextRef {
+                    effect,
+                    ..ContextRef::default()
+                },
+                visible_bounds(),
+            )
+        });
+        let white = Color::from_rgb(255, 255, 255);
+        let mut painter = RecordingPainter::new();
+        replay_display_list(
+            &tree,
+            &list_of(&[], &runs),
+            &EffectClipPlan::new(&tree, &runs).unwrap(),
+            white,
+            &ReplayFrame::unscrolled(0),
+            ReplaySelection {
+                backdrop_filters_left_out: &[left_out],
+                ..ReplaySelection::default()
+            },
+            &mut painter,
+        );
+        // Both boxes still get layers, but only the kept one reads a backdrop.
+        assert_eq!(
+            painter
+                .events
+                .iter()
+                .filter(|event| matches!(event, PainterEvent::PushLayer(_)))
+                .count(),
+            3
+        );
+        assert_eq!(painter.backdrop_base_colors, vec![white]);
     }
 
     // A background-color animation marker is an effect without canvas state: entering or leaving

@@ -1,0 +1,6 @@
+[L1] base space=document
+[L2] backdrop #0 of e1 space=document reads=[1,1 318x238]
+[L3] painted space=document above L2
+[L4] backdrop #1 of e2 space=document reads=[159,99 282x202]
+[L5] painted space=document above L4
+compared: true, matches a direct raster: true

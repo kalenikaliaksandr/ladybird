@@ -1599,8 +1599,9 @@ impl<'a> RasterSpaceOfFrame<'a> {
         };
 
         // The backdrop filters that content of the group reads its backdrop through, each with where the first content
-        // under it is.
+        // under it is. Those that layers of their own apply are left out of the tiles.
         let tree = list.tree;
+        let backdrop_filters_applied_by_layers = stack.backdrop_filters_applied_by_layers();
         let mut seen_effects = vec![false; tree.effect_nodes.len()];
         let mut backdrops = Vec::new();
         for chunk in &chunks {
@@ -1609,7 +1610,9 @@ impl<'a> RasterSpaceOfFrame<'a> {
                 while !effect.is_none() && !seen_effects[effect.0 as usize] {
                     seen_effects[effect.0 as usize] = true;
                     let node = &tree.effect_nodes[effect.0 as usize];
-                    if matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some()) {
+                    if matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some())
+                        && !backdrop_filters_applied_by_layers.contains(&effect)
+                    {
                         backdrops.push(self.backdrop_read_in_layer(effect, first_held_position_of_run(chunk, run)));
                     }
                     effect = node.parent;
@@ -2018,16 +2021,18 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
-        CanvasId, DisplayListCommand, DrawCanvas, DrawScaledDecodedImageFrame, FillRect, OptionalColor,
-        OptionalFloatRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
+        BackdropFilterRegion, CanvasId, DisplayListCommand, DrawCanvas, DrawScaledDecodedImageFrame, FillRect,
+        OptionalColor, OptionalFloatRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
     };
-    use crate::display_list::layers::{LayerStack, LayerStackInputs, layer_stack_of};
+    use crate::display_list::layers::{BarrierKey, LayerKey, LayerStack, LayerStackInputs, layer_stack_of};
     use crate::display_list::placement::RasterSpaces;
     use crate::display_list::tiles::tile_coords_touching;
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
-        CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, TransformData, TransformDataRole,
+        BackdropFilterData, CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, TransformData,
+        TransformDataRole,
     };
+    use libgfx_rust::filter::Filter;
     use libgfx_rust::{CompositingAndBlendingOperator, ScalingMode};
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
@@ -2233,6 +2238,53 @@ mod tests {
         let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
         offsets[document.spatial.0 as usize] = FloatPoint { x: 0.0, y };
         offsets
+    }
+
+    #[test]
+    fn content_over_a_backdrop_layer_keys_its_tiles_without_what_the_layer_filters() {
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let region = IntRect::new(80, 80, 100, 60);
+        let frosted = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(BackdropFilterData {
+                    filter: Arc::new(Filter::blur(4.0, 4.0, None).serialize()),
+                    region,
+                    corner_radii: Default::default(),
+                }),
+            }),
+        );
+        let list_with_box_below_of_color = |color| {
+            TestList::default()
+                .with(fill(VIEWPORT, GREEN), root)
+                .with(fill(IntRect::new(100, 100, 20, 20), color), root)
+                .with(BackdropFilterRegion { rect: region }, frosted)
+                .with(fill(IntRect::new(90, 90, 30, 10), BLUE), frosted)
+        };
+        let tiles = [TileCoord::new(0, 0)];
+        let (stack, red) = keys_of_layers(&list_with_box_below_of_color(RED), &tree, &[], &tiles);
+        let (_, green) = keys_of_layers(&list_with_box_below_of_color(GREEN), &tree, &[], &tiles);
+        let above_backdrop = stack
+            .layers
+            .iter()
+            .position(|layer| {
+                matches!(
+                    layer.key,
+                    LayerKey::Painted {
+                        above: Some(BarrierKey::Backdrop { .. }),
+                        ..
+                    }
+                )
+            })
+            .expect("the frosted box's content goes above its backdrop layer");
+        assert_ne!(red[stack.base_layer], green[stack.base_layer]);
+        assert_ne!(red[above_backdrop][0], 0);
+        assert_eq!(red[above_backdrop], green[above_backdrop]);
     }
 
     #[test]
