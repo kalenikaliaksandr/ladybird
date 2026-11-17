@@ -2,17 +2,23 @@ function animationFrame() {
     return new Promise(resolve => requestAnimationFrame(() => resolve()));
 }
 
+// Animation frames of tests come as fast as the event loop allows, while a frame can take tens of milliseconds to reach
+// the screen when many tests run at once, and the highlights of the compositor layers overlay keep frames on their way
+// for half a second. So the wait is bounded by time rather than by a count of frames.
+const LONGEST_WAIT_FOR_A_PRESENTED_FRAME_IN_MILLISECONDS = 5000;
+
 // The compositor's comparison of the frame it presented last with its display list painted straight into one surface,
-// once a frame rendered after the call has reached the screen.
+// once a frame rendered after the call has reached the screen, or the state as it is once that took too long, which
+// says nothing was compared.
 async function presentedFrameState() {
     await animationFrame();
     await animationFrame();
-    for (let attempt = 0; attempt < 100; ++attempt) {
+    const deadline = performance.now() + LONGEST_WAIT_FOR_A_PRESENTED_FRAME_IN_MILLISECONDS;
+    for (;;) {
         const state = internals.presentedFrameState();
-        if (state.compared) return state;
+        if (state.compared || performance.now() >= deadline) return state;
         await animationFrame();
     }
-    return internals.presentedFrameState();
 }
 
 function printPresentedFrameState(state, tolerance = 0) {
@@ -23,14 +29,6 @@ async function presentedFrameStateOnceNothingIsLeftToRasterize() {
     let state = await presentedFrameState();
     for (let attempt = 0; attempt < 10 && state.tilesRasterizedSinceLastCheck !== 0; ++attempt)
         state = await presentedFrameState();
-    return state;
-}
-
-// While the highlights of the compositor layers overlay fade, the compositor presents a frame with every display tick,
-// which can keep a frame on its way to the screen whenever it is asked until they have faded.
-async function presentedFrameStateWithCompositorLayers() {
-    let state = await presentedFrameState();
-    for (let attempt = 0; attempt < 50 && !state.compared; ++attempt) state = await presentedFrameState();
     return state;
 }
 

@@ -19,14 +19,14 @@
         results.push(["two boxes changed without the overlay", await presentedFrameState()]);
 
         internals.setShowCompositorLayers(true);
-        results.push(["overlay switched on", await presentedFrameStateWithCompositorLayers()]);
+        results.push(["overlay switched on", await presentedFrameState()]);
 
         near.style.background = "green";
         far.style.background = "green";
-        results.push(["two boxes changed with the overlay", await presentedFrameStateWithCompositorLayers()]);
+        results.push(["two boxes changed with the overlay", await presentedFrameState()]);
 
         internals.setShowCompositorLayers(false);
-        results.push(["overlay switched off", await presentedFrameStateWithCompositorLayers()]);
+        results.push(["overlay switched off", await presentedFrameState()]);
         const compositorLayersOnceSwitchedOff = internals.compositorLayers();
 
         for (const [what, state] of results) {

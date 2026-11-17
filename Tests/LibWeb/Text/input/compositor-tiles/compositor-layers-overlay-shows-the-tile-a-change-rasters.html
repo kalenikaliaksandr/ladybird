@@ -13,15 +13,15 @@
     asyncTest(async done => {
         await presentedFrameStateOnceNothingIsLeftToRasterize();
         internals.setShowCompositorLayers(true);
-        await presentedFrameStateWithCompositorLayers();
+        await presentedFrameState();
         const switchedOn = compositorLayersWithoutTiming();
 
         far.style.background = "blue";
-        const state = await presentedFrameStateWithCompositorLayers();
+        const state = await presentedFrameState();
         const afterAChange = compositorLayersWithoutTiming();
 
         far.style.background = "green";
-        await presentedFrameStateWithCompositorLayers();
+        await presentedFrameState();
         const afterAnotherChange = compositorLayersWithoutTiming();
         internals.setShowCompositorLayers(false);
 

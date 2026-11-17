@@ -18,7 +18,7 @@
         context.fillRect(0, 0, canvas.width, canvas.height);
         await presentedFrameStateOnceNothingIsLeftToRasterize();
         internals.setShowCompositorLayers(true);
-        await presentedFrameStateWithCompositorLayers();
+        await presentedFrameState();
         println(compositorLayersWithoutTiming());
         internals.setShowCompositorLayers(false);
         done();
