@@ -132,8 +132,6 @@ pub struct FrameOfLayerOverlay {
     pub painted_at: MonotonicTime,
     /// From the base layer up.
     pub layers: Vec<LayerOfFrame>,
-    /// Layers out of the stack that keep their tiles for when they come back.
-    pub layers_kept_out_of_the_stack: Vec<LayerKey>,
     pub single_layer_reason: Option<String>,
     pub media_and_backdrop_filters_without_layers: Vec<String>,
     pub counts: FrameCounts,
@@ -505,9 +503,8 @@ impl LayerOverlay {
         device_pixel_ratio: f64,
         shaper: &dyn OverlayLabelShaper,
     ) -> &LayerOverlayFrame {
-        self.tile_records.retain(|key, _| {
-            frame.layers.iter().any(|layer| layer.key == *key) || frame.layers_kept_out_of_the_stack.contains(key)
-        });
+        self.tile_records
+            .retain(|key, _| frame.layers.iter().any(|layer| layer.key == *key));
         let model = self.model_of_frame(frame);
         let records = self.record_drawing(&model, device_pixel_ratio, shaper);
         self.latest_frame.insert(LayerOverlayFrame { model, records })
@@ -977,7 +974,6 @@ mod tests {
             viewport_rect: IntRect::new(0, 0, 800, 600),
             painted_at,
             layers,
-            layers_kept_out_of_the_stack: Vec::new(),
             single_layer_reason: None,
             media_and_backdrop_filters_without_layers: Vec::new(),
             counts: FrameCounts::default(),
@@ -1181,10 +1177,10 @@ mod tests {
     }
 
     #[test]
-    fn the_records_of_a_layer_that_left_go_once_it_no_longer_keeps_its_tiles() {
-        let (kept, gone) = (painted_key(1), painted_key(2));
+    fn the_records_of_a_layer_go_once_it_leaves_the_stack() {
+        let (stays, leaves) = (painted_key(1), painted_key(2));
         let mut overlay = LayerOverlay::default();
-        for key in [kept, gone] {
+        for key in [stays, leaves] {
             overlay.record_raster(
                 key,
                 TileCoord::new(0, 0),
@@ -1194,14 +1190,16 @@ mod tests {
             );
         }
         let shaper = CountingShaper::default();
-        let mut without_either = frame(at(16), vec![painted_layer(painted_key(3), "[L0] base", &[])]);
-        without_either.layers_kept_out_of_the_stack = vec![kept];
-        overlay.take_frame(without_either, 1.0, &shaper);
+        overlay.take_frame(
+            frame(at(16), vec![painted_layer(stays, "[L0] base", &[(0, 0)])]),
+            1.0,
+            &shaper,
+        );
         let model = overlay.model_of_frame(frame(
             at(32),
             vec![
-                painted_layer(kept, "[L0] base", &[(0, 0)]),
-                painted_layer(gone, "[L1] painted", &[(0, 0)]),
+                painted_layer(stays, "[L0] base", &[(0, 0)]),
+                painted_layer(leaves, "[L1] painted", &[(0, 0)]),
             ],
         ));
         assert_eq!(tiles_of(&model, 0)[0].raster_count, 1);

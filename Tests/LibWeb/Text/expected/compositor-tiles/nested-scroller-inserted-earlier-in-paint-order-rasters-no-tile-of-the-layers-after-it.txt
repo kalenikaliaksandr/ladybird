@@ -1,0 +1,17 @@
+before:
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+[L3] painted space=document band=1
+after:
+[L1] base space=document
+[L2] painted space=scroller@2 in document composited within [300,280 150x150] of document
+[L4] painted space=viewport above band 0 of document
+[L5] painted space=document band=1
+compared: true, matches a direct raster: true
+tiles rasterized: 1
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+[L1] painted space=document: 12 tiles, 1.9 MiB
+[L2] painted space=scroller@2 in document: 1 tile, 144 KiB
+    tile 1,1: rastered 1 time, last newly shown over [297,277 156x235]
+[L4] painted space=viewport above band 0 of document: 4 tiles, 166 KiB
+[L5] painted space=document band=1: 1 tile, 18 KiB

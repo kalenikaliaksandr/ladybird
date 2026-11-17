@@ -906,8 +906,8 @@ impl ContextPresenting {
         Some(source)
     }
 
-    pub fn layer_drop_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
-        self.layers.drop_timer_fired(env);
+    pub fn spare_tile_eviction_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
+        self.layers.spare_tile_eviction_timer_fired(env);
     }
 
     pub fn tile_raster_surface_release_timer_fired(&mut self) {

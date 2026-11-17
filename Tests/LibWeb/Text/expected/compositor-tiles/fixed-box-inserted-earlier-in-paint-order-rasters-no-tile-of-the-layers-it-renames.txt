@@ -1,0 +1,21 @@
+before:
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+[L3] painted space=document band=1
+after:
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+[L3] painted space=document band=1
+[L4] painted space=viewport above band 1 of document
+[L5] painted space=document band=2
+compared: true, matches a direct raster: true
+tiles rasterized: 3
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+[L1] painted space=document: 12 tiles, 1.9 MiB
+    tile 2,1: rastered 1 time, last key changed over [512,256 256x247]
+[L2] painted space=viewport above band 0 of document: 1 tile, 9 KiB
+    tile 0,1: rastered 1 time, last newly shown over [37,417 46x46]
+[L3] painted space=document band=1: 1 tile, 9 KiB
+    tile 2,1: rastered 1 time, last newly shown over [677,457 46x46]
+[L4] painted space=viewport above band 1 of document: 4 tiles, 166 KiB
+[L5] painted space=document band=2: 1 tile, 9 KiB

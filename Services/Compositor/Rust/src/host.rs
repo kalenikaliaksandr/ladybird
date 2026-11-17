@@ -31,7 +31,7 @@ pub enum ContextTimer {
     CaretBlink,
     BackingStoreShrink,
     SurplusStoreRetirement,
-    LayerDrop,
+    SpareTileEviction,
     TileRasterSurfaceRelease,
 }
 

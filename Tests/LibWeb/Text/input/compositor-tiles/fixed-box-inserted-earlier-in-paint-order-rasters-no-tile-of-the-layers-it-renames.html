@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .box { position: absolute; width: 40px; height: 40px; }
+    #first { left: 40px; top: 120px; background: green; }
+    /* Document content painted after the box that is inserted and before the header, which goes into a band of its
+       own once the box is in, so that the bands of the document after it count one more. */
+    #between { left: 680px; top: 460px; background: purple; }
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 50px; background: navy; }
+    #inserted { position: fixed; left: 40px; top: 420px; width: 40px; height: 40px; }
+    #later { left: 300px; top: 300px; background: orange; }
+</style>
+<div id="stripes"></div>
+<div class="box" id="first"></div>
+<div class="box" id="between"></div>
+<div id="header"></div>
+<div class="box" id="later"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersBefore = layersOfTheDisplayList();
+
+        const inserted = document.createElement("div");
+        inserted.id = "inserted";
+        inserted.style.background = colorUniqueToThisPageLoad();
+        document.body.insertBefore(inserted, between);
+        const state = await presentedFrameState();
+        const overlay = compositorLayersWithoutTiming();
+        internals.setShowCompositorLayers(false);
+
+        println("before:");
+        println(layersBefore);
+        println("after:");
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        println(overlay);
+        done();
+    });
+</script>

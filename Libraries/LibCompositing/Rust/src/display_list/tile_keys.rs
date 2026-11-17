@@ -19,7 +19,7 @@ use super::commands::{
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{Extent, changed_extent_through_filters, nearest_spreading_effects};
-use super::layers::{LayerGroup, LayerStack, LayeringObstacles};
+use super::layers::{LayerGroup, LayerStack};
 use super::nested_records::for_each_command_including_nested;
 use super::placement::{RunGroups, SpaceGeometry, intersect_bounds, is_finite_rect};
 use super::reach::Reach;
@@ -312,16 +312,19 @@ pub struct ListOfFrame<'a> {
     live_stamp: TileKey,
     // The mask each mask declaration declares the content of, with where the declaration is.
     mask_declarations: Vec<(EffectNodeIndex, ListPosition)>,
+    // The effects whose backdrop filter a layer of its own applies, which tiles leave out.
+    backdrop_filters_applied_by_layers: Vec<EffectNodeIndex>,
 }
 
 impl<'a> ListOfFrame<'a> {
-    /// The list of a frame, whose stack worked out `layering_obstacles` from the list and the tree.
+    /// The list of a frame, of which `stack` was worked out.
     pub fn new(
         display_list: &'a DisplayListStorage,
         tree: &'a VisualContextTree,
-        layering_obstacles: LayeringObstacles,
+        stack: &LayerStack,
         reads_outside_the_list: ReplayReadsOutsideTheList<'a>,
     ) -> Self {
+        let layering_obstacles = stack.layering_obstacles;
         let run_groups = display_list.run_groups(tree);
         let mask_declarations = display_list
             .summary()
@@ -346,6 +349,7 @@ impl<'a> ListOfFrame<'a> {
             tree_has_sorting_contexts: layering_obstacles.has_3d_sorting_contexts,
             live_stamp: live_stamp_of(display_list, &reads_outside_the_list),
             mask_declarations,
+            backdrop_filters_applied_by_layers: stack.backdrop_filters_applied_by_layers(),
         }
     }
 }
@@ -1068,6 +1072,8 @@ impl<'a> RasterSpaceOfFrame<'a> {
                         hasher.write_bytes(&backdrop.filter);
                         hasher.write_int_rect(backdrop.region);
                         hasher.write_corner_radii(&backdrop.corner_radii);
+                        // A tile replays the effect without its backdrop filter where a layer of its own applies it.
+                        hasher.write_bool(self.list.backdrop_filters_applied_by_layers.contains(&effect));
                     }
                     None => hasher.write_u64(u64::MAX),
                 }
@@ -1597,7 +1603,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
         // The backdrop filters that content of the group reads its backdrop through, each with where the first content
         // under it is. Those that layers of their own apply are left out of the tiles.
         let tree = list.tree;
-        let backdrop_filters_applied_by_layers = stack.backdrop_filters_applied_by_layers();
+        let backdrop_filters_applied_by_layers = &list.backdrop_filters_applied_by_layers;
         let mut seen_effects = vec![false; tree.effect_nodes.len()];
         let mut backdrops = Vec::new();
         for chunk in &chunks {
@@ -2162,7 +2168,7 @@ mod tests {
         let list_of_frame = ListOfFrame::new(
             &display_list,
             &tree,
-            stack.layering_obstacles,
+            &stack,
             ReplayReadsOutsideTheList {
                 scrollbars: &[],
                 time_ns: 0,
@@ -2233,7 +2239,7 @@ mod tests {
         let list_of_frame = ListOfFrame::new(
             display_list,
             tree,
-            stack.layering_obstacles,
+            stack,
             ReplayReadsOutsideTheList {
                 scrollbars: &[],
                 time_ns: 0,
@@ -2267,7 +2273,7 @@ mod tests {
                 let list_of_frame = ListOfFrame::new(
                     display_list,
                     tree,
-                    stack.layering_obstacles,
+                    stack,
                     ReplayReadsOutsideTheList {
                         scrollbars: &[],
                         time_ns: 0,

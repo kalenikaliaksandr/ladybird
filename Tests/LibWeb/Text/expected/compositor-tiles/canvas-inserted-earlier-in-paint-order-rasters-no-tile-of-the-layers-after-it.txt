@@ -1,0 +1,16 @@
+before:
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+[L3] painted space=document band=1
+after:
+[L1] base space=document
+[L2] canvas #0 space=document region=[297,277 156x106] shown by the window server: clip=[0,0 800x600]
+[L4] painted space=viewport above band 0 of document
+[L5] painted space=document band=1
+compared: true, matches a direct raster: true
+tiles rasterized: 0
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+[L1] painted space=document: 12 tiles, 1.9 MiB
+[L2] canvas #0 space=document region=[297,277 156x106]: replayed: the context is not shown in a remote layer
+[L4] painted space=viewport above band 0 of document: 4 tiles, 166 KiB
+[L5] painted space=document band=1: 1 tile, 18 KiB

@@ -800,14 +800,14 @@ impl CompositorCore {
                 self.resize_backing_stores_if_needed(context_id, now);
             }
             ContextTimer::SurplusStoreRetirement => self.retire_idle_surplus_backing_stores(context_id),
-            ContextTimer::LayerDrop => {
+            ContextTimer::SpareTileEviction => {
                 if let Some(presenting) = self.presenting_of(context_id) {
                     let environment = self.environment(
                         context_id,
                         now,
                         &libcompositing_rust::display_list::replay::NoCompositedContexts,
                     );
-                    presenting.borrow_mut().layer_drop_timer_fired(&environment);
+                    presenting.borrow_mut().spare_tile_eviction_timer_fired(&environment);
                 }
             }
             ContextTimer::TileRasterSurfaceRelease => {

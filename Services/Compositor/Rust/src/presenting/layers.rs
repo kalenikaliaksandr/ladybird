@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The layers a frame is painted in, each kept as tiles under its key from one frame and one list to the next, and what
-//! of them the window server shows above the frame by itself.
+//! The layers a frame is painted in, each kept as tiles from one frame and one list to the next, and what of them the
+//! window server shows above the frame by itself. The pixels of a tile are kept in a pool under the tile's key, which
+//! digests all they depend on, so a layer finds the tiles another layer or an earlier stack rastered.
 
 use super::layer_overlay::{
     FrameCounts, FrameOfLayerOverlay, LayerOfFrame, LayerOfFrameContent, MediaPresentation, RasterCause,
@@ -43,12 +44,12 @@ use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libcompositing_rust::visual_context::VisualContextTree;
 use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, IntSize, ScalingMode};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 const TILE_RASTER_SURFACE_RELEASE_DELAY: Duration = Duration::from_milliseconds(3000);
-// How long a layer that left the stack keeps its tiles, for when it comes back.
-const TIME_A_LAYER_OUTLIVES_ITS_STACK: Duration = Duration::from_milliseconds(3000);
+// How long a tile that no layer holds stays in the pool, for content that comes back to what it held.
+const TIME_A_SPARE_TILE_STAYS_IN_THE_POOL: Duration = Duration::from_milliseconds(3000);
 
 // The pool of presentable surfaces the overlays are shown from, apart from those of the painted layers.
 const COMPOSITOR_OVERLAY_SURFACE_POOL: u32 = u32::MAX;
@@ -61,12 +62,17 @@ const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
 // Canvas and video IDs count up from 1, and stay far below this.
 const MEDIA_DRAWING_INDEX_SHIFT: u32 = 44;
 
-struct Tile {
+// The pixels of the tile of one key, which every layer that holds a tile of that key shows.
+struct PooledTile {
     surface: SurfaceHandle,
     // The part of its cell that the surface holds.
     rect: IntRect,
-    key_of_held_pixels: Option<TileKey>,
+    holds_current_pixels: bool,
+    // When a layer held the tile last, as of the latest frame.
+    last_held_at: MonotonicTime,
 }
+
+type TilePool = HashMap<TileKey, PooledTile>;
 
 // The surface that the window server shows a painted layer from.
 struct PaintedLayerPresentation {
@@ -76,21 +82,24 @@ struct PaintedLayerPresentation {
     content_version: u64,
 }
 
-// What is kept of a layer under its key: its tiles, or for a canvas, video, nested context or backdrop filter what was
-// replayed of it.
+// What is kept of a layer under its key while it is in the stack: the keys of the tiles it holds, whose pixels the pool
+// keeps, or for a canvas, video, nested context or backdrop filter what was replayed of it.
 #[derive(Default)]
 struct LayerState {
-    tiles: BTreeMap<TileCoord, Tile>,
+    tiles: BTreeMap<TileCoord, TileKey>,
     // Changes whenever anything is drawn into the tiles, or the tiles change.
     content_version: u64,
     digest_of_replayed_records: Option<TileKey>,
     presentation: Option<PaintedLayerPresentation>,
-    // Since when the layer is in no stack.
-    left_the_stack_at: Option<MonotonicTime>,
 }
 
 impl LayerState {
-    fn invalidate_tiles_shown_within(&mut self, invalidation: TileInvalidation, composite_offset: IntPoint) {
+    fn invalidate_tiles_shown_within(
+        &mut self,
+        tile_pool: &mut TilePool,
+        invalidation: TileInvalidation,
+        composite_offset: IntPoint,
+    ) {
         let rect_in_raster_space = match invalidation {
             TileInvalidation::Nothing => return,
             TileInvalidation::WithinViewportRect(rect) => {
@@ -98,12 +107,21 @@ impl LayerState {
             }
             TileInvalidation::Everywhere => None,
         };
-        for tile in self.tiles.values_mut() {
-            if rect_in_raster_space.is_none_or(|rect| !rect.intersected(tile.rect).is_empty()) {
-                tile.key_of_held_pixels = None;
+        for key in self.tiles.values() {
+            if let Some(tile) = tile_pool.get_mut(key)
+                && rect_in_raster_space.is_none_or(|rect| !rect.intersected(tile.rect).is_empty())
+            {
+                tile.holds_current_pixels = false;
             }
         }
         self.digest_of_replayed_records = None;
+    }
+
+    fn rect_held(&self, tile_pool: &TilePool) -> IntRect {
+        self.tiles
+            .values()
+            .filter_map(|key| tile_pool.get(key))
+            .fold(IntRect::default(), |bounds, tile| bounds.united(tile.rect))
     }
 }
 
@@ -292,12 +310,14 @@ struct PlacementOfFrame {
     placement: ListPlacement,
 }
 
-/// The layers of the frames of a context under their keys, and what of them the window server shows.
+/// The layers of the frames of a context under their keys, the pool of their tiles, and what of them the window server
+/// shows.
 #[derive(Default)]
 pub struct ContextLayers {
     stack: Option<LayerStack>,
     placement_of_latest_frame: Option<PlacementOfFrame>,
     states: HashMap<LayerKey, LayerState>,
+    tile_pool: TilePool,
     // How the latest frame composited its layers, from the base layer up.
     compositing_of_latest_frame: Vec<CompositingOfLayer>,
     last_content_version: u64,
@@ -363,27 +383,67 @@ impl ContextLayers {
         }
     }
 
-    /// Drops the layers that have been out of the stack for long enough, and keeps the timer running for the others.
-    pub fn drop_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
-        let mut layers_still_waiting = false;
-        self.states.retain(|_, state| {
-            let Some(left_the_stack_at) = state.left_the_stack_at else {
-                return true;
-            };
-            if env.now - left_the_stack_at < TIME_A_LAYER_OUTLIVES_ITS_STACK {
-                layers_still_waiting = true;
+    pub fn spare_tile_eviction_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
+        self.evict_spare_tiles(env);
+    }
+
+    // Drops from the pool the tiles that no layer has held for long enough, or whose pixels are not current, and then
+    // the least recently held of the others for as long as they hold more pixels than the tiles layers hold. Keeps the
+    // timer running for those that stay.
+    fn evict_spare_tiles(&mut self, env: &PresentingEnvironment<'_>) {
+        let held: HashSet<TileKey> = self
+            .states
+            .values()
+            .flat_map(|state| state.tiles.values().copied())
+            .collect();
+        let pixels_of = |tile: &PooledTile| tile.rect.width.max(0) as u64 * tile.rect.height.max(0) as u64;
+        let mut pixels_of_held_tiles = 0u64;
+        let mut spare_tiles: Vec<(MonotonicTime, TileKey, u64)> = Vec::new();
+        self.tile_pool.retain(|key, tile| {
+            if held.contains(key) {
+                tile.last_held_at = env.now;
+                pixels_of_held_tiles += pixels_of(tile);
                 return true;
             }
-            if let Some(presentation) = &state.presentation {
-                env.raster
-                    .drop_presentable_surface_pool(env.context_id, presentation.pool);
+            if !tile.holds_current_pixels || env.now - tile.last_held_at >= TIME_A_SPARE_TILE_STAYS_IN_THE_POOL {
+                return false;
             }
-            false
+            spare_tiles.push((tile.last_held_at, *key, pixels_of(tile)));
+            true
         });
-        if layers_still_waiting {
-            env.host
-                .set_timer(env.context_id, ContextTimer::LayerDrop, TIME_A_LAYER_OUTLIVES_ITS_STACK);
+        spare_tiles.sort_unstable();
+        let mut pixels_of_spare_tiles: u64 = spare_tiles.iter().map(|(_, _, pixels)| pixels).sum();
+        let mut evicted = 0;
+        for (_, key, pixels) in &spare_tiles {
+            if pixels_of_spare_tiles <= pixels_of_held_tiles {
+                break;
+            }
+            self.tile_pool.remove(key);
+            pixels_of_spare_tiles -= pixels;
+            evicted += 1;
         }
+        if let Some((least_recently_held_at, _, _)) = spare_tiles.get(evicted) {
+            env.host.set_timer(
+                env.context_id,
+                ContextTimer::SpareTileEviction,
+                TIME_A_SPARE_TILE_STAYS_IN_THE_POOL - (env.now - *least_recently_held_at),
+            );
+        }
+    }
+
+    // How many layers hold the tile of each key, or show it with the frame that `tile_pass` worked out.
+    fn holders_of_tiles(&self, tile_pass: &TilePass) -> HashMap<TileKey, usize> {
+        let mut holders: HashMap<TileKey, usize> = HashMap::new();
+        for key in self.states.values().flat_map(|state| state.tiles.values()) {
+            *holders.entry(*key).or_default() += 1;
+        }
+        for shown in tile_pass.shown_tiles_of_layers.iter().flatten() {
+            let keyed = &tile_pass.groups[shown.group];
+            for &tile_index in &shown.tiles {
+                *holders.entry(keyed.tile(tile_index).key).or_default() += 1;
+            }
+        }
+        holders
     }
 
     pub fn tile_raster_surface_release_timer_fired(&mut self) {
@@ -463,6 +523,31 @@ impl ContextLayers {
     }
 }
 
+// Replays into the scratch surface over `bounds`, and copies what lands on each tile into it.
+fn raster_through_scratch(
+    raster: &RasterHost,
+    scratch: &SurfaceHandle,
+    tiles: &[(SurfaceHandle, IntRect)],
+    bounds: IntRect,
+    clear_color: Color,
+    replay: &dyn Fn(&SurfaceHandle),
+) {
+    let save_count = raster.save(scratch);
+    raster.clear(scratch, clear_color);
+    raster.translate(scratch, -bounds.x as f32, -bounds.y as f32);
+    replay(scratch);
+    raster.restore_to_count(scratch, save_count);
+    for (surface, rect) in tiles {
+        raster.draw_surface(
+            surface,
+            scratch,
+            translated(*rect, -bounds.x, -bounds.y),
+            rect_of_size(size_of(*rect)),
+            SurfaceBlend::Source,
+        );
+    }
+}
+
 // A surface on the backend of the one given, or none, as one that falls back to the CPU on a GPU backend would be
 // allocated again with every frame.
 fn create_surface_like(raster: &RasterHost, size: IntSize, like: &SurfaceHandle) -> Option<SurfaceHandle> {
@@ -509,14 +594,14 @@ fn tile_area_of(space: usize, rect_shown: IntRect, viewport_rect: IntRect) -> In
     rect_shown.inflated_edges(half_height, half_width, half_height, half_width)
 }
 
-// Why a tile that holds pixels of another key than the one it needs, or that is not held, is rastered.
+// Why a layer rasters a tile it needs, given the tile it held at the cell, of the same key or another, if any.
 fn raster_cause_of(
-    held: Option<&Tile>,
+    held: Option<(&PooledTile, bool)>,
     rect_needed: IntRect,
     raster: &RasterHost,
     like: &SurfaceHandle,
 ) -> RasterCause {
-    let Some(held) = held else {
+    let Some((held, held_key_is_needed)) = held else {
         return RasterCause::NewlyShown;
     };
     if !held.rect.contains_rect(rect_needed) {
@@ -525,17 +610,20 @@ fn raster_cause_of(
     if !raster.surfaces_share_backend(&held.surface, like) {
         return RasterCause::HeldOnAnotherBackend;
     }
-    match held.key_of_held_pixels {
-        None => RasterCause::HeldPixelsInvalidated,
-        Some(_) => RasterCause::KeyChanged,
+    if held_key_is_needed {
+        RasterCause::HeldPixelsInvalidated
+    } else {
+        RasterCause::KeyChanged
     }
 }
 
 // Draws the tiles over `damage_rect` of the surface, with the layer's space translated by `offset` into the surface's.
+#[allow(clippy::too_many_arguments)]
 fn composite_layer_tiles(
     raster: &RasterHost,
     surface: &SurfaceHandle,
     state: &LayerState,
+    tile_pool: &TilePool,
     damage_rect: IntRect,
     blend: SurfaceBlend,
     offset: IntPoint,
@@ -546,7 +634,7 @@ fn composite_layer_tiles(
     if let Some(clip) = composite_clip {
         raster.clip_rect(surface, clip);
     }
-    for tile in state.tiles.values() {
+    for tile in state.tiles.values().filter_map(|key| tile_pool.get(key)) {
         let rect = translated(tile.rect, offset.x, offset.y);
         if rect.intersected(area).is_empty() {
             continue;
@@ -770,7 +858,17 @@ impl ContextPresenting {
         let composite_offsets = &layer_update.composite_offsets;
         for compositing in &layer_update.compositing {
             if let Some(state) = self.layers.states.get_mut(&compositing.key) {
-                state.invalidate_tiles_shown_within(layer_update.tile_invalidation, compositing.offset);
+                state.invalidate_tiles_shown_within(
+                    &mut self.layers.tile_pool,
+                    layer_update.tile_invalidation,
+                    compositing.offset,
+                );
+            }
+        }
+        // Whatever made every tile stale holds for the tiles that no layer holds as much.
+        if layer_update.tile_invalidation == TileInvalidation::Everywhere {
+            for tile in self.layers.tile_pool.values_mut() {
+                tile.holds_current_pixels = false;
             }
         }
 
@@ -799,7 +897,7 @@ impl ContextPresenting {
         let list = ListOfFrame::new(
             storage,
             tree,
-            stack.layering_obstacles,
+            stack,
             ReplayReadsOutsideTheList {
                 scrollbars: &scrollbars,
                 time_ns: frame.frame_inputs.painted_at.nanoseconds(),
@@ -972,8 +1070,12 @@ impl ContextPresenting {
                 continue;
             };
             let shown_rect = rect_shown_of(compositing, viewport_rect);
+            let tile_pool = &self.layers.tile_pool;
             // Tiles the layer held where it shows that it no longer holds go, and what they showed is painted again.
-            for (coord, tile) in &state.tiles {
+            for (coord, key) in &state.tiles {
+                let Some(tile) = tile_pool.get(key) else {
+                    continue;
+                };
                 if tile.rect.intersected(shown_rect).is_empty() {
                     continue;
                 }
@@ -991,11 +1093,14 @@ impl ContextPresenting {
                 continue;
             };
             let keyed = &pass.groups[shown.group];
+            // A tile the layer finds in the pool under another key than it held at the cell is not rastered, but what it
+            // shows changed.
             for (&tile_index, rect_needed) in shown.tiles.iter().zip(&shown.rects_needed) {
                 let tile = keyed.tile(tile_index);
-                let kept = state.tiles.get(&tile.coord).is_some_and(|held| {
-                    held.rect.contains_rect(*rect_needed) && held.key_of_held_pixels == Some(tile.key)
-                });
+                let kept = state.tiles.get(&tile.coord) == Some(&tile.key)
+                    && tile_pool
+                        .get(&tile.key)
+                        .is_some_and(|held| held.rect.contains_rect(*rect_needed) && held.holds_current_pixels);
                 if !kept {
                     stale_rect = stale_rect.united(clip_in_viewport(*rect_needed));
                 }
@@ -1121,7 +1226,13 @@ impl ContextPresenting {
                             .layers
                             .states
                             .get(&compositing.key)
-                            .map(|state| state.tiles.iter().map(|(coord, tile)| (*coord, tile.rect)).collect())
+                            .map(|state| {
+                                state
+                                    .tiles
+                                    .iter()
+                                    .filter_map(|(coord, key)| Some((*coord, self.layers.tile_pool.get(key)?.rect)))
+                                    .collect()
+                            })
                             .unwrap_or_default(),
                     },
                     LayerContent::Media { region, .. } => LayerOfFrameContent::Media {
@@ -1155,18 +1266,10 @@ impl ContextPresenting {
                 })
             })
             .collect();
-        let layers_kept_out_of_the_stack = self
-            .layers
-            .states
-            .keys()
-            .filter(|key| compositing.iter().all(|compositing| compositing.key != **key))
-            .copied()
-            .collect();
         let overlay_frame = FrameOfLayerOverlay {
             viewport_rect: self.raster_rect(),
             painted_at: frame.frame_inputs.painted_at,
             layers,
-            layers_kept_out_of_the_stack,
             single_layer_reason: stack.unlayered_reason.map(|reason| reason.to_string()),
             media_and_backdrop_filters_without_layers: stack
                 .names_of_media_without_layers()
@@ -1186,8 +1289,8 @@ impl ContextPresenting {
         }
     }
 
-    /// Takes in what the frame painted of its layers: how it composited them, and which layers left the stack, which
-    /// keep their tiles for a while.
+    /// Takes in what the frame painted of its layers: how it composited them, and which layers left the stack, whose
+    /// tiles stay in the pool for a while.
     pub(super) fn commit_layer_update(&mut self, env: &PresentingEnvironment<'_>, layer_update: LayerUpdate) {
         let layers = &mut self.layers;
         layers.window_server_shows_media = layer_update.shown_by_window_server;
@@ -1202,27 +1305,22 @@ impl ContextPresenting {
                 }
             }
         }
-        let mut some_layer_left_the_stack = false;
-        for (key, state) in &mut layers.states {
+        layers.states.retain(|key, state| {
             let in_stack = layer_update
                 .compositing
                 .iter()
                 .any(|compositing| compositing.key == *key);
-            if in_stack {
-                state.left_the_stack_at = None;
-            } else {
-                state.left_the_stack_at.get_or_insert(env.now);
-                some_layer_left_the_stack = true;
+            if !in_stack && let Some(presentation) = &state.presentation {
+                env.raster
+                    .drop_presentable_surface_pool(env.context_id, presentation.pool);
             }
-        }
+            in_stack
+        });
         layers.compositing_of_latest_frame = layer_update.compositing;
         if let Some(tile_pass) = layer_update.tile_pass {
             layers.keyed_groups = tile_pass.groups;
         }
-        if some_layer_left_the_stack {
-            env.host
-                .set_timer(env.context_id, ContextTimer::LayerDrop, TIME_A_LAYER_OUTLIVES_ITS_STACK);
-        }
+        layers.evict_spare_tiles(env);
     }
 
     /// Paints the frame from its layers over `damage_rect`, and answers the rect it painted, which grows to the whole
@@ -1263,6 +1361,8 @@ impl ContextPresenting {
             .as_ref()
             .expect("a layered frame worked out its tiles before it was painted");
         self.layers.tiles_rasterized_by_this_frame = 0;
+        let holders_of_tiles = self.layers.holders_of_tiles(tile_pass);
+        let mut tile_pool = std::mem::take(&mut self.layers.tile_pool);
         let mut painted_straight = Vec::new();
         for compositing in &layer_update.compositing {
             let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
@@ -1296,11 +1396,14 @@ impl ContextPresenting {
                 layer_index,
                 compositing,
                 &mut state,
+                &mut tile_pool,
+                &holders_of_tiles,
                 tile_pass,
                 clear_color,
             ));
             self.layers.states.insert(compositing.key, state);
         }
+        self.layers.tile_pool = tile_pool;
 
         // The overlay goes into the surface the window server shows the overlays from, so it is worked out first, as if
         // that went well.
@@ -1347,6 +1450,7 @@ impl ContextPresenting {
                 raster,
                 surface,
                 state,
+                &self.layers.tile_pool,
                 damage_rect,
                 SurfaceBlend::Source,
                 base.offset,
@@ -1383,7 +1487,8 @@ impl ContextPresenting {
     }
 
     // Answers where in the raster the tiles that could not be allocated or rastered show, which the frame paints straight
-    // instead, and which are tried again with the next frame.
+    // instead, and which are tried again with the next frame. A tile the pool holds current pixels of for its key is not
+    // rastered again, whichever layer rastered it.
     #[allow(clippy::too_many_arguments)]
     fn raster_layer_tiles(
         &mut self,
@@ -1394,6 +1499,8 @@ impl ContextPresenting {
         layer_index: usize,
         compositing: &CompositingOfLayer,
         state: &mut LayerState,
+        tile_pool: &mut TilePool,
+        holders_of_tiles: &HashMap<TileKey, usize>,
         tile_pass: &TilePass,
         clear_color: Color,
     ) -> Vec<IntRect> {
@@ -1419,9 +1526,11 @@ impl ContextPresenting {
 
         // Tiles stay where the layer may show them later, but not where it shows and no longer holds anything.
         let tile_count = state.tiles.len();
-        state.tiles.retain(|coord, tile| {
+        state.tiles.retain(|coord, key| {
             !coord.cell_rect().intersected(tile_area).is_empty()
-                && (tile.rect.intersected(shown_rect).is_empty() || shown_coords.contains(coord))
+                && tile_pool
+                    .get(key)
+                    .is_some_and(|tile| tile.rect.intersected(shown_rect).is_empty() || shown_coords.contains(coord))
         });
         let mut tiles_changed = state.tiles.len() != tile_count;
 
@@ -1439,41 +1548,65 @@ impl ContextPresenting {
         let mut tiles_to_raster = Vec::new();
         for (&tile_index, &rect_needed) in shown.tiles.iter().zip(&shown.rects_needed) {
             let keyed_tile = keyed.tile(tile_index);
-            let cause =
-                records_rasters.then(|| raster_cause_of(state.tiles.get(&keyed_tile.coord), rect_needed, raster, like));
-            let tile_fits = state.tiles.get(&keyed_tile.coord).is_some_and(|tile| {
-                tile.rect.contains_rect(rect_needed) && raster.surfaces_share_backend(&tile.surface, like)
+            let (coord, key) = (keyed_tile.coord, keyed_tile.key);
+            let held_key = state.tiles.get(&coord).copied();
+            let cause = records_rasters.then(|| {
+                let held = held_key.and_then(|held_key| Some((tile_pool.get(&held_key)?, held_key == key)));
+                raster_cause_of(held, rect_needed, raster, like)
             });
-            if !tile_fits {
-                let Some(surface) = create_surface_like(raster, size_of(rect_needed), like) else {
-                    tiles_changed |= state.tiles.remove(&keyed_tile.coord).is_some();
-                    unrastered.push(shown_in_raster(rect_needed));
-                    if let Some(overlay) = self.layer_overlay.overlay_mut() {
-                        overlay.record_raster(
-                            compositing.key,
-                            keyed_tile.coord,
-                            RasterCause::PaintedStraightIntoTheFrame,
-                            rect_needed,
-                            painted_at,
-                        );
-                    }
-                    continue;
-                };
-                state.tiles.insert(
-                    keyed_tile.coord,
-                    Tile {
-                        surface,
-                        rect: rect_needed,
-                        key_of_held_pixels: None,
-                    },
-                );
+            let fits = |tile: &PooledTile| {
+                tile.rect.contains_rect(rect_needed) && raster.surfaces_share_backend(&tile.surface, like)
+            };
+            if held_key != Some(key) {
+                state.tiles.insert(coord, key);
                 tiles_changed = true;
             }
-            if state.tiles[&keyed_tile.coord].key_of_held_pixels != Some(keyed_tile.key) {
-                tiles_to_raster.push(tile_index);
-                if let Some(cause) = cause {
-                    causes_of_rasters.push((tile_index, cause));
+            match tile_pool.get(&key) {
+                Some(tile) if fits(tile) && tile.holds_current_pixels => continue,
+                Some(tile) if fits(tile) => {}
+                _ => {
+                    // The surface of the tile the layer held at the cell takes the new key where no other layer holds
+                    // that tile or shows it now, as its pixels then serve nothing.
+                    let surface_held_by_this_layer_alone = held_key
+                        .filter(|held_key| {
+                            *held_key != key
+                                && holders_of_tiles.get(held_key).copied().unwrap_or(0) <= 1
+                                && tile_pool.get(held_key).is_some_and(fits)
+                        })
+                        .and_then(|held_key| tile_pool.remove(&held_key))
+                        .map(|tile| (tile.surface, tile.rect));
+                    let surface = surface_held_by_this_layer_alone.or_else(|| {
+                        create_surface_like(raster, size_of(rect_needed), like).map(|surface| (surface, rect_needed))
+                    });
+                    let Some((surface, rect)) = surface else {
+                        state.tiles.remove(&coord);
+                        tiles_changed = true;
+                        unrastered.push(shown_in_raster(rect_needed));
+                        if let Some(overlay) = self.layer_overlay.overlay_mut() {
+                            overlay.record_raster(
+                                compositing.key,
+                                coord,
+                                RasterCause::PaintedStraightIntoTheFrame,
+                                rect_needed,
+                                painted_at,
+                            );
+                        }
+                        continue;
+                    };
+                    tile_pool.insert(
+                        key,
+                        PooledTile {
+                            surface,
+                            rect,
+                            holds_current_pixels: false,
+                            last_held_at: env.now,
+                        },
+                    );
                 }
+            }
+            tiles_to_raster.push(tile_index);
+            if let Some(cause) = cause {
+                causes_of_rasters.push((tile_index, cause));
             }
         }
         if tiles_changed || !tiles_to_raster.is_empty() {
@@ -1519,6 +1652,11 @@ impl ContextPresenting {
                 None => batches.push((cuts, vec![tile_index])),
             }
         }
+        let pooled = |tile_pool: &TilePool, tile_index: usize| {
+            tile_pool
+                .get(&keyed.tile(tile_index).key)
+                .map(|tile| (tile.surface.clone(), tile.rect))
+        };
         for (cuts, batch) in &batches {
             let largest_margin = batch.iter().try_fold(0i32, |largest, &tile_index| {
                 Some(largest.max(keyed.tile(tile_index).raster_margin_in_device_pixels?))
@@ -1526,13 +1664,13 @@ impl ContextPresenting {
             if largest_margin == Some(0) && batch.len() == 1 {
                 let keyed_tile = keyed.tile(batch[0]);
                 let spans = keyed.keys.record_spans_of_tiles([keyed_tile]);
-                let tile = &state.tiles[&keyed_tile.coord];
-                let save_count = raster.save(&tile.surface);
-                raster.translate(&tile.surface, -tile.rect.x as f32, -tile.rect.y as f32);
-                raster.clip_rect(&tile.surface, tile.rect);
-                raster.clear(&tile.surface, clear_color);
-                replay(&tile.surface, &spans);
-                raster.restore_to_count(&tile.surface, save_count);
+                let (surface, rect) = pooled(tile_pool, batch[0]).expect("a tile to raster is in the pool");
+                let save_count = raster.save(&surface);
+                raster.translate(&surface, -rect.x as f32, -rect.y as f32);
+                raster.clip_rect(&surface, rect);
+                raster.clear(&surface, clear_color);
+                replay(&surface, &spans);
+                raster.restore_to_count(&surface, save_count);
                 continue;
             }
             // Where how far a backdrop filter reads is not known, every shown tile that the same barriers cut is
@@ -1549,8 +1687,8 @@ impl ContextPresenting {
             let margin = largest_margin.unwrap_or(0);
             let rect_held_by_tiles = |tile_indices: &[usize]| {
                 tile_indices.iter().fold(IntRect::default(), |bounds, &tile_index| {
-                    match state.tiles.get(&keyed.tile(tile_index).coord) {
-                        Some(tile) => bounds.united(tile.rect),
+                    match pooled(tile_pool, tile_index) {
+                        Some((_, rect)) => bounds.united(rect),
                         None => bounds,
                     }
                 })
@@ -1563,20 +1701,29 @@ impl ContextPresenting {
             let spans = keyed
                 .keys
                 .record_spans_of_tiles(tiles_read.iter().map(|&tile_index| keyed.tile(tile_index)));
-            let tiles: Vec<&Tile> = batch
+            let tiles: Vec<(SurfaceHandle, IntRect)> = batch
                 .iter()
-                .map(|&tile_index| &state.tiles[&keyed.tile(tile_index).coord])
+                .map(|&tile_index| pooled(tile_pool, tile_index).expect("a tile to raster is in the pool"))
                 .collect();
-            if !self.raster_through_scratch(env, like, &tiles, bounds, clear_color, &|target| replay(target, &spans)) {
+            let scratch = self.layers.tile_raster_surface_of_size(env, size_of(bounds), like);
+            if let Some(scratch) = &scratch {
+                raster_through_scratch(raster, scratch, &tiles, bounds, clear_color, &|target| {
+                    replay(target, &spans);
+                });
+            }
+            let rastered = scratch.is_some();
+            if !rastered {
                 for &tile_index in batch {
-                    let coord = keyed.tile(tile_index).coord;
-                    let tile = state.tiles.get_mut(&coord).expect("a tile to raster is held");
-                    tile.key_of_held_pixels = None;
+                    let keyed_tile = keyed.tile(tile_index);
+                    let tile = tile_pool
+                        .get_mut(&keyed_tile.key)
+                        .expect("a tile to raster is in the pool");
+                    tile.holds_current_pixels = false;
                     unrastered.push(shown_in_raster(tile.rect));
                     if let Some(overlay) = self.layer_overlay.overlay_mut() {
                         overlay.record_raster(
                             compositing.key,
-                            coord,
+                            keyed_tile.coord,
                             RasterCause::PaintedStraightIntoTheFrame,
                             tile.rect,
                             painted_at,
@@ -1587,9 +1734,8 @@ impl ContextPresenting {
             }
         }
         for &tile_index in &tiles_rastered {
-            let keyed_tile = keyed.tile(tile_index);
-            if let Some(tile) = state.tiles.get_mut(&keyed_tile.coord) {
-                tile.key_of_held_pixels = Some(keyed_tile.key);
+            if let Some(tile) = tile_pool.get_mut(&keyed.tile(tile_index).key) {
+                tile.holds_current_pixels = true;
             }
         }
         if let Some(overlay) = self.layer_overlay.overlay_mut() {
@@ -1597,43 +1743,13 @@ impl ContextPresenting {
                 if !tiles_rastered.contains(&tile_index) {
                     continue;
                 }
-                let coord = keyed.tile(tile_index).coord;
-                if let Some(tile) = state.tiles.get(&coord) {
-                    overlay.record_raster(compositing.key, coord, cause, tile.rect, painted_at);
+                let keyed_tile = keyed.tile(tile_index);
+                if let Some(tile) = tile_pool.get(&keyed_tile.key) {
+                    overlay.record_raster(compositing.key, keyed_tile.coord, cause, tile.rect, painted_at);
                 }
             }
         }
         unrastered
-    }
-
-    fn raster_through_scratch(
-        &mut self,
-        env: &PresentingEnvironment<'_>,
-        like: &SurfaceHandle,
-        tiles: &[&Tile],
-        bounds: IntRect,
-        clear_color: Color,
-        replay: &dyn Fn(&SurfaceHandle),
-    ) -> bool {
-        let raster = env.raster;
-        let Some(raster_surface) = self.layers.tile_raster_surface_of_size(env, size_of(bounds), like) else {
-            return false;
-        };
-        let save_count = raster.save(&raster_surface);
-        raster.clear(&raster_surface, clear_color);
-        raster.translate(&raster_surface, -bounds.x as f32, -bounds.y as f32);
-        replay(&raster_surface);
-        raster.restore_to_count(&raster_surface, save_count);
-        for tile in tiles {
-            raster.draw_surface(
-                &tile.surface,
-                &raster_surface,
-                translated(tile.rect, -bounds.x, -bounds.y),
-                rect_of_size(size_of(tile.rect)),
-                SurfaceBlend::Source,
-            );
-        }
-        true
     }
 
     /// Composites the layers above the base layer into the surface as the latest frame did, as for a snapshot of the
@@ -1704,6 +1820,7 @@ impl ContextPresenting {
                     env.raster,
                     surface,
                     state,
+                    &self.layers.tile_pool,
                     damage_rect,
                     SurfaceBlend::SourceOver,
                     compositing.offset,
@@ -1738,10 +1855,7 @@ impl ContextPresenting {
                 continue;
             };
             // A layer of a space that scrolls is shown as far as the viewport shows it, where it composites.
-            let held = state
-                .tiles
-                .values()
-                .fold(IntRect::default(), |bounds, tile| bounds.united(tile.rect));
+            let held = state.rect_held(&layers.tile_pool);
             let mut rect = translated(held, compositing.offset.x, compositing.offset.y).intersected(viewport_rect);
             if let Some(clip) = compositing.clip {
                 rect = rect.intersected(clip);
@@ -1780,6 +1894,7 @@ impl ContextPresenting {
                 raster,
                 &target,
                 state,
+                &layers.tile_pool,
                 rect,
                 SurfaceBlend::Source,
                 compositing.offset,

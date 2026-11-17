@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .box { position: absolute; width: 40px; height: 40px; background: green; }
+</style>
+<div id="stripes"></div>
+<div id="boxes">
+    <div class="box" style="left: 100px; top: 100px"></div>
+    <div class="box" style="left: 400px; top: 300px"></div>
+    <div class="box" style="left: 700px; top: 500px"></div>
+</div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersBefore = layersOfTheDisplayList();
+
+        const inserted = document.createElement("div");
+        inserted.className = "box";
+        inserted.style.left = "300px";
+        inserted.style.top = "20px";
+        inserted.style.background = colorUniqueToThisPageLoad();
+        inserted.style.transform = "translateX(0)";
+        boxes.insertBefore(inserted, boxes.firstChild);
+        const state = await presentedFrameState();
+        const overlay = compositorLayersWithoutTiming();
+        internals.setShowCompositorLayers(false);
+
+        println("before:");
+        println(layersBefore);
+        println("after:");
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        println(overlay);
+        done();
+    });
+</script>

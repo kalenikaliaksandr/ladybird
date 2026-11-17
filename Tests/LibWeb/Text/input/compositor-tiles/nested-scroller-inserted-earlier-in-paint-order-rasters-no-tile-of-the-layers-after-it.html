@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .box { position: absolute; width: 60px; height: 60px; }
+    #first { left: 40px; top: 120px; background: green; }
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 50px; background: navy; }
+    #inserted { position: absolute; left: 300px; top: 280px; width: 150px; height: 150px; overflow: auto; scrollbar-width: none; }
+    #inserted > div { height: 600px; }
+    #later { left: 600px; top: 300px; background: orange; }
+</style>
+<div id="stripes"></div>
+<div class="box" id="first"></div>
+<div id="header"></div>
+<div class="box" id="later"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersBefore = layersOfTheDisplayList();
+
+        const inserted = document.createElement("div");
+        inserted.id = "inserted";
+        const scrolled = document.createElement("div");
+        scrolled.style.background = colorUniqueToThisPageLoad();
+        inserted.appendChild(scrolled);
+        document.body.insertBefore(inserted, header);
+        const state = await presentedFrameState();
+        const overlay = compositorLayersWithoutTiming();
+        internals.setShowCompositorLayers(false);
+
+        println("before:");
+        println(layersBefore);
+        println("after:");
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(state);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        println(overlay);
+        done();
+    });
+</script>

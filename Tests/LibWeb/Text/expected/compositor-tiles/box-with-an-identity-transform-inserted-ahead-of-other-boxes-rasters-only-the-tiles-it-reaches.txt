@@ -1,0 +1,9 @@
+before:
+[L1] base space=document
+after:
+[L1] base space=document
+compared: true, matches a direct raster: true
+tiles rasterized: 1
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+[L1] painted space=document: 12 tiles, 2.0 MiB
+    tile 1,0: rastered 1 time, last key changed over [256,0 256x256]
