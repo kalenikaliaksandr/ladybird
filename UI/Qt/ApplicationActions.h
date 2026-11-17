@@ -106,6 +106,7 @@ private:
     RefPtr<Action> m_show_tab_performance_monitor_action;
     RefPtr<Action> m_show_line_box_borders_action;
     RefPtr<Action> m_show_caret_hit_test_debug_overlay_action;
+    RefPtr<Action> m_show_compositor_layers_action;
     RefPtr<Action> m_enable_scripting_action;
     RefPtr<Action> m_block_pop_ups_action;
 

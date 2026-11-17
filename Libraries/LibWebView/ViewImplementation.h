@@ -237,6 +237,8 @@ public:
     void set_hosts_remote_layer(bool);
     // What the view shows, from the Compositor, scaled down to fit within the size given.
     void take_frame_snapshot(Optional<Gfx::IntSize> maximum_size, Function<void(Optional<Gfx::ShareableBitmap>)>);
+    // Tells the Compositor which of the overlays the browser draws over the page the view shows.
+    void update_ui_overlays();
     // The Compositor's remote layers went with its process, so the view asks the new one for another.
     void recreate_remote_layer_after_compositor_reconnect(Badge<WebContentClient>);
     static ViewImplementation* find_view_showing_remote_layer(u64 remote_layer_id);
@@ -856,7 +858,6 @@ protected:
     bool is_ui_overlay_hovered() const { return m_debugger_overlay_pointer_state.hovered_action().has_value() || m_picture_in_picture_controls_pointer_state.hovered_action().has_value(); }
     void apply_cursor();
     void apply_tooltip();
-    void update_ui_overlays();
     void set_page_background_color_to_system_canvas(bool dark);
     void set_page_background_color(Gfx::Color);
     Gfx::Color preferred_canvas_background_color() const;

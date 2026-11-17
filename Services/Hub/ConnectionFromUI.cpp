@@ -716,6 +716,11 @@ void ConnectionFromUI::set_shows_caret_hit_test_debug_overlay(bool shows)
     Application::the().set_shows_caret_hit_test_debug_overlay(shows);
 }
 
+void ConnectionFromUI::set_shows_compositor_layers(bool shows)
+{
+    Application::the().set_shows_compositor_layers(shows);
+}
+
 void ConnectionFromUI::dump_cookies()
 {
     Application::the().dump_cookies();

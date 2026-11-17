@@ -140,6 +140,7 @@ endpoint HubServer
     set_blocks_pop_ups(bool blocks) =|
     set_shows_line_box_borders(bool shows) =|
     set_shows_caret_hit_test_debug_overlay(bool shows) =|
+    set_shows_compositor_layers(bool shows) =|
     dump_cookies() =|
     crash_compositor_process() =|
     launch_devtools_client() =|

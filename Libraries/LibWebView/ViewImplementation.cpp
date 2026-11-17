@@ -2466,6 +2466,7 @@ void ViewImplementation::update_ui_overlays()
             .hovered_control = m_picture_in_picture_controls_pointer_state.hovered_action(),
         };
     }
+    overlays.compositor_layers = Application::the().shows_compositor_layers();
     Application::the().update_compositor_ui_overlays(page().compositor_context_id(), overlays);
 }
 

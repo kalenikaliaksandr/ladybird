@@ -76,6 +76,7 @@ private:
     virtual void set_blocks_pop_ups(bool blocks) override;
     virtual void set_shows_line_box_borders(bool shows) override;
     virtual void set_shows_caret_hit_test_debug_overlay(bool shows) override;
+    virtual void set_shows_compositor_layers(bool shows) override;
     virtual void dump_cookies() override;
     virtual void crash_compositor_process() override;
     virtual void launch_devtools_client() override;
