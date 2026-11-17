@@ -1193,15 +1193,20 @@ impl ContextPresenting {
             };
             let keyed = &pass.groups[shown.group];
             // A tile the layer finds in the pool under another key than it held at the cell is not rastered, but what it
-            // shows changed.
+            // shows changed, there and wherever the tile it held at the cell showed what it no longer shows.
             for (&tile_index, rect_needed) in shown.tiles.iter().zip(&shown.rects_needed) {
                 let tile = keyed.tile(tile_index);
-                let kept = state.tiles.get(&tile.coord) == Some(&tile.key)
+                let held_key = state.tiles.get(&tile.coord);
+                let kept = held_key == Some(&tile.key)
                     && tile_pool
                         .get(&tile.key)
                         .is_some_and(|held| held.rect.contains_rect(*rect_needed) && held.holds_current_pixels);
-                if !kept {
-                    stale_rect = stale_rect.united(clip_in_viewport(*rect_needed));
+                if kept {
+                    continue;
+                }
+                stale_rect = stale_rect.united(clip_in_viewport(*rect_needed));
+                if let Some(held) = held_key.and_then(|held_key| tile_pool.get(held_key)) {
+                    stale_rect = stale_rect.united(clip_in_viewport(held.rect));
                 }
             }
         }

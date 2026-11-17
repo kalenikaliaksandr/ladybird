@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    /* Fixed content painted before the box puts the box in a band of the document above it, whose tiles hold only the
+       part of their cells the box reaches. */
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 30px; background: navy; }
+    #sliding { position: absolute; left: 20px; top: 300px; width: 100px; height: 100px; background: green; }
+</style>
+<div id="header"></div>
+<div id="sliding"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // The compositor slides the box within the cells of its tiles, so each of its tiles changes where in its cell
+        // it holds the box.
+        const slide = sliding.animate([{ transform: "translateX(0)" }, { transform: "translateX(100px)" }], { duration: 500, fill: "forwards" });
+        await slide.finished;
+        const slid = await presentedFrameState();
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(slid);
+        done();
+    });
+</script>
