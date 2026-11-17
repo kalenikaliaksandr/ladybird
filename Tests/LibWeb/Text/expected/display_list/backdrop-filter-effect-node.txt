@@ -14,8 +14,8 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
-  no backdrop layer for e1: its opacity composites the filtered backdrop and the content as one
-  no backdrop layer for e3: reads only its own layer
+  e1 is not composited: its opacity composites the filtered backdrop and the content as one
+  e3 is not composited: it reads only its own layer
 
 DisplayList:
 L0 BackdropFilterRegion@s2/c0/e1 rect=[20,20 100x100]

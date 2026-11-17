@@ -1,0 +1,14 @@
+[L1] base space=document
+[L2] canvas #0 space=document region=[77,87 102x82] replayed: the compositor composites an effect over what is below it
+[L4] painted space=document inside BlockContainer<DIV>#plain.frosted
+composited BlockContainer<DIV>#plain.frosted space=document reads=[61,71 134x114]: it reads what its own layer does not hold
+no layer for canvas: under content that reads the root group below it
+BlockContainer<DIV>#translucent.frosted is not composited: its opacity composites the filtered backdrop and the content as one
+BlockContainer<DIV>#blended.frosted is not composited: its blend mode composites the filtered backdrop and the content as one
+BlockContainer<DIV>#filtered.frosted is not composited: its filter applies to the filtered backdrop and the content as one
+BlockContainer<DIV>#reading-what-it-filters.frosted is not composited: content in it reads the filtered backdrop
+BlockContainer<DIV>#in-a-group.frosted is not composited: inside a group effect
+BlockContainer<DIV>#rotated.frosted is not composited: its region is not an axis-aligned rect in its raster space
+BlockContainer<DIV>#below-a-translucent-one.frosted is not composited: under content that reads the root group below it
+BlockContainer<DIV>#translucent-over-a-frosted-one.frosted is not composited: its opacity composites the filtered backdrop and the content as one
+compared: true, matches a direct raster: true

@@ -1,5 +1,5 @@
 [L1] base space=document
-no backdrop layer for BlockContainer<DIV>#card: reads only its own layer
+BlockContainer<DIV>#card is not composited: it reads only its own layer
 compared: true, matches a direct raster: true
 compared: true, matches a direct raster: true
 scrolled to 100, tiles rasterized: 0

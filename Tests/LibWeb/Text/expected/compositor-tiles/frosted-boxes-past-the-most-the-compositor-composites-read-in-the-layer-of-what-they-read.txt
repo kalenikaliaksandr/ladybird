@@ -1,0 +1,16 @@
+[L0] base space=viewport
+[L1] canvas #0 space=viewport region=[263,7 126x86] replayed: the compositor composites an effect over what is below it
+[L3] canvas #0 space=viewport region=[519,7 126x86] replayed: the compositor composites an effect over what is below it
+[L5] canvas #0 space=viewport region=[7,263 126x86] replayed: the compositor composites an effect over what is below it
+[L7] canvas #0 space=viewport region=[263,263 126x86] replayed: the compositor composites an effect over what is below it
+[L9] painted space=viewport inside BlockContainer<DIV>#second.frosted
+[L11] painted space=viewport inside BlockContainer<DIV>#third.frosted
+[L13] painted space=viewport inside BlockContainer<DIV>#fourth.frosted
+[L15] painted space=viewport inside BlockContainer<DIV>#fifth.frosted
+composited BlockContainer<DIV>#second.frosted space=viewport reads=[249,-7 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#third.frosted space=viewport reads=[505,-7 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#fourth.frosted space=viewport reads=[-7,249 154x114]: it reads what its own layer does not hold
+composited BlockContainer<DIV>#fifth.frosted space=viewport reads=[249,249 154x114]: it reads what its own layer does not hold
+no layer for canvas: under content that reads the root group below it
+BlockContainer<DIV>#first.frosted is not composited: past the most backdrop filters the compositor composites
+compared: true, matches a direct raster: true

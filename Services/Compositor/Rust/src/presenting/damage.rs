@@ -293,7 +293,7 @@ impl ContextPresenting {
             rect: if repaints_everything {
                 raster_rect
             } else {
-                layer_update.damage_grown_over_backdrop_read_areas(forced_damage_rect.united(stale_rect))
+                layer_update.damage_grown_over_what_composited_effects_read(forced_damage_rect.united(stale_rect))
             },
             layers: layer_update,
             live_media_changed,

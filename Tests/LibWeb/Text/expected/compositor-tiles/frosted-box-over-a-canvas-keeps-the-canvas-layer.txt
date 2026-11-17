@@ -1,6 +1,6 @@
 [L0] base space=viewport
-[L1] canvas #0 space=viewport region=[37,37 306x206] replayed: a backdrop layer filters what is composited below it
-[L3] backdrop #0 of e1 space=viewport reads=[61,41 278x158]
-[L4] painted space=viewport above L3
+[L1] canvas #0 space=viewport region=[37,37 306x206] replayed: the compositor composites an effect over what is below it
+[L3] painted space=viewport inside e1
+composited e1 space=viewport reads=[61,41 278x158]: it reads what its own layer does not hold
 compared: true, matches a direct raster: true
 canvas redrawn, tiles rasterized: 0

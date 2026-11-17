@@ -20,7 +20,7 @@ use crate::display_list::nested_records::span_bytes;
 use crate::display_list::storage::{DisplayListStorage, ListSpan};
 use crate::host::{
     CompositedContextDraw, IsolatedGroup, PresentedScrollbar, ResolvedFillRect, ResolvedFillRectWithRoundedCorners,
-    TileRaster, VectorImagePlacement, VectorImageReplay,
+    SurfaceDraw, TileRaster, VectorImagePlacement, VectorImageReplay,
 };
 use crate::visual_context::queries::TreeCullingScratch;
 use crate::visual_context::{
@@ -76,6 +76,8 @@ pub trait ReplayPainter {
         requires_direct_replay: bool,
     ) -> VectorImageReplay;
     fn end_vector_image(&mut self);
+    // Draws pixels of a surface of the compositor under the canvas's matrix and clip.
+    fn draw_surface(&mut self, draw: &SurfaceDraw);
 
     fn execute_run<'t>(&mut self, _run_index: usize, records: &'t [u8], context: &RecordsContext<'_, 't>) {
         replay_records(records, context, self);
@@ -676,8 +678,9 @@ pub struct ReplaySelection<'a> {
     pub record_spans: Option<&'a [ListSpan]>,
     pub skip_root_isolation_layer: bool,
     pub clips_left_to_composite: Option<&'a [bool]>,
-    /// Effects whose backdrop filter a layer of its own applies, which their layers then start out without.
-    pub backdrop_filters_left_out: &'a [EffectNodeIndex],
+    /// The effect that the compositor composites the replayed records inside. The replay leaves it out, with the
+    /// effects around it and the clips it is entered within, which the compositor applies as it composites.
+    pub composited_effect: Option<EffectNodeIndex>,
     /// Where the frame is, in the coordinates of the list before the target's own transform, where the target is not
     /// the frame: a blur of a backdrop mirrors at the edge of the frame there, as it does at the edge of the frame's
     /// surface in a raster of the frame.
@@ -718,6 +721,34 @@ struct ReplayDriver<'a, Painter: ReplayPainter + ?Sized> {
     // Filled when the first layer is entered, since only replays that enter layers need it.
     effect_geometry: Vec<EffectGeometry>,
     effect_geometry_is_known: bool,
+    // Per effect and per clip, whether the selection's composited effect leaves it to the compositor. Empty without one.
+    effects_left_to_composite_around_the_composited_effect: Vec<bool>,
+    clips_left_to_composite_around_the_composited_effect: Vec<bool>,
+}
+
+// The effects that a replay inside `composited_effect` leaves to the compositor, which are the effect and those around
+// it, and the clips the effect is entered within, which are the clips of its output clip chain.
+fn effects_and_clips_left_to_composite_around(
+    tree: &VisualContextTree,
+    effect_clips: &EffectClipPlan,
+    composited_effect: Option<EffectNodeIndex>,
+) -> (Vec<bool>, Vec<bool>) {
+    let Some(composited_effect) = composited_effect else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut effects = vec![false; tree.effect_nodes.len()];
+    let mut effect = composited_effect;
+    while !effect.is_none() {
+        effects[effect.0 as usize] = true;
+        effect = tree.effect_nodes[effect.0 as usize].parent;
+    }
+    let mut clips = vec![false; tree.clip_nodes.len()];
+    let mut clip = effect_clips.output_clip(composited_effect);
+    while !clip.is_none() {
+        clips[clip.0 as usize] = true;
+        clip = tree.clip_nodes[clip.0 as usize].parent;
+    }
+    (effects, clips)
 }
 
 fn replay_clip_of(clip: &crate::visual_context::ClipData) -> ReplayClip {
@@ -808,6 +839,42 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
         self.selection
             .clips_left_to_composite
             .is_some_and(|clips| clips.get(clip.0 as usize).copied().unwrap_or(false))
+            || self
+                .clips_left_to_composite_around_the_composited_effect
+                .get(clip.0 as usize)
+                .copied()
+                .unwrap_or(false)
+    }
+
+    // An effect left to the compositor still gets a layer of the bounds a replay of the list gives it, without its
+    // opacity, blend mode, filters or masks: under dynamic MSAA, Skia rasters some content, such as antialiased rounded
+    // rects, differently into a layer than into the surface below it, so the content goes into the tiles as it goes
+    // into the effect's layer.
+    fn push_plain_layer_standing_in_for(&mut self, effect: EffectNodeIndex) {
+        let spatial = self.tree.effect_nodes[effect.0 as usize].spatial;
+        self.ensure_ctm_space(spatial);
+        let content_bounds = self.layer_content_bounds(effect, spatial);
+        self.painter.push_layer(&ReplayLayer {
+            opacity: 1.0,
+            blend_mode: libgfx_rust::CompositingAndBlendingOperator::Normal,
+            filter_bytes: std::ptr::null(),
+            filter_bytes_size: 0,
+            backdrop_filter_bytes: std::ptr::null(),
+            backdrop_filter_bytes_size: 0,
+            backdrop_region: IntRect::default(),
+            backdrop_corner_radii: CornerRadii::default(),
+            backdrop_base_color: Color::TRANSPARENT,
+            backdrop_blur_edge: OptionalFloatRect::none(),
+            filter_cache_key: 0,
+            content_bounds: OptionalFloatRect::from(content_bounds),
+        });
+    }
+
+    fn effect_is_left_to_composite(&self, effect: EffectNodeIndex) -> bool {
+        self.effects_left_to_composite_around_the_composited_effect
+            .get(effect.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn effect_layer_is_pushed(&self, effect: EffectNodeIndex) -> bool {
@@ -1037,6 +1104,12 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                     self.painter.pop();
                     self.current_ctm_space = None;
                 }
+                Applied::Effect(effect) if self.effect_is_left_to_composite(effect) => {
+                    if self.effect_layer_is_pushed(effect) {
+                        self.painter.pop();
+                        self.current_ctm_space = None;
+                    }
+                }
                 Applied::Effect(effect) => {
                     let node = &tree.effect_nodes[effect.0 as usize];
                     match &node.data {
@@ -1111,6 +1184,11 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                         ClipNodeData::Dead => unreachable!("a run never records under a tombstoned clip"),
                     }
                 }
+                Applied::Effect(effect) if self.effect_is_left_to_composite(effect) => {
+                    if self.effect_layer_is_pushed(effect) {
+                        self.push_plain_layer_standing_in_for(effect);
+                    }
+                }
                 Applied::Effect(effect) => {
                     let node = &tree.effect_nodes[effect.0 as usize];
                     if node.data.pushes_layer() && may_cull_layers {
@@ -1147,9 +1225,6 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                                     layer.backdrop_filter_bytes_size = 0;
                                     layer.opacity = 1.0;
                                     layer.blend_mode = libgfx_rust::CompositingAndBlendingOperator::Normal;
-                                } else if self.selection.backdrop_filters_left_out.contains(&effect) {
-                                    layer.backdrop_filter_bytes = std::ptr::null();
-                                    layer.backdrop_filter_bytes_size = 0;
                                 } else if effects.backdrop_filter.is_some() {
                                     layer.backdrop_base_color = self.backdrop_base_color(effect);
                                     layer.backdrop_blur_edge = self.backdrop_blur_edge(effect);
@@ -1334,46 +1409,202 @@ pub fn replay_display_list<Painter: ReplayPainter + ?Sized>(
     selection: ReplaySelection<'_>,
     painter: &mut Painter,
 ) {
-    let replay_base_matrix = painter.canvas_matrix();
-    let mut scratch = take_replay_scratch_storage();
-    tree.fill_culling_scratch(&mut scratch.culling);
-    let mut driver = ReplayDriver {
+    let mut driver = ReplayDriver::new(
         tree,
         display_list,
-        list: ListReplay::new(tree),
-        frame,
         effect_clips,
         root_group_color,
+        frame,
         selection,
         painter,
-        world: scratch.world,
-        culling: scratch.culling,
-        spatial_dependency_order: tree.spatial_dependency_order(),
-        tree_has_sorting_contexts: tree.spatial_nodes.iter().any(|node| {
-            matches!(&node.data, SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
-        }),
-        replay_base_matrix,
-        current_ctm_space: None,
-        applied: scratch.applied,
-        target: scratch.target,
-        applied_context: None,
-        effect_geometry: scratch.effect_geometry,
-        effect_geometry_is_known: false,
-    };
-    driver.world.fill(
-        tree,
-        &driver.spatial_dependency_order,
-        frame.scroll_offsets,
-        Some(replay_base_matrix),
     );
     driver.execute();
-    return_replay_scratch_storage(ReplayScratchStorage {
-        world: std::mem::take(&mut driver.world),
-        culling: std::mem::take(&mut driver.culling),
-        applied: std::mem::take(&mut driver.applied),
-        target: std::mem::take(&mut driver.target),
-        effect_geometry: std::mem::take(&mut driver.effect_geometry),
-    });
+    driver.return_scratch_storage();
+}
+
+impl<'a, Painter: ReplayPainter + ?Sized> ReplayDriver<'a, Painter> {
+    // A driver that replays from the painter's matrix.
+    fn new(
+        tree: &'a VisualContextTree,
+        display_list: &'a DisplayListStorage,
+        effect_clips: &'a EffectClipPlan,
+        root_group_color: Color,
+        frame: &'a ReplayFrame<'a>,
+        selection: ReplaySelection<'a>,
+        painter: &'a mut Painter,
+    ) -> Self {
+        let replay_base_matrix = painter.canvas_matrix();
+        let mut scratch = take_replay_scratch_storage();
+        tree.fill_culling_scratch(&mut scratch.culling);
+        let (effects_left_to_composite, clips_left_to_composite) =
+            effects_and_clips_left_to_composite_around(tree, effect_clips, selection.composited_effect);
+        let mut driver = ReplayDriver {
+            tree,
+            display_list,
+            list: ListReplay::new(tree),
+            frame,
+            effect_clips,
+            root_group_color,
+            selection,
+            painter,
+            world: scratch.world,
+            culling: scratch.culling,
+            spatial_dependency_order: tree.spatial_dependency_order(),
+            tree_has_sorting_contexts: tree.spatial_nodes.iter().any(|node| {
+                matches!(&node.data, SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
+            }),
+            replay_base_matrix,
+            current_ctm_space: None,
+            applied: scratch.applied,
+            target: scratch.target,
+            applied_context: None,
+            effect_geometry: scratch.effect_geometry,
+            effect_geometry_is_known: false,
+            effects_left_to_composite_around_the_composited_effect: effects_left_to_composite,
+            clips_left_to_composite_around_the_composited_effect: clips_left_to_composite,
+        };
+        driver.world.fill(
+            tree,
+            &driver.spatial_dependency_order,
+            frame.scroll_offsets,
+            Some(replay_base_matrix),
+        );
+        driver
+    }
+
+    fn return_scratch_storage(&mut self) {
+        return_replay_scratch_storage(ReplayScratchStorage {
+            world: std::mem::take(&mut self.world),
+            culling: std::mem::take(&mut self.culling),
+            applied: std::mem::take(&mut self.applied),
+            target: std::mem::take(&mut self.target),
+            effect_geometry: std::mem::take(&mut self.effect_geometry),
+        });
+    }
+
+    // Every mask of the list declares its content where a replay of the list reaches the declaration, ahead of what
+    // the mask holds. Compositing enters masks without replaying what comes before them, so it declares them all first.
+    fn declare_every_mask_content_of_the_list(&mut self) {
+        let display_list = self.display_list;
+        for declaration in &display_list.summary().mask_declarations {
+            let (_, payload) = display_list.record_at(declaration.position());
+            let command = read_command::<DeclareMaskContent>(payload);
+            self.list
+                .declare_mask_content(command.effect, span_bytes(payload, command.content));
+        }
+    }
+}
+
+/// The compositing of rasters of a frame inside the effects the compositor applies to them as it composites them,
+/// which it enters and leaves through the same context switches a replay of the list makes, so that every effect
+/// composites as a replay of the list composites it.
+pub struct CompositingInsideEffects<'d, 'a, Painter: ReplayPainter + ?Sized> {
+    driver: &'d mut ReplayDriver<'a, Painter>,
+    // The matrix of the surface the rasters are drawn into, which their pixels are in.
+    matrix_of_rasters: FloatMatrix4x4,
+    // How long the applied stack is inside each effect entered, outermost first.
+    applied_lengths_inside_entered_effects: Vec<usize>,
+}
+
+impl<Painter: ReplayPainter + ?Sized> CompositingInsideEffects<'_, '_, Painter> {
+    /// Enters `effect` from the innermost effect entered so far, which is one of the effects around it.
+    pub fn enter_effect(&mut self, effect: EffectNodeIndex) {
+        let node = &self.driver.tree.effect_nodes[effect.0 as usize];
+        let context = ContextRef {
+            spatial: node.spatial,
+            clip: self.driver.effect_clips.output_clip(effect),
+            effect,
+        };
+        self.driver.switch_to_context(context, false);
+        self.applied_lengths_inside_entered_effects
+            .push(self.driver.applied.len());
+    }
+
+    /// Leaves the innermost effect entered, which composites what was drawn inside it.
+    pub fn leave_effect(&mut self) {
+        self.applied_lengths_inside_entered_effects.pop();
+        self.return_to_the_innermost_entered_effect();
+    }
+
+    fn return_to_the_innermost_entered_effect(&mut self) {
+        let length = self.applied_lengths_inside_entered_effects.last().copied().unwrap_or(0);
+        self.driver.restore_to_length(length);
+    }
+
+    /// Draws the pixels of `source_rect` of a raster over `target_rect` of the surface, within `clip` of the surface,
+    /// inside the innermost effect entered.
+    pub fn draw_raster(
+        &mut self,
+        surface: *mut std::ffi::c_void,
+        source_rect: IntRect,
+        target_rect: IntRect,
+        clip: Option<IntRect>,
+    ) {
+        self.return_to_the_innermost_entered_effect();
+        self.driver.painter.set_matrix(&self.matrix_of_rasters);
+        self.driver.current_ctm_space = None;
+        if let Some(clip) = clip {
+            self.driver.painter.push_clip(&ReplayClip {
+                rect: clip.to_float(),
+                corner_radii: CornerRadii::default(),
+                mode: ClipMode::Intersect,
+            });
+        }
+        self.driver.painter.draw_surface(&SurfaceDraw {
+            surface,
+            source_rect,
+            target_rect,
+        });
+        if clip.is_some() {
+            self.driver.painter.pop();
+        }
+    }
+
+    /// Replays the records within `span` inside the innermost effect entered, which they are recorded within.
+    pub fn replay_records(&mut self, span: ListSpan) {
+        self.return_to_the_innermost_entered_effect();
+        self.driver.execute_record_span(span);
+    }
+}
+
+/// Composites rasters of the frame into the painter's surface through `composite`, which draws them at the painter's
+/// matrix and enters effects as a replay of the list under that matrix and `raster_transform` would, outside the root
+/// isolation layer, which the surface stands for.
+#[allow(clippy::too_many_arguments)]
+pub fn composite_inside_effects<Painter: ReplayPainter + ?Sized>(
+    tree: &VisualContextTree,
+    display_list: &DisplayListStorage,
+    effect_clips: &EffectClipPlan,
+    root_group_color: Color,
+    frame: &ReplayFrame<'_>,
+    raster_transform: FloatMatrix4x4,
+    painter: &mut Painter,
+    composite: impl FnOnce(&mut CompositingInsideEffects<'_, '_, Painter>),
+) {
+    let matrix_of_rasters = painter.canvas_matrix();
+    painter.set_matrix(&matrix_of_rasters.multiplied(raster_transform));
+    let mut driver = ReplayDriver::new(
+        tree,
+        display_list,
+        effect_clips,
+        root_group_color,
+        frame,
+        ReplaySelection {
+            skip_root_isolation_layer: true,
+            ..ReplaySelection::default()
+        },
+        painter,
+    );
+    driver.declare_every_mask_content_of_the_list();
+    let mut compositing = CompositingInsideEffects {
+        driver: &mut driver,
+        matrix_of_rasters,
+        applied_lengths_inside_entered_effects: Vec::new(),
+    };
+    composite(&mut compositing);
+    driver.restore_to_length(0);
+    driver.painter.set_matrix(&matrix_of_rasters);
+    driver.return_scratch_storage();
 }
 
 #[cfg(test)]
@@ -1574,6 +1805,7 @@ mod tests {
             VectorImageReplay::Skipped
         }
         fn end_vector_image(&mut self) {}
+        fn draw_surface(&mut self, _draw: &SurfaceDraw) {}
 
         fn execute_run<'t>(&mut self, run_index: usize, records: &'t [u8], _context: &RecordsContext<'_, 't>) {
             self.events.push(PainterEvent::Run(run_index));
@@ -1762,7 +1994,7 @@ mod tests {
                 record_spans: Some(&spans),
                 skip_root_isolation_layer: false,
                 clips_left_to_composite: None,
-                backdrop_filters_left_out: &[],
+                composited_effect: None,
                 frame_backdrop_blurs_mirror_at: None,
             },
         );
@@ -1824,7 +2056,7 @@ mod tests {
                     record_spans: spans,
                     skip_root_isolation_layer: false,
                     clips_left_to_composite: None,
-                    backdrop_filters_left_out: &[],
+                    composited_effect: None,
                     frame_backdrop_blurs_mirror_at: None,
                 },
                 &mut painter,
@@ -1884,7 +2116,7 @@ mod tests {
                 record_spans: Some(&spans),
                 skip_root_isolation_layer: false,
                 clips_left_to_composite: None,
-                backdrop_filters_left_out: &[],
+                composited_effect: None,
                 frame_backdrop_blurs_mirror_at: None,
             },
         );
@@ -1916,7 +2148,7 @@ mod tests {
                 record_spans: None,
                 skip_root_isolation_layer: true,
                 clips_left_to_composite: None,
-                backdrop_filters_left_out: &[],
+                composited_effect: None,
                 frame_backdrop_blurs_mirror_at: None,
             },
         );
@@ -2705,7 +2937,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replay_leaves_out_the_backdrop_filters_that_layers_of_their_own_apply() {
+    fn a_replay_inside_a_composited_effect_leaves_out_the_effect_and_those_around_it() {
         let mut tree = identity_tree();
         let root = effect_under(&mut tree, effects(1.0), EffectNodeIndex::NONE, ClipNodeIndex::NONE);
         tree.root_isolation_effect = Some(root);
@@ -2722,9 +2954,9 @@ mod tests {
                 }),
             })
         };
-        let left_out = effect_under(&mut tree, backdrop(), root, ClipNodeIndex::NONE);
+        let composited = effect_under(&mut tree, backdrop(), root, ClipNodeIndex::NONE);
         let kept = effect_under(&mut tree, backdrop(), root, ClipNodeIndex::NONE);
-        let runs = [left_out, kept].map(|effect| {
+        let runs = [composited, kept].map(|effect| {
             run(
                 VISUAL_VIEWPORT_NODE_INDEX,
                 ContextRef {
@@ -2743,12 +2975,13 @@ mod tests {
             white,
             &ReplayFrame::unscrolled(0),
             ReplaySelection {
-                backdrop_filters_left_out: &[left_out],
+                composited_effect: Some(composited),
                 ..ReplaySelection::default()
             },
             &mut painter,
         );
-        // Both boxes still get layers, but only the kept one reads a backdrop.
+        // The composited box and the root isolation layer around it get only plain layers standing in for theirs, which
+        // the other box reads no backdrop through, while the other box gets its own and reads its backdrop.
         assert_eq!(
             painter
                 .events

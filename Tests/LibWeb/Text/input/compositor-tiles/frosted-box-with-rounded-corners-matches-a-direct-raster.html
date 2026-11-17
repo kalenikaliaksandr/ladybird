@@ -9,7 +9,7 @@
     .frosted { width: 300px; height: 180px; border-radius: 40px 10px 60px 20px; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); }
     /* It finds all it reads in the document's layer, so it reads it in its tiles. */
     #in-the-document { position: absolute; left: 60px; top: 50px; }
-    /* The document scrolls under it, so it gets a layer of its own. */
+    /* The document scrolls under it, so the compositor composites it. */
     #fixed { position: fixed; left: 420px; top: 330px; }
 </style>
 <div id="stripes"></div>

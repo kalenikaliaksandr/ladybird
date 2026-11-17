@@ -312,8 +312,9 @@ pub struct ListOfFrame<'a> {
     live_stamp: TileKey,
     // The mask each mask declaration declares the content of, with where the declaration is.
     mask_declarations: Vec<(EffectNodeIndex, ListPosition)>,
-    // The effects whose backdrop filter a layer of its own applies, which tiles leave out.
-    backdrop_filters_applied_by_layers: Vec<EffectNodeIndex>,
+    // Per effect node, whether the compositor composites the effect, which the tiles of its content leave out along
+    // with the effects around it.
+    effects_the_compositor_composites: Vec<bool>,
 }
 
 impl<'a> ListOfFrame<'a> {
@@ -349,7 +350,13 @@ impl<'a> ListOfFrame<'a> {
             tree_has_sorting_contexts: layering_obstacles.has_3d_sorting_contexts,
             live_stamp: live_stamp_of(display_list, &reads_outside_the_list),
             mask_declarations,
-            backdrop_filters_applied_by_layers: stack.backdrop_filters_applied_by_layers(),
+            effects_the_compositor_composites: {
+                let mut composited = vec![false; tree.effect_nodes.len()];
+                for effect in stack.effects_the_compositor_composites() {
+                    composited[effect.0 as usize] = true;
+                }
+                composited
+            },
         }
     }
 }
@@ -1057,6 +1064,8 @@ impl<'a> RasterSpaceOfFrame<'a> {
         hasher.write_key(self.spatial_digest(node.spatial));
         hasher.write_key(self.clip_digest(self.list.effect_clips.output_clip(effect)));
         hasher.write_bool(tree.root_isolation_effect == Some(effect));
+        // A tile replays content under an effect the compositor composites without the effect.
+        hasher.write_bool(self.list.effects_the_compositor_composites[effect.0 as usize]);
         match &node.data {
             EffectNodeData::Effects(effects) => {
                 hasher.write_u32(1);
@@ -1072,8 +1081,6 @@ impl<'a> RasterSpaceOfFrame<'a> {
                         hasher.write_bytes(&backdrop.filter);
                         hasher.write_int_rect(backdrop.region);
                         hasher.write_corner_radii(&backdrop.corner_radii);
-                        // A tile replays the effect without its backdrop filter where a layer of its own applies it.
-                        hasher.write_bool(self.list.backdrop_filters_applied_by_layers.contains(&effect));
                     }
                     None => hasher.write_u64(u64::MAX),
                 }
@@ -1233,6 +1240,12 @@ impl<'a> RasterSpaceOfFrame<'a> {
             hasher.write_key(live_digest);
         }
         hasher.finish()
+    }
+
+    /// The digest of what compositing the layers of a node inside `effect` reads of the effect: its values, where it
+    /// is, and the clips it is entered within, which changes wherever the composited effect draws differently.
+    pub fn digest_of_composited_effect(&self, effect: EffectNodeIndex) -> TileKey {
+        self.effect_digest(effect)
     }
 
     /// The digest of what the records within `span` draw in the frame.
@@ -1601,20 +1614,21 @@ impl<'a> RasterSpaceOfFrame<'a> {
         };
 
         // The backdrop filters that content of the group reads its backdrop through, each with where the first content
-        // under it is. Those that layers of their own apply are left out of the tiles.
+        // under it is. The effect the compositor composites the group inside, and those around it, are left out of the
+        // tiles.
         let tree = list.tree;
-        let backdrop_filters_applied_by_layers = &list.backdrop_filters_applied_by_layers;
+        let composited_effect = stack.nodes[layer_group.node]
+            .composited_effect
+            .unwrap_or(EffectNodeIndex::NONE);
         let mut seen_effects = vec![false; tree.effect_nodes.len()];
         let mut backdrops = Vec::new();
         for chunk in &chunks {
             for &run in &chunk.held_runs {
                 let mut effect = display_list.chunk(chunk.position).runs()[run as usize].context.effect;
-                while !effect.is_none() && !seen_effects[effect.0 as usize] {
+                while !effect.is_none() && effect != composited_effect && !seen_effects[effect.0 as usize] {
                     seen_effects[effect.0 as usize] = true;
                     let node = &tree.effect_nodes[effect.0 as usize];
-                    if matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some())
-                        && !backdrop_filters_applied_by_layers.contains(&effect)
-                    {
+                    if matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some()) {
                         backdrops.push(self.backdrop_read_in_layer(effect, first_held_position_of_run(chunk, run)));
                     }
                     effect = node.parent;

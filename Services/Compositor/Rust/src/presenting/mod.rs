@@ -24,10 +24,11 @@ use layer_overlay::LayerOverlaySwitch;
 use layers::ContextLayers;
 use libcompositing_rust::display_list::commands::CompositorContextId;
 use libcompositing_rust::display_list::replay::{
-    CompositedContexts, NoCompositedContexts, ReplayFrame, ReplaySelection, ResolvedCompositedContext,
-    replay_display_list,
+    CompositedContexts, CompositingInsideEffects, NoCompositedContexts, ReplayFrame, ReplaySelection,
+    ResolvedCompositedContext, composite_inside_effects, replay_display_list,
 };
 use libcompositing_rust::display_list::storage::ListSpan;
+use libcompositing_rust::host::FfiRasterPainter;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, IntRect, IntSize, enclosing_int_rect};
@@ -1036,6 +1037,41 @@ pub(crate) fn replay_with_scroll_offsets(
                 &replay_frame,
                 selection,
                 painter,
+            );
+        });
+}
+
+// Composites rasters of the frame into the target through `composite`, which enters the effects the compositor applies
+// to them as a replay of the frame's list under `raster_transform` enters them.
+pub(crate) fn composite_inside_effects_of_frame(
+    env: &PresentingEnvironment<'_>,
+    target: &SurfaceHandle,
+    frame: &FrameToPaint<'_>,
+    raster_transform: FloatMatrix4x4,
+    composite: impl FnOnce(&mut CompositingInsideEffects<'_, '_, FfiRasterPainter>),
+) {
+    let frame_inputs = frame.frame_inputs;
+    let display_list = frame.display_list;
+    env.raster
+        .paint(env.context_id, target, PaintingResources::Page, |painter| {
+            let scrollbars = frame_inputs.scrollbars_shown_for_the_page();
+            let replay_frame = ReplayFrame {
+                scroll_offsets: frame_inputs.presented_scroll_state_snapshot.device_offsets(),
+                scrollbars: &scrollbars,
+                time_ns: frame_inputs.painted_at.nanoseconds(),
+                composited_contexts: env.nested_contexts,
+            };
+            let storage = display_list.storage();
+            let tree = frame_inputs.visual_context_tree.as_arc();
+            composite_inside_effects(
+                tree,
+                storage,
+                storage.effect_clip_plan(tree),
+                display_list.root_group_color(),
+                &replay_frame,
+                raster_transform,
+                painter,
+                composite,
             );
         });
 }

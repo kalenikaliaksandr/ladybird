@@ -124,6 +124,7 @@ struct DisplayListPlayerSkia::PainterCallbacks {
             .end_tile_raster = [](void* context) { PainterCallbacks::player(context).end_tile_raster(); },
             .begin_vector_image = [](void* context, RustFFI::VectorImagePlacement const* placement, bool requires_direct_replay) { return PainterCallbacks::player(context).begin_vector_image(*placement, requires_direct_replay); },
             .end_vector_image = [](void* context) { PainterCallbacks::player(context).end_vector_image(); },
+            .draw_surface = [](void* context, RustFFI::SurfaceDraw const* draw) { PainterCallbacks::player(context).draw_surface(*draw); },
         };
     }
 };
@@ -377,6 +378,18 @@ void DisplayListPlayerSkia::draw_composited_context(RustFFI::CompositedContextDr
     SkPaint paint;
     paint.setAntiAlias(true);
     canvas.drawImageRect(image.get(), src_rect, dst_rect, to_skia_sampling_options(command.scaling_mode), &paint, SkCanvas::kStrict_SrcRectConstraint);
+}
+
+// The pixels of a surface of the compositor, such as a tile of a layer, land as they are where the two rects have one
+// size, as when the compositor draws them outside the replay.
+void DisplayListPlayerSkia::draw_surface(RustFFI::SurfaceDraw const& draw)
+{
+    auto image = static_cast<Gfx::PaintingSurface*>(draw.surface)->sk_image_snapshot<sk_sp<SkImage>>();
+    if (!image)
+        return;
+    SkPaint paint;
+    paint.setBlendMode(SkBlendMode::kSrcOver);
+    surface().canvas().drawImageRect(image.get(), to_skia_rect(draw.source_rect), to_skia_rect(draw.target_rect), SkSamplingOptions {}, &paint, SkCanvas::kStrict_SrcRectConstraint);
 }
 
 void DisplayListPlayerSkia::play_command(DrawCanvas const& command)

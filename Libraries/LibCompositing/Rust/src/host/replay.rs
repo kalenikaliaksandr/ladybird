@@ -68,6 +68,16 @@ pub struct CompositedContextDraw {
     pub scaling_mode: ScalingMode,
 }
 
+/// Pixels of a surface of the compositor, such as a tile of a layer, drawn without resampling where the two rects have
+/// one size: those of `source_rect`, over `target_rect`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub struct SurfaceDraw {
+    pub surface: *mut c_void,
+    pub source_rect: IntRect,
+    pub target_rect: IntRect,
+}
+
 /// A group of records that is composited as one: inside `clip_rect`, with the opacity, the blend mode and the filter.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -151,6 +161,7 @@ pub struct FfiRasterPainter {
     /// the image is skipped, the replay of its records is followed by `end_vector_image`.
     pub begin_vector_image: unsafe extern "C" fn(*mut c_void, *const VectorImagePlacement, bool) -> VectorImageReplay,
     pub end_vector_image: unsafe extern "C" fn(*mut c_void),
+    pub draw_surface: unsafe extern "C" fn(*mut c_void, *const SurfaceDraw),
 }
 
 impl ReplayPainter for FfiRasterPainter {
@@ -297,5 +308,10 @@ impl ReplayPainter for FfiRasterPainter {
     fn end_vector_image(&mut self) {
         // SAFETY: The C++ painter finishes the image synchronously.
         unsafe { (self.end_vector_image)(self.context) };
+    }
+
+    fn draw_surface(&mut self, draw: &SurfaceDraw) {
+        // SAFETY: The caller keeps the surface alive, and the C++ painter draws it synchronously.
+        unsafe { (self.draw_surface)(self.context, draw) };
     }
 }

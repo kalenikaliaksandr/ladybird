@@ -7,15 +7,17 @@
 //! The layers a display list is painted in, bottom to top.
 //!
 //! Content is rastered in the space of the scroll node or held sticky box it moves with, and its raster is composited
-//! within the clips it leaves to apply then: content of one space and one set of such clips makes a placement node.
-//! Within a node, a canvas, video or nested context that is a layer of its own, a backdrop filter that filters what is
-//! composited below it, and each band of content of a node inside it, sits between the node's records as a barrier. A
-//! barrier cuts the tiles of the node it can show in, or for a backdrop filter that it reads, at its paint position:
-//! there, the node's records painted before it go into the node's layer below it and those painted after it into the
-//! node's layer above it. Elsewhere it cuts nothing. A band of a node inside ends where content outside it that can
-//! show where the band can is painted, so the layers stacked in paint order of their barriers paint every pixel in the
-//! order the list does, as long as nothing within a layer reads what is below the layer. So a backdrop filter that
-//! finds all it reads in the layer it is in, where it is painted, reads it there and needs no layer of its own.
+//! within the clips it leaves to apply then, and inside the effects the compositor applies to it: content of one space,
+//! one set of such clips and one such effect makes a placement node. Within a node, a canvas, video or nested context
+//! that is a layer of its own, and each band of content of a node inside it, sits between the node's records as a
+//! barrier. A barrier cuts the tiles of the node it can show in, or for an effect that reads what is composited below
+//! it, that it reads, at its paint position: there, the node's records painted before it go into the node's layer below
+//! it and those painted after it into the node's layer above it. Elsewhere it cuts nothing. A band of a node inside ends
+//! where content outside it that can show where the band can is painted, so the layers stacked in paint order of their
+//! barriers paint every pixel in the order the list does, as long as nothing within a layer reads what is below the
+//! layer. So a backdrop filter that finds all it reads in the layer it is in, where it is painted, reads it there, and
+//! one that does not gets a node of its own, whose layers the compositor composites inside the filter's effect as a
+//! replay of the list composites the effect, over what is composited below them.
 
 use crate::display_list::builder::read_command;
 use crate::display_list::commands::{DeclareMaskContent, DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
@@ -80,8 +82,27 @@ impl std::fmt::Display for MediaLayerRejection {
     }
 }
 
-/// Why a backdrop filter that reads the root group is applied within the layer of what it reads rather than by a layer
-/// of its own, which filters what is composited below it.
+/// Why the compositor composites the layers of an effect's content inside the effect, as a replay of the list
+/// composites the effect, rather than tiles holding the effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhyEffectIsComposited {
+    ItReadsWhatItsOwnLayerDoesNotHold,
+    ItsBackdropFilterReadsPastTheEdgeOfTheFrame,
+}
+
+impl std::fmt::Display for WhyEffectIsComposited {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold => "it reads what its own layer does not hold",
+            WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame => {
+                "its backdrop filter reads past the edge of the frame"
+            }
+        })
+    }
+}
+
+/// Why a backdrop filter that reads the root group is applied within the layer of what it reads rather than by the
+/// compositor, which composites its effect over what is composited below it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackdropLayerRejection {
     OpacityGroupsTheBackdropWithTheContent,
@@ -126,9 +147,9 @@ impl std::fmt::Display for BackdropLayerRejection {
                 "under content that reads the root group below it"
             }
             BackdropLayerRejection::MoreBackdropFiltersThanLayersFor => {
-                "past the most backdrop filters that get layers"
+                "past the most backdrop filters the compositor composites"
             }
-            BackdropLayerRejection::ReadsOnlyItsOwnLayer => "reads only its own layer",
+            BackdropLayerRejection::ReadsOnlyItsOwnLayer => "it reads only its own layer",
         })
     }
 }
@@ -157,8 +178,8 @@ impl std::fmt::Display for UnlayeredReason {
     }
 }
 
-/// Names a placement node by the identity of its space and the clips its rasters are composited within, which outlive
-/// the tree and the list.
+/// Names a placement node by the identity of its space, the clips its rasters are composited within, and the effects
+/// they are composited inside, which outlive the tree and the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlacementKey(pub u64);
 
@@ -168,8 +189,6 @@ pub enum BarrierKey {
     Media { content: LiveContent, ordinal: u32 },
     /// The `band`th band of content of a node, counted over the whole list.
     Band { node: PlacementKey, band: u32 },
-    /// The `ordinal`th backdrop filter of a node that has a layer of its own, counted over the whole list.
-    Backdrop { node: PlacementKey, ordinal: u32 },
 }
 
 /// Names a layer from one list to the next, so that its tiles outlive both.
@@ -184,21 +203,22 @@ pub enum LayerKey {
         content: LiveContent,
         ordinal: u32,
     },
-    Backdrop {
-        node: PlacementKey,
-        ordinal: u32,
-    },
 }
 
-/// Content rastered in one space and composited within one set of clips.
+/// Content rastered in one space, composited within one set of clips, and inside at most one effect that the
+/// compositor applies, which a replay of the list would apply around it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacementNode {
     pub key: PlacementKey,
     pub space: usize,
     /// At most one per space, ordered by space.
     pub composite_clips: Vec<CompositeClip>,
+    /// The effect the compositor composites the rasters of the node inside, within those it composites the parent
+    /// node inside. The rasters leave it out, with the effects around it and the clips it is entered within.
+    pub composited_effect: Option<EffectNodeIndex>,
     pub parent: Option<usize>,
-    /// Where content of the node and of the nodes in it can show, in the raster coordinates of the parent node.
+    /// Where content of the node and of the nodes in it can show, or a composited effect read, in the raster
+    /// coordinates of the parent node.
     pub region_in_parent: Reach<IntRect>,
 }
 
@@ -224,6 +244,8 @@ impl Cut {
 pub struct LayerGroup {
     pub node: usize,
     pub band: u32,
+    /// The group of the band of the parent node that this band is a barrier in.
+    pub group_it_is_a_barrier_in: Option<usize>,
     /// In paint order.
     pub record_spans: Vec<ListSpan>,
     /// In paint order.
@@ -267,26 +289,30 @@ pub enum LayerContent {
         /// For a canvas or a video, where the window server can show its content by itself, or why it cannot.
         window_server_placement: Option<Result<WindowServerPlacement, WindowServerRejection>>,
     },
-    /// The backdrop filter of an effect, which filters what is composited below the layer when the record that marks
-    /// where the effect reads its backdrop is replayed over it. The effect's content goes into the layers above it.
-    Backdrop {
-        effect: EffectNodeIndex,
-        marker_span: ListSpan,
-        /// What the filter reads and draws, in the raster coordinates of the node's space.
-        read_area: IntRect,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StackLayer {
     pub key: LayerKey,
     pub node: usize,
+    /// The group of the band the layer is in: the band it holds the records of, or the one it is a barrier in.
+    pub group_of_band: usize,
     pub content: LayerContent,
     /// Whether any record can go into the layer anywhere; a layer that holds nothing has no tiles.
     pub may_hold_content: bool,
     /// Whether a record painted within the root group, which what reads the root group below it reads, can go into
     /// the layer anywhere.
     pub may_hold_root_group_content: bool,
+}
+
+/// An effect that the compositor composites the layers of its content inside, and why.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompositedEffect {
+    pub effect: EffectNodeIndex,
+    pub node: usize,
+    pub why: WhyEffectIsComposited,
+    /// What the effect reads of what is composited below it, in the raster coordinates of its node's space.
+    pub read_area: Reach<IntRect>,
 }
 
 /// The layers of a list bottom to top, with the base layer, which is rastered over the surface's clear color and
@@ -297,14 +323,16 @@ pub struct LayerStack {
     pub nodes: Vec<PlacementNode>,
     pub groups: Vec<LayerGroup>,
     pub layers: Vec<StackLayer>,
+    /// In paint order.
+    pub composited_effects: Vec<CompositedEffect>,
     pub base_layer: usize,
     /// Why the stack is one layer that replays the whole list, if it is.
     pub unlayered_reason: Option<UnlayeredReason>,
     pub layering_obstacles: LayeringObstacles,
     /// The canvases, videos and nested contexts that were not given layers, and why.
     pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
-    /// The effects whose backdrop filter reads the root group and is applied within the layer of what it reads, and
-    /// why.
+    /// The effects whose backdrop filter reads the root group and is applied within the layer of what it reads rather
+    /// than by the compositor, and why.
     pub rejected_backdrop_filters: Vec<(EffectNodeIndex, BackdropLayerRejection)>,
     /// Where the parts of the list are placed among the spaces of the stack.
     pub placement: ListPlacement,
@@ -329,6 +357,14 @@ fn key_of_node(spaces: &[RasterSpace], space: usize, composite_clips: &[Composit
     PlacementKey(hasher.finish())
 }
 
+// The effect index names the effect for as long as the tree keeps the node, which outlives lists and scrolls.
+fn key_of_composited_node(parent: PlacementKey, effect: EffectNodeIndex) -> PlacementKey {
+    let mut hasher = foldhash::fast::FixedState::with_seed(0x636f_6d70_6f73_6974).build_hasher();
+    hasher.write_u64(parent.0);
+    hasher.write_u32(effect.0);
+    PlacementKey(hasher.finish())
+}
+
 impl LayerStack {
     /// One layer that replays the whole list, which is always correct.
     pub fn single_layer(viewport_rect: IntRect, whole_list: ListSpan, reason: Option<UnlayeredReason>) -> Self {
@@ -337,6 +373,7 @@ impl LayerStack {
             key: key_of_node(&spaces, VIEWPORT_RASTER_SPACE, &[]),
             space: VIEWPORT_RASTER_SPACE,
             composite_clips: Vec::new(),
+            composited_effect: None,
             parent: None,
             region_in_parent: Reach::Anywhere,
         };
@@ -348,6 +385,7 @@ impl LayerStack {
                     above: None,
                 },
                 node: 0,
+                group_of_band: 0,
                 content: LayerContent::Painted { group: 0 },
                 may_hold_content: true,
                 may_hold_root_group_content: true,
@@ -355,12 +393,14 @@ impl LayerStack {
             groups: vec![LayerGroup {
                 node: 0,
                 band: 0,
+                group_it_is_a_barrier_in: None,
                 record_spans: vec![whole_list],
                 cuts: Vec::new(),
                 layer_below_every_cut: 0,
             }],
             nodes: vec![root],
             spaces,
+            composited_effects: Vec::new(),
             base_layer: 0,
             unlayered_reason: reason,
             layering_obstacles: LayeringObstacles::default(),
@@ -392,6 +432,7 @@ impl LayerStack {
         let layer_is_alike = |layer: &StackLayer, other: &StackLayer| {
             layer.key == other.key
                 && layer.node == other.node
+                && layer.group_of_band == other.group_of_band
                 && layer.may_hold_content == other.may_hold_content
                 && layer.may_hold_root_group_content == other.may_hold_root_group_content
                 && match (&layer.content, &other.content) {
@@ -406,20 +447,13 @@ impl LayerStack {
                             ..
                         },
                     ) => content == other_content && region == other_region,
-                    (
-                        LayerContent::Backdrop { effect, read_area, .. },
-                        LayerContent::Backdrop {
-                            effect: other_effect,
-                            read_area: other_read_area,
-                            ..
-                        },
-                    ) => effect == other_effect && read_area == other_read_area,
                     _ => false,
                 }
         };
         let group_is_alike = |group: &LayerGroup, other: &LayerGroup| {
             group.node == other.node
                 && group.band == other.band
+                && group.group_it_is_a_barrier_in == other.group_it_is_a_barrier_in
                 && group.layer_below_every_cut == other.layer_below_every_cut
                 && group.cuts.len() == other.cuts.len()
                 && group.cuts.iter().zip(&other.cuts).all(|(cut, other)| {
@@ -430,6 +464,7 @@ impl LayerStack {
             && self.layering_obstacles == other.layering_obstacles
             && self.base_layer == other.base_layer
             && self.nodes == other.nodes
+            && self.composited_effects == other.composited_effects
             && self.spaces.len() == other.spaces.len()
             && self
                 .spaces
@@ -482,13 +517,15 @@ impl LayerStack {
 
     /// The clip a layer's raster is composited within, in the viewport, or none for no clip.
     pub fn composite_clip_in_viewport(&self, layer: usize, composite_offsets: &[IntPoint]) -> Option<IntRect> {
-        self.nodes[self.layers[layer].node]
-            .composite_clips
-            .iter()
-            .fold(None, |clip_rect, clip| {
-                let rect = translated(clip.rect, composite_offsets[clip.space]);
-                Some(clip_rect.map_or(rect, |clip_rect: IntRect| clip_rect.intersected(rect)))
-            })
+        self.composite_clip_of_node_in_viewport(self.layers[layer].node, composite_offsets)
+    }
+
+    /// The clip the rasters of a node are composited within, in the viewport, or none for no clip.
+    pub fn composite_clip_of_node_in_viewport(&self, node: usize, composite_offsets: &[IntPoint]) -> Option<IntRect> {
+        self.nodes[node].composite_clips.iter().fold(None, |clip_rect, clip| {
+            let rect = translated(clip.rect, composite_offsets[clip.space]);
+            Some(clip_rect.map_or(rect, |clip_rect: IntRect| clip_rect.intersected(rect)))
+        })
     }
 
     pub fn has_media_layers(&self) -> bool {
@@ -497,23 +534,33 @@ impl LayerStack {
             .any(|layer| matches!(layer.content, LayerContent::Media { .. }))
     }
 
-    /// Whether a layer of the stack filters what is composited below it, which then has to be composited by the
-    /// compositor rather than shown above the frame by the window server.
-    pub fn has_backdrop_layers(&self) -> bool {
-        self.layers[self.base_layer..]
-            .iter()
-            .any(|layer| matches!(layer.content, LayerContent::Backdrop { .. }))
+    /// Whether the compositor composites an effect of the stack over what is composited below it, which the frame then
+    /// has to hold rather than the window server showing it above the frame.
+    pub fn has_composited_effects(&self) -> bool {
+        !self.composited_effects.is_empty()
     }
 
-    /// The effects whose backdrop filter a layer of the stack applies, which rasters of the effects' content leave out.
-    pub fn backdrop_filters_applied_by_layers(&self) -> Vec<EffectNodeIndex> {
-        self.layers
+    /// The effects the compositor composites, which rasters of their content leave out.
+    pub fn effects_the_compositor_composites(&self) -> Vec<EffectNodeIndex> {
+        self.composited_effects
             .iter()
-            .filter_map(|layer| match layer.content {
-                LayerContent::Backdrop { effect, .. } => Some(effect),
-                _ => None,
-            })
+            .map(|composited| composited.effect)
             .collect()
+    }
+
+    /// The groups of the bands the layer is in, outermost first, whose nodes the compositor composites inside their
+    /// effects.
+    pub fn composited_groups_around_layer(&self, layer: usize) -> Vec<usize> {
+        let mut groups = Vec::new();
+        let mut group = Some(self.layers[layer].group_of_band);
+        while let Some(index) = group {
+            if self.nodes[self.groups[index].node].composited_effect.is_some() {
+                groups.push(index);
+            }
+            group = self.groups[index].group_it_is_a_barrier_in;
+        }
+        groups.reverse();
+        groups
     }
 
     /// Works out again where the window server can show the content of each canvas and video layer, under
@@ -576,42 +623,52 @@ impl LayerStack {
         )
     }
 
+    // The space of the node, and the effects the compositor composites it inside, innermost first.
+    fn name_of_node(&self, node: usize) -> String {
+        let mut name = self.name_of_space(self.nodes[node].space);
+        let mut node = Some(node);
+        while let Some(index) = node {
+            if let Some(effect) = self.nodes[index].composited_effect {
+                name.push_str(&format!(" inside e{}", effect.0));
+            }
+            node = self.nodes[index].parent;
+        }
+        name
+    }
+
     fn name_of_barrier(&self, barrier: &BarrierKey) -> String {
-        let name_of_barrier_layer = |key: LayerKey| {
-            let layer = self
-                .layers
-                .iter()
-                .position(|layer| layer.key == key)
-                .expect("a media or backdrop barrier is a layer of the stack");
-            format!("L{layer}")
-        };
         match barrier {
-            BarrierKey::Media { content, ordinal } => name_of_barrier_layer(LayerKey::Media {
-                content: *content,
-                ordinal: *ordinal,
-            }),
-            BarrierKey::Backdrop { node, ordinal } => name_of_barrier_layer(LayerKey::Backdrop {
-                node: *node,
-                ordinal: *ordinal,
-            }),
+            BarrierKey::Media { content, ordinal } => {
+                let key = LayerKey::Media {
+                    content: *content,
+                    ordinal: *ordinal,
+                };
+                let layer = self
+                    .layers
+                    .iter()
+                    .position(|layer| layer.key == key)
+                    .expect("a media barrier is a layer of the stack");
+                format!("L{layer}")
+            }
             BarrierKey::Band { node, band } => {
                 let node = self
                     .nodes
                     .iter()
-                    .find(|candidate| candidate.key == *node)
+                    .position(|candidate| candidate.key == *node)
                     .expect("a band barrier names a node of the stack");
-                format!("band {band} of {}", self.name_of_space(node.space))
+                format!("band {band} of {}", self.name_of_node(node))
             }
         }
     }
 
-    /// What the dump calls a layer: its index, what it holds, the space it is rastered in, and what it sits above.
+    /// What the dump calls a layer: its index, what it holds, the space it is rastered in and the effects the
+    /// compositor composites it inside, and what it sits above.
     pub fn name_of_layer(&self, index: usize) -> String {
         if self.unlayered_reason.is_some() {
             return "[L0] single layer replaying the whole list".into();
         }
         let layer = &self.layers[index];
-        let space = self.name_of_space(self.nodes[layer.node].space);
+        let space = self.name_of_node(layer.node);
         match (&layer.key, &layer.content) {
             (LayerKey::Painted { band, above, .. }, _) => {
                 let kind = if index == self.base_layer { "base" } else { "painted" };
@@ -632,21 +689,36 @@ impl LayerStack {
                 region.width,
                 region.height
             ),
-            (LayerKey::Backdrop { ordinal, .. }, LayerContent::Backdrop { effect, read_area, .. }) => format!(
-                "[L{index}] backdrop #{ordinal} of e{} space={space} reads=[{},{} {}x{}]",
-                effect.0, read_area.x, read_area.y, read_area.width, read_area.height
-            ),
-            (LayerKey::Media { .. } | LayerKey::Backdrop { .. }, _) => {
-                unreachable!("a media or backdrop key names a layer of its kind")
-            }
+            (LayerKey::Media { .. }, _) => unreachable!("a media key names a media layer"),
         }
     }
 
-    /// What the dump says of a backdrop filter that reads the root group and has no layer of its own, and why.
-    pub fn names_of_backdrop_filters_without_layers(&self) -> impl Iterator<Item = String> + '_ {
+    /// What the dump says of an effect the compositor composites: the space of its node, what it reads of what is
+    /// composited below it, and why it is composited.
+    pub fn names_of_composited_effects(&self) -> impl Iterator<Item = String> + '_ {
+        self.composited_effects.iter().map(|composited| {
+            let parent = self.nodes[composited.node]
+                .parent
+                .expect("a composited node is inside another");
+            let reads = match composited.read_area {
+                Reach::Nothing => String::new(),
+                Reach::Within(rect) => format!(" reads=[{},{} {}x{}]", rect.x, rect.y, rect.width, rect.height),
+                Reach::Anywhere => " reads=anywhere".into(),
+            };
+            format!(
+                "composited e{} space={}{reads}: {}",
+                composited.effect.0,
+                self.name_of_node(parent),
+                composited.why
+            )
+        })
+    }
+
+    /// What the dump says of a backdrop filter that reads the root group and is not composited, and why.
+    pub fn names_of_backdrop_filters_not_composited(&self) -> impl Iterator<Item = String> + '_ {
         self.rejected_backdrop_filters
             .iter()
-            .map(|(effect, rejection)| format!("no backdrop layer for e{}: {rejection}", effect.0))
+            .map(|(effect, rejection)| format!("e{} is not composited: {rejection}", effect.0))
     }
 
     /// What the dump says of a canvas, video or nested context that was not given a layer, and why.
@@ -685,9 +757,9 @@ impl LayerStack {
                 LayerContent::Media {
                     window_server_placement: Some(Ok(_)),
                     ..
-                } if self.has_backdrop_layers() => writeln!(
+                } if self.has_composited_effects() => writeln!(
                     output,
-                    " replayed: a backdrop layer filters what is composited below it"
+                    " replayed: the compositor composites an effect over what is below it"
                 )?,
                 LayerContent::Media {
                     window_server_placement: Some(Ok(placement)),
@@ -701,8 +773,9 @@ impl LayerStack {
             }
         }
         for name in self
-            .names_of_media_without_layers()
-            .chain(self.names_of_backdrop_filters_without_layers())
+            .names_of_composited_effects()
+            .chain(self.names_of_media_without_layers())
+            .chain(self.names_of_backdrop_filters_not_composited())
         {
             writeln!(output, "{indent}{name}")?;
         }
@@ -715,18 +788,10 @@ impl LayerStack {
             return vec![0];
         }
         for (index, layer) in self.layers.iter().enumerate() {
-            let (LayerContent::Media {
-                record_span: barrier_span,
-                ..
-            }
-            | LayerContent::Backdrop {
-                marker_span: barrier_span,
-                ..
-            }) = &layer.content
-            else {
+            let LayerContent::Media { record_span, .. } = &layer.content else {
                 continue;
             };
-            if barrier_span.begin == position {
+            if record_span.begin == position {
                 return vec![index];
             }
         }
@@ -945,25 +1010,23 @@ pub fn backdrop_filter_read_area(
 }
 
 /// A stretch of records of one group that is placed as one: the whole group, or the records of a run between the
-/// canvases, videos and nested contexts that are layers of their own, or one of those, or the record that marks where
-/// an effect with a backdrop layer reads its backdrop, or the rest of that effect's records.
+/// canvases, videos and nested contexts that are layers of their own, or one of those.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlacedUnit {
     pub span: ListSpan,
     pub group: usize,
     pub reach: IntRect,
     pub media: Option<usize>,
+    /// The backdrop filter the compositor can composite the whole group inside, for the unit that is the group.
     pub backdrop: Option<usize>,
 }
 
-/// A backdrop filter that reads the root group and gets a layer of its own, placed with the group of its effect, which
-/// holds the effect's records and nothing else.
+/// A backdrop filter that reads the root group and that the compositor can composite, placed with the group of its
+/// effect, which holds the effect's records and nothing else.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlacedBackdrop {
     pub effect: EffectNodeIndex,
     pub group: usize,
-    /// The record that marks where the effect reads its backdrop, the first of its group.
-    pub marker_span: ListSpan,
     /// What the filter reads and draws, in the raster coordinates of the group's space, wherever the effect can show if
     /// it moves within its space.
     pub read_area: IntRect,
@@ -1126,7 +1189,6 @@ fn backdrop_layer_of_reader(
     if !is_one_stretch_starting_with_the_marker {
         return Err(BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop);
     }
-    let marker = marker.expect("the stretch starts with the marker");
     let group = &groups[group_index];
     if !group.composite_clips.is_empty() {
         return Err(BackdropLayerRejection::CompositedWithinClips);
@@ -1159,10 +1221,6 @@ fn backdrop_layer_of_reader(
     Ok(PlacedBackdrop {
         effect: reader,
         group: group_index,
-        marker_span: ListSpan {
-            begin: ListPosition::new(chunk, marker.offset),
-            end: ListPosition::new(chunk, marker.end_offset),
-        },
         read_area,
         reads_nothing_past_the_edge_it_mirrors_at:
             crate::display_list::tile_keys::backdrop_filter_reads_nothing_past_the_edge_it_mirrors_at(
@@ -1418,29 +1476,16 @@ pub fn place_list(
             begin: list.start_of_run(group.first_run as usize),
             end: list.end_of_run(group.last_run as usize),
         };
-        // The marker of a backdrop layer is a barrier, and the rest of its effect's records go above it where it reads.
-        if let Some((backdrop_index, backdrop)) =
-            backdrops_of_groups.next_if(|(_, backdrop)| backdrop.group == group_index)
-        {
+        // The group of an effect the compositor can composite is a unit, which goes into a node of its own where the
+        // effect is composited.
+        if let Some((backdrop_index, _)) = backdrops_of_groups.next_if(|(_, backdrop)| backdrop.group == group_index) {
             units.push(PlacedUnit {
-                span: backdrop.marker_span,
+                span: span_of_group,
                 group: group_index,
-                reach: backdrop.read_area,
+                reach: group.device_rect,
                 media: None,
                 backdrop: Some(backdrop_index),
             });
-            if backdrop.marker_span.end < span_of_group.end {
-                units.push(PlacedUnit {
-                    span: ListSpan {
-                        begin: backdrop.marker_span.end,
-                        end: span_of_group.end,
-                    },
-                    group: group_index,
-                    reach: group.device_rect,
-                    media: None,
-                    backdrop: None,
-                });
-            }
             continue;
         }
         let has_media = media_of_records
@@ -1523,7 +1568,6 @@ struct BandBeingBuilt {
 enum BarrierBeingBuilt {
     Media { unit: usize },
     Band { band: usize },
-    Backdrop { unit: usize },
 }
 
 fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
@@ -1548,20 +1592,26 @@ struct StackBeingBuilt<'a> {
     groups: Vec<LayerGroup>,
     // Per band, where content of the root group in it can show so far, in the raster coordinates of its node.
     root_group_reach_of_bands: Vec<Reach<IntRect>>,
-    // Per backdrop of the placement, how many backdrop layers of its node are painted before its own, or none where it
-    // reads only its own layer.
-    ordinals_of_backdrop_layers: Vec<Option<u32>>,
-    // The effects whose backdrop filters got layers of their own, in paint order.
-    effects_with_backdrop_layers: Vec<EffectNodeIndex>,
+    // In paint order.
+    composited_effects: Vec<CompositedEffect>,
 }
 
 impl StackBeingBuilt<'_> {
+    fn add_node(&mut self, node: PlacementNode) -> usize {
+        let parent = node.parent;
+        self.nodes.push(node);
+        self.children_of_node.push(Vec::new());
+        let index = self.nodes.len() - 1;
+        if let Some(parent) = parent {
+            self.children_of_node[parent].push(index);
+        }
+        index
+    }
+
     fn node_of(&mut self, space: usize, composite_clips: Vec<CompositeClip>) -> usize {
-        if let Some(node) = self
-            .nodes
-            .iter()
-            .position(|node| node.space == space && node.composite_clips == composite_clips)
-        {
+        if let Some(node) = self.nodes.iter().position(|node| {
+            node.space == space && node.composite_clips == composite_clips && node.composited_effect.is_none()
+        }) {
             return node;
         }
         let spaces = &self.placement.spaces;
@@ -1580,19 +1630,38 @@ impl StackBeingBuilt<'_> {
                 .collect();
             (Some(self.node_of(parent_space, clips_of_parent)), region)
         };
-        self.nodes.push(PlacementNode {
+        self.add_node(PlacementNode {
             key: key_of_node(spaces, space, &composite_clips),
             space,
             composite_clips,
+            composited_effect: None,
             parent,
             region_in_parent,
-        });
-        self.children_of_node.push(Vec::new());
-        let node = self.nodes.len() - 1;
-        if let Some(parent) = parent {
-            self.children_of_node[parent].push(node);
+        })
+    }
+
+    // A node of the space and the clips of `parent`, whose rasters the compositor composites inside `effect`, which
+    // shows and reads within `region` of the raster coordinates of the space.
+    fn composited_node_inside(&mut self, parent: usize, effect: EffectNodeIndex, region: Reach<IntRect>) -> usize {
+        let parent_node = &self.nodes[parent];
+        let node = PlacementNode {
+            key: key_of_composited_node(parent_node.key, effect),
+            space: parent_node.space,
+            composite_clips: parent_node.composite_clips.clone(),
+            composited_effect: Some(effect),
+            parent: Some(parent),
+            region_in_parent: region,
+        };
+        self.add_node(node)
+    }
+
+    // Where a unit can show, or where the backdrop filter of its group reads if the compositor can composite it, as a
+    // node of its own then shows there.
+    fn reach_of_unit_with_what_it_can_read(&self, unit: &PlacedUnit) -> IntRect {
+        match unit.backdrop {
+            Some(backdrop) => unit.reach.united(self.placement.backdrops[backdrop].read_area),
+            None => unit.reach,
         }
-        node
     }
 
     // The content of a held sticky box shows in the space around it wherever the box's offset takes it, so the region of
@@ -1603,7 +1672,7 @@ impl StackBeingBuilt<'_> {
         let mut reach_of_nodes = vec![IntRect::default(); self.nodes.len()];
         for unit in &placement.units {
             let node = self.node_of_group[unit.group];
-            reach_of_nodes[node] = reach_of_nodes[node].united(unit.reach);
+            reach_of_nodes[node] = reach_of_nodes[node].united(self.reach_of_unit_with_what_it_can_read(unit));
         }
         for (node, reach) in self.nodes.iter_mut().zip(reach_of_nodes) {
             let space = &placement.spaces[node.space];
@@ -1683,9 +1752,7 @@ impl StackBeingBuilt<'_> {
         };
         self.bands[band_of_reader].barriers.iter().all(|barrier| {
             let region = match *barrier {
-                BarrierBeingBuilt::Media { unit } | BarrierBeingBuilt::Backdrop { unit } => {
-                    Reach::Within(self.placement.units[unit].reach)
-                }
+                BarrierBeingBuilt::Media { unit } => Reach::Within(self.placement.units[unit].reach),
                 BarrierBeingBuilt::Band { band } => self.nodes[self.bands[band].node].region_in_parent,
             };
             !region.touches(read_tiles)
@@ -1699,32 +1766,53 @@ impl StackBeingBuilt<'_> {
         }
     }
 
+    // Why the compositor composites the group of `backdrop`, painted next in `node`, inside its effect, if it does: it
+    // does where the backdrop filter does not find all it reads in the layer it goes into.
+    fn why_backdrop_is_composited(
+        &self,
+        backdrop: &PlacedBackdrop,
+        node: usize,
+        band_of_node: Option<usize>,
+    ) -> Option<WhyEffectIsComposited> {
+        if !backdrop.reads_nothing_past_the_edge_it_mirrors_at {
+            return Some(WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame);
+        }
+        let read_tiles = expanded_to_tile_grid(backdrop.read_area);
+        (!self.reads_only_its_own_layer(node, band_of_node, read_tiles))
+            .then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+    }
+
     // Walks the units in paint order, giving each node bands within the bands of its parent, and each band its
-    // barriers and its own units. A backdrop filter that can have a layer of its own gets one where it does not find
-    // all it reads in the layer it goes into.
+    // barriers and its own units. The group of a backdrop filter that does not find all it reads in the layer it goes
+    // into gets a node of its own, which the compositor composites inside the filter's effect.
     fn cut_into_bands(&mut self) {
         let placement = self.placement;
         let mut open_band_of_node: Vec<Option<usize>> = vec![None; self.nodes.len()];
         let mut next_band_of_node = vec![0u32; self.nodes.len()];
-        let mut backdrop_layers_of_node = vec![0u32; self.nodes.len()];
         open_band_of_node[0] = Some(self.open_band(0, 0, 0));
         next_band_of_node[0] = 1;
         for (unit_index, unit) in placement.units.iter().enumerate() {
             if unit.reach.is_empty() {
                 continue;
             }
-            let node_of_unit = self.node_of_group[unit.group];
-            let backdrop_layer = unit.backdrop.filter(|&backdrop| {
-                let backdrop = &placement.backdrops[backdrop];
-                let read_tiles = expanded_to_tile_grid(backdrop.read_area);
-                !backdrop.reads_nothing_past_the_edge_it_mirrors_at
-                    || !self.reads_only_its_own_layer(node_of_unit, open_band_of_node[node_of_unit], read_tiles)
-            });
-            if let Some(backdrop) = backdrop_layer {
-                self.ordinals_of_backdrop_layers[backdrop] = Some(backdrop_layers_of_node[node_of_unit]);
-                backdrop_layers_of_node[node_of_unit] += 1;
-                self.effects_with_backdrop_layers
-                    .push(placement.backdrops[backdrop].effect);
+            let node_of_group = self.node_of_group[unit.group];
+            let mut node_of_unit = node_of_group;
+            if let Some(backdrop_index) = unit.backdrop {
+                let backdrop = &placement.backdrops[backdrop_index];
+                if let Some(why) =
+                    self.why_backdrop_is_composited(backdrop, node_of_group, open_band_of_node[node_of_group])
+                {
+                    let region = Reach::Within(self.reach_of_unit_with_what_it_can_read(unit));
+                    node_of_unit = self.composited_node_inside(node_of_group, backdrop.effect, region);
+                    open_band_of_node.push(None);
+                    next_band_of_node.push(0);
+                    self.composited_effects.push(CompositedEffect {
+                        effect: backdrop.effect,
+                        node: node_of_unit,
+                        why,
+                        read_area: Reach::Within(backdrop.read_area),
+                    });
+                }
             }
             let path = self.path_to(node_of_unit);
             for level in 0..path.len() {
@@ -1758,31 +1846,19 @@ impl StackBeingBuilt<'_> {
                             .barriers
                             .push(BarrierBeingBuilt::Media { unit: unit_index });
                     }
-                    None if backdrop_layer.is_some() => {
-                        self.bands[band]
-                            .barriers
-                            .push(BarrierBeingBuilt::Backdrop { unit: unit_index });
-                    }
                     None => self.bands[band].own_units.push(unit_index),
                 }
             }
-            let group = &placement.groups[unit.group];
-            if group.paints_within_the_root_group {
-                // A backdrop filter read in its own layer draws within its group, where its layer would read.
-                let reach = if unit.backdrop.is_some() && backdrop_layer.is_none() {
-                    group.device_rect
-                } else {
-                    unit.reach
-                };
+            if placement.groups[unit.group].paints_within_the_root_group {
                 let band = open_band_of_node[node_of_unit].expect("the band of a unit is open once it is placed");
                 self.root_group_reach_of_bands[band] =
-                    self.root_group_reach_of_bands[band].united(Reach::Within(reach));
+                    self.root_group_reach_of_bands[band].united(Reach::Within(unit.reach));
             }
         }
     }
 
     // Pushes the layers of a band and of the bands in it, bottom to top, and the group of its records.
-    fn emit_band(&mut self, band_index: usize) -> usize {
+    fn emit_band(&mut self, band_index: usize, group_it_is_a_barrier_in: Option<usize>) -> usize {
         let placement = self.placement;
         let node = self.bands[band_index].node;
         let ordinal = self.bands[band_index].ordinal;
@@ -1795,6 +1871,7 @@ impl StackBeingBuilt<'_> {
         self.groups.push(LayerGroup {
             node,
             band: ordinal,
+            group_it_is_a_barrier_in,
             record_spans: Vec::new(),
             cuts: Vec::new(),
             layer_below_every_cut: self.layers.len(),
@@ -1806,6 +1883,7 @@ impl StackBeingBuilt<'_> {
                 above: None,
             },
             node,
+            group_of_band: group,
             content: LayerContent::Painted { group },
             may_hold_content: false,
             may_hold_root_group_content: false,
@@ -1824,6 +1902,7 @@ impl StackBeingBuilt<'_> {
                     self.layers.push(StackLayer {
                         key,
                         node,
+                        group_of_band: group,
                         content: LayerContent::Media {
                             content: media.content,
                             record_span: placed_unit.span,
@@ -1849,37 +1928,8 @@ impl StackBeingBuilt<'_> {
                         band: self.bands[band].ordinal,
                     };
                     let position = unit_position(self.bands[band].first_unit);
-                    self.emit_band(band);
+                    self.emit_band(band, Some(group));
                     (key, position, self.nodes[child_node].region_in_parent)
-                }
-                BarrierBeingBuilt::Backdrop { unit } => {
-                    let placed_unit = &placement.units[unit];
-                    let backdrop_index = placed_unit.backdrop.expect("a backdrop barrier is a backdrop unit");
-                    let backdrop = &placement.backdrops[backdrop_index];
-                    let ordinal = self.ordinals_of_backdrop_layers[backdrop_index]
-                        .expect("a backdrop barrier is of a backdrop filter that got a layer");
-                    self.layers.push(StackLayer {
-                        key: LayerKey::Backdrop {
-                            node: node_key,
-                            ordinal,
-                        },
-                        node,
-                        content: LayerContent::Backdrop {
-                            effect: backdrop.effect,
-                            marker_span: backdrop.marker_span,
-                            read_area: backdrop.read_area,
-                        },
-                        may_hold_content: true,
-                        may_hold_root_group_content: true,
-                    });
-                    (
-                        BarrierKey::Backdrop {
-                            node: node_key,
-                            ordinal,
-                        },
-                        unit_position(unit),
-                        Reach::Within(backdrop.read_area),
-                    )
                 }
             };
             self.layers.push(StackLayer {
@@ -1889,6 +1939,7 @@ impl StackBeingBuilt<'_> {
                     above: Some(key),
                 },
                 node,
+                group_of_band: group,
                 content: LayerContent::Painted { group },
                 may_hold_content: false,
                 may_hold_root_group_content: false,
@@ -1908,6 +1959,7 @@ impl StackBeingBuilt<'_> {
         let group_so_far = LayerGroup {
             node,
             band: ordinal,
+            group_it_is_a_barrier_in,
             record_spans: Vec::new(),
             cuts,
             layer_below_every_cut,
@@ -1950,7 +2002,10 @@ impl StackBeingBuilt<'_> {
 // replace what is below it.
 fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node: usize) -> bool {
     let placement_node = &nodes[node];
-    if !placement_node.composite_clips.is_empty() || placement_node.region_in_parent != Reach::Anywhere {
+    if !placement_node.composite_clips.is_empty()
+        || placement_node.composited_effect.is_some()
+        || placement_node.region_in_parent != Reach::Anywhere
+    {
         return false;
     }
     match placement_node.parent {
@@ -1963,10 +2018,10 @@ fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], nod
 }
 
 enum StackConflict {
-    // More backdrop filters got layers than there are layers for: the earliest of them in paint order, which are to read
-    // in the layer of what they read instead, so that no backdrop layer is under them.
+    // The compositor composites more backdrop filters than it composites at most: the earliest of them in paint order,
+    // which are to read in the layer of what they read instead, so that no composited effect is under them.
     BackdropLayersPastTheMost(Vec<EffectNodeIndex>),
-    // Media drawn, and backdrop filters applied by layers of their own, before content that reads the root group's
+    // Media drawn, and backdrop filters the compositor composites, before content that reads the root group's
     // backdrop, where the content can show.
     BarriersUnderBackdrop {
         media: Vec<ListPosition>,
@@ -1995,8 +2050,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         layers: Vec::new(),
         groups: Vec::new(),
         root_group_reach_of_bands: Vec::new(),
-        ordinals_of_backdrop_layers: vec![None; placement.backdrops.len()],
-        effects_with_backdrop_layers: Vec::new(),
+        composited_effects: Vec::new(),
     };
     built.node_of(VIEWPORT_RASTER_SPACE, Vec::new());
     built.node_of_group = placement
@@ -2010,21 +2064,23 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         .collect();
     built.bound_the_regions_of_held_sticky_boxes();
     built.cut_into_bands();
-    built.emit_band(0);
+    built.emit_band(0, None);
 
     let StackBeingBuilt {
         nodes,
         node_of_group,
         layers,
         groups,
-        ordinals_of_backdrop_layers,
-        effects_with_backdrop_layers,
+        composited_effects,
         ..
     } = built;
 
     let mut rejected_backdrop_filters = placement.rejected_backdrop_filters.clone();
-    for (backdrop, ordinal) in placement.backdrops.iter().zip(&ordinals_of_backdrop_layers) {
-        if ordinal.is_none() {
+    for backdrop in &placement.backdrops {
+        if composited_effects
+            .iter()
+            .all(|composited| composited.effect != backdrop.effect)
+        {
             rejected_backdrop_filters.push((backdrop.effect, BackdropLayerRejection::ReadsOnlyItsOwnLayer));
         }
     }
@@ -2047,12 +2103,16 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         _ => 0,
     };
 
-    let backdrop_layers_past_the_most = effects_with_backdrop_layers
-        .len()
-        .saturating_sub(MAXIMUM_BACKDROP_LAYER_COUNT);
-    let mut conflict = (backdrop_layers_past_the_most > 0).then(|| {
-        StackConflict::BackdropLayersPastTheMost(effects_with_backdrop_layers[..backdrop_layers_past_the_most].to_vec())
+    let composited_effects_past_the_most = composited_effects.len().saturating_sub(MAXIMUM_BACKDROP_LAYER_COUNT);
+    let mut conflict = (composited_effects_past_the_most > 0).then(|| {
+        StackConflict::BackdropLayersPastTheMost(
+            composited_effects[..composited_effects_past_the_most]
+                .iter()
+                .map(|composited| composited.effect)
+                .collect(),
+        )
     });
+    let composited_effect_of_layer = |layer: usize| nodes[layers[layer].node].composited_effect;
     // Content that reads the root group's backdrop reads what is below it in its own layer only, so no layer below its
     // own may hold content of the root group, and no barrier painted before it may cut the tiles it reaches.
     for unit in &placement.units {
@@ -2079,14 +2139,12 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         // of its own space alone are in other bands or behind other clips, which the space around it merges.
         let space = nodes[node].space;
         let layers_read_through = base_layer..layer_group.layer_below_every_cut;
-        // A backdrop layer read through goes first, as the spaces around it may then hold what it reads.
-        let backdrop_filters_read_through: Vec<EffectNodeIndex> = layers_read_through
+        // A composited backdrop filter read through goes first, as the spaces around it may then hold what it reads.
+        let mut backdrop_filters_read_through: Vec<EffectNodeIndex> = layers_read_through
             .clone()
-            .filter_map(|layer| match layers[layer].content {
-                LayerContent::Backdrop { effect, .. } => Some(effect),
-                _ => None,
-            })
+            .filter_map(composited_effect_of_layer)
             .collect();
+        backdrop_filters_read_through.dedup();
         if !backdrop_filters_read_through.is_empty() {
             conflict = Some(StackConflict::BarriersUnderBackdrop {
                 media: Vec::new(),
@@ -2121,27 +2179,19 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
             }
             match cut.barrier {
                 BarrierKey::Media { .. } => refused_media.push(cut.position),
-                BarrierKey::Backdrop { node, ordinal } => {
-                    let backdrop_layer = layers
-                        .iter()
-                        .find(|layer| layer.key == LayerKey::Backdrop { node, ordinal })
-                        .expect("a backdrop barrier is a layer of the stack");
-                    let LayerContent::Backdrop { effect, .. } = backdrop_layer.content else {
-                        unreachable!("a backdrop key names a backdrop layer");
-                    };
-                    refused_backdrop_filters.push(effect);
-                }
                 BarrierKey::Band { node: band_node, .. } => {
-                    let band_space = nodes
+                    let band_node = nodes
                         .iter()
                         .find(|candidate| candidate.key == band_node)
-                        .expect("a band barrier names a node of the stack")
-                        .space;
-                    spaces_to_fold.extend(spaces_up_to_common_space(
-                        &placement.spaces,
-                        band_space,
-                        nodes[node].space,
-                    ));
+                        .expect("a band barrier names a node of the stack");
+                    match band_node.composited_effect {
+                        Some(effect) => refused_backdrop_filters.push(effect),
+                        None => spaces_to_fold.extend(spaces_up_to_common_space(
+                            &placement.spaces,
+                            band_node.space,
+                            nodes[node].space,
+                        )),
+                    }
                 }
             }
         }
@@ -2163,6 +2213,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         nodes,
         groups,
         layers,
+        composited_effects,
         base_layer,
         unlayered_reason: None,
         layering_obstacles: placement.layering_obstacles,
@@ -2416,7 +2467,6 @@ mod tests {
                         format!("{kind} {space} band {band}{above}")
                     }
                     LayerKey::Media { content, ordinal } => format!("{} #{ordinal} {space}", media_name(content)),
-                    LayerKey::Backdrop { ordinal, .. } => format!("backdrop #{ordinal} {space}"),
                 }
             })
             .collect()
@@ -2538,7 +2588,7 @@ mod tests {
         let frosted = tree.append_effect_node_under(root, frosted_effect(region));
         let list = TestList::new().with(fill(VIEWPORT), root).with(fill(region), frosted);
         let stack = list.stack(&tree, &[]);
-        assert!(stack.backdrop_filters_applied_by_layers().is_empty());
+        assert!(!stack.has_composited_effects());
         assert_eq!(
             stack.rejected_backdrop_filters,
             [(

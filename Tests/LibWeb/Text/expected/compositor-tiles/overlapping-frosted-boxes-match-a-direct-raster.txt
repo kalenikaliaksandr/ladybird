@@ -1,4 +1,4 @@
 [L1] base space=document
-no backdrop layer for e1: reads only its own layer
-no backdrop layer for e2: reads only its own layer
+e1 is not composited: it reads only its own layer
+e2 is not composited: it reads only its own layer
 compared: true, matches a direct raster: true

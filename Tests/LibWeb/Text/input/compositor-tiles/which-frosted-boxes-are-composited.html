@@ -6,8 +6,8 @@
     .stripe { height: 30px; }
     .stripe:nth-child(odd) { background: teal; }
     .stripe:nth-child(even) { background: salmon; }
-    /* Each box reads the tiles of its own, so that none reads another's backdrop layer unless it is meant to. */
-    /* A box that finds all it reads in the layer it is in needs no layer of its own, so a canvas under a box keeps
+    /* Each box reads the tiles of its own, so that none reads another's composited layer unless it is meant to. */
+    /* A box that finds all it reads in the layer it is in is not composited, so a canvas under a box keeps
        what it reads out of its layer. */
     canvas { position: absolute; width: 96px; height: 76px; }
     .frosted { position: absolute; width: 80px; height: 60px; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(4px); }

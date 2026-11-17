@@ -12,8 +12,9 @@ use super::layer_overlay::{
     FrameCounts, FrameOfLayerOverlay, LayerOfFrame, LayerOfFrameContent, MediaPresentation, RasterCause,
 };
 use super::{
-    ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform, paint_overlays,
-    rect_of_size, replay_into, replay_with_scroll_offsets, replaying_only,
+    ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform,
+    composite_inside_effects_of_frame, paint_overlays, rect_of_size, replay_into, replay_with_scroll_offsets,
+    replaying_only,
 };
 use crate::host::ContextTimer;
 use crate::raster_host::{
@@ -24,8 +25,8 @@ use libcompositing_rust::display_list::commands::{
     CanvasId, CompositorContextId, ImageFrameResourceId, SpatialNodeIndex, VideoSinkHandle,
 };
 use libcompositing_rust::display_list::layers::{
-    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, StackLayer, VIEWPORT_RASTER_SPACE,
-    backdrop_filter_read_area, build_layer_stack, place_list, raster_space_anchors,
+    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, PlacementKey, StackLayer,
+    VIEWPORT_RASTER_SPACE, backdrop_filter_read_area, build_layer_stack, place_list, raster_space_anchors,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaces, SpaceGeometry, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
@@ -83,7 +84,7 @@ struct PaintedLayerPresentation {
 }
 
 // What is kept of a layer under its key while it is in the stack: the keys of the tiles it holds, whose pixels the pool
-// keeps, or for a canvas, video, nested context or backdrop filter what was replayed of it.
+// keeps, or for a canvas, video or nested context what was replayed of it.
 #[derive(Default)]
 struct LayerState {
     tiles: BTreeMap<TileCoord, TileKey>,
@@ -139,7 +140,7 @@ enum WhyMediaIsReplayed {
     WindowServerCannotShowThePlacement,
     TilesWerePaintedStraightIntoTheFrame,
     AnotherMediaLayerIsReplayed,
-    BackdropLayerFiltersWhatIsCompositedBelowIt,
+    CompositorCompositesAnEffectOverWhatIsBelowIt,
 }
 
 impl std::fmt::Display for WhyMediaIsReplayed {
@@ -162,8 +163,8 @@ impl std::fmt::Display for WhyMediaIsReplayed {
             WhyMediaIsReplayed::WindowServerCannotShowThePlacement => "the window server cannot show it where it is",
             WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame => "tiles were painted straight into the frame",
             WhyMediaIsReplayed::AnotherMediaLayerIsReplayed => "another media layer is replayed",
-            WhyMediaIsReplayed::BackdropLayerFiltersWhatIsCompositedBelowIt => {
-                "a backdrop layer filters what is composited below it"
+            WhyMediaIsReplayed::CompositorCompositesAnEffectOverWhatIsBelowIt => {
+                "the compositor composites an effect over what is below it"
             }
         })
     }
@@ -247,6 +248,8 @@ pub struct TilePass {
     // Indexed like the layers of the stack.
     shown_tiles_of_layers: Vec<Option<ShownTilesOfLayer>>,
     digests_of_replayed_records: Vec<Option<TileKey>>,
+    // What compositing the nodes of composited effects reads of each effect, by node.
+    digests_of_composited_effects: HashMap<PlacementKey, TileKey>,
 }
 
 /// What a frame paints of its layers.
@@ -257,17 +260,18 @@ pub struct LayerUpdate {
     /// From the base layer up, the layers that can hold something, and where the frame composites each.
     pub compositing: Vec<CompositingOfLayer>,
     pub shown_by_window_server: bool,
-    /// In the raster coordinates of the frame, what each backdrop layer reads and draws as the frame places it.
-    pub backdrop_read_areas: Vec<IntRect>,
+    /// In the raster coordinates of the frame, what each composited effect that reads past each of its pixels reads
+    /// and draws as the frame places it.
+    pub read_areas_of_composited_effects: Vec<IntRect>,
 }
 
 impl LayerUpdate {
-    /// The damage grown over all that a backdrop layer reads wherever it reaches that, as compositing the layer reads
-    /// what is composited below it, which the frame painted before holds only under what it composited above.
-    pub fn damage_grown_over_backdrop_read_areas(&self, mut damage: IntRect) -> IntRect {
+    /// The damage grown over all that a composited effect reads wherever it reaches that, as compositing the effect
+    /// reads what is composited below it, which the frame painted before holds only under what it composited above.
+    pub fn damage_grown_over_what_composited_effects_read(&self, mut damage: IntRect) -> IntRect {
         loop {
             let mut grew = false;
-            for &read_area in &self.backdrop_read_areas {
+            for &read_area in &self.read_areas_of_composited_effects {
                 if !read_area.intersected(damage).is_empty() && !damage.contains_rect(read_area) {
                     damage = damage.united(read_area);
                     grew = true;
@@ -344,6 +348,8 @@ pub struct ContextLayers {
     stack_generation: u64,
     // The keys of the tiles of the groups of the latest frame, kept for the next one.
     keyed_groups: Vec<KeyedGroupOfFrame>,
+    // What compositing the nodes of composited effects read of each effect in the latest frame, by node.
+    digests_of_composited_effects: HashMap<PlacementKey, TileKey>,
 }
 
 /// What the test hook reports of the layers since it last asked.
@@ -823,7 +829,7 @@ impl ContextPresenting {
             composite_offsets,
             compositing,
             shown_by_window_server,
-            backdrop_read_areas: Vec::new(),
+            read_areas_of_composited_effects: Vec::new(),
         }
     }
 
@@ -1014,7 +1020,40 @@ impl ContextPresenting {
         self.layers.chunks_placed_by_this_frame += chunks_placed;
 
         let mut stale_rect = IntRect::default();
-        let mut backdrop_read_areas = Vec::new();
+        // A composited effect that changed, or moved within its space, as its digest then says, composited elsewhere or
+        // otherwise before. One that reads past each of its pixels reads what is composited below it all over its read
+        // area.
+        let mut read_areas_of_composited_effects = Vec::new();
+        for composited in &stack.composited_effects {
+            let node = &stack.nodes[composited.node];
+            let offset = composite_offsets[node.space];
+            let clip_in_viewport = |rect: IntRect| {
+                let rect = translated(rect, offset.x, offset.y).intersected(viewport_rect);
+                match stack.composite_clip_of_node_in_viewport(composited.node, composite_offsets) {
+                    Some(clip) => rect.intersected(clip),
+                    None => rect,
+                }
+            };
+            let region_in_viewport = match node.region_in_parent {
+                Reach::Within(region) => clip_in_viewport(region),
+                Reach::Nothing => IntRect::default(),
+                Reach::Anywhere => clip_in_viewport(viewport_rect),
+            };
+            let digest = raster_spaces[node.space].digest_of_composited_effect(composited.effect);
+            if self.layers.digests_of_composited_effects.get(&node.key) != Some(&digest) {
+                stale_rect = stale_rect.united(region_in_viewport);
+            }
+            pass.digests_of_composited_effects.insert(node.key, digest);
+            if composited.read_area != Reach::Nothing {
+                let read_area_in_this_frame =
+                    match backdrop_filter_read_area(tree, &geometries[node.space], composited.effect) {
+                        Reach::Within(read_area) => clip_in_viewport(read_area),
+                        Reach::Nothing => IntRect::default(),
+                        Reach::Anywhere => region_in_viewport,
+                    };
+                read_areas_of_composited_effects.push(read_area_in_this_frame);
+            }
+        }
         for compositing in &layer_update.compositing {
             let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
                 continue;
@@ -1025,27 +1064,6 @@ impl ContextPresenting {
                 compositing.clip.map_or(rect, |clip| rect.intersected(clip))
             };
             let state = self.layers.states.get(&layer.key);
-            if let LayerContent::Backdrop {
-                effect,
-                marker_span,
-                read_area: area_it_can_read,
-            } = &layer.content
-            {
-                let space = stack.space_of_layer(layer_index);
-                // A filter that moved within its space, as its digest then says, filtered elsewhere before.
-                let digest = raster_spaces[space].digest_of_records_within(*marker_span);
-                if state.and_then(|state| state.digest_of_replayed_records) != Some(digest) {
-                    stale_rect = stale_rect.united(clip_in_viewport(*area_it_can_read));
-                }
-                pass.digests_of_replayed_records[layer_index] = Some(digest);
-                let read_area_in_this_frame = match backdrop_filter_read_area(tree, &geometries[space], *effect) {
-                    Reach::Within(read_area) => clip_in_viewport(read_area),
-                    Reach::Nothing => IntRect::default(),
-                    Reach::Anywhere => clip_in_viewport(*area_it_can_read),
-                };
-                backdrop_read_areas.push(read_area_in_this_frame);
-                continue;
-            }
             if let LayerContent::Media {
                 record_span, region, ..
             } = &layer.content
@@ -1107,7 +1125,7 @@ impl ContextPresenting {
             }
         }
         layer_update.tile_pass = Some(pass);
-        layer_update.backdrop_read_areas = backdrop_read_areas;
+        layer_update.read_areas_of_composited_effects = read_areas_of_composited_effects;
         stale_rect
     }
 
@@ -1120,7 +1138,7 @@ impl ContextPresenting {
         live_content: &LiveContent,
     ) -> bool {
         self.why_window_server_shows_no_media_of_this_context(env).is_none()
-            && !stack.has_backdrop_layers()
+            && !stack.has_composited_effects()
             && stack.layers[stack.base_layer..]
                 .iter()
                 .all(|layer| self.why_window_server_does_not_show(env, layer, live_content).is_none())
@@ -1244,8 +1262,8 @@ impl ContextPresenting {
                                 .or_else(|| self.why_window_server_does_not_show(env, layer, live_content))
                                 .or_else(|| {
                                     stack
-                                        .has_backdrop_layers()
-                                        .then_some(WhyMediaIsReplayed::BackdropLayerFiltersWhatIsCompositedBelowIt)
+                                        .has_composited_effects()
+                                        .then_some(WhyMediaIsReplayed::CompositorCompositesAnEffectOverWhatIsBelowIt)
                                 })
                                 .unwrap_or(if tiles_painted_straight {
                                     WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame
@@ -1255,7 +1273,6 @@ impl ContextPresenting {
                             MediaPresentation::Replayed { why: why.to_string() }
                         },
                     },
-                    LayerContent::Backdrop { read_area, .. } => LayerOfFrameContent::Backdrop { region: *read_area },
                 };
                 Some(LayerOfFrame {
                     key: compositing.key,
@@ -1271,9 +1288,10 @@ impl ContextPresenting {
             painted_at: frame.frame_inputs.painted_at,
             layers,
             single_layer_reason: stack.unlayered_reason.map(|reason| reason.to_string()),
-            media_and_backdrop_filters_without_layers: stack
-                .names_of_media_without_layers()
-                .chain(stack.names_of_backdrop_filters_without_layers())
+            composited_effects_and_what_got_no_layer: stack
+                .names_of_composited_effects()
+                .chain(stack.names_of_media_without_layers())
+                .chain(stack.names_of_backdrop_filters_not_composited())
                 .collect(),
             counts: FrameCounts {
                 tiles_rastered: self.layers.tiles_rasterized_by_this_frame,
@@ -1319,6 +1337,7 @@ impl ContextPresenting {
         layers.compositing_of_latest_frame = layer_update.compositing;
         if let Some(tile_pass) = layer_update.tile_pass {
             layers.keyed_groups = tile_pass.groups;
+            layers.digests_of_composited_effects = tile_pass.digests_of_composited_effects;
         }
         layers.evict_spare_tiles(env);
     }
@@ -1354,8 +1373,8 @@ impl ContextPresenting {
         let raster = env.raster;
         let surface_clear_color = frame.display_list.surface_clear_color().unwrap_or(Color::TRANSPARENT);
         raster.start_raster_cache_frame(env.context_id);
-        // A store can miss the damage of several frames, which joined can reach part of what a backdrop layer reads.
-        damage_rect = layer_update.damage_grown_over_backdrop_read_areas(damage_rect);
+        // A store can miss the damage of several frames, which joined can reach part of what a composited effect reads.
+        damage_rect = layer_update.damage_grown_over_what_composited_effects_read(damage_rect);
         let tile_pass = layer_update
             .tile_pass
             .as_ref()
@@ -1372,10 +1391,7 @@ impl ContextPresenting {
                 entry.insert(LayerState::default());
                 self.layers.layers_created_since_last_check += 1;
             }
-            if matches!(
-                stack.layers[layer_index].content,
-                LayerContent::Media { .. } | LayerContent::Backdrop { .. }
-            ) {
+            if matches!(stack.layers[layer_index].content, LayerContent::Media { .. }) {
                 continue;
             }
             let clear_color = if layer_index == stack.base_layer {
@@ -1626,7 +1642,7 @@ impl ContextPresenting {
         let clips_left_to_composite =
             (!geometry.clips_left_to_composite.is_empty()).then_some(&geometry.clips_left_to_composite[..]);
         let (raster_scale, raster_translation) = (self.raster_scale, self.raster_translation);
-        let backdrop_filters_applied_by_layers = stack.backdrop_filters_applied_by_layers();
+        let composited_effect = stack.nodes[stack.layers[layer_index].node].composited_effect;
         let frame_in_space_of_layer = frame_in_space(space, compositing.offset, viewport_rect);
         let replay = |target: &SurfaceHandle, spans: &[ListSpan]| {
             let mut selection = if keyed.keys.replays_whole_list {
@@ -1635,7 +1651,7 @@ impl ContextPresenting {
                 replaying_only(spans, false)
             };
             selection.clips_left_to_composite = clips_left_to_composite;
-            selection.backdrop_filters_left_out = &backdrop_filters_applied_by_layers;
+            selection.composited_effect = composited_effect;
             selection.frame_backdrop_blurs_mirror_at = frame_in_space_of_layer.map(IntRect::to_float);
             apply_raster_transform(raster, target, raster_scale, raster_translation);
             replay_with_scroll_offsets(env, target, frame, selection, &geometry.raster_scroll_offsets);
@@ -1774,6 +1790,8 @@ impl ContextPresenting {
         );
     }
 
+    // The layers above the base layer go over it in the order of the stack, inside the effects the compositor
+    // composites them inside, which it enters and leaves as the bands of their nodes start and end.
     fn composite_layers_above_base_of_stack(
         &self,
         env: &PresentingEnvironment<'_>,
@@ -1783,51 +1801,70 @@ impl ContextPresenting {
         stack: &LayerStack,
         compositing: &[CompositingOfLayer],
     ) {
-        for compositing in compositing.iter().skip(1) {
-            let Some(layer) = stack.layers.iter().find(|layer| layer.key == compositing.key) else {
-                continue;
-            };
-            let replayed = match &layer.content {
-                LayerContent::Media {
-                    record_span, region, ..
-                } => Some((record_span, region)),
-                // Replaying the record that marks where the effect reads its backdrop filters what is composited so far.
-                LayerContent::Backdrop {
-                    marker_span, read_area, ..
-                } => Some((marker_span, read_area)),
-                LayerContent::Painted { .. } => None,
-            };
-            if let Some((record_span, region)) = replayed {
-                let mut rect = translated(*region, compositing.offset.x, compositing.offset.y);
-                if let Some(clip) = compositing.clip {
-                    rect = rect.intersected(clip);
-                }
-                if !rect.intersected(damage_rect).is_empty() {
-                    let save_count = env.raster.save(surface);
-                    self.apply_raster_transform(env.raster, surface);
-                    replay_into(
-                        env,
-                        surface,
-                        frame,
-                        replaying_only(std::slice::from_ref(record_span), true),
-                    );
-                    env.raster.restore_to_count(surface, save_count);
-                }
-                continue;
-            }
-            if let Some(state) = self.layers.states.get(&compositing.key) {
-                composite_layer_tiles(
-                    env.raster,
-                    surface,
-                    state,
-                    &self.layers.tile_pool,
-                    damage_rect,
-                    SurfaceBlend::SourceOver,
-                    compositing.offset,
-                    compositing.clip,
-                );
-            }
+        if compositing.len() <= 1 {
+            return;
         }
+        let tile_pool = &self.layers.tile_pool;
+        composite_inside_effects_of_frame(env, surface, frame, self.raster_transform(), |compositing_session| {
+            let mut entered_groups: Vec<usize> = Vec::new();
+            for compositing in compositing.iter().skip(1) {
+                let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
+                    continue;
+                };
+                let groups = stack.composited_groups_around_layer(layer_index);
+                let groups_still_entered = entered_groups
+                    .iter()
+                    .zip(&groups)
+                    .take_while(|(entered, group)| entered == group)
+                    .count();
+                while entered_groups.len() > groups_still_entered {
+                    compositing_session.leave_effect();
+                    entered_groups.pop();
+                }
+                for &group in &groups[groups_still_entered..] {
+                    let effect = stack.nodes[stack.groups[group].node]
+                        .composited_effect
+                        .expect("a composited group is of a composited node");
+                    compositing_session.enter_effect(effect);
+                    entered_groups.push(group);
+                }
+                let layer = &stack.layers[layer_index];
+                if let LayerContent::Media {
+                    record_span, region, ..
+                } = &layer.content
+                {
+                    let mut rect = translated(*region, compositing.offset.x, compositing.offset.y);
+                    if let Some(clip) = compositing.clip {
+                        rect = rect.intersected(clip);
+                    }
+                    if !rect.intersected(damage_rect).is_empty() {
+                        compositing_session.replay_records(*record_span);
+                    }
+                    continue;
+                }
+                let Some(state) = self.layers.states.get(&compositing.key) else {
+                    continue;
+                };
+                let area = compositing
+                    .clip
+                    .map_or(damage_rect, |clip| damage_rect.intersected(clip));
+                for tile in state.tiles.values().filter_map(|key| tile_pool.get(key)) {
+                    let rect = translated(tile.rect, compositing.offset.x, compositing.offset.y);
+                    if rect.intersected(area).is_empty() {
+                        continue;
+                    }
+                    compositing_session.draw_raster(
+                        tile.surface.as_ptr(),
+                        rect_of_size(size_of(rect)),
+                        rect,
+                        compositing.clip,
+                    );
+                }
+            }
+            for _ in entered_groups {
+                compositing_session.leave_effect();
+            }
+        });
     }
 
     // Each painted layer goes to the window server as its own surface, which is copied from its tiles when they

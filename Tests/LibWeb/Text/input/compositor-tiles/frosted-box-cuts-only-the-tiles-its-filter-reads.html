@@ -4,8 +4,8 @@
 <style>
     body { margin: 0; background: lightyellow; }
     div { position: absolute; width: 20px; height: 20px; }
-    /* Once a canvas is painted below the frosted box, what the box reads is not all in the layer it is in, so it gets a
-       layer of its own. */
+    /* Once a canvas is painted below the frosted box, what the box reads is not all in the layer it is in, so the
+       compositor composites the box's layer inside its effect. */
     canvas { position: absolute; left: 20px; top: 20px; }
     #below { left: 60px; top: 60px; background: rgb(1, 0, 0); }
     #frosted { left: 40px; top: 40px; width: 100px; height: 60px; background: rgba(0, 0, 2, 0.3); backdrop-filter: blur(4px); }

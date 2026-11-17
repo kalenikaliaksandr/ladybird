@@ -9,10 +9,12 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
-  [L1] canvas #0 space=viewport region=[17,17 206x126] replayed: a backdrop layer filters what is composited below it
-  [L3] canvas #0 space=viewport region=[397,17 206x126] replayed: a backdrop layer filters what is composited below it
-  [L5] backdrop #0 of e1 space=viewport reads=[237,57 106x46]
-  [L7] backdrop #1 of e2 space=viewport reads=[559,9 202x142]
+  [L1] canvas #0 space=viewport region=[17,17 206x126] replayed: the compositor composites an effect over what is below it
+  [L3] canvas #0 space=viewport region=[397,17 206x126] replayed: the compositor composites an effect over what is below it
+  [L5] painted space=viewport inside e1
+  [L7] painted space=viewport inside e2
+  composited e1 space=viewport reads=[237,57 106x46]: it reads what its own layer does not hold
+  composited e2 space=viewport reads=[559,9 202x142]: it reads what its own layer does not hold
 
 DisplayList:
 L1 DrawCanvas@s1/e0 dst_rect=[20,20 200x120]

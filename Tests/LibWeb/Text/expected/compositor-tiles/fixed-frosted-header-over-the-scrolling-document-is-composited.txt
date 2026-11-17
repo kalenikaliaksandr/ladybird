@@ -1,0 +1,5 @@
+[L1] base space=document
+[L3] painted space=viewport inside BlockContainer<DIV>#header
+composited BlockContainer<DIV>#header space=viewport reads=[-27,-27 854x114]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true

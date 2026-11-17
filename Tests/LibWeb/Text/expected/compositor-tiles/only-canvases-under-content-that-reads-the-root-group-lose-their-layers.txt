@@ -3,7 +3,7 @@ Layers:
   [L1] canvas #0 space=viewport region=[557,37 206x126] shown by the window server: clip=[0,0 800x600]
   no layer for canvas: under content that reads the root group below it
   no layer for canvas: under content that reads the root group below it
-  no backdrop layer for e2: its opacity composites the filtered backdrop and the content as one
+  e2 is not composited: its opacity composites the filtered backdrop and the content as one
 
 DisplayList:
 L0 DrawCanvas@s1/e0 dst_rect=[20,40 200x120]
