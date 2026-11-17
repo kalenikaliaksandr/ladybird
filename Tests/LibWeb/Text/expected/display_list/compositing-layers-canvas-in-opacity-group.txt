@@ -8,8 +8,9 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
-  no layer for canvas: inside a group effect
+  [L2] canvas #0 space=viewport inside e1 region=[5,5 206x126] replayed: the compositor composites an effect over what is below it
+  composited e1 space=viewport: it holds a canvas with a layer of its own
 
 DisplayList:
-L0 DrawCanvas@s1/e1 dst_rect=[8,8 200x120]
+L2 DrawCanvas@s1/e1 dst_rect=[8,8 200x120]
 

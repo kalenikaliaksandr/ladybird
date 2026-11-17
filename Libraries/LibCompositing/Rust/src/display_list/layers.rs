@@ -59,10 +59,8 @@ pub(crate) fn media_name(content: LiveContent) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaLayerRejection {
     DrawnInsideAnotherCommand,
-    InsideGroupEffect,
     UnderTransformThatIsNot2DAffine,
     DrawsNothingVisible,
-    BetweenRunsOfOneGroupEffect,
     MoreMediaThanLayersFor,
 }
 
@@ -70,10 +68,8 @@ impl std::fmt::Display for MediaLayerRejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             MediaLayerRejection::DrawnInsideAnotherCommand => "drawn inside another command",
-            MediaLayerRejection::InsideGroupEffect => "inside a group effect",
             MediaLayerRejection::UnderTransformThatIsNot2DAffine => "under a transform that is not 2D affine",
             MediaLayerRejection::DrawsNothingVisible => "draws nothing visible",
-            MediaLayerRejection::BetweenRunsOfOneGroupEffect => "between the runs of one group effect",
             MediaLayerRejection::MoreMediaThanLayersFor => "past the most media that get layers",
         })
     }
@@ -86,6 +82,7 @@ pub enum WhyEffectIsComposited {
     ItReadsWhatItsOwnLayerDoesNotHold,
     ItsBackdropFilterReadsPastTheEdgeOfTheFrame,
     ItHoldsAnEffectTheCompositorComposites,
+    ItHoldsMedia(LiveContent),
 }
 
 impl std::fmt::Display for WhyEffectIsComposited {
@@ -97,6 +94,9 @@ impl std::fmt::Display for WhyEffectIsComposited {
             }
             WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites => {
                 "it holds an effect the compositor composites"
+            }
+            WhyEffectIsComposited::ItHoldsMedia(content) => {
+                return write!(formatter, "it holds a {} with a layer of its own", media_name(*content));
             }
         })
     }
@@ -262,6 +262,9 @@ pub struct CompositedEffect {
     pub why: WhyEffectIsComposited,
     /// What the effect reads of what is composited below it, in the raster coordinates of its node's space.
     pub read_area: Reach<IntRect>,
+    /// Whether its filter moves what it composites past where it is drawn, so that it reads what is drawn inside it
+    /// past each of its pixels.
+    pub filter_spreads_what_it_composites: bool,
 }
 
 /// The layers of a list bottom to top, with the base layer, which is rastered over the surface's clear color and
@@ -991,6 +994,7 @@ pub struct PlacedEffect {
     pub reads_the_root_group: bool,
     /// Why the compositor composites it, whatever the layer it goes into holds, if it does.
     pub composited_whatever_its_layer_holds: Option<WhyEffectIsComposited>,
+    pub filter_spreads_what_it_composites: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1047,19 +1051,12 @@ fn media_layer_rejection(
         return Some(MediaLayerRejection::DrawnInsideAnotherCommand);
     }
     let run = inputs.list.run(run_index as usize);
-    let run_groups = inputs.list.run_groups(inputs.tree);
-    if !run_groups.grouping_effect_of(run.context.effect).is_none() {
-        return Some(MediaLayerRejection::InsideGroupEffect);
-    }
     if !geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
         return Some(MediaLayerRejection::UnderTransformThatIsNot2DAffine);
     }
     // What moves on its own may show wherever its fixed clips let it, which its group's rect already says.
     if !moves_within_space && geometry.ink_device_rect(run, record.bounding_rect).is_empty() {
         return Some(MediaLayerRejection::DrawsNothingVisible);
-    }
-    if !run_groups.run_is_a_group_of_its_own(run_index as usize) {
-        return Some(MediaLayerRejection::BetweenRunsOfOneGroupEffect);
     }
     None
 }
@@ -1234,14 +1231,96 @@ pub fn place_list(
         };
     }
 
+    // The canvases, videos and nested contexts are layers of their own where they can be, with
+    // canvases and videos ahead of nested contexts once there are more than layers for them.
+    let mut media = Vec::new();
+    let mut rejected_media = Vec::new();
+    for live_content_record in &list.summary().live_content_records {
+        let content = live_content_record.content;
+        if matches!(content, LiveContent::ImageFrame(_)) {
+            continue;
+        }
+        let record: IndexedRecord = live_content_record.record;
+        let (run_index, position) = (record.run_index, record.position());
+        let group = &groups[run_groups.group_of_run(run_index as usize)];
+        let rejection = if group.moves_within_space && group.device_rect.is_empty() {
+            Some(MediaLayerRejection::DrawsNothingVisible)
+        } else {
+            media_layer_rejection(
+                inputs,
+                &geometries[group.space],
+                run_index,
+                position,
+                group.moves_within_space,
+            )
+        };
+        match rejection {
+            None => media.push(PlacedMedia {
+                content,
+                ordinal: 0,
+                position,
+                run_index,
+            }),
+            Some(rejection) => rejected_media.push((content, rejection)),
+        }
+    }
+    if media.len() > MAXIMUM_MEDIA_LAYER_COUNT {
+        media.sort_by_key(|candidate| matches!(candidate.content, LiveContent::CompositedContext(_)));
+        for candidate in media.drain(MAXIMUM_MEDIA_LAYER_COUNT..) {
+            rejected_media.push((candidate.content, MediaLayerRejection::MoreMediaThanLayersFor));
+        }
+        media.sort_by_key(|candidate| candidate.position);
+    }
+    for index in 0..media.len() {
+        media[index].ordinal = media[..index]
+            .iter()
+            .filter(|earlier| earlier.content == media[index].content)
+            .count() as u32;
+    }
+
+    // The effects around a canvas, video or nested context with a layer of its own hold its barrier, so the compositor
+    // composites them, with the media inside.
+    let mut composited_whatever_its_layer_holds: Vec<Option<WhyEffectIsComposited>> =
+        vec![None; tree.effect_nodes.len()];
+    let mark_effects_around_as_composited = |composited: &mut Vec<Option<WhyEffectIsComposited>>,
+                                             mut around: EffectNodeIndex,
+                                             why: WhyEffectIsComposited| {
+        while !around.is_none() && tree.root_isolation_effect != Some(around) {
+            if tree.effect_pushes_layer_at_replay(around) && composited[around.0 as usize].is_none() {
+                composited[around.0 as usize] = Some(why);
+            }
+            around = tree.effect_nodes[around.0 as usize].parent;
+        }
+    };
+    // Per placed canvas, video or nested context, where its record can show in the space of its group.
+    let reaches_of_media: Vec<IntRect> = media
+        .iter()
+        .map(|placed| {
+            let group = &groups[run_groups.group_of_run(placed.run_index as usize)];
+            if group.moves_within_space {
+                return group.device_rect;
+            }
+            let table = list.chunk(placed.position.chunk).record_table();
+            let record = &table.records()[table
+                .records_within(placed.position.offset, placed.position.offset + 1)
+                .start as usize];
+            geometries[group.space].ink_device_rect(list.run(placed.run_index as usize), record.bounding_rect)
+        })
+        .collect();
+    for placed in &media {
+        mark_effects_around_as_composited(
+            &mut composited_whatever_its_layer_holds,
+            list.run(placed.run_index as usize).context.effect,
+            WhyEffectIsComposited::ItHoldsMedia(placed.content),
+        );
+    }
+
     // What each reader reads, and whether the compositor composites it whatever the layer it goes into holds: where its
     // backdrop filter reads past each pixel without mirroring at the edge of the frame, or where an effect around it
     // holds what it reads and a barrier painted before it cuts the tiles it reads there. The effects around one that is
     // composited are composited too, as they hold its barrier.
     let readers = readers_of_tree(tree);
     let mut read_areas = vec![Reach::Nothing; tree.effect_nodes.len()];
-    let mut composited_whatever_its_layer_holds: Vec<Option<WhyEffectIsComposited>> =
-        vec![None; tree.effect_nodes.len()];
     let mut readers_in_paint_order = Vec::new();
     let mut readers_of_the_root_group = Vec::new();
     for &effect in &effects_in_paint_order {
@@ -1297,7 +1376,7 @@ pub fn place_list(
                 Reach::Within(rect) => Reach::Within(expanded_to_tile_grid(rect)),
                 read_area => read_area,
             };
-            let cut_by_a_barrier = effects_in_paint_order.iter().any(|&other| {
+            let cut_by_a_composited_effect = effects_in_paint_order.iter().any(|&other| {
                 other != effect
                     && composited_whatever_its_layer_holds[other.0 as usize].is_some()
                     && first_run_of_effect[other.0 as usize] < first_run_of_effect[effect.0 as usize]
@@ -1310,7 +1389,14 @@ pub fn place_list(
                         },
                     )))
             });
-            cut_by_a_barrier.then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+            let cut_by_media = media.iter().zip(&reaches_of_media).any(|(placed, reach)| {
+                let effect_of_media = list.run(placed.run_index as usize).context.effect;
+                (placed.run_index as usize) < first_run_of_effect[effect.0 as usize]
+                    && effect_chain_contains(tree, effect_of_media, backdrop_root)
+                    && read_tiles.meets(Reach::Within(*reach))
+            });
+            (cut_by_a_composited_effect || cut_by_media)
+                .then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
         } else {
             None
         };
@@ -1322,16 +1408,11 @@ pub fn place_list(
             continue;
         };
         composited_whatever_its_layer_holds[effect.0 as usize] = Some(why);
-        let mut around = reading_node.parent;
-        while !around.is_none() && tree.root_isolation_effect != Some(around) {
-            if tree.effect_pushes_layer_at_replay(around)
-                && composited_whatever_its_layer_holds[around.0 as usize].is_none()
-            {
-                composited_whatever_its_layer_holds[around.0 as usize] =
-                    Some(WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites);
-            }
-            around = tree.effect_nodes[around.0 as usize].parent;
-        }
+        mark_effects_around_as_composited(
+            &mut composited_whatever_its_layer_holds,
+            reading_node.parent,
+            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
+        );
     }
 
     // The effects the compositor composites or may, in paint order, each after the one around it.
@@ -1360,6 +1441,8 @@ pub fn place_list(
             read_area: read_areas[effect.0 as usize],
             reads_the_root_group,
             composited_whatever_its_layer_holds: composited,
+            filter_spreads_what_it_composites: matches!(&tree.effect_nodes[effect.0 as usize].data,
+                EffectNodeData::Effects(effects) if effects.filter.as_deref().is_some_and(|filter| crate::filter_bytes::may_affect_output_bounds(filter))),
         });
     }
     // Per run, the innermost placed effect its records are inside.
@@ -1373,53 +1456,6 @@ pub fn place_list(
         }
         None
     };
-
-    // The canvases, videos and nested contexts are layers of their own where they can be, with
-    // canvases and videos ahead of nested contexts once there are more than layers for them.
-    let mut media = Vec::new();
-    let mut rejected_media = Vec::new();
-    for live_content_record in &list.summary().live_content_records {
-        let content = live_content_record.content;
-        if matches!(content, LiveContent::ImageFrame(_)) {
-            continue;
-        }
-        let record: IndexedRecord = live_content_record.record;
-        let (run_index, position) = (record.run_index, record.position());
-        let group = &groups[run_groups.group_of_run(run_index as usize)];
-        let rejection = if group.moves_within_space && group.device_rect.is_empty() {
-            Some(MediaLayerRejection::DrawsNothingVisible)
-        } else {
-            media_layer_rejection(
-                inputs,
-                &geometries[group.space],
-                run_index,
-                position,
-                group.moves_within_space,
-            )
-        };
-        match rejection {
-            None => media.push(PlacedMedia {
-                content,
-                ordinal: 0,
-                position,
-                run_index,
-            }),
-            Some(rejection) => rejected_media.push((content, rejection)),
-        }
-    }
-    if media.len() > MAXIMUM_MEDIA_LAYER_COUNT {
-        media.sort_by_key(|candidate| matches!(candidate.content, LiveContent::CompositedContext(_)));
-        for candidate in media.drain(MAXIMUM_MEDIA_LAYER_COUNT..) {
-            rejected_media.push((candidate.content, MediaLayerRejection::MoreMediaThanLayersFor));
-        }
-        media.sort_by_key(|candidate| candidate.position);
-    }
-    for index in 0..media.len() {
-        media[index].ordinal = media[..index]
-            .iter()
-            .filter(|earlier| earlier.content == media[index].content)
-            .count() as u32;
-    }
 
     let mut units: Vec<PlacedUnit> = Vec::with_capacity(groups.len());
     let mut media_of_records = media.iter().enumerate().peekable();
@@ -1808,6 +1844,7 @@ impl StackBeingBuilt<'_> {
                         node: composited_node,
                         why,
                         read_area: placed.read_area,
+                        filter_spreads_what_it_composites: placed.filter_spreads_what_it_composites,
                     });
                     composited_node
                 }

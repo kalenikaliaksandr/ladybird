@@ -1044,7 +1044,11 @@ impl ContextPresenting {
                 stale_rect = stale_rect.united(region_in_viewport);
             }
             pass.digests_of_composited_effects.insert(node.key, digest);
-            if composited.read_area != Reach::Nothing {
+            // A filter that spreads what the effect composites reads all of it, which a frame painting part of the
+            // effect inside it would cut.
+            if composited.filter_spreads_what_it_composites {
+                read_areas_of_composited_effects.push(region_in_viewport);
+            } else if composited.read_area != Reach::Nothing {
                 let read_area_in_this_frame =
                     match backdrop_filter_read_area(tree, &geometries[node.space], composited.effect) {
                         Reach::Within(read_area) => clip_in_viewport(read_area),

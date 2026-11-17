@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    /* The compositor composites the group, with the canvas's layer inside it, as a replay of the list composites it. */
+    #group { position: absolute; left: 40px; top: 40px; width: 360px; height: 260px; opacity: 0.6; background: rgba(0, 128, 0, 0.3); }
+    canvas { position: absolute; left: 30px; top: 30px; }
+    #over-the-canvas { position: absolute; left: 60px; top: 60px; width: 40px; height: 40px; background: crimson; }
+</style>
+<div id="group"><canvas id="canvas" width="300" height="200"></canvas><div id="over-the-canvas"></div></div>
+<script>
+    function drawStripes(context, offset) {
+        for (let x = 0; x < canvas.width; x += 20) {
+            context.fillStyle = (x / 20 + offset) % 2 ? "navy" : "orange";
+            context.fillRect(x, 0, 20, canvas.height);
+        }
+    }
+
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        drawStripes(context, 0);
+        const drawn = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        drawStripes(context, 1);
+        const redrawn = await presentedFrameState();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(drawn);
+        printPresentedFrameState(redrawn);
+        println(`canvas redrawn, tiles rasterized: ${redrawn.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

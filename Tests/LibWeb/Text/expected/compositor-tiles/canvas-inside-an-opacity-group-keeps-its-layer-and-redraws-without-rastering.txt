@@ -1,0 +1,8 @@
+[L0] base space=viewport
+[L1] painted space=viewport inside BlockContainer<DIV>#group
+[L2] canvas #0 space=viewport inside BlockContainer<DIV>#group region=[67,67 306x206] replayed: the compositor composites an effect over what is below it
+[L3] painted space=viewport inside BlockContainer<DIV>#group above L2
+composited BlockContainer<DIV>#group space=viewport: it holds a canvas with a layer of its own
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+canvas redrawn, tiles rasterized: 0
