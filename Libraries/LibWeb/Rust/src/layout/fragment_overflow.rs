@@ -746,40 +746,87 @@ impl LayoutNodeArena {
     ) -> Vec<FragmentLink> {
         let mut met = crate::fast_hash::FastSet::default();
         let mut contained = Vec::new();
-        let holder_fragment = self
-            .committed_link_holder(node)
-            .map(|(holder, _)| holder)
-            .filter(|&holder| self.slot_is_live(holder))
-            .and_then(|holder| {
-                self.paintable_rows
-                    .committed_fragment_link_cloned(holder.slot_index(), holder.generation())
-            })
-            .map(|holder_link| holder_link.fragment)
-            .filter(|holder_fragment| holder_fragment.outer_links != OuterLinks::None);
-        let links_held_beside = holder_fragment
-            .iter()
-            .flat_map(|holder_fragment| holder_fragment.children.iter())
-            .filter(|held| held.placement.containing_block == node)
-            .map(|held| held.fragment.node);
-        let candidates = contained_links(&link.fragment)
-            .map(|contained_link| contained_link.fragment.node)
-            .chain(links_held_beside)
-            .chain(
-                self.links_held_apart_from_their_containing_blocks
-                    .held_apart_from(node)
-                    .iter()
-                    .copied(),
-            );
-        for candidate in candidates {
-            if met.insert(candidate)
-                && self.slot_is_live(candidate)
-                && self.paintable_row_is_populated(candidate)
-                && self.paintable_data(candidate).containing_block == node
-            {
+        self.for_each_box_that_may_be_in_containing_block_fragment(node, link, |candidate| {
+            if met.insert(candidate) && self.has_containing_block(candidate, node) {
                 self.committed_links_in_containing_block_fragment(candidate, fragment_index, &mut contained);
             }
-        }
+        });
         contained
+    }
+
+    /// Calls `visit` with each box whose containing block is `node` and that has a fragment in fragment
+    /// `fragment_index` of `node`, which `link` is, but for those `leave_out` answers yes for. A box can come more than
+    /// once.
+    pub(crate) fn for_each_box_in_containing_block_fragment(
+        &self,
+        node: NodeSlotId,
+        link: &FragmentLink,
+        fragment_index: u32,
+        leave_out: impl Fn(NodeSlotId) -> bool,
+        mut visit: impl FnMut(NodeSlotId),
+    ) {
+        self.for_each_box_that_may_be_in_containing_block_fragment(node, link, |candidate| {
+            if !leave_out(candidate)
+                && self.has_containing_block(candidate, node)
+                && self.has_committed_link_in_containing_block_fragment(candidate, fragment_index)
+            {
+                visit(candidate);
+            }
+        });
+    }
+
+    fn has_containing_block(&self, node: NodeSlotId, containing_block: NodeSlotId) -> bool {
+        self.slot_is_live(node)
+            && self.paintable_row_is_populated(node)
+            && self.paintable_data(node).containing_block == containing_block
+    }
+
+    fn has_committed_link_in_containing_block_fragment(
+        &self,
+        node: NodeSlotId,
+        containing_block_fragment: u32,
+    ) -> bool {
+        let side_data = self.committed_side_data(node);
+        (side_data.containing_block_fragment == containing_block_fragment
+            && self
+                .paintable_rows
+                .with_committed_fragment_link(node.slot_index(), node.generation(), |link| link.is_some()))
+            || side_data
+                .box_fragments()
+                .iter()
+                .any(|fragment| fragment.containing_block_fragment == containing_block_fragment)
+    }
+
+    fn for_each_box_that_may_be_in_containing_block_fragment(
+        &self,
+        node: NodeSlotId,
+        link: &FragmentLink,
+        mut visit: impl FnMut(NodeSlotId),
+    ) {
+        for contained_link in contained_links(&link.fragment) {
+            visit(contained_link.fragment.node);
+        }
+        if let Some((holder, _)) = self.committed_link_holder(node)
+            && self.slot_is_live(holder)
+        {
+            self.paintable_rows
+                .with_committed_fragment_link(holder.slot_index(), holder.generation(), |holder_link| {
+                    let Some(holder_link) = holder_link else {
+                        return;
+                    };
+                    if holder_link.fragment.outer_links == OuterLinks::None {
+                        return;
+                    }
+                    for held in &holder_link.fragment.children {
+                        if held.placement.containing_block == node {
+                            visit(held.fragment.node);
+                        }
+                    }
+                });
+        }
+        for &held_apart in self.links_held_apart_from_their_containing_blocks.held_apart_from(node) {
+            visit(held_apart);
+        }
     }
 
     fn recalculated_fragment_overflow(

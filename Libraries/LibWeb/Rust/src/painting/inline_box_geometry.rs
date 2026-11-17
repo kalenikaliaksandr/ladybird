@@ -8,6 +8,7 @@
 //! content holds.
 
 use crate::css::css_pixels::{CssPixelPoint, CssPixelRect};
+use crate::layout::inline_content::InlineBoxPieceRecord;
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::paint_read::GeometryRead;
 use crate::painting::paintable_data::FfiPixelBox;
@@ -57,11 +58,8 @@ fn unions_of_pieces(arena: &impl GeometryRead, inline_box: NodeSlotId) -> Option
         .as_ref()
         .map(|positions| positions.of_fragment(arena.committed_side_data(inline_box).containing_block_fragment));
     let side = arena.committed_side_data(root);
-    let mut content_union = None;
-    let mut padding_union = None;
-    let mut border_union = None;
-    for piece_index in side.inline_box_piece_indices(inline_box) {
-        let piece = side.inline_box_pieces()[*piece_index as usize];
+    unions_of_placed_pieces(side.inline_box_piece_indices(inline_box).iter().map(|piece_index| {
+        let piece = &side.inline_box_pieces()[*piece_index as usize];
         let root_fragment_offset =
             root_positions
                 .as_ref()
@@ -73,6 +71,24 @@ fn unions_of_pieces(arena: &impl GeometryRead, inline_box: NodeSlotId) -> Option
                         y: location.y - origin.y,
                     }
                 });
+        (piece, root_fragment_offset)
+    }))
+}
+
+/// The unions of `pieces`, which lie on the lines of a line root that is not broken into fragments.
+pub(crate) fn unions_of_pieces_in_line_root_of_one_fragment<'a>(
+    pieces: impl Iterator<Item = &'a InlineBoxPieceRecord>,
+) -> Option<InlineBoxUnions> {
+    unions_of_placed_pieces(pieces.map(|piece| (piece, CssPixelPoint::default())))
+}
+
+fn unions_of_placed_pieces<'a>(
+    pieces: impl Iterator<Item = (&'a InlineBoxPieceRecord, CssPixelPoint)>,
+) -> Option<InlineBoxUnions> {
+    let mut content_union = None;
+    let mut padding_union = None;
+    let mut border_union = None;
+    for (piece, root_fragment_offset) in pieces {
         let border_rect = CssPixelRect::from(piece.border_box_rect).translated_by(root_fragment_offset);
         let border_widths = FfiPixelBox::from(piece.border_widths);
         let padding_widths = FfiPixelBox::from(piece.padding_widths);

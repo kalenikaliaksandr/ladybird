@@ -6,7 +6,7 @@
 
 use crate::css::computed_value_views::ComputedValuesView;
 use crate::css::css_enums::{line_style, overflow, text_decoration_line, text_decoration_style};
-use crate::css::css_pixels::{CssPixelRect, CssPixels};
+use crate::css::css_pixels::{CssPixelPoint, CssPixelRect, CssPixels};
 use crate::layout::node_data::{NodeFlag, NodeKind, NodeSlotId};
 use crate::painting::border_radii::BorderRadii;
 use crate::painting::corner_shape::CornerShapes;
@@ -121,6 +121,17 @@ pub(crate) fn own_ink_overflow(
     paint_state: &PublishedPaintState,
     owner: NodeSlotId,
 ) -> InkOverflow {
+    own_ink_overflow_leaving_out_pieces_of(source, paint_state, owner, &[])
+}
+
+/// [`own_ink_overflow`], leaving out the pieces of the inline boxes in `gathered_inline_boxes`, whose ink overflow
+/// the row gathers along with theirs.
+fn own_ink_overflow_leaving_out_pieces_of(
+    source: &impl PaintRead,
+    paint_state: &PublishedPaintState,
+    owner: NodeSlotId,
+    gathered_inline_boxes: &[GatheredInlineBox],
+) -> InkOverflow {
     let mut ink = InkOverflow::default();
     for border_box in paintable_geometry::absolute_border_box_rects_of_fragments(source, owner) {
         let fragment_ink = box_decoration_ink(source, owner, border_box);
@@ -181,7 +192,7 @@ pub(crate) fn own_ink_overflow(
         let mut include_piece = |piece: &crate::painting::paintable_data::InlineBoxPieceRecord| {
             // NB: A box leaving the line root resets its row before the root lays out its lines again, and resetting
             //     the row asks for the root's ink overflow, so the pieces can name a box that paints nothing now.
-            if !source.paintable_row_is_populated(piece.node) {
+            if !source.paintable_row_is_populated(piece.node) || is_gathered(gathered_inline_boxes, piece.node) {
                 return;
             }
             let piece_owner = if fragment_ownership::is_self_painting_inline(source, piece.node) {
@@ -593,34 +604,98 @@ fn recalculated_ink_overflow(
     state: &PublishedPaintState,
     node: NodeSlotId,
 ) -> InkOverflow {
-    use crate::css::css_enums::positioning;
-    use crate::painting::paintable_data::PaintableFlag;
-    let own = own_ink_overflow(source, state, node);
+    recalculated_ink_overflow_gathering_inline_boxes(source, state, node, &mut Vec::new())
+}
+
+/// Recalculates the ink overflow of `node`. Where `node` is a line root that gathers the inline boxes on its lines, as
+/// [`line_root_that_gathers`] says, the ink overflow of each comes from the box's row, or from recalculating it where
+/// that is pending, which goes to `recalculated_inline_boxes`.
+fn recalculated_ink_overflow_gathering_inline_boxes(
+    source: &impl crate::painting::paintable_rows::PaintableRowsRead,
+    state: &PublishedPaintState,
+    node: NodeSlotId,
+    recalculated_inline_boxes: &mut Vec<(NodeSlotId, InkOverflow)>,
+) -> InkOverflow {
+    let gathered_inline_boxes = inline_boxes_gathered_by_line_root(source, node);
+    let own = own_ink_overflow_leaving_out_pieces_of(source, state, node, &gathered_inline_boxes);
     let mut ink = own;
-    if let Some(link) = source.with_committed_fragment_link(node, |link| link.cloned()) {
-        let later_fragments = source.committed_side_data(node);
-        let fragments =
-            std::iter::once(&link).chain(later_fragments.box_fragments().iter().map(|fragment| &fragment.link));
-        for (fragment_index, link) in fragments.enumerate() {
-            for child_link in source.links_in_containing_block_fragment(node, link, fragment_index as u32) {
-                let child = child_link.fragment.node;
-                let child_ink = source.stored_ink_overflow(child);
-                let mut contribution = InkOverflow {
-                    rect: child_ink
+    if !gathered_inline_boxes.is_empty() {
+        let origin = paintable_geometry::absolute_rect(source, node).location();
+        for gathered in &gathered_inline_boxes {
+            let inline_box_ink = if source
+                .paintable_rows
+                .ink_overflow_recalculation_is_pending(gathered.inline_box)
+            {
+                let inline_box_ink = ink_overflow_of_box_without_children(source, state, gathered.inline_box);
+                recalculated_inline_boxes.push((gathered.inline_box, inline_box_ink));
+                inline_box_ink
+            } else {
+                source.stored_ink_overflow(gathered.inline_box)
+            };
+            include_child(
+                &mut ink,
+                InkOverflow {
+                    rect: inline_box_ink
                         .rect
-                        .translated_by(paintable_geometry::first_fragment_padding_box_rect(source, child).location()),
-                    ..child_ink
-                };
-                if let Some((transform, _)) =
-                    crate::painting::visual_context::node_values::compute_transform(source, child, 1.0)
-                {
-                    contribution = mapped_ink(contribution, &transform);
-                    contribution.holds_what_a_transform_moves = true;
-                }
-                include_child(&mut ink, contribution);
-            }
+                        .translated_by(origin)
+                        .translated_by(gathered.padding_box_origin_in_line_root),
+                    ..inline_box_ink
+                },
+            );
         }
     }
+    source.with_committed_fragment_link(node, |link| {
+        let Some(link) = link else {
+            return;
+        };
+        let later_fragments = source.committed_side_data(node);
+        let fragments =
+            std::iter::once(link).chain(later_fragments.box_fragments().iter().map(|fragment| &fragment.link));
+        for (fragment_index, link) in fragments.enumerate() {
+            let leave_out = |candidate| is_gathered(&gathered_inline_boxes, candidate);
+            source.for_each_box_in_containing_block_fragment(node, link, fragment_index as u32, leave_out, |child| {
+                include_child(
+                    &mut ink,
+                    contribution_of_child(source, child, source.stored_ink_overflow(child)),
+                );
+            });
+        }
+    });
+    finished_ink_overflow(source, node, own, ink)
+}
+
+/// The ink overflow of `node` for a box that no other box has as its containing block.
+fn ink_overflow_of_box_without_children(
+    source: &impl crate::painting::paintable_rows::PaintableRowsRead,
+    state: &PublishedPaintState,
+    node: NodeSlotId,
+) -> InkOverflow {
+    let own = own_ink_overflow(source, state, node);
+    finished_ink_overflow(source, node, own, own)
+}
+
+fn contribution_of_child(source: &impl PaintRead, child: NodeSlotId, child_ink: InkOverflow) -> InkOverflow {
+    let mut contribution = InkOverflow {
+        rect: child_ink
+            .rect
+            .translated_by(paintable_geometry::first_fragment_padding_box_rect(source, child).location()),
+        ..child_ink
+    };
+    if let Some((transform, _)) = crate::painting::visual_context::node_values::compute_transform(source, child, 1.0) {
+        contribution = mapped_ink(contribution, &transform);
+        contribution.holds_what_a_transform_moves = true;
+    }
+    contribution
+}
+
+fn finished_ink_overflow(
+    source: &impl crate::painting::paintable_rows::PaintableRowsRead,
+    node: NodeSlotId,
+    own: InkOverflow,
+    mut ink: InkOverflow,
+) -> InkOverflow {
+    use crate::css::css_enums::positioning;
+    use crate::painting::paintable_data::PaintableFlag;
     if let Some(clip) = overflow_clip_ranges(source, node) {
         clip_content_to_overflow_clip(&mut ink, own, &clip);
     }
@@ -645,7 +720,103 @@ fn recalculated_ink_overflow(
     ink
 }
 
+/// An inline box whose ink overflow its line root gathers, with where its padding box lies in the content box of the
+/// line root.
+struct GatheredInlineBox {
+    inline_box: NodeSlotId,
+    padding_box_origin_in_line_root: CssPixelPoint,
+}
+
+fn inline_box_order(node: NodeSlotId) -> (u32, u8) {
+    (node.slot_index(), node.generation())
+}
+
+fn is_gathered(gathered_inline_boxes: &[GatheredInlineBox], node: NodeSlotId) -> bool {
+    gathered_inline_boxes
+        .binary_search_by_key(&inline_box_order(node), |gathered| {
+            inline_box_order(gathered.inline_box)
+        })
+        .is_ok()
+}
+
+/// The line root that recalculates the ink overflow of the inline box `inline_box` along with its own: the line root
+/// holding its pieces, where [`line_root_gathers_inline_boxes`] and [`line_root_gathers_inline_box`] say so.
+fn line_root_that_gathers(source: &impl PaintRead, inline_box: NodeSlotId) -> Option<NodeSlotId> {
+    let root = source.inline_pieces_root(inline_box)?;
+    (line_root_gathers_inline_boxes(source, root)
+        && line_root_gathers_inline_box(source, root, inline_box)
+        && !source
+            .committed_side_data(root)
+            .inline_box_piece_indices(inline_box)
+            .is_empty())
+    .then_some(root)
+}
+
+/// Whether the line root `root` gathers the inline boxes on its lines: one that is not broken into fragments, and whose
+/// overflow clip, which would cut the pieces of the boxes along with the rest of its content, does not apply.
+fn line_root_gathers_inline_boxes(source: &impl PaintRead, root: NodeSlotId) -> bool {
+    node_painting::has_lines(source, root)
+        && paintable_geometry::fragment_count(source, root) == 1
+        && overflow_clip_ranges(source, root).is_none()
+}
+
+/// Whether the line root `root` gathers the inline box `inline_box` on its lines: a box whose style does not let it be
+/// the containing block of another box, and so has no children whose ink overflow it would gather, nor a transform.
+fn line_root_gathers_inline_box(source: &impl PaintRead, root: NodeSlotId, inline_box: NodeSlotId) -> bool {
+    source.paintable_row_is_populated(inline_box)
+        && source.paintable_data(inline_box).containing_block == root
+        && node_painting::is_fragmented_inline(source, inline_box)
+        && source
+            .node_style_if_live(inline_box)
+            .is_some_and(|style| !style_queries::style_may_establish_positioning_containing_blocks(style))
+}
+
+/// The inline boxes on the lines of `root` that it gathers, in the order of [`inline_box_order`].
+fn inline_boxes_gathered_by_line_root(source: &impl PaintRead, root: NodeSlotId) -> Vec<GatheredInlineBox> {
+    if !source.paintable_row_is_populated(root) || !line_root_gathers_inline_boxes(source, root) {
+        return Vec::new();
+    }
+    let side = source.committed_side_data(root);
+    let Some(content) = side.inline_content.as_ref() else {
+        return Vec::new();
+    };
+    content
+        .inline_boxes
+        .boxes()
+        .filter(|&(inline_box, _)| line_root_gathers_inline_box(source, root, inline_box))
+        .filter_map(|(inline_box, piece_indices)| {
+            let unions = crate::painting::inline_box_geometry::unions_of_pieces_in_line_root_of_one_fragment(
+                piece_indices
+                    .iter()
+                    .map(|&piece_index| &content.inline_box_pieces[piece_index as usize]),
+            )?;
+            Some(GatheredInlineBox {
+                inline_box,
+                padding_box_origin_in_line_root: unions.padding.location(),
+            })
+        })
+        .collect()
+}
+
 impl crate::painting::paintable_rows::PaintableRowStore {
+    fn ink_overflow_recalculation_is_pending(&self, node: NodeSlotId) -> bool {
+        self.ink_overflow_dirty
+            .get(node.slot_index() as usize)
+            .is_some_and(|dirty| *dirty)
+    }
+
+    /// Stores the ink overflow of a row, answering whether it changed.
+    fn store_ink_overflow(&mut self, node: NodeSlotId, ink: InkOverflow) -> bool {
+        let index = node.slot_index() as usize;
+        if self.ink_overflow.get(index).is_some_and(|previous| *previous == ink) {
+            return false;
+        }
+        self.ink_overflow.grow_to(index + 1);
+        self.ink_overflow.set(index, ink);
+        self.ink_overflow_stamp = crate::cow_column::new_edit_token();
+        true
+    }
+
     /// Whether the row had no recalculation pending until now.
     fn mark_ink_overflow_dirty(&mut self, node: NodeSlotId) -> bool {
         let index = node.slot_index() as usize;
@@ -769,19 +940,27 @@ impl crate::layout::LayoutNodeArena {
             .map(|node| (source.node_pre_order_label(node), node.index))
             .collect();
         let mut recalculated = 0;
+        let mut recalculated_inline_boxes = Vec::new();
         while let Some((_, index)) = queue.pop() {
             let node = NodeSlotId { index };
-            let index = node.slot_index() as usize;
-            source.paintable_rows.ink_overflow_dirty[index] = false;
-            let ink = recalculated_ink_overflow(&source, state, node);
-            recalculated += 1;
-            let store = &mut source.paintable_rows;
-            if store.ink_overflow.get(index).is_some_and(|previous| *previous == ink) {
+            if let Some(root) = line_root_that_gathers(&source, node) {
+                if source.paintable_rows.mark_ink_overflow_dirty(root) {
+                    queue.push((source.node_pre_order_label(root), root.index));
+                }
                 continue;
             }
-            store.ink_overflow.grow_to(index + 1);
-            store.ink_overflow.set(index, ink);
-            store.ink_overflow_stamp = crate::cow_column::new_edit_token();
+            source.paintable_rows.ink_overflow_dirty[node.slot_index() as usize] = false;
+            let ink =
+                recalculated_ink_overflow_gathering_inline_boxes(&source, state, node, &mut recalculated_inline_boxes);
+            recalculated += 1;
+            for (inline_box, inline_box_ink) in recalculated_inline_boxes.drain(..) {
+                source.paintable_rows.ink_overflow_dirty[inline_box.slot_index() as usize] = false;
+                source.paintable_rows.store_ink_overflow(inline_box, inline_box_ink);
+                recalculated += 1;
+            }
+            if !source.paintable_rows.store_ink_overflow(node, ink) {
+                continue;
+            }
             let block = source.paintable_data(node).containing_block;
             if source.slot_is_live(block)
                 && source.paintable_row_is_populated(block)
