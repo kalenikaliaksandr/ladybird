@@ -10,6 +10,9 @@ AccumulatedVisualContext Tree:
     [e0 in s0] effects=[]
       [e1 in s2 out=c0] effects=[opacity=0.5] (SVGGeometryBox<rect>)
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-FillPath@s3/c0/e1 path_bounding_rect=[0,0 100x100]
+L0 FillPath@s3/c0/e1 path_bounding_rect=[0,0 100x100]
 

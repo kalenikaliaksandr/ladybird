@@ -133,9 +133,9 @@ pub struct EffectGeometry {
 }
 
 /// Fills `geometry` with every effect's geometry, indexed by effect.
-pub fn compute_effect_geometry(
+pub fn compute_effect_geometry<'a>(
     tree: &VisualContextTree,
-    command_runs: &[DisplayListCommandRun],
+    command_runs: impl IntoIterator<Item = &'a DisplayListCommandRun>,
     world: &WorldTransforms,
     geometry: &mut Vec<EffectGeometry>,
 ) {

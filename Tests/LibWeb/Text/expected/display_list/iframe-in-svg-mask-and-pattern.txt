@@ -10,11 +10,14 @@ AccumulatedVisualContext Tree:
       [e1 in s2 out=c0] mask=[0,0 100x100] kind=luminance origin=svg-mask (SVGGeometryBox<rect>)
       [e2 in s2 out=c0] mask=[200,0 100x100] kind=luminance origin=svg-mask (SVGGeometryBox<rect>)
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-DeclareMaskContent@s2/c0/e1 rect=[0,0 100x100] effect=e1
-FillPath@s2/c0/e1 path_bounding_rect=[0,0 100x100]
-FillPath@s2/c0/e0 path_bounding_rect=[100,0 100x100]
-  PatternTile:
-DeclareMaskContent@s2/c0/e2 rect=[200,0 100x100] effect=e2
-FillPath@s2/c0/e2 path_bounding_rect=[200,0 100x100]
+L0 DeclareMaskContent@s2/c0/e1 rect=[0,0 100x100] effect=e1
+L0 FillPath@s2/c0/e1 path_bounding_rect=[0,0 100x100]
+L0 FillPath@s2/c0/e0 path_bounding_rect=[100,0 100x100]
+     PatternTile:
+L0 DeclareMaskContent@s2/c0/e2 rect=[200,0 100x100] effect=e2
+L0 FillPath@s2/c0/e2 path_bounding_rect=[200,0 100x100]
 

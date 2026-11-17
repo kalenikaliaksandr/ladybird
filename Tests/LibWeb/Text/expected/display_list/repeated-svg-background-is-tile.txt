@@ -5,9 +5,12 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-DrawRepeatedTile@s1/e0 dst_rect=[8,8 20x20] clip_rect=[8,8 120x80] tile_size=[20x20] tile_step=[20x20] scaling_mode=NearestNeighbor inline_clips=[clip=[8,8 120x80], clip=[8,8 120x80]]
-  PaintVectorImage@s1/e0 rect=[0,0 20x20]
-    FillPath@s1/e0 path_bounding_rect=[0,0 20x20]
-    FillPath@s1/e0 path_bounding_rect=[5,5 10x10]
+L0 DrawRepeatedTile@s1/e0 dst_rect=[8,8 20x20] clip_rect=[8,8 120x80] tile_size=[20x20] tile_step=[20x20] scaling_mode=NearestNeighbor inline_clips=[clip=[8,8 120x80], clip=[8,8 120x80]]
+     PaintVectorImage@s1/e0 rect=[0,0 20x20]
+       FillPath@s1/e0 path_bounding_rect=[0,0 20x20]
+       FillPath@s1/e0 path_bounding_rect=[5,5 10x10]
 

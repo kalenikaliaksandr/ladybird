@@ -4,27 +4,47 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! The layers a frame is painted in while it draws canvases, videos or nested contexts, and what of them the window
-//! server shows above the frame by itself.
+//! The layers a frame is painted in, each kept as tiles under its key from one frame and one list to the next, and what
+//! of them the window server shows above the frame by itself.
 
-use super::damage::LiveContentChangesSinceLastPaint;
 use super::{
-    ContextPresenting, FrameToPaint, PresentingEnvironment, paint_overlays, rect_of_size, replay_into, replaying_only,
+    ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform, paint_overlays,
+    rect_of_size, replay_into, replay_with_scroll_offsets, replaying_only,
 };
 use crate::host::ContextTimer;
 use crate::raster_host::{
-    FfiSublayer, FfiSublayerPlacement, LiveContent, MediaKind, PresentableSurfaceHandle, SublayerContentKind,
-    SurfaceBlend, SurfaceHandle,
+    FfiSublayer, FfiSublayerPlacement, LiveContent, MediaKind, PresentableSurfaceHandle, RasterHost,
+    SublayerContentKind, SurfaceBlend, SurfaceHandle,
 };
-use libcompositing_rust::display_list::layers::{LayerKind, LayerPlan, LayerPlanInputs, build_layer_plan};
+use libcompositing_rust::display_list::commands::{
+    CanvasId, CompositorContextId, ImageFrameResourceId, SpatialNodeIndex, VideoSinkHandle,
+};
+use libcompositing_rust::display_list::layers::{
+    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, VIEWPORT_RASTER_SPACE, build_layer_stack,
+    place_list, raster_space_anchors,
+};
+use libcompositing_rust::display_list::placement::{
+    RasterSpace, RasterSpaces, SpaceGeometry, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
+};
+use libcompositing_rust::display_list::replay::ReplaySelection;
+use libcompositing_rust::display_list::storage::ListSpan;
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
+use libcompositing_rust::display_list::tile_keys::{
+    GroupTileKeys, KeyedTile, LayerConstants, ListOfFrame, LiveContentVersions, RasterSpaceOfFrame,
+    ReplayReadsOutsideTheList, TileKey,
+};
+use libcompositing_rust::display_list::tiles::TileCoord;
 use libcompositing_rust::display_list::window_server_placement::WindowServerPlacement;
-use libcompositing_rust::time::Duration;
-use libgfx_rust::{Color, IntRect, IntSize, ScalingMode};
-use std::collections::HashMap;
+use libcompositing_rust::scrolling::DisplayList;
+use libcompositing_rust::time::{Duration, MonotonicTime};
+use libcompositing_rust::visual_context::VisualContextTree;
+use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, IntSize, ScalingMode};
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
-// How long the layers of a context stay after the last frame painted with them.
-const TIME_LAYERS_OUTLIVE_THEIR_LAST_FRAME: Duration = Duration::from_milliseconds(3000);
+const TILE_RASTER_SURFACE_RELEASE_DELAY: Duration = Duration::from_milliseconds(3000);
+// How long a layer that left the stack keeps its tiles, for when it comes back.
+const TIME_A_LAYER_OUTLIVES_ITS_STACK: Duration = Duration::from_milliseconds(3000);
 
 // The pool of presentable surfaces the overlays are shown from, apart from those of the painted layers.
 const COMPOSITOR_OVERLAY_SURFACE_POOL: u32 = u32::MAX;
@@ -37,123 +57,370 @@ const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
 // Canvas and video IDs count up from 1, and stay far below this.
 const MEDIA_DRAWING_INDEX_SHIFT: u32 = 44;
 
-#[derive(Default)]
-struct LayerSurface {
-    surface: Option<SurfaceHandle>,
+struct Tile {
+    surface: SurfaceHandle,
+    // The part of its cell that the surface holds.
     rect: IntRect,
-    // Changes whenever anything is drawn into the surface.
-    content_version: u64,
+    key_of_held_pixels: Option<TileKey>,
 }
 
 // The surface that the window server shows a painted layer from.
-#[derive(Default)]
 struct PaintedLayerPresentation {
+    pool: u32,
     latest_surface: Option<PresentableSurfaceHandle>,
     rect: IntRect,
     content_version: u64,
 }
 
-/// The layers of the frames of a context, and what of them the window server shows.
+// What is kept of a layer under its key: its tiles, or for a canvas, video or nested context what was replayed of it.
+#[derive(Default)]
+struct LayerState {
+    tiles: BTreeMap<TileCoord, Tile>,
+    // Changes whenever anything is drawn into the tiles, or the tiles change.
+    content_version: u64,
+    digest_of_replayed_media: Option<TileKey>,
+    presentation: Option<PaintedLayerPresentation>,
+    // Since when the layer is in no stack.
+    left_the_stack_at: Option<MonotonicTime>,
+}
+
+impl LayerState {
+    fn invalidate_tiles_shown_within(&mut self, invalidation: TileInvalidation, composite_offset: IntPoint) {
+        let rect_in_raster_space = match invalidation {
+            TileInvalidation::Nothing => return,
+            TileInvalidation::WithinViewportRect(rect) => {
+                Some(translated(rect, -composite_offset.x, -composite_offset.y))
+            }
+            TileInvalidation::Everywhere => None,
+        };
+        for tile in self.tiles.values_mut() {
+            if rect_in_raster_space.is_none_or(|rect| !rect.intersected(tile.rect).is_empty()) {
+                tile.key_of_held_pixels = None;
+            }
+        }
+        self.digest_of_replayed_media = None;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TileInvalidation {
+    #[default]
+    Nothing,
+    Everywhere,
+    WithinViewportRect(IntRect),
+}
+
+struct LiveContentVersionsOfFrame<'a> {
+    live_content: &'a LiveContent,
+    nested_contexts: &'a dyn NestedContexts,
+}
+
+impl LiveContentVersions for LiveContentVersionsOfFrame<'_> {
+    fn canvas_content_generation(&self, canvas: CanvasId) -> u64 {
+        self.live_content
+            .canvases
+            .get(&canvas.0)
+            .map_or(0, |canvas| canvas.content_generation)
+    }
+
+    fn video_frame_id(&self, video_sink: VideoSinkHandle) -> Option<u64> {
+        self.live_content
+            .video_sinks
+            .get(&video_sink.0)
+            .and_then(|sink| sink.has_frame.then_some(sink.frame_id))
+    }
+
+    fn image_frame_pixel_generation(&self, image_frame: ImageFrameResourceId) -> Option<u64> {
+        self.live_content.image_frames.get(&image_frame.0).copied()
+    }
+
+    fn nested_context_frame_generation(&self, nested_context: CompositorContextId) -> Option<u64> {
+        self.nested_contexts.frame_generation_of(nested_context)
+    }
+}
+
+/// Where a frame composites a layer: translated by the scroll offsets of its space's anchors, within its clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompositingOfLayer {
+    key: LayerKey,
+    offset: IntPoint,
+    clip: Option<IntRect>,
+}
+
+// The keys of the tiles of a group of a stack, which a frame takes from the context and gives back once painted, bound
+// to the list and the geometry of the group's space they were binned against last.
+struct KeyedGroupOfFrame {
+    stack_generation: u64,
+    group: usize,
+    display_list: Rc<DisplayList>,
+    geometry: Rc<SpaceGeometry>,
+    keys: GroupTileKeys,
+    // The tiles the frame shows, by their cell and their layer.
+    shown_tiles: Vec<(TileCoord, usize)>,
+}
+
+impl KeyedGroupOfFrame {
+    fn tile(&self, index: usize) -> &KeyedTile {
+        let (coord, layer) = self.shown_tiles[index];
+        self.keys.tile(coord, layer).expect("a shown tile is keyed")
+    }
+}
+
+pub struct ShownTilesOfLayer {
+    group: usize,
+    // Indices into the tiles of the keyed group.
+    tiles: Vec<usize>,
+    rects_needed: Vec<IntRect>,
+}
+
+#[derive(Default)]
+pub struct TilePass {
+    viewport_rect: IntRect,
+    groups: Vec<KeyedGroupOfFrame>,
+    // Indexed like the layers of the stack.
+    shown_tiles_of_layers: Vec<Option<ShownTilesOfLayer>>,
+    digests_of_replayed_media: Vec<Option<TileKey>>,
+}
+
+/// What a frame paints of its layers.
+pub struct LayerUpdate {
+    pub tile_invalidation: TileInvalidation,
+    pub tile_pass: Option<TilePass>,
+    pub composite_offsets: Vec<IntPoint>,
+    /// From the base layer up, the layers that can hold something, and where the frame composites each.
+    pub compositing: Vec<CompositingOfLayer>,
+    pub shown_by_window_server: bool,
+}
+
+// The geometry of a space as a frame worked it out, which later frames reuse while the tree copy, the spaces and the
+// raster scroll offsets of the space stay, as they do while the space's own anchor scrolls.
+struct KnownSpaceGeometry {
+    tree_copy: u64,
+    anchors_of_spaces: Vec<SpatialNodeIndex>,
+    space: usize,
+    viewport: ViewportRaster,
+    geometry: Rc<SpaceGeometry>,
+}
+
+// The viewport in the device pixels of the raster, and how those of the viewport map into them.
+#[derive(Clone, Copy, PartialEq)]
+struct ViewportRaster {
+    rect: IntRect,
+    transform: FloatMatrix4x4,
+}
+
+// Where the parts of a list were placed for a frame, and what that depended on: the list, the tree copy, and the scroll
+// offsets of the nodes that neither anchor a space nor move on their own.
+struct PlacementOfFrame {
+    display_list: Rc<DisplayList>,
+    tree_copy: u64,
+    viewport_rect: IntRect,
+    raster_transform: FloatMatrix4x4,
+    scroll_offsets_placement_depends_on: Vec<FloatPoint>,
+    anchors: Vec<SpatialNodeIndex>,
+    placement: ListPlacement,
+}
+
+/// The layers of the frames of a context under their keys, and what of them the window server shows.
 #[derive(Default)]
 pub struct ContextLayers {
-    plan: Option<LayerPlan>,
-    surfaces: Vec<LayerSurface>,
+    stack: Option<LayerStack>,
+    placement_of_latest_frame: Option<PlacementOfFrame>,
+    states: HashMap<LayerKey, LayerState>,
+    // How the latest frame composited its layers, from the base layer up.
+    compositing_of_latest_frame: Vec<CompositingOfLayer>,
     last_content_version: u64,
-    pub repaint_everything_after_dropping_layers: bool,
-    // Whether the window server shows the canvases and videos of the latest frame above it.
+    // Where damage reaches several tiles of a layer, the layer is replayed once into this surface, and its damage
+    // copied into the tiles.
+    tile_raster_surface: Option<SurfaceHandle>,
+    // Whether the window server shows the layers above the base layer of the latest frame.
     window_server_shows_media: bool,
-    painted_layer_presentations: Vec<PaintedLayerPresentation>,
     latest_overlay_surface: Option<PresentableSurfaceHandle>,
     overlay_rect: IntRect,
+    known_space_geometries: Vec<KnownSpaceGeometry>,
+    next_presentable_surface_pool: u32,
+    // Counts the stacks of another shape worked out, so that what was keyed against one is not taken for another.
+    stack_generation: u64,
+    // The keys of the tiles of the groups of the latest frame, kept for the next one.
+    keyed_groups: Vec<KeyedGroupOfFrame>,
 }
 
 impl ContextLayers {
-    pub fn has_plan(&self) -> bool {
-        self.plan.is_some()
-    }
-
-    pub fn plan(&self) -> Option<&LayerPlan> {
-        self.plan.as_ref()
+    pub fn has_layers(&self) -> bool {
+        self.stack.is_some()
     }
 
     pub fn window_server_shows_media(&self) -> bool {
         self.window_server_shows_media
     }
 
-    fn plan_has_nested_context_layers(&self) -> bool {
-        self.plan.as_ref().is_some_and(|plan| {
-            plan.layers.iter().any(|layer| {
-                matches!(
-                    layer.kind,
-                    LayerKind::Media {
-                        content: LiveMedia::CompositedContext(_)
-                    }
-                )
-            })
-        })
+    pub fn compositing_of_latest_frame(&self) -> &[CompositingOfLayer] {
+        &self.compositing_of_latest_frame
     }
 
-    pub fn drop_layers(&mut self, env: &PresentingEnvironment<'_>) {
-        // NB: The drop timer runs only while there is a plan.
-        if self.plan.is_none() && self.surfaces.is_empty() && self.painted_layer_presentations.is_empty() {
-            return;
-        }
-        self.plan = None;
-        self.surfaces.clear();
-        for pool in 0..self.painted_layer_presentations.len() {
-            env.raster.drop_presentable_surface_pool(env.context_id, pool as u32);
-        }
-        self.painted_layer_presentations.clear();
-        env.host.cancel_timer(env.context_id, ContextTimer::LayerDrop);
-    }
-
+    /// Drops the layers that have been out of the stack for long enough, and keeps the timer running for the others.
     pub fn drop_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
-        // While the window server shows the media, the layers cost nothing, and the frame on screen still needs their
-        // plan, as for a snapshot. The next frame without a plan puts the media back into the store.
-        if self.plan.is_none() || self.window_server_shows_media || self.plan_has_nested_context_layers() {
-            return;
+        let mut layers_still_waiting = false;
+        self.states.retain(|_, state| {
+            let Some(left_the_stack_at) = state.left_the_stack_at else {
+                return true;
+            };
+            if env.now - left_the_stack_at < TIME_A_LAYER_OUTLIVES_ITS_STACK {
+                layers_still_waiting = true;
+                return true;
+            }
+            if let Some(presentation) = &state.presentation {
+                env.raster
+                    .drop_presentable_surface_pool(env.context_id, presentation.pool);
+            }
+            false
+        });
+        if layers_still_waiting {
+            env.host
+                .set_timer(env.context_id, ContextTimer::LayerDrop, TIME_A_LAYER_OUTLIVES_ITS_STACK);
         }
-        self.drop_layers(env);
-        self.repaint_everything_after_dropping_layers = true;
+    }
+
+    pub fn tile_raster_surface_release_timer_fired(&mut self) {
+        self.tile_raster_surface = None;
+    }
+
+    fn tile_raster_surface_of_size(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        size: IntSize,
+        like: &SurfaceHandle,
+    ) -> Option<SurfaceHandle> {
+        let fits = self.tile_raster_surface.as_ref().is_some_and(|surface| {
+            env.raster.surface_size(surface) == size && env.raster.surfaces_share_backend(surface, like)
+        });
+        if !fits {
+            self.tile_raster_surface = None;
+            self.tile_raster_surface = Some(create_surface_like(env.raster, size, like)?);
+        }
+        env.host.set_timer(
+            env.context_id,
+            ContextTimer::TileRasterSurfaceRelease,
+            TILE_RASTER_SURFACE_RELEASE_DELAY,
+        );
+        self.tile_raster_surface.clone()
+    }
+
+    fn geometry_of_space(
+        &mut self,
+        tree: &VisualContextTree,
+        spaces: &[RasterSpace],
+        raster_spaces: &mut Option<RasterSpaces>,
+        space: usize,
+        scroll_offsets: &[FloatPoint],
+        viewport: ViewportRaster,
+    ) -> Rc<SpaceGeometry> {
+        let anchors_match = |known: &KnownSpaceGeometry| {
+            known.anchors_of_spaces.len() == spaces.len()
+                && known
+                    .anchors_of_spaces
+                    .iter()
+                    .zip(spaces)
+                    .all(|(anchor, space)| *anchor == space.anchor)
+        };
+        let raster_offsets = raster_scroll_offsets(spaces, space, scroll_offsets);
+        if let Some(known) = self.known_space_geometries.iter().find(|known| {
+            known.tree_copy == tree.copy.number()
+                && known.space == space
+                && known.viewport == viewport
+                && anchors_match(known)
+                && known.geometry.raster_scroll_offsets == raster_offsets
+        }) {
+            return known.geometry.clone();
+        }
+        let raster_spaces = raster_spaces.get_or_insert_with(|| RasterSpaces::of_spaces(tree, spaces.to_vec()));
+        let geometry = Rc::new(SpaceGeometry::new(
+            tree,
+            raster_spaces,
+            space,
+            scroll_offsets,
+            viewport.rect,
+            viewport.transform,
+        ));
+        self.known_space_geometries.retain(|known| {
+            known.tree_copy == tree.copy.number()
+                && known.viewport == viewport
+                && !(known.space == space && anchors_match(known))
+        });
+        self.known_space_geometries.push(KnownSpaceGeometry {
+            tree_copy: tree.copy.number(),
+            anchors_of_spaces: spaces.iter().map(|space| space.anchor).collect(),
+            space,
+            viewport,
+            geometry: geometry.clone(),
+        });
+        geometry
     }
 }
 
-/// The layers a frame is painted in, and what of each it repaints.
-#[derive(Default)]
-pub struct LayerUpdate {
-    pub new_plan: Option<LayerPlan>,
-    pub keeps_plan: bool,
-    pub painted_damage: IntRect,
-    pub damage_of_layers: Vec<IntRect>,
-    pub fully_repainted_layer_bits: u32,
-    pub repaints_everything: bool,
-    pub shown_by_window_server: bool,
+// A surface on the backend of the one given, or none, as one that falls back to the CPU on a GPU backend would be
+// allocated again with every frame.
+fn create_surface_like(raster: &RasterHost, size: IntSize, like: &SurfaceHandle) -> Option<SurfaceHandle> {
+    raster
+        .create_surface(size, Some(like))
+        .filter(|surface| raster.surfaces_share_backend(surface, like))
 }
 
-impl LayerUpdate {
-    pub fn has_plan(&self) -> bool {
-        self.new_plan.is_some() || self.keeps_plan
-    }
-
-    pub fn plan<'a>(&'a self, layers: &'a ContextLayers) -> Option<&'a LayerPlan> {
-        if self.keeps_plan {
-            layers.plan.as_ref()
-        } else {
-            self.new_plan.as_ref()
-        }
+fn size_of(rect: IntRect) -> IntSize {
+    IntSize {
+        width: rect.width,
+        height: rect.height,
     }
 }
 
-pub fn rect_of_media_layers_showing_changes(plan: &LayerPlan, changes: &LiveContentChangesSinceLastPaint) -> IntRect {
-    let mut rect = IntRect::default();
-    for layer in &plan.layers {
-        if let LayerKind::Media { content } = layer.kind
-            && changes.changed(content)
-        {
-            rect = rect.united(layer.rect);
-        }
+fn translated(rect: IntRect, dx: i32, dy: i32) -> IntRect {
+    IntRect::new(rect.x + dx, rect.y + dy, rect.width, rect.height)
+}
+
+// What of the viewport a layer can show, in the raster coordinates of its space.
+fn rect_shown_of(compositing: &CompositingOfLayer, viewport_rect: IntRect) -> IntRect {
+    let shown_in_viewport = match compositing.clip {
+        Some(clip) => viewport_rect.intersected(clip),
+        None => viewport_rect,
+    };
+    translated(shown_in_viewport, -compositing.offset.x, -compositing.offset.y)
+}
+
+// A layer of a space that scrolls keeps tiles a little past what the viewport shows of it, for scrolls back.
+fn tile_area_of(space: usize, rect_shown: IntRect, viewport_rect: IntRect) -> IntRect {
+    if space == VIEWPORT_RASTER_SPACE {
+        return viewport_rect;
     }
-    rect
+    if rect_shown.is_empty() {
+        return IntRect::default();
+    }
+    let (half_width, half_height) = (viewport_rect.width / 2, viewport_rect.height / 2);
+    rect_shown.inflated_edges(half_height, half_width, half_height, half_width)
+}
+
+// Draws the tiles over `damage_rect` of the surface, with the layer's space translated by `offset` into the surface's.
+fn composite_layer_tiles(
+    raster: &RasterHost,
+    surface: &SurfaceHandle,
+    state: &LayerState,
+    damage_rect: IntRect,
+    blend: SurfaceBlend,
+    offset: IntPoint,
+    composite_clip: Option<IntRect>,
+) {
+    let area = composite_clip.map_or(damage_rect, |clip| damage_rect.intersected(clip));
+    let save_count = raster.save(surface);
+    if let Some(clip) = composite_clip {
+        raster.clip_rect(surface, clip);
+    }
+    for tile in state.tiles.values() {
+        let rect = translated(tile.rect, offset.x, offset.y);
+        if rect.intersected(area).is_empty() {
+            continue;
+        }
+        raster.draw_surface(surface, &tile.surface, rect_of_size(size_of(rect)), rect, blend);
+    }
+    raster.restore_to_count(surface, save_count);
 }
 
 fn sublayer_placement_of(placement: &WindowServerPlacement) -> FfiSublayerPlacement {
@@ -190,52 +457,396 @@ fn surface_sublayer(identity: u64, surface: &PresentableSurfaceHandle, rect: Int
     }
 }
 
+// The scroll offsets with those of the nodes that the compositor scrolls or that move on their own left out: what the
+// placement of a list depends on of the offsets, as content that moves with those is rastered in a space that follows
+// them or placed wherever they could take it.
+fn scroll_offsets_placement_depends_on(tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> Vec<FloatPoint> {
+    let moves_on_its_own = spatial_nodes_that_move_on_their_own(tree);
+    let scrolled_by_the_compositor = &tree.compositor_scroll_table().nodes;
+    scroll_offsets
+        .iter()
+        .enumerate()
+        .map(|(index, offset)| {
+            let left_out = moves_on_its_own.get(index).copied().unwrap_or(false)
+                || scrolled_by_the_compositor
+                    .iter()
+                    .any(|record| record.scroll_node_index.0 as usize == index);
+            if left_out { FloatPoint::default() } else { *offset }
+        })
+        .collect()
+}
+
+fn compositing_of_layer(stack: &LayerStack, layer: usize, composite_offsets: &[IntPoint]) -> CompositingOfLayer {
+    CompositingOfLayer {
+        key: stack.layers[layer].key,
+        offset: composite_offsets[stack.space_of_layer(layer)],
+        clip: stack.composite_clip_in_viewport(layer, composite_offsets),
+    }
+}
+
 impl ContextPresenting {
-    pub(super) fn layer_update_for(&self, frame: &FrameToPaint<'_>, viewport_rect: IntRect) -> LayerUpdate {
-        let mut layers = LayerUpdate::default();
-        let draws_media = frame
-            .display_list
-            .storage()
-            .summary()
-            .live_content_records
-            .iter()
-            .any(|live_content_record| !matches!(live_content_record.content, LiveMedia::ImageFrame(_)));
-        if !draws_media {
-            return layers;
-        }
-        if self.layers_keep_plan_for(frame, viewport_rect) {
-            layers.keeps_plan = true;
-            return layers;
-        }
+    /// Works out the layers of the frame within `viewport_rect`, in the device pixels of the raster: keeps the stack
+    /// while where the list's parts are placed stays, and works it out again otherwise.
+    pub(super) fn layer_update_for(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        frame: &FrameToPaint<'_>,
+        viewport_rect: IntRect,
+        live_content: &LiveContent,
+    ) -> LayerUpdate {
+        let raster_transform = self.raster_transform();
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
-        layers.new_plan = build_layer_plan(&LayerPlanInputs {
-            tape: storage.bytes(),
-            command_runs: storage.command_runs(),
-            summary: storage.summary(),
-            effect_clips: storage.effect_clip_plan(tree),
+        let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
+        let inputs = LayerStackInputs {
+            list: storage,
             tree,
-            scroll_offsets: frame.frame_inputs.presented_scroll_state_snapshot.device_offsets(),
+            scroll_offsets,
             viewport_rect,
-        })
-        .ok();
-        layers
+            raster_transform,
+        };
+
+        let placement_is_known = self.layers.placement_of_latest_frame.as_ref().is_some_and(|known| {
+            Rc::ptr_eq(&known.display_list, frame.display_list)
+                && known.tree_copy == tree.copy.number()
+                && known.viewport_rect == viewport_rect
+                && known.raster_transform == raster_transform
+                && known.scroll_offsets_placement_depends_on
+                    == scroll_offsets_placement_depends_on(tree, scroll_offsets)
+        });
+        if !placement_is_known {
+            // A space that scrolls composites at whole device pixels of the viewport, which a raster that scales them
+            // or shifts them by a fraction does not have, so such a raster has the viewport's space alone.
+            let anchors = if raster_transform == FloatMatrix4x4::identity() {
+                raster_space_anchors(tree)
+            } else {
+                Vec::new()
+            };
+            let spaces = RasterSpaces::at_anchors(tree, &anchors, viewport_rect);
+            let mut raster_spaces = None;
+            let geometries: Vec<Rc<SpaceGeometry>> = (0..spaces.len())
+                .map(|space| {
+                    self.layers.geometry_of_space(
+                        tree,
+                        spaces.spaces(),
+                        &mut raster_spaces,
+                        space,
+                        scroll_offsets,
+                        ViewportRaster {
+                            rect: viewport_rect,
+                            transform: raster_transform,
+                        },
+                    )
+                })
+                .collect();
+            let placement = place_list(&inputs, &anchors, &geometries, &[]);
+            self.layers.placement_of_latest_frame = Some(PlacementOfFrame {
+                display_list: frame.display_list.clone(),
+                tree_copy: tree.copy.number(),
+                viewport_rect,
+                raster_transform,
+                scroll_offsets_placement_depends_on: scroll_offsets_placement_depends_on(tree, scroll_offsets),
+                anchors,
+                placement,
+            });
+        }
+        let known = self
+            .layers
+            .placement_of_latest_frame
+            .as_ref()
+            .expect("the placement of the frame is known");
+        let stack_still_holds = self
+            .layers
+            .stack
+            .as_ref()
+            .is_some_and(|stack| stack.placement_at_every_anchor == known.placement);
+        if !stack_still_holds {
+            let stack = build_layer_stack(&inputs, &known.anchors, known.placement.clone());
+            // A stack of the same shape keeps what was keyed against the one it replaces, as where the list's records
+            // are is bound anew to every list.
+            let keeps_its_shape = self
+                .layers
+                .stack
+                .as_ref()
+                .is_some_and(|current| current.has_the_shape_of(&stack));
+            if !keeps_its_shape {
+                self.layers.stack_generation += 1;
+            }
+            self.layers.stack = Some(stack);
+        }
+        let stack = self.layers.stack.as_mut().expect("a frame with layers has a stack");
+        stack.update_window_server_placements(storage, tree, scroll_offsets, viewport_rect);
+        let stack = self.layers.stack.as_ref().expect("a frame with layers has a stack");
+        let composite_offsets = stack.composite_offsets(scroll_offsets);
+        let compositing: Vec<CompositingOfLayer> = (stack.base_layer..stack.layers.len())
+            .filter(|&layer| layer == stack.base_layer || stack.layers[layer].may_hold_content)
+            .map(|layer| compositing_of_layer(stack, layer, &composite_offsets))
+            .collect();
+        let shown_by_window_server =
+            compositing.len() > 1 && self.window_server_can_show_media_layers_of(env, stack, live_content);
+        LayerUpdate {
+            tile_invalidation: TileInvalidation::Nothing,
+            tile_pass: None,
+            composite_offsets,
+            compositing,
+            shown_by_window_server,
+        }
+    }
+
+    /// Keys the tiles the frame shows of each layer, and answers the rect of the viewport that the tiles to raster
+    /// again, the tiles that go, and the media replayed anew cover.
+    pub(super) fn prepare_tile_pass(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        frame: &FrameToPaint<'_>,
+        live_content: &LiveContent,
+        layer_update: &mut LayerUpdate,
+        viewport_rect: IntRect,
+    ) -> IntRect {
+        let stack = self.layers.stack.take().expect("a frame with layers has a stack");
+        let stale_rect = self.prepare_tile_pass_of_stack(env, frame, live_content, layer_update, viewport_rect, &stack);
+        self.layers.stack = Some(stack);
+        stale_rect
+    }
+
+    fn prepare_tile_pass_of_stack(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        frame: &FrameToPaint<'_>,
+        live_content: &LiveContent,
+        layer_update: &mut LayerUpdate,
+        viewport_rect: IntRect,
+        stack: &LayerStack,
+    ) -> IntRect {
+        let storage = frame.display_list.storage();
+        let tree = frame.frame_inputs.visual_context_tree.as_arc();
+        let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
+        let composite_offsets = &layer_update.composite_offsets;
+        for compositing in &layer_update.compositing {
+            if let Some(state) = self.layers.states.get_mut(&compositing.key) {
+                state.invalidate_tiles_shown_within(layer_update.tile_invalidation, compositing.offset);
+            }
+        }
+
+        let raster_transform = self.raster_transform();
+        let mut raster_spaces = None;
+        let geometries: Vec<Rc<SpaceGeometry>> = (0..stack.spaces.len())
+            .map(|space| {
+                self.layers.geometry_of_space(
+                    tree,
+                    &stack.spaces,
+                    &mut raster_spaces,
+                    space,
+                    scroll_offsets,
+                    ViewportRaster {
+                        rect: viewport_rect,
+                        transform: raster_transform,
+                    },
+                )
+            })
+            .collect();
+        let scrollbars = frame.frame_inputs.scrollbars_shown_for_the_page();
+        let live_content_versions = LiveContentVersionsOfFrame {
+            live_content,
+            nested_contexts: env.nested_contexts,
+        };
+        let list = ListOfFrame::new(
+            storage,
+            tree,
+            ReplayReadsOutsideTheList {
+                scrollbars: &scrollbars,
+                time_ns: frame.frame_inputs.painted_at.nanoseconds(),
+                live_content: &live_content_versions,
+            },
+        );
+        let raster_spaces: Vec<RasterSpaceOfFrame<'_>> = geometries
+            .iter()
+            .map(|geometry| RasterSpaceOfFrame::new(&list, geometry))
+            .collect();
+        let surface_clear_color = frame.display_list.surface_clear_color().unwrap_or(Color::TRANSPARENT);
+        let root_group_color = frame.display_list.root_group_color();
+        let constants_of_layer = |layer: usize| LayerConstants {
+            raster_space_identity: stack.spaces[stack.space_of_layer(layer)].identity,
+            clear_color: if layer == stack.base_layer {
+                surface_clear_color
+            } else {
+                Color::TRANSPARENT
+            },
+            root_group_color,
+            raster_transform,
+        };
+
+        let mut pass = TilePass {
+            viewport_rect,
+            shown_tiles_of_layers: (0..stack.layers.len()).map(|_| None).collect(),
+            digests_of_replayed_media: vec![None; stack.layers.len()],
+            ..TilePass::default()
+        };
+        for (group_index, group) in stack.groups.iter().enumerate() {
+            // A group whose layers are all below the base layer holds nothing.
+            let has_layer_from_base_up = (stack.base_layer..stack.layers.len()).any(
+                |layer| matches!(stack.layers[layer].content, LayerContent::Painted { group: of } if of == group_index),
+            );
+            if !has_layer_from_base_up {
+                continue;
+            }
+            let space = stack.nodes[group.node].space;
+            let shown_rect = rect_shown_of(
+                &compositing_of_layer(stack, group.layer_below_every_cut, composite_offsets),
+                viewport_rect,
+            );
+            let known =
+                self.layers.keyed_groups.iter().position(|known| {
+                    known.stack_generation == self.layers.stack_generation && known.group == group_index
+                });
+            let mut keyed = match known {
+                Some(index) => self.layers.keyed_groups.swap_remove(index),
+                None => KeyedGroupOfFrame {
+                    stack_generation: self.layers.stack_generation,
+                    group: group_index,
+                    display_list: frame.display_list.clone(),
+                    geometry: geometries[space].clone(),
+                    keys: GroupTileKeys::default(),
+                    shown_tiles: Vec::new(),
+                },
+            };
+            if known.is_none()
+                || !Rc::ptr_eq(&keyed.display_list, frame.display_list)
+                || !Rc::ptr_eq(&keyed.geometry, &geometries[space])
+            {
+                raster_spaces[space].bind_group(&mut keyed.keys, stack, group_index);
+                keyed.display_list = frame.display_list.clone();
+                keyed.geometry = geometries[space].clone();
+            }
+            raster_spaces[space].key_shown_tiles(
+                &mut keyed.keys,
+                stack,
+                group_index,
+                constants_of_layer,
+                shown_rect,
+                tile_area_of(space, shown_rect, viewport_rect),
+            );
+            keyed.shown_tiles = keyed
+                .keys
+                .tiles_within(shown_rect)
+                .map(|tile| (tile.coord, tile.layer))
+                .collect();
+            let keyed_group = pass.groups.len();
+            for (tile_index, &(coord, layer)) in keyed.shown_tiles.iter().enumerate() {
+                if layer < stack.base_layer {
+                    continue;
+                }
+                let tile = keyed.tile(tile_index);
+                debug_assert_eq!(tile.coord, coord);
+                let mut rect_needed = if tile.layer == stack.base_layer {
+                    tile.coord.cell_rect()
+                } else {
+                    tile.content_bounds
+                };
+                if space == VIEWPORT_RASTER_SPACE {
+                    rect_needed = rect_needed.intersected(viewport_rect);
+                }
+                if rect_needed.is_empty() {
+                    continue;
+                }
+                let shown = pass.shown_tiles_of_layers[tile.layer].get_or_insert_with(|| ShownTilesOfLayer {
+                    group: keyed_group,
+                    tiles: Vec::new(),
+                    rects_needed: Vec::new(),
+                });
+                shown.tiles.push(tile_index);
+                shown.rects_needed.push(rect_needed);
+            }
+            pass.groups.push(keyed);
+        }
+
+        let mut stale_rect = IntRect::default();
+        for compositing in &layer_update.compositing {
+            let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
+                continue;
+            };
+            let layer = &stack.layers[layer_index];
+            let clip_in_viewport = |rect: IntRect| {
+                let rect = translated(rect, compositing.offset.x, compositing.offset.y).intersected(viewport_rect);
+                compositing.clip.map_or(rect, |clip| rect.intersected(clip))
+            };
+            let state = self.layers.states.get(&layer.key);
+            if let LayerContent::Media {
+                record_span, region, ..
+            } = &layer.content
+            {
+                let space = stack.space_of_layer(layer_index);
+                let digest = raster_spaces[space].digest_of_records_within(*record_span);
+                if !layer_update.shown_by_window_server
+                    && state.and_then(|state| state.digest_of_replayed_media) != Some(digest)
+                {
+                    stale_rect = stale_rect.united(clip_in_viewport(*region));
+                }
+                pass.digests_of_replayed_media[layer_index] = Some(digest);
+                continue;
+            }
+            let shown = pass.shown_tiles_of_layers[layer_index].as_ref();
+            let Some(state) = state else {
+                if let Some(shown) = shown {
+                    for rect_needed in &shown.rects_needed {
+                        stale_rect = stale_rect.united(clip_in_viewport(*rect_needed));
+                    }
+                }
+                continue;
+            };
+            let shown_rect = rect_shown_of(compositing, viewport_rect);
+            // Tiles the layer held where it shows that it no longer holds go, and what they showed is painted again.
+            for (coord, tile) in &state.tiles {
+                if tile.rect.intersected(shown_rect).is_empty() {
+                    continue;
+                }
+                let still_held = shown.is_some_and(|shown| {
+                    shown
+                        .tiles
+                        .iter()
+                        .any(|&tile_index| pass.groups[shown.group].tile(tile_index).coord == *coord)
+                });
+                if !still_held {
+                    stale_rect = stale_rect.united(clip_in_viewport(tile.rect));
+                }
+            }
+            let Some(shown) = shown else {
+                continue;
+            };
+            let keyed = &pass.groups[shown.group];
+            for (&tile_index, rect_needed) in shown.tiles.iter().zip(&shown.rects_needed) {
+                let tile = keyed.tile(tile_index);
+                let kept = state.tiles.get(&tile.coord).is_some_and(|held| {
+                    held.rect.contains_rect(*rect_needed) && held.key_of_held_pixels == Some(tile.key)
+                });
+                if !kept {
+                    stale_rect = stale_rect.united(clip_in_viewport(*rect_needed));
+                }
+            }
+        }
+        layer_update.tile_pass = Some(pass);
+        stale_rect
     }
 
     pub(super) fn window_server_can_show_media_layers_of(
         &self,
         env: &PresentingEnvironment<'_>,
-        plan: &LayerPlan,
+        stack: &LayerStack,
         live_content: &LiveContent,
     ) -> bool {
         if !self.remote_layer_may_show_media(env.has_gpu) {
             return false;
         }
-        for layer in &plan.layers {
-            let LayerKind::Media { content } = layer.kind else {
+        for layer in &stack.layers[stack.base_layer..] {
+            let LayerContent::Media {
+                content,
+                window_server_placement,
+                ..
+            } = &layer.content
+            else {
                 continue;
             };
-            let Some(Ok(placement)) = &layer.window_server_placement else {
+            let Some(Ok(placement)) = window_server_placement else {
                 return false;
             };
             let (kind, id) = match content {
@@ -273,49 +884,59 @@ impl ContextPresenting {
         true
     }
 
+    /// Takes in what the frame painted of its layers: how it composited them, and which layers left the stack, which
+    /// keep their tiles for a while.
     pub(super) fn commit_layer_update(&mut self, env: &PresentingEnvironment<'_>, layer_update: LayerUpdate) {
         let layers = &mut self.layers;
-        layers.window_server_shows_media = layer_update.has_plan() && layer_update.shown_by_window_server;
-        if layer_update.repaints_everything {
-            layers.repaint_everything_after_dropping_layers = false;
+        layers.window_server_shows_media = layer_update.shown_by_window_server;
+        if let Some(tile_pass) = &layer_update.tile_pass
+            && let Some(stack) = &layers.stack
+        {
+            for (layer, digest) in stack.layers.iter().zip(&tile_pass.digests_of_replayed_media) {
+                if digest.is_some()
+                    && let Some(state) = layers.states.get_mut(&layer.key)
+                {
+                    state.digest_of_replayed_media = *digest;
+                }
+            }
         }
-        if !layer_update.has_plan() {
-            layers.drop_layers(env);
-            return;
+        let mut some_layer_left_the_stack = false;
+        for (key, state) in &mut layers.states {
+            let in_stack = layer_update
+                .compositing
+                .iter()
+                .any(|compositing| compositing.key == *key);
+            if in_stack {
+                state.left_the_stack_at = None;
+            } else {
+                state.left_the_stack_at.get_or_insert(env.now);
+                some_layer_left_the_stack = true;
+            }
         }
-        if let Some(new_plan) = layer_update.new_plan {
-            layers.plan = Some(new_plan);
+        layers.compositing_of_latest_frame = layer_update.compositing;
+        if let Some(tile_pass) = layer_update.tile_pass {
+            layers.keyed_groups = tile_pass.groups;
         }
-        env.host.set_timer(
-            env.context_id,
-            ContextTimer::LayerDrop,
-            TIME_LAYERS_OUTLIVE_THEIR_LAST_FRAME,
-        );
+        if some_layer_left_the_stack {
+            env.host
+                .set_timer(env.context_id, ContextTimer::LayerDrop, TIME_A_LAYER_OUTLIVES_ITS_STACK);
+        }
     }
 
+    /// Paints the frame from its layers over `damage_rect`, and answers the rect it painted, which grows to the whole
+    /// raster where the frame has to hold what the window server was to show above it.
     pub(super) fn paint_layered_frame(
         &mut self,
         env: &PresentingEnvironment<'_>,
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
-        layer_update: &LayerUpdate,
-    ) -> bool {
-        // The plan a frame keeps stays with the layers, out of their way while they are painted.
-        let kept_plan = if layer_update.keeps_plan {
-            self.layers.plan.take()
-        } else {
-            None
-        };
-        let plan = kept_plan
-            .as_ref()
-            .or(layer_update.new_plan.as_ref())
-            .expect("a layered frame has a plan");
-        let painted = self.paint_layers(env, surface, frame, damage_rect, layer_update, plan);
-        if layer_update.keeps_plan {
-            self.layers.plan = kept_plan;
-        }
-        painted
+        layer_update: &mut LayerUpdate,
+    ) -> IntRect {
+        let stack = self.layers.stack.take().expect("a layered frame has a stack");
+        let painted_rect = self.paint_layers(env, surface, frame, damage_rect, layer_update, &stack);
+        self.layers.stack = Some(stack);
+        painted_rect
     }
 
     fn paint_layers(
@@ -323,119 +944,316 @@ impl ContextPresenting {
         env: &PresentingEnvironment<'_>,
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
-        damage_rect: IntRect,
-        layer_update: &LayerUpdate,
-        plan: &LayerPlan,
-    ) -> bool {
+        mut damage_rect: IntRect,
+        layer_update: &mut LayerUpdate,
+        stack: &LayerStack,
+    ) -> IntRect {
         let raster = env.raster;
         let surface_clear_color = frame.display_list.surface_clear_color().unwrap_or(Color::TRANSPARENT);
         raster.start_raster_cache_frame(env.context_id);
-        let layer_count = plan.layers.len();
-
-        let mut surfaces = std::mem::take(&mut self.layers.surfaces);
-        surfaces.resize_with(layer_count, LayerSurface::default);
-        for (index, layer) in plan.layers.iter().enumerate() {
-            let layer_surface = &mut surfaces[index];
-            let is_base = matches!(layer.kind, LayerKind::Base);
-            let rect = if is_base {
-                rect_of_size(self.raster_size())
-            } else {
-                self.raster_rect_of(layer.rect)
+        let tile_pass = layer_update
+            .tile_pass
+            .as_ref()
+            .expect("a layered frame worked out its tiles before it was painted");
+        let mut painted_straight = Vec::new();
+        for compositing in &layer_update.compositing {
+            let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
+                continue;
             };
-            if matches!(layer.kind, LayerKind::Media { .. }) || rect.is_empty() {
-                *layer_surface = LayerSurface::default();
+            self.layers.states.entry(compositing.key).or_default();
+            if matches!(stack.layers[layer_index].content, LayerContent::Media { .. }) {
                 continue;
             }
-            let mut repaints_whole_layer = (layer_update.fully_repainted_layer_bits & (1 << index)) != 0;
-            let surface_fits = if is_base {
-                layer_surface.rect == rect
+            let clear_color = if layer_index == stack.base_layer {
+                surface_clear_color
             } else {
-                layer_surface.rect.contains_rect(rect)
+                Color::TRANSPARENT
             };
-            let shares_backend = layer_surface
-                .surface
-                .as_ref()
-                .is_some_and(|layer_surface| raster.surfaces_share_backend(layer_surface, surface));
-            if layer_surface.surface.is_none() || !surface_fits || !shares_backend {
-                let Some(new_surface) = raster.create_surface(
-                    IntSize {
-                        width: rect.width,
-                        height: rect.height,
-                    },
-                    Some(surface),
-                ) else {
-                    self.layers.surfaces = surfaces;
-                    return false;
-                };
-                *layer_surface = LayerSurface {
-                    surface: Some(new_surface),
-                    rect,
-                    content_version: 0,
-                };
-                repaints_whole_layer = true;
-            }
-            let repaint_rect = if repaints_whole_layer {
-                layer_surface.rect
-            } else {
-                self.raster_rect_of(layer_update.damage_of_layers[index])
-                    .intersected(layer_surface.rect)
-            };
-            if repaint_rect.is_empty() {
-                continue;
-            }
-            let target = layer_surface.surface.as_ref().expect("the layer has a surface");
-            let save_count = raster.save(target);
-            raster.translate(target, -layer_surface.rect.x as f32, -layer_surface.rect.y as f32);
-            raster.clip_rect(target, repaint_rect);
-            raster.clear(
-                target,
-                if is_base {
-                    surface_clear_color
-                } else {
-                    Color::TRANSPARENT
-                },
-            );
-            self.apply_raster_transform(raster, target);
-            replay_into(env, target, frame, replaying_only(&layer.record_spans, false));
-            raster.restore_to_count(target, save_count);
-            self.layers.last_content_version += 1;
-            layer_surface.content_version = self.layers.last_content_version;
+            let mut state = self
+                .layers
+                .states
+                .remove(&compositing.key)
+                .expect("the state of the layer was just made sure of");
+            painted_straight.extend(self.raster_layer_tiles(
+                env,
+                surface,
+                frame,
+                stack,
+                layer_index,
+                compositing,
+                &mut state,
+                tile_pass,
+                clear_color,
+            ));
+            self.layers.states.insert(compositing.key, state);
         }
-        self.layers.surfaces = surfaces;
+
+        // The window server shows everything above the base layer from surfaces of its own, unless some could not be
+        // made, when the frame holds all of it instead.
+        if layer_update.shown_by_window_server {
+            let shown = painted_straight.is_empty()
+                && self.present_painted_layers_to_window_server(env, stack, &layer_update.compositing, surface)
+                && self.present_compositor_overlays_to_window_server(env, frame, surface);
+            if !shown {
+                layer_update.shown_by_window_server = false;
+                damage_rect = self.raster_rect();
+            }
+        }
 
         let save_count = raster.save(surface);
         raster.clip_rect(surface, damage_rect);
-        if let Some(base_surface) = self.layers.surfaces.first()
-            && let Some(base) = &base_surface.surface
-            && base_surface.rect.intersected(damage_rect) != IntRect::default()
+        if let Some(base) = layer_update.compositing.first()
+            && let Some(state) = self.layers.states.get(&base.key)
         {
-            raster.draw_surface(
+            composite_layer_tiles(
+                raster,
                 surface,
-                base,
-                IntRect::new(0, 0, base_surface.rect.width, base_surface.rect.height),
-                base_surface.rect,
+                state,
+                damage_rect,
                 SurfaceBlend::Source,
+                base.offset,
+                base.clip,
             );
         }
         if !layer_update.shown_by_window_server {
-            self.composite_layers_above_base_with_plan(env, surface, frame, plan, damage_rect);
+            self.composite_layers_above_base_of_stack(
+                env,
+                surface,
+                frame,
+                damage_rect,
+                stack,
+                &layer_update.compositing,
+            );
+            for rect in painted_straight {
+                let rect = rect.intersected(damage_rect);
+                if rect.is_empty() {
+                    continue;
+                }
+                let save_count = raster.save(surface);
+                raster.clip_rect(surface, rect);
+                raster.clear(surface, surface_clear_color);
+                self.apply_raster_transform(raster, surface);
+                replay_into(env, surface, frame, ReplaySelection::default());
+                raster.restore_to_count(surface, save_count);
+            }
             self.apply_raster_transform(raster, surface);
             paint_overlays(env, surface, frame.frame_inputs, true);
         }
         raster.restore_to_count(surface, save_count);
+        damage_rect
+    }
 
-        // The window server shows everything above the base layer from surfaces of its own.
-        if layer_update.shown_by_window_server {
-            if !self.present_painted_layers_to_window_server(env, plan, surface) {
-                return false;
+    // Answers where in the raster the tiles that could not be allocated or rastered show, which the frame paints straight
+    // instead, and which are tried again with the next frame.
+    #[allow(clippy::too_many_arguments)]
+    fn raster_layer_tiles(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        like: &SurfaceHandle,
+        frame: &FrameToPaint<'_>,
+        stack: &LayerStack,
+        layer_index: usize,
+        compositing: &CompositingOfLayer,
+        state: &mut LayerState,
+        tile_pass: &TilePass,
+        clear_color: Color,
+    ) -> Vec<IntRect> {
+        let raster = env.raster;
+        let viewport_rect = tile_pass.viewport_rect;
+        let shown_in_raster = |rect: IntRect| {
+            let rect = translated(rect, compositing.offset.x, compositing.offset.y).intersected(viewport_rect);
+            compositing.clip.map_or(rect, |clip| rect.intersected(clip))
+        };
+        let space = stack.space_of_layer(layer_index);
+        let shown = tile_pass.shown_tiles_of_layers[layer_index].as_ref();
+        let shown_rect = rect_shown_of(compositing, viewport_rect);
+        let tile_area = tile_area_of(space, shown_rect, viewport_rect);
+        let keyed = shown.map(|shown| &tile_pass.groups[shown.group]);
+        let shown_coords: Vec<TileCoord> = match (shown, keyed) {
+            (Some(shown), Some(keyed)) => shown
+                .tiles
+                .iter()
+                .map(|&tile_index| keyed.tile(tile_index).coord)
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        // Tiles stay where the layer may show them later, but not where it shows and no longer holds anything.
+        let tile_count = state.tiles.len();
+        state.tiles.retain(|coord, tile| {
+            !coord.cell_rect().intersected(tile_area).is_empty()
+                && (tile.rect.intersected(shown_rect).is_empty() || shown_coords.contains(coord))
+        });
+        let mut tiles_changed = state.tiles.len() != tile_count;
+
+        let (Some(shown), Some(keyed)) = (shown, keyed) else {
+            if tiles_changed {
+                self.layers.last_content_version += 1;
+                state.content_version = self.layers.last_content_version;
             }
-            if !self.present_compositor_overlays_to_window_server(env, frame, surface) {
-                return false;
+            return Vec::new();
+        };
+        let mut unrastered = Vec::new();
+        let mut tiles_to_raster = Vec::new();
+        for (&tile_index, &rect_needed) in shown.tiles.iter().zip(&shown.rects_needed) {
+            let keyed_tile = keyed.tile(tile_index);
+            let tile_fits = state.tiles.get(&keyed_tile.coord).is_some_and(|tile| {
+                tile.rect.contains_rect(rect_needed) && raster.surfaces_share_backend(&tile.surface, like)
+            });
+            if !tile_fits {
+                let Some(surface) = create_surface_like(raster, size_of(rect_needed), like) else {
+                    tiles_changed |= state.tiles.remove(&keyed_tile.coord).is_some();
+                    unrastered.push(shown_in_raster(rect_needed));
+                    continue;
+                };
+                state.tiles.insert(
+                    keyed_tile.coord,
+                    Tile {
+                        surface,
+                        rect: rect_needed,
+                        key_of_held_pixels: None,
+                    },
+                );
+                tiles_changed = true;
             }
+            if state.tiles[&keyed_tile.coord].key_of_held_pixels != Some(keyed_tile.key) {
+                tiles_to_raster.push(tile_index);
+            }
+        }
+        if tiles_changed || !tiles_to_raster.is_empty() {
+            self.layers.last_content_version += 1;
+            state.content_version = self.layers.last_content_version;
+        }
+        if tiles_to_raster.is_empty() {
+            return unrastered;
+        }
+        let geometry = &tile_pass.groups[shown.group].geometry;
+        let clips_left_to_composite =
+            (!geometry.clips_left_to_composite.is_empty()).then_some(&geometry.clips_left_to_composite[..]);
+        let (raster_scale, raster_translation) = (self.raster_scale, self.raster_translation);
+        let replay = |target: &SurfaceHandle, spans: &[ListSpan]| {
+            let mut selection = if keyed.keys.replays_whole_list {
+                ReplaySelection::default()
+            } else {
+                replaying_only(spans, false)
+            };
+            selection.clips_left_to_composite = clips_left_to_composite;
+            apply_raster_transform(raster, target, raster_scale, raster_translation);
+            replay_with_scroll_offsets(env, target, frame, selection, &geometry.raster_scroll_offsets);
+        };
+
+        let mut tiles_rastered = tiles_to_raster.clone();
+        // Tiles that the same barriers cut select the same records wherever those reach, so one replay can raster them
+        // together.
+        let mut batches: Vec<(u64, Vec<usize>)> = Vec::new();
+        for &tile_index in &tiles_to_raster {
+            let cuts = keyed.tile(tile_index).cuts;
+            match batches.iter_mut().find(|(batch_cuts, _)| *batch_cuts == cuts) {
+                Some((_, batch)) => batch.push(tile_index),
+                None => batches.push((cuts, vec![tile_index])),
+            }
+        }
+        for (cuts, batch) in &batches {
+            let largest_margin = batch.iter().try_fold(0i32, |largest, &tile_index| {
+                Some(largest.max(keyed.tile(tile_index).raster_margin_in_device_pixels?))
+            });
+            if largest_margin == Some(0) && batch.len() == 1 {
+                let keyed_tile = keyed.tile(batch[0]);
+                let spans = keyed.keys.record_spans_of_tiles([keyed_tile]);
+                let tile = &state.tiles[&keyed_tile.coord];
+                let save_count = raster.save(&tile.surface);
+                raster.translate(&tile.surface, -tile.rect.x as f32, -tile.rect.y as f32);
+                raster.clip_rect(&tile.surface, tile.rect);
+                raster.clear(&tile.surface, clear_color);
+                replay(&tile.surface, &spans);
+                raster.restore_to_count(&tile.surface, save_count);
+                continue;
+            }
+            // Where how far a backdrop filter reads is not known, every shown tile that the same barriers cut is
+            // replayed, so that what it reads is there.
+            let tiles_read: Vec<usize> = match largest_margin {
+                Some(_) => batch.clone(),
+                None => shown
+                    .tiles
+                    .iter()
+                    .copied()
+                    .filter(|&tile_index| keyed.tile(tile_index).cuts == *cuts)
+                    .collect(),
+            };
+            let margin = largest_margin.unwrap_or(0);
+            let rect_held_by_tiles = |tile_indices: &[usize]| {
+                tile_indices.iter().fold(IntRect::default(), |bounds, &tile_index| {
+                    match state.tiles.get(&keyed.tile(tile_index).coord) {
+                        Some(tile) => bounds.united(tile.rect),
+                        None => bounds,
+                    }
+                })
+            };
+            let mut bounds = rect_held_by_tiles(&tiles_read).inflated_edges(margin, margin, margin, margin);
+            if space == VIEWPORT_RASTER_SPACE {
+                bounds = bounds.intersected(viewport_rect);
+            }
+            bounds = bounds.united(rect_held_by_tiles(batch));
+            let spans = keyed
+                .keys
+                .record_spans_of_tiles(tiles_read.iter().map(|&tile_index| keyed.tile(tile_index)));
+            let tiles: Vec<&Tile> = batch
+                .iter()
+                .map(|&tile_index| &state.tiles[&keyed.tile(tile_index).coord])
+                .collect();
+            if !self.raster_through_scratch(env, like, &tiles, bounds, clear_color, &|target| replay(target, &spans)) {
+                for &tile_index in batch {
+                    let tile = state
+                        .tiles
+                        .get_mut(&keyed.tile(tile_index).coord)
+                        .expect("a tile to raster is held");
+                    tile.key_of_held_pixels = None;
+                    unrastered.push(shown_in_raster(tile.rect));
+                }
+                tiles_rastered.retain(|tile_index| !batch.contains(tile_index));
+            }
+        }
+        for &tile_index in &tiles_rastered {
+            let keyed_tile = keyed.tile(tile_index);
+            if let Some(tile) = state.tiles.get_mut(&keyed_tile.coord) {
+                tile.key_of_held_pixels = Some(keyed_tile.key);
+            }
+        }
+        unrastered
+    }
+
+    fn raster_through_scratch(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        like: &SurfaceHandle,
+        tiles: &[&Tile],
+        bounds: IntRect,
+        clear_color: Color,
+        replay: &dyn Fn(&SurfaceHandle),
+    ) -> bool {
+        let raster = env.raster;
+        let Some(raster_surface) = self.layers.tile_raster_surface_of_size(env, size_of(bounds), like) else {
+            return false;
+        };
+        let save_count = raster.save(&raster_surface);
+        raster.clear(&raster_surface, clear_color);
+        raster.translate(&raster_surface, -bounds.x as f32, -bounds.y as f32);
+        replay(&raster_surface);
+        raster.restore_to_count(&raster_surface, save_count);
+        for tile in tiles {
+            raster.draw_surface(
+                &tile.surface,
+                &raster_surface,
+                translated(tile.rect, -bounds.x, -bounds.y),
+                rect_of_size(size_of(tile.rect)),
+                SurfaceBlend::Source,
+            );
         }
         true
     }
 
+    /// Composites the layers above the base layer into the surface as the latest frame did, as for a snapshot of the
+    /// frame on screen.
     pub(super) fn composite_layers_above_base(
         &self,
         env: &PresentingEnvironment<'_>,
@@ -443,109 +1261,148 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
     ) {
-        let Some(plan) = self.layers.plan() else {
+        let Some(stack) = &self.layers.stack else {
             return;
         };
-        self.composite_layers_above_base_with_plan(env, surface, frame, plan, damage_rect);
+        self.composite_layers_above_base_of_stack(
+            env,
+            surface,
+            frame,
+            damage_rect,
+            stack,
+            &self.layers.compositing_of_latest_frame,
+        );
     }
 
-    fn composite_layers_above_base_with_plan(
+    fn composite_layers_above_base_of_stack(
         &self,
         env: &PresentingEnvironment<'_>,
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
-        plan: &LayerPlan,
         damage_rect: IntRect,
+        stack: &LayerStack,
+        compositing: &[CompositingOfLayer],
     ) {
-        for (index, layer) in plan.layers.iter().enumerate().skip(1) {
-            if matches!(layer.kind, LayerKind::Media { .. }) {
-                if !self.raster_rect_of(layer.rect).intersected(damage_rect).is_empty() {
+        for compositing in compositing.iter().skip(1) {
+            let Some(layer) = stack.layers.iter().find(|layer| layer.key == compositing.key) else {
+                continue;
+            };
+            if let LayerContent::Media {
+                record_span, region, ..
+            } = &layer.content
+            {
+                let mut rect = translated(*region, compositing.offset.x, compositing.offset.y);
+                if let Some(clip) = compositing.clip {
+                    rect = rect.intersected(clip);
+                }
+                if !rect.intersected(damage_rect).is_empty() {
                     let save_count = env.raster.save(surface);
                     self.apply_raster_transform(env.raster, surface);
-                    replay_into(env, surface, frame, replaying_only(&layer.record_spans, true));
+                    replay_into(
+                        env,
+                        surface,
+                        frame,
+                        replaying_only(std::slice::from_ref(record_span), true),
+                    );
                     env.raster.restore_to_count(surface, save_count);
                 }
                 continue;
             }
-            let Some(layer_surface) = self.layers.surfaces.get(index) else {
-                continue;
-            };
-            let Some(source) = &layer_surface.surface else {
-                continue;
-            };
-            if layer_surface.rect.intersected(damage_rect).is_empty() {
-                continue;
+            if let Some(state) = self.layers.states.get(&compositing.key) {
+                composite_layer_tiles(
+                    env.raster,
+                    surface,
+                    state,
+                    damage_rect,
+                    SurfaceBlend::SourceOver,
+                    compositing.offset,
+                    compositing.clip,
+                );
             }
-            env.raster.draw_surface(
-                surface,
-                source,
-                IntRect::new(0, 0, layer_surface.rect.width, layer_surface.rect.height),
-                layer_surface.rect,
-                SurfaceBlend::SourceOver,
-            );
         }
     }
 
-    // Each painted layer goes to the window server as its own surface, which is copied from its raster when the raster
-    // changes. The window server may still show the surface of the frame before, so the copy goes into another one.
+    // Each painted layer goes to the window server as its own surface, which is copied from its tiles when they
+    // change. The window server may still show the surface of the frame before, so the copy goes into another one.
     fn present_painted_layers_to_window_server(
         &mut self,
         env: &PresentingEnvironment<'_>,
-        plan: &LayerPlan,
+        stack: &LayerStack,
+        compositing: &[CompositingOfLayer],
         like: &SurfaceHandle,
     ) -> bool {
         let raster = env.raster;
+        let viewport_rect = rect_of_size(self.viewport_size);
         let layers = &mut self.layers;
-        // The surfaces of the layers that the plan no longer has go with them.
-        for pool in plan.layers.len()..layers.painted_layer_presentations.len() {
-            raster.drop_presentable_surface_pool(env.context_id, pool as u32);
-        }
-        layers
-            .painted_layer_presentations
-            .resize_with(plan.layers.len(), PaintedLayerPresentation::default);
-        for (index, layer) in plan.layers.iter().enumerate() {
-            let presentation = &mut layers.painted_layer_presentations[index];
-            let layer_surface = layers.surfaces.get(index);
-            let source = layer_surface.and_then(|layer_surface| layer_surface.surface.as_ref());
-            let (Some(layer_surface), Some(source)) = (layer_surface, source) else {
-                presentation.latest_surface = None;
-                continue;
-            };
-            if !matches!(layer.kind, LayerKind::Painted) || layer.rect.is_empty() {
-                presentation.latest_surface = None;
+        for compositing in compositing.iter().skip(1) {
+            let is_painted = stack
+                .layers
+                .iter()
+                .find(|layer| layer.key == compositing.key)
+                .is_some_and(|layer| matches!(layer.content, LayerContent::Painted { .. }));
+            if !is_painted {
                 continue;
             }
+            let Some(state) = layers.states.get_mut(&compositing.key) else {
+                continue;
+            };
+            // A layer of a space that scrolls is shown as far as the viewport shows it, where it composites.
+            let held = state
+                .tiles
+                .values()
+                .fold(IntRect::default(), |bounds, tile| bounds.united(tile.rect));
+            let mut rect = translated(held, compositing.offset.x, compositing.offset.y).intersected(viewport_rect);
+            if let Some(clip) = compositing.clip {
+                rect = rect.intersected(clip);
+            }
+            if rect.is_empty() {
+                if let Some(presentation) = &mut state.presentation {
+                    presentation.latest_surface = None;
+                }
+                continue;
+            }
+            let presentation = state.presentation.get_or_insert_with(|| {
+                let pool = layers.next_presentable_surface_pool;
+                layers.next_presentable_surface_pool += 1;
+                PaintedLayerPresentation {
+                    pool,
+                    latest_surface: None,
+                    rect: IntRect::default(),
+                    content_version: 0,
+                }
+            });
             if presentation.latest_surface.is_some()
-                && presentation.rect == layer.rect
-                && presentation.content_version == layer_surface.content_version
+                && presentation.rect == rect
+                && presentation.content_version == state.content_version
             {
                 continue;
             }
-            let layer_size = IntSize {
-                width: layer.rect.width,
-                height: layer.rect.height,
-            };
-            let Some(presentable) = raster.next_presentable_surface(env.context_id, index as u32, layer_size, like)
-            else {
+            let pool = presentation.pool;
+            let Some(presentable) = raster.next_presentable_surface(env.context_id, pool, size_of(rect), like) else {
                 return false;
             };
             let target = raster.painting_surface_of(&presentable);
-            let source_rect = IntRect::new(
-                layer.rect.x - layer_surface.rect.x,
-                layer.rect.y - layer_surface.rect.y,
-                layer.rect.width,
-                layer.rect.height,
-            );
-            raster.draw_surface(
+            raster.clear(&target, Color::TRANSPARENT);
+            let save_count = raster.save(&target);
+            raster.translate(&target, -rect.x as f32, -rect.y as f32);
+            composite_layer_tiles(
+                raster,
                 &target,
-                source,
-                source_rect,
-                rect_of_size(layer_size),
+                state,
+                rect,
                 SurfaceBlend::Source,
+                compositing.offset,
+                compositing.clip,
             );
+            raster.restore_to_count(&target, save_count);
+            let content_version = state.content_version;
+            let presentation = state
+                .presentation
+                .as_mut()
+                .expect("the presentation was just made sure of");
             presentation.latest_surface = Some(presentable);
-            presentation.rect = layer.rect;
-            presentation.content_version = layer_surface.content_version;
+            presentation.rect = rect;
+            presentation.content_version = content_version;
         }
         true
     }
@@ -585,17 +1442,26 @@ impl ContextPresenting {
     pub(super) fn sublayers_shown_by_window_server(&self, live_content: &LiveContent) -> Vec<FfiSublayer> {
         let layers = &self.layers;
         let mut sublayers = Vec::new();
-        let Some(plan) = layers.plan.as_ref().filter(|_| layers.window_server_shows_media) else {
+        let Some(stack) = layers.stack.as_ref().filter(|_| layers.window_server_shows_media) else {
             return sublayers;
         };
-        // The same canvas or video can be drawn by more than one record, and each drawing is a sublayer of its own.
-        let mut drawings_of_media: HashMap<u64, u64> = HashMap::new();
-        for (index, layer) in plan.layers.iter().enumerate().skip(1) {
-            if let LayerKind::Media { content } = layer.kind {
-                let Some(Ok(placement)) = &layer.window_server_placement else {
+        for compositing in layers.compositing_of_latest_frame.iter().skip(1) {
+            let Some(layer) = stack.layers.iter().find(|layer| layer.key == compositing.key) else {
+                continue;
+            };
+            if let LayerContent::Media {
+                content,
+                window_server_placement,
+                ..
+            } = &layer.content
+            {
+                let Some(Ok(placement)) = window_server_placement else {
                     continue;
                 };
-                let (kind, id, mut identity, has_content) = match content {
+                let LayerKey::Media { ordinal, .. } = layer.key else {
+                    unreachable!("a media layer has a media key");
+                };
+                let (kind, id, identity, has_content) = match content {
                     LiveMedia::Canvas(id) => (
                         SublayerContentKind::Canvas,
                         id.0,
@@ -619,11 +1485,8 @@ impl ContextPresenting {
                 if !has_content {
                     continue;
                 }
-                let earlier_drawings = drawings_of_media.entry(identity).or_insert(0);
-                identity |= *earlier_drawings << MEDIA_DRAWING_INDEX_SHIFT;
-                *earlier_drawings += 1;
                 sublayers.push(FfiSublayer {
-                    identity,
+                    identity: identity | (u64::from(ordinal) << MEDIA_DRAWING_INDEX_SHIFT),
                     content_kind: kind,
                     media_id: id,
                     presentable_surface: std::ptr::null_mut(),
@@ -631,14 +1494,18 @@ impl ContextPresenting {
                 });
                 continue;
             }
-            let Some(presentation) = layers.painted_layer_presentations.get(index) else {
+            let Some(presentation) = layers
+                .states
+                .get(&compositing.key)
+                .and_then(|state| state.presentation.as_ref())
+            else {
                 continue;
             };
             let Some(surface) = &presentation.latest_surface else {
                 continue;
             };
             sublayers.push(surface_sublayer(
-                PAINTED_LAYER_SUBLAYER_IDENTITY_TAG | index as u64,
+                PAINTED_LAYER_SUBLAYER_IDENTITY_TAG | u64::from(presentation.pool),
                 surface,
                 presentation.rect,
             ));

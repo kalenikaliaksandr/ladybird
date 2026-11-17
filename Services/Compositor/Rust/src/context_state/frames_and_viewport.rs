@@ -295,7 +295,6 @@ impl ContextState {
             visual_context_tree: self.scene.visual_context_tree_for_compositing().clone(),
             presented_scroll_state_snapshot,
             scrollbars,
-            viewport_scroll_node_index: self.async_scroll_tree.viewport_scroll_node_index(),
             painted_at: now,
             overlays,
         }

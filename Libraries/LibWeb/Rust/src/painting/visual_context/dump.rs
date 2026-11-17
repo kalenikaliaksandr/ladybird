@@ -58,9 +58,9 @@ pub trait VisualContextTreeDump {
     fn dump_effect_node(&self, index: EffectNodeIndex) -> String;
     // The nodes the runs record under, each tree in first-seen order. An effect's output clip
     // chain counts as reachable, since replay enters it before the effect.
-    fn dump_nodes_reachable_from_runs(
+    fn dump_nodes_reachable_from_runs<'a>(
         &self,
-        command_runs: &[DisplayListCommandRun],
+        command_runs: impl IntoIterator<Item = &'a DisplayListCommandRun> + Clone,
         owner_label: impl FnMut(SlotKind, u32) -> Option<String>,
     ) -> String;
 }
@@ -263,13 +263,14 @@ impl VisualContextTreeDump for VisualContextTree {
         text
     }
 
-    fn dump_nodes_reachable_from_runs(
+    fn dump_nodes_reachable_from_runs<'a>(
         &self,
-        command_runs: &[DisplayListCommandRun],
+        command_runs: impl IntoIterator<Item = &'a DisplayListCommandRun> + Clone,
         mut owner_label: impl FnMut(SlotKind, u32) -> Option<String>,
     ) -> String {
-        let effect_clips = crate::painting::display_list::effect_clip_plan::EffectClipPlan::new(self, command_runs)
-            .expect("dumped command runs reference live visual context nodes");
+        let effect_clips =
+            crate::painting::display_list::effect_clip_plan::EffectClipPlan::new(self, command_runs.clone())
+                .expect("dumped command runs reference live visual context nodes");
         let mut visited_spatial_nodes: HashSet<u32> = HashSet::new();
         let mut visited_clip_nodes: HashSet<u32> = HashSet::new();
         let mut visited_effect_nodes: HashSet<u32> = HashSet::new();

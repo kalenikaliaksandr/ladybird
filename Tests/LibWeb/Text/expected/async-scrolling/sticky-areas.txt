@@ -18,6 +18,9 @@ AccumulatedVisualContext Tree:
 ScrollNodes:
 ScrollNode scroll_node_index=s1 parent_scroll_node_index=s0 scrollport_rect=[0,0 800x600] min_scroll_offset=[0,0] max_scroll_offset=[0,1429] is_viewport=true
 
+Layers:
+  [L1] base space=document
+
 DisplayList:
-DrawGlyphRun@s3/e0 rect=[0,0 45x16] translation=[0,13] color=rgb(0, 0, 0)
+L1 DrawGlyphRun@s3/e0 rect=[0,0 45x16] translation=[0,13] color=rgb(0, 0, 0)
 

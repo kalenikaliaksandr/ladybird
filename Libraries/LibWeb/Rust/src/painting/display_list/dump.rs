@@ -6,11 +6,9 @@
 
 use super::builder::{HEADER_SIZE, for_each_command, inline_transform_of, read_command};
 use super::commands::*;
-use super::effect_clip_plan::EffectClipPlan;
-use super::layers::{LayerPlan, LayerPlanInputs, build_layer_plan};
+use super::layers::{LayerStack, LayerStackInputs, layer_stack_of};
 use super::nested_records::{NestedRecordsRole, for_each_nested_record_span, span_bytes};
-use super::storage::DisplayListStorage;
-use super::summary::{LiveContent, summarize};
+use super::storage::{DisplayListStorage, ListPosition};
 use crate::css::color_resolution::format_to_8bit_compatible;
 use crate::layout::LayoutNodeArena;
 use crate::layout::node_data::NodeSlotId;
@@ -195,16 +193,12 @@ pub unsafe extern "C" fn painting_dump(
             .expect("the dump records the document first");
     // The dump shows the tape as the compositor replays it, with the records of the SVG images it draws.
     let display_list = DisplayListStorage::recorded(
-        std::sync::Arc::new(display_list_holding_vector_image_records(
-            &recording.display_list,
-            &recording.resources.vector_images,
-        )),
+        &display_list_holding_vector_image_records(&recording.display_list, &recording.resources.vector_images),
         recording
             .visual_context_tree
             .clone()
             .expect("a recording was recorded against a tree"),
     );
-    let (tape, command_runs) = (display_list.bytes(), display_list.command_runs());
     let owners = {
         crate::painting::ffi::read_arena(host, read, viewport, |arena, viewport| {
             let mut owners = VisualContextNodeOwners::collect(arena, viewport);
@@ -214,26 +208,20 @@ pub unsafe extern "C" fn painting_dump(
             owners
         })
     };
-    let mut output = visual_context_tree.dump_nodes_reachable_from_runs(command_runs, |kind, index| {
+    let mut output = visual_context_tree.dump_nodes_reachable_from_runs(display_list.runs(), |kind, index| {
         let owner = owners.owner(kind, index)?;
         Some(callbacks.debug_description(&main_thread, owner))
     });
     dump_compositor_scroll_table(&mut output, visual_context_tree.compositor_scroll_table());
-    let layer_plan = dump_layers_if_list_draws_canvas_video_or_nested_context(
+    let layer_stack = dump_layers(
         &mut output,
-        tape,
-        command_runs,
+        &display_list,
         visual_context_tree,
         host.scroll_state().device_offsets(),
         device_viewport_rect,
     );
     output.push_str("\nDisplayList:\n");
-    match layer_plan {
-        Some(layer_plan) => {
-            dump_top_level_commands_with_their_layers(&main_thread, &mut output, &display_list, &layer_plan);
-        }
-        None => dump_commands(&main_thread, &mut output, &display_list, 0),
-    }
+    dump_top_level_commands_with_their_layers(&main_thread, &mut output, &display_list, &layer_stack);
     callbacks.append_text(&main_thread, &output);
 }
 
@@ -289,80 +277,64 @@ fn dump_compositor_scroll_table(output: &mut String, table: &CompositorScrollTab
     }
 }
 
-fn dump_commands(main_thread: &MainThread, output: &mut String, display_list: &DisplayListStorage, base_indent: usize) {
-    let (bytes, command_runs) = (display_list.bytes(), display_list.command_runs());
-    for run in command_runs {
-        let run_bytes = &bytes[run.offset as usize..(run.offset + run.size) as usize];
-        dump_command_bytes(main_thread, output, run_bytes, run.context, base_indent);
-    }
-}
-
-// A list that draws no canvas, video or nested context gets no section.
-fn dump_layers_if_list_draws_canvas_video_or_nested_context(
+fn dump_layers(
     output: &mut String,
-    tape: &[u8],
-    command_runs: &[DisplayListCommandRun],
+    display_list: &DisplayListStorage,
     tree: &VisualContextTree,
     scroll_offsets: &[FloatPoint],
     device_viewport_rect: IntRect,
-) -> Option<LayerPlan> {
-    let summary = summarize(tape, command_runs);
-    let draws_canvas_video_or_nested_context = summary
-        .live_content_records
-        .iter()
-        .any(|live_content_record| !matches!(live_content_record.content, LiveContent::ImageFrame(_)));
-    if !draws_canvas_video_or_nested_context {
-        return None;
-    }
-    let effect_clips =
-        EffectClipPlan::new(tree, command_runs).expect("a display list's runs name live nodes of its tree");
-    let layer_plan = build_layer_plan(&LayerPlanInputs {
-        tape,
-        command_runs,
-        summary: &summary,
-        effect_clips: &effect_clips,
+) -> LayerStack {
+    let layer_stack = layer_stack_of(&LayerStackInputs {
+        list: display_list,
         tree,
         scroll_offsets,
         viewport_rect: device_viewport_rect,
+        raster_transform: libgfx_rust::FloatMatrix4x4::identity(),
     });
-    match layer_plan {
-        Ok(layer_plan) => {
-            output.push_str("\nLayers:\n");
-            layer_plan.write_layer_lines(output, "  ").unwrap();
-            Some(layer_plan)
-        }
-        Err(unlayered_reason) => {
-            writeln!(output, "\nLayers: none ({unlayered_reason})").unwrap();
-            None
-        }
-    }
+    output.push_str("\nLayers:\n");
+    layer_stack.write_layer_lines(output, "  ").unwrap();
+    layer_stack
 }
 
-// Each top-level command starts with the layer it draws into. The records nested in it draw into the same layer.
+// Each top-level command starts with the layers it can be drawn into, which differ from tile to tile where a canvas,
+// video or another space sits between the command and what is painted before it. The records nested in it draw into
+// the same layers.
 fn dump_top_level_commands_with_their_layers(
     main_thread: &MainThread,
     output: &mut String,
     display_list: &DisplayListStorage,
-    layer_plan: &LayerPlan,
+    layer_stack: &LayerStack,
 ) {
-    let (bytes, command_runs) = (display_list.bytes(), display_list.command_runs());
-    for run in command_runs {
-        let run_bytes = &bytes[run.offset as usize..(run.offset + run.size) as usize];
-        for_each_command(run_bytes, |_, offset_in_run, payload| {
-            let layer_label = format!("L{} ", layer_plan.layer_of_record(run.offset + offset_in_run as u32));
-            let record_bytes = &run_bytes[offset_in_run..offset_in_run + HEADER_SIZE + payload.len()];
-            let record_dump_start = output.len();
-            dump_command_bytes(main_thread, output, record_bytes, run.context, 0);
-            let record_dump = output.split_off(record_dump_start);
-            for (line_index, line) in record_dump.split_inclusive('\n').enumerate() {
-                if line_index == 0 {
-                    output.push_str(&layer_label);
+    for (chunk_index, chunk) in display_list.chunks().iter().enumerate() {
+        for run in chunk.runs() {
+            let run_bytes = &chunk.records()[run.offset as usize..(run.offset + run.size) as usize];
+            for_each_command(run_bytes, |header, offset_in_run, payload| {
+                // What draws nothing, such as compositor metadata, goes with the base layer.
+                let mut layers = if header.command_type.is_compositor_metadata() {
+                    Vec::new()
                 } else {
-                    output.extend(std::iter::repeat_n(' ', layer_label.len()));
+                    layer_stack
+                        .layers_of_record(ListPosition::new(chunk_index as u32, run.offset + offset_in_run as u32))
+                };
+                if layers.is_empty() {
+                    layers.push(layer_stack.base_layer);
                 }
-                output.push_str(line);
-            }
-        });
+                let layer_names: Vec<String> = layers.iter().map(|layer| format!("L{layer}")).collect();
+                let layer_label = format!("{} ", layer_names.join(","));
+                let record_bytes = &run_bytes[offset_in_run..offset_in_run + HEADER_SIZE + payload.len()];
+                let record_dump_start = output.len();
+                dump_command_bytes(main_thread, output, record_bytes, run.context, 0);
+                let record_dump = output.split_off(record_dump_start);
+                for (line_index, line) in record_dump.split_inclusive('\n').enumerate() {
+                    if line_index == 0 {
+                        output.push_str(&layer_label);
+                    } else {
+                        output.extend(std::iter::repeat_n(' ', layer_label.len()));
+                    }
+                    output.push_str(line);
+                }
+            });
+        }
     }
 }
 

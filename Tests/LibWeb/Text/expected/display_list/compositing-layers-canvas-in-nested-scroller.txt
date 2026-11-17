@@ -1,0 +1,30 @@
+AccumulatedVisualContext Tree:
+  spatial:
+    [s0] transform=[1,0,0,1,0,0] origin=(0,0) (Viewport<#document>)
+      [s1] scroll (Viewport<#document>)
+        [s2] scroll (BlockContainer<DIV>#scroller)
+  clips:
+    [c0 in s1] clip=[20,300 300x200] (BlockContainer<DIV>#scroller)
+  effects:
+    [e0 in s0] effects=[]
+
+ScrollNodes:
+ScrollNode scroll_node_index=s1 parent_scroll_node_index=s0 scrollport_rect=[0,0 800x600] min_scroll_offset=[0,0] max_scroll_offset=[0,1413] is_viewport=true
+ScrollNode scroll_node_index=s2 parent_scroll_node_index=s1 scrollport_rect=[20,300 300x200] min_scroll_offset=[0,0] max_scroll_offset=[0,1200] is_viewport=false
+
+Layers:
+  [L0] base space=viewport
+  [L3] canvas #0 space=scroller@2 in document region=[20,697 203x126] composited within [20,300 300x200] of document shown by the window server: clip=[20,300 300x200]
+  [L4] painted space=scroller@2 in document above L3 composited within [20,300 300x200] of document
+
+DisplayList:
+L0 CompositorWheelHitTestTarget@s0/e0 target_scroll_node_index=s1 rect=[0,0 800x600]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s1 rect=[0,0 800x2013]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s1 rect=[0,13 800x2000]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s2 rect=[20,300 300x200]
+L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[20,700 300x1000]
+L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[20,700 200x120]
+L3 DrawCanvas@s2/c0/e0 dst_rect=[20,700 200x120]
+L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[30,720 100x40]
+L4 FillRect@s2/c0/e0 rect=[30,720 100x40] color=rgba(255, 255, 255, 0.5)
+

@@ -25,7 +25,7 @@ use libcompositing_rust::display_list::replay::{
     CompositedContexts, NoCompositedContexts, ReplayFrame, ReplaySelection, ResolvedCompositedContext,
     replay_display_list,
 };
-use libcompositing_rust::host::RecordSpan;
+use libcompositing_rust::display_list::storage::ListSpan;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, IntRect, IntSize, enclosing_int_rect};
@@ -135,7 +135,6 @@ pub struct ContextPresenting {
     // flight.
     size_of_latest_rendered_frame: IntSize,
     store_damage: StoreDamage,
-    damage_surface: Option<SurfaceHandle>,
     surplus_store_retirement_is_scheduled: bool,
 
     surface_drawn_by_parent: Option<SurfaceHandle>,
@@ -170,7 +169,6 @@ impl ContextPresenting {
             latest_rendered_surface: None,
             size_of_latest_rendered_frame: IntSize::default(),
             store_damage: StoreDamage::default(),
-            damage_surface: None,
             surplus_store_retirement_is_scheduled: false,
             surface_drawn_by_parent: None,
             unbounded_raster_scale_of_embedding: FloatSize {
@@ -520,6 +518,15 @@ impl ContextPresenting {
         }
     }
 
+    // The device pixels of the raster, which hold those of the viewport as the raster transform maps them.
+    fn raster_rect(&self) -> IntRect {
+        rect_of_size(self.raster_size())
+    }
+
+    fn raster_transform(&self) -> FloatMatrix4x4 {
+        raster_transform_of(self.raster_scale, self.raster_translation)
+    }
+
     fn raster_rect_of(&self, rect: IntRect) -> IntRect {
         if rect.is_empty() {
             return IntRect::default();
@@ -587,19 +594,20 @@ impl ContextPresenting {
                 sublayers: self.sublayers_shown_by_window_server(&live_content),
             });
         }
-        let raster_damage_rect = self.raster_rect_of(damage_rect);
         let Some((bitmap_id, store)) = env.raster.acquire_store(env.context_id) else {
             self.queue_present_frame(pending_frame);
             return None;
         };
         let store_rect = rect_of_size(env.raster.surface_size(&store));
-        let repaint_rect = self.store_damage.take(bitmap_id, raster_damage_rect, store_rect);
-        let painted_rect = self.paint_frame(env, &store, &frame, repaint_rect, &mut frame_damage.layers);
+        let repaint_rect = self.store_damage.take(bitmap_id, damage_rect, store_rect);
+        let painted_rect = self.paint_layered_frame(env, &store, &frame, repaint_rect, &mut frame_damage.layers);
+        // The other stores miss all of what this one now holds.
         if painted_rect != repaint_rect {
             damage_rect = rect_of_size(IntSize {
                 width: pending_frame.viewport_rect.width,
                 height: pending_frame.viewport_rect.height,
             });
+            self.store_damage.forget_every_store();
         }
         self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
@@ -644,9 +652,7 @@ impl ContextPresenting {
         let mut frame_damage = self.frame_damage_for(env, &pending_frame, &frame, &live_content);
         let raster_size = self.raster_size();
         let (surface, repaint_rect) = match self.surface_drawn_by_parent.take() {
-            Some(surface) if env.raster.surface_size(&surface) == raster_size => {
-                (surface, self.raster_rect_of(frame_damage.rect))
-            }
+            Some(surface) if env.raster.surface_size(&surface) == raster_size => (surface, frame_damage.rect),
             _ => {
                 let Some(surface) = env.raster.create_surface(raster_size, None) else {
                     return;
@@ -654,7 +660,7 @@ impl ContextPresenting {
                 (surface, rect_of_size(raster_size))
             }
         };
-        let _ = self.paint_frame(env, &surface, &frame, repaint_rect, &mut frame_damage.layers);
+        let _ = self.paint_layered_frame(env, &surface, &frame, repaint_rect, &mut frame_damage.layers);
         self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
             env,
@@ -692,11 +698,24 @@ impl ContextPresenting {
         &mut self,
         env: &PresentingEnvironment<'_>,
     ) -> Option<(SurfaceHandle, IntSize)> {
-        let latest_rendered_surface = self.latest_rendered_surface.clone()?;
-        let mut source = latest_rendered_surface;
+        let source = self.surface_of_presented_frame(env)?;
+        let source_size = env.raster.surface_size(&source);
+        let frame_size = IntSize {
+            width: self.size_of_latest_rendered_frame.width.min(source_size.width),
+            height: self.size_of_latest_rendered_frame.height.min(source_size.height),
+        };
+        if frame_size.is_empty() {
+            return None;
+        }
+        Some((source, frame_size))
+    }
+
+    // The store that holds the frame on screen, with what the window server shows above it composited in.
+    fn surface_of_presented_frame(&mut self, env: &PresentingEnvironment<'_>) -> Option<SurfaceHandle> {
+        let mut source = self.latest_rendered_surface.clone()?;
         // The store then holds only what is under the canvases, videos and overlays that the window server shows above it.
         if self.layers.window_server_shows_media()
-            && self.layers.has_plan()
+            && self.layers.has_layers()
             && let Some(painted_frame) = self.painted_frame.take()
         {
             let source_size = env.raster.surface_size(&source);
@@ -719,54 +738,19 @@ impl ContextPresenting {
             }
             self.painted_frame = Some(painted_frame);
         }
-        let source_size = env.raster.surface_size(&source);
-        let frame_size = IntSize {
-            width: self.size_of_latest_rendered_frame.width.min(source_size.width),
-            height: self.size_of_latest_rendered_frame.height.min(source_size.height),
-        };
-        if frame_size.is_empty() {
-            return None;
-        }
-        Some((source, frame_size))
+        Some(source)
     }
 
     pub fn layer_drop_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
         self.layers.drop_timer_fired(env);
     }
 
-    // Returns the rect it painted, which grows to the whole frame when the frame has to hold media that the window
-    // server was to show.
-    fn paint_frame(
-        &mut self,
-        env: &PresentingEnvironment<'_>,
-        surface: &SurfaceHandle,
-        frame: &FrameToPaint<'_>,
-        mut damage_rect: IntRect,
-        layer_update: &mut layers::LayerUpdate,
-    ) -> IntRect {
-        if layer_update.has_plan() {
-            if self.paint_layered_frame(env, surface, frame, damage_rect, layer_update) {
-                return damage_rect;
-            }
-            // The sublayers that the window server was to show go away with this frame, so the store has to hold all
-            // that they showed.
-            if layer_update.shown_by_window_server {
-                damage_rect = rect_of_size(self.raster_size());
-            }
-            layer_update.new_plan = None;
-            layer_update.keeps_plan = false;
-            layer_update.shown_by_window_server = false;
-            self.layers.drop_layers(env);
-            self.layers.repaint_everything_after_dropping_layers = true;
-        }
-        // NB: Only a frame shown on screen ages the rasters it did not use, so a screenshot keeps them.
-        env.raster.start_raster_cache_frame(env.context_id);
-        self.paint_current_display_list(env, surface, frame, Some(damage_rect), true, true);
-        damage_rect
+    pub fn tile_raster_surface_release_timer_fired(&mut self) {
+        self.layers.tile_raster_surface_release_timer_fired();
     }
 
     fn paint_current_display_list(
-        &mut self,
+        &self,
         env: &PresentingEnvironment<'_>,
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
@@ -775,65 +759,46 @@ impl ContextPresenting {
         applies_raster_transform: bool,
     ) {
         let raster = env.raster;
-        let surface_clear_color = frame.display_list.surface_clear_color().unwrap_or(Color::TRANSPARENT);
-        let paint_display_list = |target: &SurfaceHandle| {
-            replay_into(env, target, frame, ReplaySelection::default());
-            paint_overlays(env, target, frame.frame_inputs, paints_ui_overlays);
-        };
-
-        if let Some(damage_rect) = damage_rect
-            && !damage_rect.is_empty()
-            && self.presents_to_client
-            && (IntSize {
-                width: damage_rect.width,
-                height: damage_rect.height,
-            }) != raster.surface_size(surface)
-            && raster.surface_uses_gpu(surface)
-        {
-            let damage_size = IntSize {
-                width: damage_rect.width,
-                height: damage_rect.height,
-            };
-            if self
-                .damage_surface
-                .as_ref()
-                .is_none_or(|damage_surface| raster.surface_size(damage_surface) != damage_size)
-            {
-                self.damage_surface = raster.create_surface(damage_size, Some(surface));
-            }
-            if let Some(damage_surface) = &self.damage_surface {
-                raster.clear(damage_surface, surface_clear_color);
-                let save_count = raster.save(damage_surface);
-                raster.translate(damage_surface, -damage_rect.x as f32, -damage_rect.y as f32);
-                paint_display_list(damage_surface);
-                raster.restore_to_count(damage_surface, save_count);
-                raster.draw_surface(
-                    surface,
-                    damage_surface,
-                    rect_of_size(damage_size),
-                    damage_rect,
-                    SurfaceBlend::Source,
-                );
-                return;
-            }
-        }
-
         let save_count = raster.save(surface);
         if let Some(damage_rect) = damage_rect {
             raster.clip_rect(surface, damage_rect);
-            raster.clear(surface, surface_clear_color);
+            raster.clear(
+                surface,
+                frame.display_list.surface_clear_color().unwrap_or(Color::TRANSPARENT),
+            );
         }
         if applies_raster_transform {
             self.apply_raster_transform(raster, surface);
         }
-        paint_display_list(surface);
+        replay_into(env, surface, frame, ReplaySelection::default());
+        paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
         raster.restore_to_count(surface, save_count);
     }
 
     fn apply_raster_transform(&self, raster: &RasterHost, surface: &SurfaceHandle) {
-        raster.translate(surface, self.raster_translation.x, self.raster_translation.y);
-        raster.scale(surface, self.raster_scale.width, self.raster_scale.height);
+        apply_raster_transform(raster, surface, self.raster_scale, self.raster_translation);
     }
+}
+
+fn raster_transform_of(scale: FloatSize, translation: FloatPoint) -> FloatMatrix4x4 {
+    FloatMatrix4x4 {
+        elements: [
+            [scale.width, 0.0, 0.0, translation.x],
+            [0.0, scale.height, 0.0, translation.y],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    }
+}
+
+pub(crate) fn apply_raster_transform(
+    raster: &RasterHost,
+    surface: &SurfaceHandle,
+    scale: FloatSize,
+    translation: FloatPoint,
+) {
+    raster.translate(surface, translation.x, translation.y);
+    raster.scale(surface, scale.width, scale.height);
 }
 
 // Replays the frame's display list into the target, through the painter of the context's page.
@@ -842,6 +807,17 @@ pub(crate) fn replay_into(
     target: &SurfaceHandle,
     frame: &FrameToPaint<'_>,
     selection: ReplaySelection<'_>,
+) {
+    let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
+    replay_with_scroll_offsets(env, target, frame, selection, scroll_offsets);
+}
+
+pub(crate) fn replay_with_scroll_offsets(
+    env: &PresentingEnvironment<'_>,
+    target: &SurfaceHandle,
+    frame: &FrameToPaint<'_>,
+    selection: ReplaySelection<'_>,
+    scroll_offsets: &[FloatPoint],
 ) {
     let frame_inputs = frame.frame_inputs;
     let display_list = frame.display_list;
@@ -853,7 +829,7 @@ pub(crate) fn replay_into(
         .paint(env.context_id, target, PaintingResources::Page, |painter| {
             let scrollbars = frame_inputs.scrollbars_shown_for_the_page();
             let replay_frame = ReplayFrame {
-                scroll_offsets: frame_inputs.presented_scroll_state_snapshot.device_offsets(),
+                scroll_offsets,
                 scrollbars: &scrollbars,
                 time_ns: frame_inputs.painted_at.nanoseconds(),
                 composited_contexts: env.nested_contexts,
@@ -862,8 +838,7 @@ pub(crate) fn replay_into(
             let tree = frame_inputs.visual_context_tree.as_arc();
             replay_display_list(
                 tree,
-                storage.bytes(),
-                storage.command_runs(),
+                storage,
                 storage.effect_clip_plan(tree),
                 display_list.root_group_color(),
                 &replay_frame,
@@ -873,10 +848,11 @@ pub(crate) fn replay_into(
         });
 }
 
-pub(crate) fn replaying_only(record_spans: &[RecordSpan], skip_root_isolation_layer: bool) -> ReplaySelection<'_> {
+pub(crate) fn replaying_only(record_spans: &[ListSpan], skip_root_isolation_layer: bool) -> ReplaySelection<'_> {
     ReplaySelection {
         record_spans: Some(record_spans),
         skip_root_isolation_layer,
+        clips_left_to_composite: None,
     }
 }
 

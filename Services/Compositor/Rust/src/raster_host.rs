@@ -10,7 +10,7 @@
 
 use libcompositing_rust::display_list::commands::CompositorContextId;
 use libcompositing_rust::display_list::storage::{
-    PackedChunkSize, ReceivedChunk, receive_packed_chunks_from_shared_memory,
+    ListChunk, PackedChunkSize, receive_packed_chunks_from_shared_memory,
 };
 use libcompositing_rust::host::FfiRasterPainter;
 use libcompositing_rust::ipc_types::Core_AnonymousBuffer;
@@ -212,7 +212,6 @@ pub struct FfiRasterHost {
     /// renders with where none is given.
     pub create_surface: unsafe extern "C" fn(*mut c_void, IntSize, *mut c_void) -> *mut c_void,
     pub surfaces_share_backend: unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool,
-    pub surface_uses_gpu: unsafe extern "C" fn(*mut c_void) -> bool,
     pub surface_save: unsafe extern "C" fn(*mut c_void) -> i32,
     pub surface_restore_to_count: unsafe extern "C" fn(*mut c_void, i32),
     pub surface_translate: unsafe extern "C" fn(*mut c_void, f32, f32),
@@ -457,11 +456,6 @@ impl RasterHost {
     pub fn surfaces_share_backend(&self, a: &SurfaceHandle, b: &SurfaceHandle) -> bool {
         // SAFETY: Both surfaces are live.
         unsafe { (self.0.surfaces_share_backend)(a.as_ptr(), b.as_ptr()) }
-    }
-
-    pub fn surface_uses_gpu(&self, surface: &SurfaceHandle) -> bool {
-        // SAFETY: The surface is live.
-        unsafe { (self.0.surface_uses_gpu)(surface.as_ptr()) }
     }
 
     pub fn start_raster_cache_frame(&self, context_id: CompositorContextId) {
@@ -815,7 +809,7 @@ impl RasterHost {
         &self,
         buffer: Core_AnonymousBuffer,
         sizes: &[PackedChunkSize],
-    ) -> Result<Vec<ReceivedChunk>, &'static str> {
+    ) -> Result<Vec<ListChunk>, &'static str> {
         let Some((size, file)) = buffer.shared_memory else {
             // SAFETY: Nothing is read from an empty buffer.
             return unsafe { receive_packed_chunks_from_shared_memory(std::ptr::null(), 0, sizes) };

@@ -4,43 +4,41 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-use crate::display_list::builder::{HEADER_SIZE, for_each_command, read_command, read_header};
-use crate::display_list::commands::{
-    ClipMode, ClipNodeIndex, DeclareMaskContent, DisplayListCommandRun, DisplayListCommandType, EffectNodeIndex,
+//! The layers a display list is painted in, bottom to top.
+//!
+//! Content is rastered in the space of the scroll node it moves with, and its raster is composited within the clips it
+//! leaves to apply then: content of one space and one set of such clips makes a placement node. Within a node, a
+//! canvas, video or nested context that is a layer of its own, and each band of content of a node inside it, sits
+//! between the node's records as a barrier. A barrier cuts the tiles of the node it can show in at its paint position:
+//! there, the node's records painted before it go into the node's layer below it and those painted after it into the
+//! node's layer above it. Elsewhere it cuts nothing. A band of a node inside ends where content outside it that can
+//! show where the band can is painted, so the layers stacked in paint order of their barriers paint every pixel in the
+//! order the list does, as long as nothing between them reads what is below it.
+
+use crate::display_list::builder::read_command;
+use crate::display_list::commands::{DeclareMaskContent, DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::effect_geometry::{EffectGeometry, compute_effect_geometry};
+pub use crate::display_list::placement::{CompositeClip, RasterSpace, VIEWPORT_RASTER_SPACE, raster_space_anchors};
+use crate::display_list::placement::{
+    PlacementTables, RasterSpaces, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space, lowest_common_space,
+    raster_scroll_offsets, space_is_ancestor_or_self, spaces_with_geometries,
 };
-use crate::display_list::effect_clip_plan::EffectClipPlan;
-use crate::display_list::effect_geometry::{Extent, compute_effect_geometry};
-use crate::display_list::summary::{DisplayListSummary, IndexedRecord, LiveContent};
-use crate::display_list::window_server_placement::{
-    WindowServerPlacement, WindowServerRejection, window_server_placement,
-};
-use crate::host::RecordSpan;
-use crate::visual_context::queries::TreeCullingScratch;
-use crate::visual_context::{ClipNodeData, EffectNodeData, SpatialData, VisualContextTree, WorldTransforms};
-use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect};
+use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
+use crate::display_list::summary::{IndexedRecord, LiveContent};
+use crate::display_list::tiles::{TILE_SIZE_IN_DEVICE_PIXELS, tile_coords_touching, tile_count_touching};
+use crate::display_list::window_server_placement::{WindowServerPlacement, WindowServerRejection};
+use crate::visual_context::{EffectNodeData, SpatialData, VisualContextTree, WorldTransforms, device_offset_for_index};
+use libgfx_rust::{FloatMatrix4x4, FloatPoint, IntPoint, IntRect};
+use std::hash::{BuildHasher, Hasher};
+use std::rc::Rc;
 
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
-const BOUNDS_MARGIN_IN_DEVICE_PIXELS: i32 = 3;
-const MAXIMUM_UPPER_PAINTED_LAYER_AREA_IN_VIEWPORTS: i64 = 2;
+// Beyond this, the innermost space that scrolls is rastered in the space around it instead.
+const MAXIMUM_LAYER_COUNT: usize = 24;
+// Beyond this, a unit is taken to reach every layer of its band painted before it, rather than followed tile by tile.
+const MAXIMUM_TILES_A_UNIT_IS_FOLLOWED_INTO: u64 = 4096;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LayerKind {
-    Base,
-    Painted,
-    Media { content: LiveContent },
-}
-
-impl std::fmt::Display for LayerKind {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LayerKind::Base => formatter.write_str("base"),
-            LayerKind::Painted => formatter.write_str("painted"),
-            LayerKind::Media { content } => formatter.write_str(media_name(*content)),
-        }
-    }
-}
-
-fn media_name(content: LiveContent) -> &'static str {
+pub(crate) fn media_name(content: LiveContent) -> &'static str {
     match content {
         LiveContent::Canvas(_) => "canvas",
         LiveContent::VideoFrame(_) => "video",
@@ -56,7 +54,8 @@ pub enum MediaLayerRejection {
     UnderTransformThatIsNot2DAffine,
     DrawsNothingVisible,
     BetweenRunsOfOneGroupEffect,
-    UnderBackdropFilterReadingRootGroup,
+    UnderContentReadingTheRootGroup,
+    MoreMediaThanLayersFor,
 }
 
 impl std::fmt::Display for MediaLayerRejection {
@@ -67,166 +66,551 @@ impl std::fmt::Display for MediaLayerRejection {
             MediaLayerRejection::UnderTransformThatIsNot2DAffine => "under a transform that is not 2D affine",
             MediaLayerRejection::DrawsNothingVisible => "draws nothing visible",
             MediaLayerRejection::BetweenRunsOfOneGroupEffect => "between the runs of one group effect",
-            MediaLayerRejection::UnderBackdropFilterReadingRootGroup => {
-                "under a backdrop filter that reads the root group"
-            }
+            MediaLayerRejection::UnderContentReadingTheRootGroup => "under content that reads the root group below it",
+            MediaLayerRejection::MoreMediaThanLayersFor => "past the most media that get layers",
         })
     }
 }
 
+/// Why a list is painted in a single layer that replays all of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnlayeredReason {
-    NoMedia,
     EmptyViewport,
     EmptyDisplayList,
     SortingContext3D,
     RootIsolationEffectIsNotPlainGroup,
-    BlendModeReadsRootGroup,
-    CommandBlendsWithRootGroup,
-    MaskDeclaredOutsideItsMask,
-    NoMediaCanBeLayer {
-        first_rejected_media: LiveContent,
-        rejection: MediaLayerRejection,
-    },
-    UpperPaintedLayersTooLarge,
+    MaskDeclaredUnderEffectsItsMaskIsNotUnder,
 }
 
 impl std::fmt::Display for UnlayeredReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let text = match self {
-            UnlayeredReason::NoMediaCanBeLayer {
-                first_rejected_media,
-                rejection,
-            } => return write!(formatter, "{} {rejection}", media_name(*first_rejected_media)),
-            UnlayeredReason::UpperPaintedLayersTooLarge => {
-                return write!(
-                    formatter,
-                    "painted layers larger than {MAXIMUM_UPPER_PAINTED_LAYER_AREA_IN_VIEWPORTS} viewports"
-                );
-            }
-            UnlayeredReason::NoMedia => "no canvas, video or nested context is drawn",
+        formatter.write_str(match self {
             UnlayeredReason::EmptyViewport => "empty viewport",
             UnlayeredReason::EmptyDisplayList => "empty display list",
             UnlayeredReason::SortingContext3D => "3D sorting context",
             UnlayeredReason::RootIsolationEffectIsNotPlainGroup => "root isolation effect is not a plain group",
-            UnlayeredReason::BlendModeReadsRootGroup => "blend mode reads the root group",
-            UnlayeredReason::CommandBlendsWithRootGroup => "command blends with the root group",
-            UnlayeredReason::MaskDeclaredOutsideItsMask => "mask content declared outside its mask",
-        };
-        formatter.write_str(text)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Layer {
-    pub kind: LayerKind,
-    pub rect: IntRect,
-    pub record_spans: Vec<RecordSpan>,
-    /// For a canvas or video layer, where the window server can show its content by itself, or why it cannot.
-    pub window_server_placement: Option<Result<WindowServerPlacement, WindowServerRejection>>,
-}
-
-// The records from `begin_offset` up to the next range's start are drawn into the layer at `layer`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LayerRecordRange {
-    begin_offset: u32,
-    layer: u8,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LayerPlan {
-    pub layers: Vec<Layer>,
-    record_ranges_in_tape_order: Vec<LayerRecordRange>,
-}
-
-impl LayerPlan {
-    pub fn media_record_offsets(&self) -> impl Iterator<Item = u32> + '_ {
-        self.layers.iter().filter_map(|layer| match layer.kind {
-            LayerKind::Media { .. } => Some(layer.record_spans[0].begin_offset),
-            _ => None,
+            UnlayeredReason::MaskDeclaredUnderEffectsItsMaskIsNotUnder => {
+                "mask content declared under effects its mask is not under"
+            }
         })
     }
+}
 
-    /// Whether the plan has the same layers as `other` in the same order, so that a raster kept for a layer of one
-    /// plan holds the content of the same layer of the other plan wherever no damage says otherwise.
-    pub fn has_same_layers_as(&self, other: &LayerPlan) -> bool {
-        self.layers.len() == other.layers.len()
+/// Names a placement node by the identity of its space and the clips its rasters are composited within, which outlive
+/// the tree and the list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlacementKey(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BarrierKey {
+    /// The `ordinal`th drawing of a canvas, video or nested context in paint order.
+    Media { content: LiveContent, ordinal: u32 },
+    /// The `band`th band of content of a node, counted over the whole list.
+    Band { node: PlacementKey, band: u32 },
+}
+
+/// Names a layer from one list to the next, so that its tiles outlive both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LayerKey {
+    Painted {
+        node: PlacementKey,
+        band: u32,
+        above: Option<BarrierKey>,
+    },
+    Media {
+        content: LiveContent,
+        ordinal: u32,
+    },
+}
+
+/// Content rastered in one space and composited within one set of clips.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacementNode {
+    pub key: PlacementKey,
+    pub space: usize,
+    /// At most one per space, ordered by space.
+    pub composite_clips: Vec<CompositeClip>,
+    pub parent: Option<usize>,
+    /// Where content of the node and of the nodes in it can show, in the raster coordinates of the parent node, or
+    /// none where that is not bounded.
+    pub region_in_parent: Option<IntRect>,
+}
+
+/// Where a barrier cuts the tiles of a group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cut {
+    pub barrier: BarrierKey,
+    /// Where the barrier's first record is.
+    pub position: ListPosition,
+    /// The barrier cuts the tiles of the group's space this reaches, every tile where it is none.
+    pub region: Option<IntRect>,
+    pub layer_above: usize,
+}
+
+impl Cut {
+    pub fn cuts_cell(&self, cell: IntRect) -> bool {
+        self.region.is_none_or(|region| !region.intersected(cell).is_empty())
+    }
+}
+
+/// One band of a placement node: the records placed in the node while the band lasts, and the barriers that cut them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerGroup {
+    pub node: usize,
+    pub band: u32,
+    /// In paint order.
+    pub record_spans: Vec<ListSpan>,
+    /// In paint order.
+    pub cuts: Vec<Cut>,
+    pub layer_below_every_cut: usize,
+}
+
+impl LayerGroup {
+    /// The layer the group's records at `position` go into within the tile at `cell`: the one above the last barrier
+    /// painted before them that cuts the tile.
+    pub fn layer_at(&self, position: ListPosition, cell: IntRect) -> usize {
+        self.cuts
+            .iter()
+            .take_while(|cut| cut.position <= position)
+            .filter(|cut| cut.cuts_cell(cell))
+            .last()
+            .map_or(self.layer_below_every_cut, |cut| cut.layer_above)
+    }
+
+    /// Which barriers cut the tile at `cell`, one bit each, up to as many as a word holds and every further one alike:
+    /// tiles that answer alike place every record alike.
+    pub fn cuts_of_cell(&self, cell: IntRect) -> u64 {
+        self.cuts
+            .iter()
+            .enumerate()
+            .filter(|(_, cut)| cut.cuts_cell(cell))
+            .fold(0, |cuts, (index, _)| cuts | (1u64 << index.min(63)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LayerContent {
+    /// The records of a group that the layer holds in some of its tiles.
+    Painted { group: usize },
+    /// A canvas, video or nested context, replayed or shown by the window server.
+    Media {
+        content: LiveContent,
+        record_span: ListSpan,
+        /// In the raster coordinates of the node's space.
+        region: IntRect,
+        /// For a canvas or a video, where the window server can show its content by itself, or why it cannot.
+        window_server_placement: Option<Result<WindowServerPlacement, WindowServerRejection>>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StackLayer {
+    pub key: LayerKey,
+    pub node: usize,
+    pub content: LayerContent,
+    /// Whether any record can go into the layer anywhere; a layer that holds nothing has no tiles.
+    pub may_hold_content: bool,
+    /// Whether a record painted within the root group, which what reads the root group below it reads, can go into
+    /// the layer anywhere.
+    pub may_hold_root_group_content: bool,
+}
+
+/// The layers of a list bottom to top, with the base layer, which is rastered over the surface's clear color and
+/// replaces what is below it. Layers below the base layer hold nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerStack {
+    pub spaces: Vec<RasterSpace>,
+    pub nodes: Vec<PlacementNode>,
+    pub groups: Vec<LayerGroup>,
+    pub layers: Vec<StackLayer>,
+    pub base_layer: usize,
+    /// Why the stack is one layer that replays the whole list, if it is.
+    pub unlayered_reason: Option<UnlayeredReason>,
+    /// The canvases, videos and nested contexts that were not given layers, and why.
+    pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
+    /// Where the parts of the list are placed among the spaces of the stack.
+    pub placement: ListPlacement,
+    /// Where they are placed at every anchor the tree offers, which the stack was worked out from: a later frame
+    /// whose placement there compares equal keeps the stack.
+    pub placement_at_every_anchor: ListPlacement,
+}
+
+fn translated(rect: IntRect, offset: IntPoint) -> IntRect {
+    IntRect::new(rect.x + offset.x, rect.y + offset.y, rect.width, rect.height)
+}
+
+fn key_of_node(spaces: &[RasterSpace], space: usize, composite_clips: &[CompositeClip]) -> PlacementKey {
+    let mut hasher = foldhash::fast::FixedState::with_seed(0x706c_6163_656d_656e).build_hasher();
+    hasher.write_u64(spaces[space].identity);
+    for clip in composite_clips {
+        hasher.write_u64(spaces[clip.space].identity);
+        for value in [clip.rect.x, clip.rect.y, clip.rect.width, clip.rect.height] {
+            hasher.write_i32(value);
+        }
+    }
+    PlacementKey(hasher.finish())
+}
+
+impl LayerStack {
+    /// One layer that replays the whole list, which is always correct.
+    pub fn single_layer(viewport_rect: IntRect, whole_list: ListSpan, reason: Option<UnlayeredReason>) -> Self {
+        let spaces = vec![RasterSpace::of_the_viewport(viewport_rect)];
+        let root = PlacementNode {
+            key: key_of_node(&spaces, VIEWPORT_RASTER_SPACE, &[]),
+            space: VIEWPORT_RASTER_SPACE,
+            composite_clips: Vec::new(),
+            parent: None,
+            region_in_parent: None,
+        };
+        Self {
+            layers: vec![StackLayer {
+                key: LayerKey::Painted {
+                    node: root.key,
+                    band: 0,
+                    above: None,
+                },
+                node: 0,
+                content: LayerContent::Painted { group: 0 },
+                may_hold_content: true,
+                may_hold_root_group_content: true,
+            }],
+            groups: vec![LayerGroup {
+                node: 0,
+                band: 0,
+                record_spans: vec![whole_list],
+                cuts: Vec::new(),
+                layer_below_every_cut: 0,
+            }],
+            nodes: vec![root],
+            spaces,
+            base_layer: 0,
+            unlayered_reason: reason,
+            rejected_media: Vec::new(),
+            placement: ListPlacement::default(),
+            placement_at_every_anchor: ListPlacement::default(),
+        }
+    }
+
+    pub fn replays_whole_list(&self) -> bool {
+        self.unlayered_reason.is_some()
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = LayerKey> + '_ {
+        self.layers.iter().map(|layer| layer.key)
+    }
+
+    /// Whether the stack has the shape of `other`: the same spaces, placement nodes and layers, which can hold content
+    /// where those of `other` can, and the same barriers cutting the same regions, wherever the records of the two
+    /// lists are. What is keyed against a stack holds for any stack of its shape.
+    pub fn has_the_shape_of(&self, other: &LayerStack) -> bool {
+        let space_is_alike = |space: &RasterSpace, other: &RasterSpace| {
+            space.anchor == other.anchor
+                && space.identity == other.identity
+                && space.parent == other.parent
+                && space.anchor_scrolls_the_viewport == other.anchor_scrolls_the_viewport
+        };
+        let layer_is_alike = |layer: &StackLayer, other: &StackLayer| {
+            layer.key == other.key
+                && layer.node == other.node
+                && layer.may_hold_content == other.may_hold_content
+                && layer.may_hold_root_group_content == other.may_hold_root_group_content
+                && match (&layer.content, &other.content) {
+                    (LayerContent::Painted { group }, LayerContent::Painted { group: other_group }) => {
+                        group == other_group
+                    }
+                    (
+                        LayerContent::Media { content, region, .. },
+                        LayerContent::Media {
+                            content: other_content,
+                            region: other_region,
+                            ..
+                        },
+                    ) => content == other_content && region == other_region,
+                    _ => false,
+                }
+        };
+        let group_is_alike = |group: &LayerGroup, other: &LayerGroup| {
+            group.node == other.node
+                && group.band == other.band
+                && group.layer_below_every_cut == other.layer_below_every_cut
+                && group.cuts.len() == other.cuts.len()
+                && group.cuts.iter().zip(&other.cuts).all(|(cut, other)| {
+                    cut.barrier == other.barrier && cut.region == other.region && cut.layer_above == other.layer_above
+                })
+        };
+        self.unlayered_reason == other.unlayered_reason
+            && self.base_layer == other.base_layer
+            && self.nodes == other.nodes
+            && self.spaces.len() == other.spaces.len()
+            && self
+                .spaces
+                .iter()
+                .zip(&other.spaces)
+                .all(|(space, other)| space_is_alike(space, other))
+            && self.layers.len() == other.layers.len()
             && self
                 .layers
                 .iter()
                 .zip(&other.layers)
-                .all(|(layer, other_layer)| layer.kind == other_layer.kind)
+                .all(|(layer, other)| layer_is_alike(layer, other))
+            && self.groups.len() == other.groups.len()
+            && self
+                .groups
+                .iter()
+                .zip(&other.groups)
+                .all(|(group, other)| group_is_alike(group, other))
     }
 
-    /// One line per layer, bottom to top: `[L<index>] <kind> rect=[<x>,<y> <width>x<height>]` after `indent`.
-    pub fn write_layer_lines(&self, output: &mut impl std::fmt::Write, indent: &str) -> std::fmt::Result {
-        for (index, layer) in self.layers.iter().enumerate() {
-            let rect = layer.rect;
-            write!(
-                output,
-                "{indent}[L{index}] {} rect=[{},{} {}x{}]",
-                layer.kind, rect.x, rect.y, rect.width, rect.height
-            )?;
-            match &layer.window_server_placement {
-                Some(Ok(placement)) => writeln!(output, " shown by the window server: {placement}")?,
-                Some(Err(rejection)) => writeln!(output, " replayed: {rejection}")?,
-                None => writeln!(output)?,
+    pub fn space_of_layer(&self, layer: usize) -> usize {
+        self.nodes[self.layers[layer].node].space
+    }
+
+    pub fn raster_scroll_offsets(&self, space: usize, scroll_offsets: &[FloatPoint]) -> Vec<FloatPoint> {
+        raster_scroll_offsets(&self.spaces, space, scroll_offsets)
+    }
+
+    /// Where the frame composites the rasters of a space: translated by the scroll offsets of the anchors of its chain,
+    /// rounded to whole device pixels.
+    pub fn composite_offset(&self, space: usize, scroll_offsets: &[FloatPoint]) -> IntPoint {
+        chain_of_space(&self.spaces, space).fold(IntPoint::default(), |sum, space| {
+            let offset = device_offset_for_index(scroll_offsets, self.spaces[space].anchor);
+            IntPoint {
+                x: sum.x + offset.x.round() as i32,
+                y: sum.y + offset.y.round() as i32,
             }
+        })
+    }
+
+    pub fn composite_offsets(&self, scroll_offsets: &[FloatPoint]) -> Vec<IntPoint> {
+        (0..self.spaces.len())
+            .map(|space| self.composite_offset(space, scroll_offsets))
+            .collect()
+    }
+
+    /// The clip a layer's raster is composited within, in the viewport, or none for no clip.
+    pub fn composite_clip_in_viewport(&self, layer: usize, composite_offsets: &[IntPoint]) -> Option<IntRect> {
+        self.nodes[self.layers[layer].node]
+            .composite_clips
+            .iter()
+            .fold(None, |clip_rect, clip| {
+                let rect = translated(clip.rect, composite_offsets[clip.space]);
+                Some(clip_rect.map_or(rect, |clip_rect: IntRect| clip_rect.intersected(rect)))
+            })
+    }
+
+    pub fn has_media_layers(&self) -> bool {
+        self.layers
+            .iter()
+            .any(|layer| matches!(layer.content, LayerContent::Media { .. }))
+    }
+
+    /// Works out again where the window server can show the content of each canvas and video layer, under
+    /// `scroll_offsets`, as the stack is kept while its spaces scroll and its media move with them.
+    pub fn update_window_server_placements(
+        &mut self,
+        list: &DisplayListStorage,
+        tree: &VisualContextTree,
+        scroll_offsets: &[FloatPoint],
+        viewport_rect: IntRect,
+    ) {
+        let window_server_may_show = |content: &LiveContent| !matches!(content, LiveContent::CompositedContext(_));
+        let has_media_the_window_server_may_show = self.layers.iter().any(
+            |layer| matches!(&layer.content, LayerContent::Media { content, .. } if window_server_may_show(content)),
+        );
+        if !has_media_the_window_server_may_show {
+            return;
+        }
+        let world = WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity()));
+        for layer in &mut self.layers {
+            let LayerContent::Media {
+                content,
+                record_span,
+                window_server_placement,
+                ..
+            } = &mut layer.content
+            else {
+                continue;
+            };
+            if !window_server_may_show(content) {
+                continue;
+            }
+            let position = record_span.begin;
+            let runs = list.chunk(position.chunk).runs();
+            let run = &runs[runs.partition_point(|run| run.offset + run.size <= position.offset)];
+            let (header, payload) = list.record_at(position);
+            *window_server_placement = Some(crate::display_list::window_server_placement::window_server_placement(
+                tree,
+                &world,
+                viewport_rect,
+                run,
+                &header,
+                payload,
+            ));
+        }
+    }
+
+    fn name_of_space(&self, space: usize) -> String {
+        let raster_space = &self.spaces[space];
+        if space == VIEWPORT_RASTER_SPACE {
+            "viewport".into()
+        } else if raster_space.anchor_scrolls_the_viewport {
+            "document".into()
+        } else {
+            format!(
+                "scroller@{} in {}",
+                raster_space.anchor.0,
+                self.name_of_space(raster_space.parent)
+            )
+        }
+    }
+
+    fn name_of_barrier(&self, barrier: &BarrierKey) -> String {
+        match barrier {
+            BarrierKey::Media { content, ordinal } => {
+                let layer = self
+                    .layers
+                    .iter()
+                    .position(|layer| {
+                        layer.key
+                            == LayerKey::Media {
+                                content: *content,
+                                ordinal: *ordinal,
+                            }
+                    })
+                    .expect("a media barrier is a layer of the stack");
+                format!("L{layer}")
+            }
+            BarrierKey::Band { node, band } => {
+                let node = self
+                    .nodes
+                    .iter()
+                    .find(|candidate| candidate.key == *node)
+                    .expect("a band barrier names a node of the stack");
+                format!("band {band} of {}", self.name_of_space(node.space))
+            }
+        }
+    }
+
+    /// One line per layer, bottom to top, after `indent`: its index, what it holds, the space it is rastered in, what it
+    /// sits above, what it is clipped to as it is composited, and for a canvas or video whether the window server
+    /// shows it. A layer below the base layer, or one that can hold nothing, is left out.
+    pub fn write_layer_lines(&self, output: &mut impl std::fmt::Write, indent: &str) -> std::fmt::Result {
+        if let Some(reason) = self.unlayered_reason {
+            return writeln!(output, "{indent}[L0] single layer replaying the whole list: {reason}");
+        }
+        for (index, layer) in self.layers.iter().enumerate() {
+            if index < self.base_layer || (index != self.base_layer && !layer.may_hold_content) {
+                continue;
+            }
+            let node = &self.nodes[layer.node];
+            write!(output, "{indent}[L{index}] ")?;
+            match (&layer.key, &layer.content) {
+                (LayerKey::Painted { band, above, .. }, _) => {
+                    let kind = if index == self.base_layer { "base" } else { "painted" };
+                    write!(output, "{kind} space={}", self.name_of_space(node.space))?;
+                    if *band != 0 {
+                        write!(output, " band={band}")?;
+                    }
+                    if let Some(above) = above {
+                        write!(output, " above {}", self.name_of_barrier(above))?;
+                    }
+                }
+                (LayerKey::Media { content, ordinal }, LayerContent::Media { region, .. }) => {
+                    write!(
+                        output,
+                        "{} #{ordinal} space={}",
+                        media_name(*content),
+                        self.name_of_space(node.space)
+                    )?;
+                    write!(
+                        output,
+                        " region=[{},{} {}x{}]",
+                        region.x, region.y, region.width, region.height
+                    )?;
+                }
+                (LayerKey::Media { .. }, LayerContent::Painted { .. }) => unreachable!("a media key names media"),
+            }
+            for clip in &node.composite_clips {
+                let clip_rect = clip.rect;
+                write!(
+                    output,
+                    " composited within [{},{} {}x{}] of {}",
+                    clip_rect.x,
+                    clip_rect.y,
+                    clip_rect.width,
+                    clip_rect.height,
+                    self.name_of_space(clip.space)
+                )?;
+            }
+            match &layer.content {
+                LayerContent::Media {
+                    window_server_placement: Some(Ok(placement)),
+                    ..
+                } => writeln!(output, " shown by the window server: {placement}")?,
+                LayerContent::Media {
+                    window_server_placement: Some(Err(rejection)),
+                    ..
+                } => writeln!(output, " replayed: {rejection}")?,
+                _ => writeln!(output)?,
+            }
+        }
+        for (content, rejection) in &self.rejected_media {
+            writeln!(output, "{indent}no layer for {}: {rejection}", media_name(*content))?;
         }
         Ok(())
     }
 
-    pub fn layer_of_record(&self, record_offset: u32) -> usize {
-        let range_index = self
-            .record_ranges_in_tape_order
-            .partition_point(|range| range.begin_offset <= record_offset)
-            .saturating_sub(1);
-        self.record_ranges_in_tape_order[range_index].layer as usize
-    }
-
-    pub fn layers_drawing_records_of(&self, run: &DisplayListCommandRun) -> impl Iterator<Item = usize> + '_ {
-        self.layers_of_records_in(run).map(|(_, layer)| usize::from(layer))
-    }
-
-    pub fn places_records_like(&self, other: &LayerPlan) -> bool {
-        self.record_ranges_in_tape_order == other.record_ranges_in_tape_order
-    }
-
-    /// Whether the records of `run` go into the same layers as those of `other_run`, an identical run of the list
-    /// that `other` plans, at the same offsets in the run.
-    pub fn places_run_like(
-        &self,
-        run: &DisplayListCommandRun,
-        other: &LayerPlan,
-        other_run: &DisplayListCommandRun,
-    ) -> bool {
-        self.layers_of_records_in(run).eq(other.layers_of_records_in(other_run))
-    }
-
-    // Where in the run the records of each layer start, as offsets in the run.
-    fn layers_of_records_in(&self, run: &DisplayListCommandRun) -> impl Iterator<Item = (u32, u8)> + '_ {
-        let first_range_index = self
-            .record_ranges_in_tape_order
-            .partition_point(|range| range.begin_offset <= run.offset)
-            .saturating_sub(1);
-        let (run_offset, run_end) = (run.offset, run.offset + run.size);
-        std::iter::once((0, self.record_ranges_in_tape_order[first_range_index].layer)).chain(
-            self.record_ranges_in_tape_order[first_range_index + 1..]
-                .iter()
-                .take_while(move |range| range.begin_offset < run_end)
-                .map(move |range| (range.begin_offset - run_offset, range.layer)),
-        )
+    /// The layers that the record at `position` can be drawn into, in the tiles it reaches.
+    pub fn layers_of_record(&self, position: ListPosition) -> Vec<usize> {
+        if self.replays_whole_list() {
+            return vec![0];
+        }
+        for (index, layer) in self.layers.iter().enumerate() {
+            if let LayerContent::Media { record_span, .. } = &layer.content
+                && record_span.begin == position
+            {
+                return vec![index];
+            }
+        }
+        let Some(unit) = self.placement.units.iter().find(|unit| unit.span.contains(position)) else {
+            return Vec::new();
+        };
+        let Some(group) = self
+            .groups
+            .iter()
+            .position(|group| group.record_spans.iter().any(|span| span.contains(position)))
+        else {
+            return Vec::new();
+        };
+        let group = &self.groups[group];
+        let mut layers: Vec<usize> = if tile_count_touching(unit.reach) > MAXIMUM_TILES_A_UNIT_IS_FOLLOWED_INTO {
+            std::iter::once(group.layer_below_every_cut)
+                .chain(
+                    group
+                        .cuts
+                        .iter()
+                        .take_while(|cut| cut.position <= unit.span.begin)
+                        .map(|cut| cut.layer_above),
+                )
+                .collect()
+        } else {
+            tile_coords_touching(unit.reach)
+                .map(|coord| group.layer_at(unit.span.begin, coord.cell_rect()))
+                .collect()
+        };
+        layers.sort_unstable();
+        layers.dedup();
+        layers
     }
 }
 
-pub struct LayerPlanInputs<'a> {
-    pub tape: &'a [u8],
-    pub command_runs: &'a [DisplayListCommandRun],
-    pub summary: &'a DisplayListSummary,
-    pub effect_clips: &'a EffectClipPlan,
+pub struct LayerStackInputs<'a> {
+    pub list: &'a DisplayListStorage,
     pub tree: &'a VisualContextTree,
     pub scroll_offsets: &'a [FloatPoint],
+    /// The viewport in the device pixels of the raster, into which `raster_transform` maps those of the viewport.
     pub viewport_rect: IntRect,
+    pub raster_transform: FloatMatrix4x4,
 }
 
 fn tree_has_sorting_contexts(tree: &VisualContextTree) -> bool {
@@ -260,48 +644,54 @@ fn effect_chain_contains(tree: &VisualContextTree, mut effect: EffectNodeIndex, 
     false
 }
 
-fn what_reads_root_group(inputs: &LayerPlanInputs<'_>) -> Option<UnlayeredReason> {
-    if inputs.tree.has_blend_mode_reading_root_group() {
-        return Some(UnlayeredReason::BlendModeReadsRootGroup);
-    }
-    let command_blends_with_root_group = inputs.summary.destination_blending_records.iter().any(|record| {
-        let effect = inputs.command_runs[record.run_index as usize].context.effect;
-        inputs.tree.content_under_effect_composites_into_root_group(effect)
-    });
-    command_blends_with_root_group.then_some(UnlayeredReason::CommandBlendsWithRootGroup)
-}
-
-fn mask_declarations_sit_under_their_masks(inputs: &LayerPlanInputs<'_>) -> bool {
-    inputs.summary.mask_declarations.iter().all(|record| {
-        let offset = record.record_offset as usize;
-        let header = read_header(&inputs.tape[offset..]);
-        let payload = &inputs.tape[offset + HEADER_SIZE..offset + HEADER_SIZE + header.payload_size as usize];
-        let declaration = read_command::<DeclareMaskContent>(payload);
-        let run_effect = inputs.command_runs[record.run_index as usize].context.effect;
-        effect_chain_contains(inputs.tree, run_effect, declaration.effect)
+// A tile replays the declaration of a mask's content along with what the mask holds, and so opens the effects the
+// declaration is under there, which draw nothing only when they are the mask's own or those around it.
+pub(crate) fn mask_declarations_sit_on_the_chains_of_their_masks(
+    list: &DisplayListStorage,
+    tree: &VisualContextTree,
+) -> bool {
+    list.summary().mask_declarations.iter().all(|record| {
+        let (_, payload) = list.record_at(record.position());
+        let mask = read_command::<DeclareMaskContent>(payload).effect;
+        let run_effect = list.run(record.run_index as usize).context.effect;
+        run_effect.is_none()
+            || effect_chain_contains(tree, run_effect, mask)
+            || effect_chain_contains(tree, mask, run_effect)
     })
 }
 
-// The structure decides the grouping effect rather than the effect values, so chunks stay put while an opacity animates.
-fn outermost_grouping_effects(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
-    let mut outermost = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
+/// Why a list cannot be layered at all.
+pub fn why_list_is_unlayered(inputs: &LayerStackInputs<'_>) -> Option<UnlayeredReason> {
+    let tree = inputs.tree;
+    if inputs.viewport_rect.is_empty() {
+        return Some(UnlayeredReason::EmptyViewport);
+    }
+    if inputs.list.run_count() == 0 {
+        return Some(UnlayeredReason::EmptyDisplayList);
+    }
+    if tree_has_sorting_contexts(tree) {
+        return Some(UnlayeredReason::SortingContext3D);
+    }
+    if !root_isolation_effect_is_plain_group(tree) {
+        return Some(UnlayeredReason::RootIsolationEffectIsNotPlainGroup);
+    }
+    if !mask_declarations_sit_on_the_chains_of_their_masks(inputs.list, tree) {
+        return Some(UnlayeredReason::MaskDeclaredUnderEffectsItsMaskIsNotUnder);
+    }
+    None
+}
+
+// Per effect node, whether an effect on its chain blends with the root group, which it reads below it to do so.
+fn blend_reading_root_group_on_chain(tree: &VisualContextTree) -> Vec<bool> {
+    let mut on_chain = vec![false; tree.effect_nodes.len()];
     tree.visit_effect_nodes_parents_first(|index| {
         let node = &tree.effect_nodes[index];
-        let from_parent = if node.parent.is_none() {
-            EffectNodeIndex::NONE
-        } else {
-            outermost[node.parent.0 as usize]
-        };
-        let is_grouping = node.data.pushes_layer() && tree.root_isolation_effect != Some(EffectNodeIndex(index as u32));
-        outermost[index] = if !from_parent.is_none() {
-            from_parent
-        } else if is_grouping {
-            EffectNodeIndex(index as u32)
-        } else {
-            EffectNodeIndex::NONE
-        };
+        let own = matches!(&node.data, EffectNodeData::Effects(effects)
+            if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal)
+            && tree.effect_backdrop_is_root_group(EffectNodeIndex(index as u32));
+        on_chain[index] = own || (!node.parent.is_none() && on_chain[node.parent.0 as usize]);
     });
-    outermost
+    on_chain
 }
 
 // A chain holds at most one such effect, since the layer of its backdrop filter isolates every effect under it.
@@ -323,634 +713,954 @@ fn backdrop_filter_reading_root_group_on_chain(tree: &VisualContextTree) -> Vec<
     on_chain
 }
 
-fn clip_chain_bounds(tree: &VisualContextTree, world: &WorldTransforms) -> Vec<Option<FloatRect>> {
-    let mut bounds: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
-    tree.visit_clip_nodes_parents_first(|index| {
-        let node = &tree.clip_nodes[index];
-        let own = match &node.data {
-            ClipNodeData::Rect(data) if data.mode == ClipMode::Intersect => Some(data.rect),
-            ClipNodeData::Path(path) => Some(path.bounding_rect.to_float()),
-            _ => None,
-        }
-        .map(|rect| world.map_rect_to_root(node.spatial, rect))
-        .filter(|rect| rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite());
-        let from_parent = if node.parent.is_none() {
-            None
-        } else {
-            bounds[node.parent.0 as usize]
-        };
-        bounds[index] = match (own, from_parent) {
-            (Some(own), Some(from_parent)) => Some(own.intersected(from_parent)),
-            (own, from_parent) => own.or(from_parent),
-        };
-    });
-    bounds
+/// A group of runs, which is placed whole, with where it is placed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacedRunGroup {
+    pub first_run: u32,
+    pub last_run: u32,
+    pub space: usize,
+    /// At most one per space, ordered by space.
+    pub composite_clips: Vec<CompositeClip>,
+    /// Where it can show in the space's raster coordinates, under the values the frame shows, except that content
+    /// that moves on its own is taken to be anywhere its fixed clips let it show.
+    pub device_rect: IntRect,
+    pub moves_within_space: bool,
+    /// Whether the group paints within the root group, rather than below it as the canvas background is.
+    pub paints_within_the_root_group: bool,
+    /// Where the backdrop filters of the group that read the root group read, in the space's raster coordinates.
+    pub root_group_backdrop_read: RootGroupBackdropRead,
 }
 
-struct BoundsContext<'a> {
-    world: WorldTransforms,
-    culling: TreeCullingScratch,
-    clip_bounds: Vec<Option<FloatRect>>,
-    viewport_rect: IntRect,
-    tree: &'a VisualContextTree,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootGroupBackdropRead {
+    Nothing,
+    Within(IntRect),
+    Anywhere,
 }
 
-impl BoundsContext<'_> {
-    fn device_rect(&self, rect: Option<FloatRect>, clip: ClipNodeIndex) -> IntRect {
-        let clip_bounds = if clip.is_none() {
-            None
-        } else {
-            self.clip_bounds[clip.0 as usize]
-        };
-        let rect = match (rect, clip_bounds) {
-            (Some(rect), Some(clip_bounds)) => rect.intersected(clip_bounds),
-            (Some(rect), None) => rect,
-            (None, Some(clip_bounds)) => clip_bounds,
-            (None, None) => return self.viewport_rect,
-        };
-        if !(rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()) {
-            return self.viewport_rect;
-        }
-        if rect.is_empty() {
-            return IntRect::default();
-        }
-        let viewport = self.viewport_rect.to_float();
-        let rect = rect.intersected(viewport.inflated(
-            2.0 * BOUNDS_MARGIN_IN_DEVICE_PIXELS as f32,
-            2.0 * BOUNDS_MARGIN_IN_DEVICE_PIXELS as f32,
-        ));
-        if rect.is_empty() {
-            return IntRect::default();
-        }
-        enclosing_int_rect(rect)
-            .inflated_edges(
-                BOUNDS_MARGIN_IN_DEVICE_PIXELS,
-                BOUNDS_MARGIN_IN_DEVICE_PIXELS,
-                BOUNDS_MARGIN_IN_DEVICE_PIXELS,
-                BOUNDS_MARGIN_IN_DEVICE_PIXELS,
-            )
-            .intersected(self.viewport_rect)
-    }
-
-    fn ink_device_rect(&self, run: &DisplayListCommandRun, ink: IntRect) -> IntRect {
-        if ink.is_empty()
-            || self.world.backface_culled[run.context.spatial.0 as usize]
-            || self.culling.context_culls_everything(run.context)
-        {
-            return IntRect::default();
-        }
-        let rect = self.world.map_rect_to_root(run.context.spatial, ink.to_float());
-        self.device_rect(Some(rect), run.context.clip)
-    }
-
-    fn backdrop_filter_reads_device_rect(&self, effect: EffectNodeIndex, rect: IntRect) -> bool {
-        let node = &self.tree.effect_nodes[effect.0 as usize];
-        let EffectNodeData::Effects(effects) = &node.data else {
-            return false;
-        };
-        let Some(backdrop_filter) = &effects.backdrop_filter else {
-            return false;
-        };
-        if rect.is_empty() {
-            return false;
-        }
-        let to_device = self.world.draw_matrix(node.spatial);
-        if !to_device.is_2d_affine() {
-            return true;
-        }
-        let Some(from_device) = to_device.extract_2d_affine().inverse() else {
-            return true;
-        };
-        let rect_in_effect_space = from_device.map_rect(rect.to_float());
-        crate::filter_bytes::changed_output_bounds(&backdrop_filter.filter, rect_in_effect_space)
-            .is_none_or(|reached| !reached.intersected(backdrop_filter.region.to_float()).is_empty())
-    }
-
-    fn group_device_rect(&self, effect: EffectNodeIndex, output: Extent, effect_clips: &EffectClipPlan) -> IntRect {
-        let node = &self.tree.effect_nodes[effect.0 as usize];
-        let output_clip = effect_clips.output_clip(effect);
-        match output {
-            Extent::Nothing => IntRect::default(),
-            Extent::Within(rect) => {
-                self.device_rect(Some(self.world.map_rect_to_root(node.spatial, rect)), output_clip)
-            }
-            Extent::Anywhere => self.device_rect(None, output_clip),
+impl RootGroupBackdropRead {
+    fn united(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Nothing, read) | (read, Self::Nothing) => read,
+            (Self::Within(rect), Self::Within(other)) => Self::Within(rect.united(other)),
+            _ => Self::Anywhere,
         }
     }
 }
 
-// Bit `n` stands for the media layer of the `n`th canvas or video that the plan tries to give a layer.
-type MediaLayerSet = u32;
-const _: () = assert!(MAXIMUM_MEDIA_LAYER_COUNT <= MediaLayerSet::BITS as usize);
-
-// The media layers that a backdrop filter reading the root group would read through, so that dropping them lets
-// the backdrop filter go into the base layer.
-struct MediaLayersUnderBackdropFilter(MediaLayerSet);
-
-struct LayersBeingPlanned {
-    layers: Vec<Layer>,
-    // A media layer exists for itself, and a painted layer for the media layers that its content is drawn over.
-    media_layers_each_layer_exists_for: Vec<MediaLayerSet>,
-    record_ranges_in_tape_order: Vec<LayerRecordRange>,
+// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
+// past it.
+fn backdrop_filter_read_area(
+    tree: &VisualContextTree,
+    geometry: &SpaceGeometry,
+    effect: EffectNodeIndex,
+) -> RootGroupBackdropRead {
+    let node = &tree.effect_nodes[effect.0 as usize];
+    let EffectNodeData::Effects(effects) = &node.data else {
+        return RootGroupBackdropRead::Anywhere;
+    };
+    let Some(backdrop) = &effects.backdrop_filter else {
+        return RootGroupBackdropRead::Anywhere;
+    };
+    let effect_to_device = geometry.world.draw_matrix(node.spatial);
+    let Some(reach) = crate::display_list::tile_keys::backdrop_filter_read_reach_in_device_pixels(
+        &backdrop.filter,
+        &effect_to_device,
+    ) else {
+        return RootGroupBackdropRead::Anywhere;
+    };
+    let region = geometry
+        .world
+        .map_rect_to_root(node.spatial, backdrop.region.to_float());
+    if !(region.x.is_finite() && region.y.is_finite() && region.width.is_finite() && region.height.is_finite()) {
+        return RootGroupBackdropRead::Anywhere;
+    }
+    RootGroupBackdropRead::Within(libgfx_rust::enclosing_int_rect(region).inflated_edges(reach, reach, reach, reach))
 }
 
-impl LayersBeingPlanned {
-    const BASE_LAYER_INDEX: usize = 0;
-
-    fn new(viewport_rect: IntRect) -> Self {
-        Self {
-            layers: vec![Layer {
-                kind: LayerKind::Base,
-                rect: viewport_rect,
-                record_spans: Vec::new(),
-                window_server_placement: None,
-            }],
-            media_layers_each_layer_exists_for: vec![0],
-            record_ranges_in_tape_order: Vec::new(),
-        }
-    }
-
-    fn media_layers_that_layers_above_base_exist_for(&self, touches_layer: impl Fn(&Layer) -> bool) -> MediaLayerSet {
-        (Self::BASE_LAYER_INDEX + 1..self.layers.len())
-            .filter(|&index| touches_layer(&self.layers[index]))
-            .fold(0, |media_layers, index| {
-                media_layers | self.media_layers_each_layer_exists_for[index]
-            })
-    }
-
-    // A backdrop filter reading the root group reads the base layer, so its content has to go there, clear of the
-    // layers above it both where it draws and where it reads.
-    fn check_backdrop_filters_can_go_into_base_layer(
-        &self,
-        bounds: IntRect,
-        backdrop_filter_reads_layer: impl Fn(&Layer) -> bool,
-    ) -> Result<(), MediaLayersUnderBackdropFilter> {
-        let media_layers = self.media_layers_that_layers_above_base_exist_for(|layer| {
-            !layer.rect.intersected(bounds).is_empty() || backdrop_filter_reads_layer(layer)
-        });
-        if media_layers == 0 {
-            return Ok(());
-        }
-        Err(MediaLayersUnderBackdropFilter(media_layers))
-    }
-
-    fn topmost_layer_above_base_touching(&self, bounds: IntRect) -> Option<usize> {
-        if bounds.is_empty() {
-            return None;
-        }
-        (Self::BASE_LAYER_INDEX + 1..self.layers.len())
-            .rev()
-            .find(|&index| !self.layers[index].rect.intersected(bounds).is_empty())
-    }
-
-    fn add_media_layer(
-        &mut self,
-        media_index: usize,
-        content: LiveContent,
-        span: RecordSpan,
-        bounds: IntRect,
-        window_server_placement: Option<Result<WindowServerPlacement, WindowServerRejection>>,
-    ) {
-        self.layers.push(Layer {
-            kind: LayerKind::Media { content },
-            rect: bounds,
-            record_spans: Vec::new(),
-            window_server_placement,
-        });
-        self.media_layers_each_layer_exists_for.push(1 << media_index);
-        self.append_records_to_layer(self.layers.len() - 1, span);
-    }
-
-    // Records drawn within `bounds` go into the lowest painted layer that is above every layer they touch, or into
-    // the base layer when they touch none above it.
-    fn place_painted_records(&mut self, span: RecordSpan, bounds: IntRect) -> usize {
-        let layer_index = match self.topmost_layer_above_base_touching(bounds) {
-            None => Self::BASE_LAYER_INDEX,
-            Some(touched) => {
-                let layer_index = (touched..self.layers.len())
-                    .find(|&index| self.layers[index].kind == LayerKind::Painted)
-                    .unwrap_or_else(|| {
-                        self.layers.push(Layer {
-                            kind: LayerKind::Painted,
-                            rect: IntRect::default(),
-                            record_spans: Vec::new(),
-                            window_server_placement: None,
-                        });
-                        self.media_layers_each_layer_exists_for.push(0);
-                        self.layers.len() - 1
-                    });
-                self.media_layers_each_layer_exists_for[layer_index] |= self
-                    .media_layers_that_layers_above_base_exist_for(|layer| !layer.rect.intersected(bounds).is_empty());
-                self.layers[layer_index].rect = self.layers[layer_index].rect.united(bounds);
-                layer_index
-            }
-        };
-        self.append_records_to_layer(layer_index, span);
-        layer_index
-    }
-
-    fn append_records_to_layer(&mut self, layer_index: usize, span: RecordSpan) {
-        let spans = &mut self.layers[layer_index].record_spans;
-        match spans.last_mut() {
-            Some(last) if last.end_offset == span.begin_offset => last.end_offset = span.end_offset,
-            _ => spans.push(span),
-        }
-        if self
-            .record_ranges_in_tape_order
-            .last()
-            .is_none_or(|range| range.layer as usize != layer_index)
-        {
-            self.record_ranges_in_tape_order.push(LayerRecordRange {
-                begin_offset: span.begin_offset,
-                layer: layer_index as u8,
-            });
-        }
-    }
+/// A stretch of records of one group that is placed as one: the whole group, or the records of a run between the
+/// canvases, videos and nested contexts that are layers of their own, or one of those.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedUnit {
+    pub span: ListSpan,
+    pub group: usize,
+    pub reach: IntRect,
+    pub media: Option<usize>,
 }
 
-struct MediaCandidate {
-    content: LiveContent,
-    run_index: u32,
-    record_offset: u32,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedMedia {
+    pub content: LiveContent,
+    pub ordinal: u32,
+    pub position: ListPosition,
+    pub run_index: u32,
+}
+
+/// Where each part of a list is placed at the spaces a tree offers, under the values a frame shows. A frame whose
+/// placement compares equal to the one a stack was worked out from keeps the stack.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ListPlacement {
+    pub spaces: Vec<RasterSpace>,
+    pub groups: Vec<PlacedRunGroup>,
+    pub units: Vec<PlacedUnit>,
+    pub media: Vec<PlacedMedia>,
+    pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
+}
+
+fn canonical_composite_clips(clips: &[CompositeClip]) -> Vec<CompositeClip> {
+    let mut by_space: Vec<CompositeClip> = Vec::with_capacity(clips.len());
+    for clip in clips {
+        match by_space.iter_mut().find(|known| known.space == clip.space) {
+            Some(known) => known.rect = known.rect.intersected(clip.rect),
+            None => by_space.push(*clip),
+        }
+    }
+    by_space.sort_by_key(|clip| clip.space);
+    by_space
 }
 
 fn media_layer_rejection(
-    inputs: &LayerPlanInputs<'_>,
-    grouping_effects: &[EffectNodeIndex],
-    bounds: &BoundsContext<'_>,
-    run_is_a_chunk_of_its_own: impl Fn(u32) -> bool,
-    record_offsets_of_media_under_backdrop_filters: &[u32],
+    inputs: &LayerStackInputs<'_>,
+    geometry: &SpaceGeometry,
     run_index: u32,
-    record_offset: u32,
+    position: ListPosition,
+    moves_within_space: bool,
 ) -> Option<MediaLayerRejection> {
-    let header = read_header(&inputs.tape[record_offset as usize..]);
+    let table = inputs.list.chunk(position.chunk).record_table();
+    let record = &table.records()[table.records_within(position.offset, position.offset + 1).start as usize];
     if !matches!(
-        header.command_type,
+        record.command_type,
         DisplayListCommandType::DrawCanvas
             | DisplayListCommandType::DrawVideoFrame
             | DisplayListCommandType::DrawCompositedContext
     ) {
         return Some(MediaLayerRejection::DrawnInsideAnotherCommand);
     }
-    let run = &inputs.command_runs[run_index as usize];
-    if !run.context.effect.is_none() && !grouping_effects[run.context.effect.0 as usize].is_none() {
+    let run = inputs.list.run(run_index as usize);
+    let run_groups = inputs.list.run_groups(inputs.tree);
+    if !run_groups.grouping_effect_of(run.context.effect).is_none() {
         return Some(MediaLayerRejection::InsideGroupEffect);
     }
-    if !bounds.world.draw_matrix(run.context.spatial).is_2d_affine() {
+    if !geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
         return Some(MediaLayerRejection::UnderTransformThatIsNot2DAffine);
     }
-    if bounds.ink_device_rect(run, header.bounding_rect).is_empty() {
+    // What moves on its own may show wherever its fixed clips let it, which its group's rect already says.
+    if !moves_within_space && geometry.ink_device_rect(run, record.bounding_rect).is_empty() {
         return Some(MediaLayerRejection::DrawsNothingVisible);
     }
-    if !run_is_a_chunk_of_its_own(run_index) {
+    if !run_groups.run_is_a_group_of_its_own(run_index as usize) {
         return Some(MediaLayerRejection::BetweenRunsOfOneGroupEffect);
-    }
-    if record_offsets_of_media_under_backdrop_filters.contains(&record_offset) {
-        return Some(MediaLayerRejection::UnderBackdropFilterReadingRootGroup);
     }
     None
 }
 
-fn media_candidates(
-    inputs: &LayerPlanInputs<'_>,
-    grouping_effects: &[EffectNodeIndex],
-    bounds: &BoundsContext<'_>,
-    run_is_a_chunk_of_its_own: impl Fn(u32) -> bool,
-    record_offsets_of_media_under_backdrop_filters: &[u32],
-) -> Result<Vec<MediaCandidate>, UnlayeredReason> {
-    let mut candidates = Vec::new();
-    let mut first_rejection = None;
-    for live_content_record in &inputs.summary.live_content_records {
+/// Where each part of the list is placed among the spaces at `anchors`, given the geometry of each of those spaces,
+/// leaving out of the media layers the drawings at `positions_refused_media_layers`.
+pub fn place_list(
+    inputs: &LayerStackInputs<'_>,
+    anchors: &[SpatialNodeIndex],
+    geometries: &[Rc<SpaceGeometry>],
+    positions_refused_media_layers: &[ListPosition],
+) -> ListPlacement {
+    let tree = inputs.tree;
+    let list = inputs.list;
+    let effect_clips = list.effect_clip_plan(tree);
+    let run_groups = list.run_groups(tree);
+    let spaces = RasterSpaces::at_anchors(tree, anchors, inputs.viewport_rect);
+    let tables = PlacementTables::new(tree, spaces, geometries);
+    let spaces = tables.spaces();
+    let runs_reaching_outside = RunsReachingOutsideTheirContext::new(list);
+    let backdrop_filter_reading_root_group_on_chain = backdrop_filter_reading_root_group_on_chain(tree);
+    let blend_reading_root_group_on_chain = blend_reading_root_group_on_chain(tree);
+    let mut runs_blending_with_root_group = vec![false; list.run_count()];
+    for record in &list.summary().destination_blending_records {
+        let effect = list.run(record.run_index as usize).context.effect;
+        if tree.content_under_effect_composites_into_root_group(effect) {
+            runs_blending_with_root_group[record.run_index as usize] = true;
+        }
+    }
+    let mut effect_geometry_of_spaces: Vec<Option<Vec<EffectGeometry>>> = vec![None; spaces.len()];
+    let mut group_rects: std::collections::HashMap<(usize, u32), IntRect> = std::collections::HashMap::new();
+
+    let groups: Vec<PlacedRunGroup> = run_groups
+        .ranges()
+        .iter()
+        .map(|&(first_run, last_run)| {
+            let runs = first_run as usize..=last_run as usize;
+            let mut space = runs
+                .clone()
+                .map(|run_index| {
+                    runs_reaching_outside.deepest_space_of_run(tree, &tables, run_index, list.run(run_index))
+                })
+                .reduce(|first, second| lowest_common_space(spaces, first, second))
+                .unwrap_or(VIEWPORT_RASTER_SPACE);
+            let composite_clips = loop {
+                let mut clips_of_runs = runs.clone().map(|run_index| {
+                    runs_reaching_outside.composite_clips_of_run_in(
+                        tree,
+                        &tables,
+                        run_index,
+                        list.run(run_index),
+                        space,
+                    )
+                });
+                let first_clips = clips_of_runs.next().flatten();
+                if let Some(first_clips) = first_clips
+                    && clips_of_runs.all(|clips| clips.as_deref() == Some(&*first_clips))
+                {
+                    break canonical_composite_clips(&first_clips);
+                }
+                if space == VIEWPORT_RASTER_SPACE {
+                    break Vec::new();
+                }
+                space = spaces[space].parent;
+            };
+            let geometry = &geometries[space];
+            let moves_within_space = runs
+                .clone()
+                .any(|run_index| tables.context_moves_within_space(tree, list.run(run_index).context, space));
+            let mut device_rect = IntRect::default();
+            let mut root_group_backdrop_read = RootGroupBackdropRead::Nothing;
+            for run_index in runs {
+                let run = list.run(run_index);
+                let group = run_groups.grouping_effect_of_run(run_index);
+                let run_rect = if moves_within_space {
+                    geometry.device_rect(None, run.context.clip)
+                } else if group.is_none() {
+                    geometry.ink_device_rect(run, run.ink_bounds)
+                } else {
+                    *group_rects.entry((space, group.0)).or_insert_with(|| {
+                        let effect_geometry = effect_geometry_of_spaces[space].get_or_insert_with(|| {
+                            let mut effect_geometry = Vec::new();
+                            compute_effect_geometry(tree, list.runs(), &geometry.world, &mut effect_geometry);
+                            effect_geometry
+                        });
+                        geometry.group_device_rect(tree, group, effect_geometry[group.0 as usize].output, effect_clips)
+                    })
+                };
+                device_rect = device_rect.united(run_rect);
+                // A blend reads below what it draws.
+                let blends_with_root_group = runs_blending_with_root_group[run_index]
+                    || (!run.context.effect.is_none()
+                        && blend_reading_root_group_on_chain[run.context.effect.0 as usize]);
+                if blends_with_root_group {
+                    root_group_backdrop_read = root_group_backdrop_read.united(RootGroupBackdropRead::Within(run_rect));
+                }
+                if !run.context.effect.is_none() {
+                    let backdrop_filter = backdrop_filter_reading_root_group_on_chain[run.context.effect.0 as usize];
+                    if !backdrop_filter.is_none() {
+                        root_group_backdrop_read =
+                            root_group_backdrop_read.united(backdrop_filter_read_area(tree, geometry, backdrop_filter));
+                    }
+                }
+            }
+            let paints_within_the_root_group = match tree.root_isolation_effect {
+                None => true,
+                Some(root) => (first_run..=last_run).any(|run_index| {
+                    let mut effect = list.run(run_index as usize).context.effect;
+                    while !effect.is_none() {
+                        if effect == root {
+                            return true;
+                        }
+                        effect = tree.effect_nodes[effect.0 as usize].parent;
+                    }
+                    false
+                }),
+            };
+            PlacedRunGroup {
+                first_run,
+                last_run,
+                space,
+                composite_clips,
+                device_rect,
+                moves_within_space,
+                paints_within_the_root_group,
+                root_group_backdrop_read,
+            }
+        })
+        .collect();
+
+    // The canvases, videos and nested contexts are layers of their own where they can be, with
+    // canvases and videos ahead of nested contexts once there are more than layers for them.
+    let mut media = Vec::new();
+    let mut rejected_media = Vec::new();
+    for live_content_record in &list.summary().live_content_records {
         let content = live_content_record.content;
         if matches!(content, LiveContent::ImageFrame(_)) {
             continue;
         }
-        let IndexedRecord {
-            run_index,
-            record_offset,
-        } = live_content_record.record;
-        match media_layer_rejection(
-            inputs,
-            grouping_effects,
-            bounds,
-            &run_is_a_chunk_of_its_own,
-            record_offsets_of_media_under_backdrop_filters,
-            run_index,
-            record_offset,
-        ) {
-            None => candidates.push(MediaCandidate {
-                content,
+        let record: IndexedRecord = live_content_record.record;
+        let (run_index, position) = (record.run_index, record.position());
+        let group = &groups[run_groups.group_of_run(run_index as usize)];
+        let rejection = if positions_refused_media_layers.contains(&position) {
+            Some(MediaLayerRejection::UnderContentReadingTheRootGroup)
+        } else if group.moves_within_space && group.device_rect.is_empty() {
+            Some(MediaLayerRejection::DrawsNothingVisible)
+        } else {
+            media_layer_rejection(
+                inputs,
+                &geometries[group.space],
                 run_index,
-                record_offset,
+                position,
+                group.moves_within_space,
+            )
+        };
+        match rejection {
+            None => media.push(PlacedMedia {
+                content,
+                ordinal: 0,
+                position,
+                run_index,
             }),
-            Some(rejection) => {
-                first_rejection.get_or_insert(UnlayeredReason::NoMediaCanBeLayer {
-                    first_rejected_media: content,
-                    rejection,
-                });
-            }
+            Some(rejection) => rejected_media.push((content, rejection)),
         }
     }
-    if candidates.is_empty() {
-        return Err(first_rejection.unwrap_or(UnlayeredReason::NoMedia));
-    }
-    Ok(candidates)
-}
-
-fn keep_canvases_and_videos_ahead_of_nested_contexts_within_layer_limit(media: &mut Vec<MediaCandidate>) {
-    if media.len() <= MAXIMUM_MEDIA_LAYER_COUNT {
-        return;
-    }
-    media.sort_by_key(|candidate| matches!(candidate.content, LiveContent::CompositedContext(_)));
-    media.truncate(MAXIMUM_MEDIA_LAYER_COUNT);
-    media.sort_by_key(|candidate| candidate.record_offset);
-}
-
-fn run_ranges_holding_whole_grouping_effects(
-    command_runs: &[DisplayListCommandRun],
-    grouping_of_run: &[EffectNodeIndex],
-) -> Vec<(u32, u32)> {
-    let mut last_run_of_group = std::collections::HashMap::new();
-    for (run_index, group) in grouping_of_run.iter().enumerate() {
-        if !group.is_none() {
-            last_run_of_group.insert(group.0, run_index);
+    if media.len() > MAXIMUM_MEDIA_LAYER_COUNT {
+        media.sort_by_key(|candidate| matches!(candidate.content, LiveContent::CompositedContext(_)));
+        for candidate in media.drain(MAXIMUM_MEDIA_LAYER_COUNT..) {
+            rejected_media.push((candidate.content, MediaLayerRejection::MoreMediaThanLayersFor));
         }
+        media.sort_by_key(|candidate| candidate.position);
     }
-    let mut ranges = Vec::new();
-    let mut run_index = 0;
-    while run_index < command_runs.len() {
-        let first = run_index;
-        let mut last = run_index;
-        let mut next = run_index;
-        while next <= last {
-            let group = grouping_of_run[next];
-            if !group.is_none() {
-                last = last.max(last_run_of_group[&group.0]);
-            }
-            next += 1;
-        }
-        ranges.push((first as u32, last as u32));
-        run_index = last + 1;
+    for index in 0..media.len() {
+        media[index].ordinal = media[..index]
+            .iter()
+            .filter(|earlier| earlier.content == media[index].content)
+            .count() as u32;
     }
-    ranges
-}
 
-// Runs that go into one layer together, as they hold all runs of the group effects among them.
-struct Chunk {
-    first_run: u32,
-    last_run: u32,
-    device_rect: IntRect,
-    backdrop_filters_reading_root_group: Vec<EffectNodeIndex>,
-}
-
-fn place_records_in_layers(
-    inputs: &LayerPlanInputs<'_>,
-    bounds: &BoundsContext<'_>,
-    chunks: &[Chunk],
-    grouping_of_run: &[EffectNodeIndex],
-    media: &[MediaCandidate],
-) -> Result<LayersBeingPlanned, MediaLayersUnderBackdropFilter> {
-    let command_runs = inputs.command_runs;
-    let mut planned = LayersBeingPlanned::new(inputs.viewport_rect);
-    let mut media_iter = media.iter().enumerate().peekable();
-    for chunk in chunks {
-        let (first, last) = (chunk.first_run, chunk.last_run);
-        let first_run = &command_runs[first as usize];
-        let last_run = &command_runs[last as usize];
-        if !chunk.backdrop_filters_reading_root_group.is_empty() {
-            planned.check_backdrop_filters_can_go_into_base_layer(chunk.device_rect, |layer| {
-                chunk
-                    .backdrop_filters_reading_root_group
-                    .iter()
-                    .any(|&effect| bounds.backdrop_filter_reads_device_rect(effect, layer.rect))
-            })?;
-        }
-
-        let run_draws_media_layer = media_iter
+    let mut units = Vec::with_capacity(groups.len());
+    let mut media_of_records = media.iter().enumerate().peekable();
+    for (group_index, group) in groups.iter().enumerate() {
+        let has_media = media_of_records
             .peek()
-            .is_some_and(|(_, candidate)| candidate.run_index == first);
-        // The rect of a record under a perspective transform is an estimate, so such a run stays whole.
-        let run_can_be_split_between_layers = first == last
-            && grouping_of_run[first as usize].is_none()
-            && bounds.world.draw_matrix(first_run.context.spatial).is_2d_affine();
-        let places_each_record_of_run = run_draws_media_layer
-            || (run_can_be_split_between_layers
-                && planned.topmost_layer_above_base_touching(chunk.device_rect).is_some());
-        if !places_each_record_of_run {
-            let chunk_span = RecordSpan {
-                begin_offset: first_run.offset,
-                end_offset: last_run.offset + last_run.size,
-            };
-            planned.place_painted_records(chunk_span, chunk.device_rect);
+            .is_some_and(|(_, candidate)| candidate.run_index == group.first_run);
+        if !has_media {
+            units.push(PlacedUnit {
+                span: ListSpan {
+                    begin: list.start_of_run(group.first_run as usize),
+                    end: list.end_of_run(group.last_run as usize),
+                },
+                group: group_index,
+                reach: group.device_rect,
+                media: None,
+            });
             continue;
         }
-
-        let run = first_run;
-        let records = &inputs.tape[run.offset as usize..(run.offset + run.size) as usize];
-        let mut layer_of_previous_painted_record = LayersBeingPlanned::BASE_LAYER_INDEX;
-        for_each_command(records, |header, offset, payload| {
-            let begin_offset = run.offset + offset as u32;
-            let span = RecordSpan {
-                begin_offset,
-                end_offset: begin_offset + (HEADER_SIZE + payload.len()) as u32,
-            };
-            if let Some((media_index, candidate)) =
-                media_iter.next_if(|(_, candidate)| candidate.record_offset == begin_offset)
-            {
-                let media_bounds = bounds.ink_device_rect(run, header.bounding_rect);
-                let window_server_shows_content = !matches!(candidate.content, LiveContent::CompositedContext(_));
-                let placement = window_server_shows_content.then(|| {
-                    window_server_placement(inputs.tree, &bounds.world, inputs.viewport_rect, run, header, payload)
-                });
-                planned.add_media_layer(media_index, candidate.content, span, media_bounds, placement);
-                layer_of_previous_painted_record = LayersBeingPlanned::BASE_LAYER_INDEX;
-            } else if !header.has_bounding_rect {
-                planned.append_records_to_layer(layer_of_previous_painted_record, span);
+        // In a run that draws media, each record is a unit of its own, so content over the media goes above it only
+        // where it reaches.
+        let geometry = &geometries[group.space];
+        let (chunk_index, run_in_chunk) = list.chunk_of_run(group.first_run as usize);
+        let chunk = list.chunk(chunk_index);
+        let run = &chunk.runs()[run_in_chunk];
+        let record_reach = |bounding_rect: IntRect| {
+            if group.moves_within_space {
+                group.device_rect
             } else {
-                let record_bounds = bounds.ink_device_rect(run, header.bounding_rect);
-                layer_of_previous_painted_record = planned.place_painted_records(span, record_bounds);
+                geometry.ink_device_rect(run, bounding_rect)
             }
-        });
+        };
+        let table = chunk.record_table();
+        let records_of_run = table.records_of_run(run_in_chunk);
+        for record in &table.records()[records_of_run.start as usize..records_of_run.end as usize] {
+            let span = ListSpan {
+                begin: ListPosition::new(chunk_index, record.offset),
+                end: ListPosition::new(chunk_index, record.end_offset),
+            };
+            let reach = if record.has_ink {
+                record_reach(record.bounding_rect)
+            } else {
+                IntRect::default()
+            };
+            let media = media_of_records
+                .next_if(|(_, candidate)| candidate.position == span.begin)
+                .map(|(media_index, _)| media_index);
+            units.push(PlacedUnit {
+                span,
+                group: group_index,
+                reach,
+                media,
+            });
+        }
     }
-    Ok(planned)
+
+    ListPlacement {
+        spaces: spaces.to_vec(),
+        groups,
+        units,
+        media,
+        rejected_media,
+    }
 }
 
-pub fn build_layer_plan(inputs: &LayerPlanInputs<'_>) -> Result<LayerPlan, UnlayeredReason> {
-    let tree = inputs.tree;
-    let command_runs = inputs.command_runs;
-    let draws_media = inputs
-        .summary
-        .live_content_records
-        .iter()
-        .any(|record| !matches!(record.content, LiveContent::ImageFrame(_)));
-    if !draws_media {
-        return Err(UnlayeredReason::NoMedia);
-    }
-    if inputs.viewport_rect.is_empty() {
-        return Err(UnlayeredReason::EmptyViewport);
-    }
-    if command_runs.is_empty() {
-        return Err(UnlayeredReason::EmptyDisplayList);
-    }
-    if tree_has_sorting_contexts(tree) {
-        return Err(UnlayeredReason::SortingContext3D);
-    }
-    if !root_isolation_effect_is_plain_group(tree) {
-        return Err(UnlayeredReason::RootIsolationEffectIsNotPlainGroup);
-    }
-    if let Some(reason) = what_reads_root_group(inputs) {
-        return Err(reason);
-    }
-    if !mask_declarations_sit_under_their_masks(inputs) {
-        return Err(UnlayeredReason::MaskDeclaredOutsideItsMask);
-    }
+// A band of a node being worked out: the barriers in it and the units placed in the node, in paint order.
+struct BandBeingBuilt {
+    node: usize,
+    ordinal: u32,
+    barriers: Vec<BarrierBeingBuilt>,
+    own_units: Vec<usize>,
+    first_unit: usize,
+}
 
-    let mut culling = TreeCullingScratch::default();
-    tree.fill_culling_scratch(&mut culling);
-    let world = WorldTransforms::new(tree, inputs.scroll_offsets, Some(FloatMatrix4x4::identity()));
-    let clip_bounds = clip_chain_bounds(tree, &world);
-    let bounds = BoundsContext {
-        world,
-        culling,
-        clip_bounds,
-        viewport_rect: inputs.viewport_rect,
-        tree,
-    };
+#[derive(Clone, Copy)]
+enum BarrierBeingBuilt {
+    Media { unit: usize },
+    Band { band: usize },
+}
 
-    let grouping_effects = outermost_grouping_effects(tree);
-    let grouping_of_run: Vec<EffectNodeIndex> = command_runs
-        .iter()
-        .map(|run| {
-            if run.context.effect.is_none() {
-                EffectNodeIndex::NONE
-            } else {
-                grouping_effects[run.context.effect.0 as usize]
-            }
-        })
-        .collect();
-    let chunk_ranges = run_ranges_holding_whole_grouping_effects(command_runs, &grouping_of_run);
-    let mut chunk_of_run = vec![0usize; command_runs.len()];
-    for (chunk_index, &(first, last)) in chunk_ranges.iter().enumerate() {
-        chunk_of_run[first as usize..=last as usize].fill(chunk_index);
+fn regions_meet(first: Option<IntRect>, second: Option<IntRect>) -> bool {
+    match (first, second) {
+        (Some(first), Some(second)) => !first.intersected(second).is_empty(),
+        (Some(rect), None) | (None, Some(rect)) => !rect.is_empty(),
+        (None, None) => true,
     }
+}
 
-    let run_is_a_chunk_of_its_own = |run_index: u32| {
-        let (first, last) = chunk_ranges[chunk_of_run[run_index as usize]];
-        first == last
-    };
+fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
+    if rect.is_empty() {
+        return rect;
+    }
+    let tile = TILE_SIZE_IN_DEVICE_PIXELS;
+    let left = rect.x.div_euclid(tile) * tile;
+    let top = rect.y.div_euclid(tile) * tile;
+    let right = (rect.right() - 1).div_euclid(tile) * tile + tile;
+    let bottom = (rect.bottom() - 1).div_euclid(tile) * tile + tile;
+    IntRect::new(left, top, right - left, bottom - top)
+}
 
-    let mut effect_geometry = Vec::new();
-    compute_effect_geometry(tree, command_runs, &bounds.world, &mut effect_geometry);
-    let backdrop_filter_reading_root_group_on_chain = backdrop_filter_reading_root_group_on_chain(tree);
-    let mut group_rects: std::collections::HashMap<u32, IntRect> = std::collections::HashMap::new();
-    let mut run_device_rect = |run_index: usize| -> IntRect {
-        let run = &command_runs[run_index];
-        let group = grouping_of_run[run_index];
-        if group.is_none() {
-            return bounds.ink_device_rect(run, run.ink_bounds);
+struct StackBeingBuilt<'a> {
+    placement: &'a ListPlacement,
+    nodes: Vec<PlacementNode>,
+    node_of_group: Vec<usize>,
+    children_of_node: Vec<Vec<usize>>,
+    bands: Vec<BandBeingBuilt>,
+    layers: Vec<StackLayer>,
+    groups: Vec<LayerGroup>,
+}
+
+impl StackBeingBuilt<'_> {
+    fn node_of(&mut self, space: usize, composite_clips: Vec<CompositeClip>) -> usize {
+        if let Some(node) = self
+            .nodes
+            .iter()
+            .position(|node| node.space == space && node.composite_clips == composite_clips)
+        {
+            return node;
         }
-        *group_rects.entry(group.0).or_insert_with(|| {
-            bounds.group_device_rect(group, effect_geometry[group.0 as usize].output, inputs.effect_clips)
-        })
-    };
-    let chunks: Vec<Chunk> = chunk_ranges
-        .iter()
-        .map(|&(first_run, last_run)| {
-            let mut device_rect = IntRect::default();
-            let mut backdrop_filters_reading_root_group = Vec::new();
-            for (run_index, run) in command_runs
+        let spaces = &self.placement.spaces;
+        let (parent, region_in_parent) = if space == VIEWPORT_RASTER_SPACE {
+            (None, None)
+        } else {
+            let parent_space = spaces[space].parent;
+            let region = composite_clips
                 .iter()
-                .enumerate()
-                .take(last_run as usize + 1)
-                .skip(first_run as usize)
-            {
-                device_rect = device_rect.united(run_device_rect(run_index));
-                let effect = run.context.effect;
-                if effect.is_none() {
-                    continue;
-                }
-                let backdrop_filter = backdrop_filter_reading_root_group_on_chain[effect.0 as usize];
-                if !backdrop_filter.is_none() && !backdrop_filters_reading_root_group.contains(&backdrop_filter) {
-                    backdrop_filters_reading_root_group.push(backdrop_filter);
-                }
-            }
-            Chunk {
-                first_run,
-                last_run,
-                device_rect,
-                backdrop_filters_reading_root_group,
-            }
-        })
-        .collect();
-
-    // Each try leaves out at least one more canvas or video, so this ends.
-    let mut record_offsets_of_media_under_backdrop_filters = Vec::new();
-    let planned = loop {
-        let mut media = media_candidates(
-            inputs,
-            &grouping_effects,
-            &bounds,
-            run_is_a_chunk_of_its_own,
-            &record_offsets_of_media_under_backdrop_filters,
-        )?;
-        keep_canvases_and_videos_ahead_of_nested_contexts_within_layer_limit(&mut media);
-        match place_records_in_layers(inputs, &bounds, &chunks, &grouping_of_run, &media) {
-            Ok(planned) => break planned,
-            Err(MediaLayersUnderBackdropFilter(media_layers)) => {
-                record_offsets_of_media_under_backdrop_filters.extend(
-                    media
-                        .iter()
-                        .enumerate()
-                        .filter(|(media_index, _)| media_layers & (1 << media_index) != 0)
-                        .map(|(_, candidate)| candidate.record_offset),
-                );
-            }
+                .find(|clip| clip.space == parent_space)
+                .map(|clip| clip.rect);
+            let clips_of_parent = composite_clips
+                .iter()
+                .filter(|clip| clip.space != parent_space)
+                .copied()
+                .collect();
+            (Some(self.node_of(parent_space, clips_of_parent)), region)
+        };
+        self.nodes.push(PlacementNode {
+            key: key_of_node(spaces, space, &composite_clips),
+            space,
+            composite_clips,
+            parent,
+            region_in_parent,
+        });
+        self.children_of_node.push(Vec::new());
+        let node = self.nodes.len() - 1;
+        if let Some(parent) = parent {
+            self.children_of_node[parent].push(node);
         }
-    };
-    let LayersBeingPlanned {
-        layers,
-        record_ranges_in_tape_order,
-        ..
-    } = planned;
-
-    let viewport_area = i64::from(inputs.viewport_rect.width) * i64::from(inputs.viewport_rect.height);
-    let upper_painted_area: i64 = layers
-        .iter()
-        .filter(|layer| layer.kind == LayerKind::Painted)
-        .map(|layer| i64::from(layer.rect.width) * i64::from(layer.rect.height))
-        .sum();
-    if upper_painted_area > MAXIMUM_UPPER_PAINTED_LAYER_AREA_IN_VIEWPORTS * viewport_area {
-        return Err(UnlayeredReason::UpperPaintedLayersTooLarge);
+        node
     }
 
-    Ok(LayerPlan {
+    fn path_to(&self, mut node: usize) -> Vec<usize> {
+        let mut path = vec![node];
+        while let Some(parent) = self.nodes[node].parent {
+            path.push(parent);
+            node = parent;
+        }
+        path.reverse();
+        path
+    }
+
+    fn close_band_of(&self, node: usize, open_band_of_node: &mut [Option<usize>]) {
+        open_band_of_node[node] = None;
+        for &child in &self.children_of_node[node] {
+            self.close_band_of(child, open_band_of_node);
+        }
+    }
+
+    // Walks the units in paint order, giving each node bands within the bands of its parent, and each band its
+    // barriers and its own units.
+    fn cut_into_bands(&mut self) {
+        let placement = self.placement;
+        let mut open_band_of_node: Vec<Option<usize>> = vec![None; self.nodes.len()];
+        let mut next_band_of_node = vec![0u32; self.nodes.len()];
+        self.bands.push(BandBeingBuilt {
+            node: 0,
+            ordinal: 0,
+            barriers: Vec::new(),
+            own_units: Vec::new(),
+            first_unit: 0,
+        });
+        open_band_of_node[0] = Some(0);
+        next_band_of_node[0] = 1;
+        for (unit_index, unit) in placement.units.iter().enumerate() {
+            if unit.reach.is_empty() {
+                continue;
+            }
+            let path = self.path_to(self.node_of_group[unit.group]);
+            for level in 0..path.len() {
+                let node = path[level];
+                let band = open_band_of_node[node].expect("the bands along the path of a unit are open");
+                let child_on_path = path.get(level + 1).copied();
+                let reach = match child_on_path {
+                    Some(child) => self.nodes[child].region_in_parent,
+                    None => Some(unit.reach),
+                };
+                for &child in &self.children_of_node[node] {
+                    if Some(child) == child_on_path || open_band_of_node[child].is_none() {
+                        continue;
+                    }
+                    if regions_meet(reach, self.nodes[child].region_in_parent) {
+                        self.close_band_of(child, &mut open_band_of_node);
+                    }
+                }
+                match child_on_path {
+                    Some(child) if open_band_of_node[child].is_none() => {
+                        self.bands.push(BandBeingBuilt {
+                            node: child,
+                            ordinal: next_band_of_node[child],
+                            barriers: Vec::new(),
+                            own_units: Vec::new(),
+                            first_unit: unit_index,
+                        });
+                        next_band_of_node[child] += 1;
+                        let child_band = self.bands.len() - 1;
+                        open_band_of_node[child] = Some(child_band);
+                        self.bands[band]
+                            .barriers
+                            .push(BarrierBeingBuilt::Band { band: child_band });
+                    }
+                    Some(_) => {}
+                    None if unit.media.is_some() => {
+                        self.bands[band]
+                            .barriers
+                            .push(BarrierBeingBuilt::Media { unit: unit_index });
+                    }
+                    None => self.bands[band].own_units.push(unit_index),
+                }
+            }
+        }
+    }
+
+    // Pushes the layers of a band and of the bands in it, bottom to top, and the group of its records.
+    fn emit_band(&mut self, band_index: usize) -> usize {
+        let placement = self.placement;
+        let node = self.bands[band_index].node;
+        let ordinal = self.bands[band_index].ordinal;
+        let node_key = self.nodes[node].key;
+        let own_units = std::mem::take(&mut self.bands[band_index].own_units);
+        let barriers = std::mem::take(&mut self.bands[band_index].barriers);
+        let unit_position = |unit: usize| placement.units[unit].span.begin;
+
+        let group = self.groups.len();
+        self.groups.push(LayerGroup {
+            node,
+            band: ordinal,
+            record_spans: Vec::new(),
+            cuts: Vec::new(),
+            layer_below_every_cut: self.layers.len(),
+        });
+        self.layers.push(StackLayer {
+            key: LayerKey::Painted {
+                node: node_key,
+                band: ordinal,
+                above: None,
+            },
+            node,
+            content: LayerContent::Painted { group },
+            may_hold_content: false,
+            may_hold_root_group_content: false,
+        });
+        let layer_below_every_cut = self.layers.len() - 1;
+        let mut cuts = Vec::with_capacity(barriers.len());
+        for barrier in barriers {
+            let (key, position, region) = match barrier {
+                BarrierBeingBuilt::Media { unit } => {
+                    let placed_unit = &placement.units[unit];
+                    let media = &placement.media[placed_unit.media.expect("a media barrier is a media unit")];
+                    let key = LayerKey::Media {
+                        content: media.content,
+                        ordinal: media.ordinal,
+                    };
+                    self.layers.push(StackLayer {
+                        key,
+                        node,
+                        content: LayerContent::Media {
+                            content: media.content,
+                            record_span: placed_unit.span,
+                            region: placed_unit.reach,
+                            window_server_placement: None,
+                        },
+                        may_hold_content: true,
+                        may_hold_root_group_content: true,
+                    });
+                    (
+                        BarrierKey::Media {
+                            content: media.content,
+                            ordinal: media.ordinal,
+                        },
+                        unit_position(unit),
+                        Some(placed_unit.reach),
+                    )
+                }
+                BarrierBeingBuilt::Band { band } => {
+                    let child_node = self.bands[band].node;
+                    let key = BarrierKey::Band {
+                        node: self.nodes[child_node].key,
+                        band: self.bands[band].ordinal,
+                    };
+                    let position = unit_position(self.bands[band].first_unit);
+                    self.emit_band(band);
+                    (key, position, self.nodes[child_node].region_in_parent)
+                }
+            };
+            self.layers.push(StackLayer {
+                key: LayerKey::Painted {
+                    node: node_key,
+                    band: ordinal,
+                    above: Some(key),
+                },
+                node,
+                content: LayerContent::Painted { group },
+                may_hold_content: false,
+                may_hold_root_group_content: false,
+            });
+            cuts.push(Cut {
+                barrier: key,
+                position,
+                region,
+                layer_above: self.layers.len() - 1,
+            });
+        }
+
+        // Which layers of the band can hold records: in each tile a unit reaches, the one above the last barrier painted
+        // before it that cuts the tile. A record draws nothing past the reach of its unit, so what it is replayed into
+        // anywhere else stays empty.
+        let mut record_spans: Vec<ListSpan> = Vec::with_capacity(own_units.len());
+        let group_so_far = LayerGroup {
+            node,
+            band: ordinal,
+            record_spans: Vec::new(),
+            cuts,
+            layer_below_every_cut,
+        };
+        for &unit in &own_units {
+            let placed_unit = &placement.units[unit];
+            let span = placed_unit.span;
+            let position = span.begin;
+            let in_root_group = placement.groups[placed_unit.group].paints_within_the_root_group;
+            let mut mark = |layer: usize| {
+                self.layers[layer].may_hold_content = true;
+                self.layers[layer].may_hold_root_group_content |= in_root_group;
+            };
+            let cuts_before = group_so_far.cuts.iter().take_while(|cut| cut.position <= position);
+            if cuts_before.clone().next().is_none() {
+                mark(layer_below_every_cut);
+            } else if tile_count_touching(placed_unit.reach) > MAXIMUM_TILES_A_UNIT_IS_FOLLOWED_INTO {
+                mark(layer_below_every_cut);
+                for cut in cuts_before {
+                    mark(cut.layer_above);
+                }
+            } else {
+                for coord in tile_coords_touching(placed_unit.reach) {
+                    mark(group_so_far.layer_at(position, coord.cell_rect()));
+                }
+            }
+            match record_spans.last_mut() {
+                Some(last) if last.end == span.begin => last.end = span.end,
+                _ => record_spans.push(span),
+            }
+        }
+        let cuts = group_so_far.cuts;
+        self.groups[group].record_spans = record_spans;
+        self.groups[group].cuts = cuts;
+        group
+    }
+}
+
+// Whether the content of a node covers every pixel its space shows in the viewport, so that its bottom layer can
+// replace what is below it.
+fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node: usize) -> bool {
+    let placement_node = &nodes[node];
+    if !placement_node.composite_clips.is_empty() || placement_node.region_in_parent.is_some() {
+        return false;
+    }
+    match placement_node.parent {
+        None => true,
+        Some(parent) => {
+            spaces[placement_node.space].anchor_scrolls_the_viewport && node_covers_the_viewport(nodes, spaces, parent)
+        }
+    }
+}
+
+enum StackConflict {
+    // Media drawn before content that reads the root group's backdrop, where the content can show.
+    MediaUnderBackdrop(Vec<ListPosition>),
+    // Content that reads the root group's backdrop would read through the layers of these spaces, which are to be
+    // rastered in the spaces around them instead.
+    BackdropReadThroughSpaces(Vec<usize>),
+}
+
+// The spaces on the chain from `space` up to the lowest space it shares with `other`, that one left out.
+fn spaces_up_to_common_space(spaces: &[RasterSpace], space: usize, other: usize) -> Vec<usize> {
+    let common = lowest_common_space(spaces, space, other);
+    chain_of_space(spaces, space)
+        .take_while(|&in_chain| in_chain != common)
+        .collect()
+}
+
+fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict>) {
+    let mut built = StackBeingBuilt {
+        placement: &placement,
+        nodes: Vec::new(),
+        node_of_group: Vec::new(),
+        children_of_node: Vec::new(),
+        bands: Vec::new(),
+        layers: Vec::new(),
+        groups: Vec::new(),
+    };
+    built.node_of(VIEWPORT_RASTER_SPACE, Vec::new());
+    built.node_of_group = placement
+        .groups
+        .iter()
+        .map(|group| group.composite_clips.clone())
+        .zip(placement.groups.iter().map(|group| group.space))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|(clips, space)| built.node_of(space, clips))
+        .collect();
+    built.cut_into_bands();
+    built.emit_band(0);
+
+    let StackBeingBuilt {
+        nodes,
+        node_of_group,
         layers,
-        record_ranges_in_tape_order,
-    })
+        groups,
+        ..
+    } = built;
+
+    let first_layer_with_content = layers.iter().position(|layer| layer.may_hold_content);
+    let base_layer = match first_layer_with_content {
+        Some(index)
+            if matches!(layers[index].key, LayerKey::Painted { above: None, .. })
+                && node_covers_the_viewport(&nodes, &placement.spaces, layers[index].node) =>
+        {
+            index
+        }
+        _ => 0,
+    };
+
+    // Content that reads the root group's backdrop reads what is below it in its own layer only, so no layer below its
+    // own may hold content of the root group, and no barrier painted before it may cut the tiles it reaches.
+    let mut conflict = None;
+    for unit in &placement.units {
+        let group_of_unit = &placement.groups[unit.group];
+        let read_area = match group_of_unit.root_group_backdrop_read {
+            RootGroupBackdropRead::Nothing => continue,
+            RootGroupBackdropRead::Within(rect) => Some(rect),
+            RootGroupBackdropRead::Anywhere => None,
+        };
+        if unit.reach.is_empty() {
+            continue;
+        }
+        let node = node_of_group[unit.group];
+        let Some(layer_group) = groups
+            .iter()
+            .find(|group| group.node == node && group.record_spans.iter().any(|span| span.contains(unit.span.begin)))
+        else {
+            continue;
+        };
+        // The content and the layers it would read through go into one space, the lowest one that holds both. Layers
+        // of its own space alone are in other bands or behind other clips, which the space around it merges.
+        let space = nodes[node].space;
+        let spaces_read_through: Vec<usize> = (base_layer..layer_group.layer_below_every_cut)
+            .filter(|&layer| layers[layer].may_hold_root_group_content)
+            .map(|layer| nodes[layers[layer].node].space)
+            .collect();
+        if !spaces_read_through.is_empty() {
+            let mut spaces_to_fold = Vec::new();
+            for &other_space in &spaces_read_through {
+                spaces_to_fold.extend(spaces_up_to_common_space(&placement.spaces, space, other_space));
+                spaces_to_fold.extend(spaces_up_to_common_space(&placement.spaces, other_space, space));
+            }
+            if spaces_to_fold.is_empty() && space != VIEWPORT_RASTER_SPACE {
+                spaces_to_fold.push(space);
+            }
+            conflict = Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold));
+            break;
+        }
+        // What it reads below it has to be in its layer wherever it reads, as must it be wherever it draws.
+        let reached_tiles = read_area.map(|read_area| expanded_to_tile_grid(unit.reach.united(read_area)));
+        let mut refused_media = Vec::new();
+        let mut spaces_to_fold = Vec::new();
+        for cut in &layer_group.cuts {
+            if cut.position > unit.span.begin || reached_tiles.is_some_and(|tiles| !cut.cuts_cell(tiles)) {
+                continue;
+            }
+            match cut.barrier {
+                BarrierKey::Media { .. } => refused_media.push(cut.position),
+                BarrierKey::Band { node: band_node, .. } => {
+                    let band_space = nodes
+                        .iter()
+                        .find(|candidate| candidate.key == band_node)
+                        .expect("a band barrier names a node of the stack")
+                        .space;
+                    spaces_to_fold.extend(spaces_up_to_common_space(
+                        &placement.spaces,
+                        band_space,
+                        nodes[node].space,
+                    ));
+                }
+            }
+        }
+        if !spaces_to_fold.is_empty() {
+            conflict = Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold));
+            break;
+        }
+        if !refused_media.is_empty() {
+            conflict = Some(StackConflict::MediaUnderBackdrop(refused_media));
+            break;
+        }
+    }
+
+    let stack = LayerStack {
+        spaces: placement.spaces.clone(),
+        nodes,
+        groups,
+        layers,
+        base_layer,
+        unlayered_reason: None,
+        rejected_media: placement.rejected_media.clone(),
+        placement,
+        placement_at_every_anchor: ListPlacement::default(),
+    };
+    (stack, conflict)
+}
+
+/// Works out the layers of a list from where its parts are placed among the spaces at every anchor the tree offers,
+/// which `place_list` gave for `anchors`.
+pub fn build_layer_stack(
+    inputs: &LayerStackInputs<'_>,
+    anchors: &[SpatialNodeIndex],
+    placement_at_every_anchor: ListPlacement,
+) -> LayerStack {
+    if let Some(reason) = why_list_is_unlayered(inputs) {
+        let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), Some(reason));
+        stack.placement_at_every_anchor = placement_at_every_anchor;
+        return stack;
+    }
+    let mut anchors = anchors.to_vec();
+    let mut placement = placement_at_every_anchor.clone();
+    let mut positions_refused_media_layers: Vec<ListPosition> = Vec::new();
+    // Each try leaves out at least one more canvas or video, or the innermost space that scrolls, so this ends.
+    loop {
+        let (mut stack, conflict) = assemble_stack(placement);
+        match conflict {
+            Some(StackConflict::MediaUnderBackdrop(positions)) => {
+                positions_refused_media_layers.extend(positions);
+            }
+            Some(StackConflict::BackdropReadThroughSpaces(spaces_to_fold))
+                if spaces_to_fold.iter().any(|&space| space != VIEWPORT_RASTER_SPACE) =>
+            {
+                // A space folded into its parent takes the spaces inside it along.
+                let stack_spaces = &stack.spaces;
+                let folded_anchors: Vec<SpatialNodeIndex> = (1..stack_spaces.len())
+                    .filter(|&space| {
+                        spaces_to_fold
+                            .iter()
+                            .any(|&folded| space_is_ancestor_or_self(stack_spaces, folded, space))
+                    })
+                    .map(|space| stack_spaces[space].anchor)
+                    .collect();
+                anchors.retain(|anchor| !folded_anchors.contains(anchor));
+            }
+            Some(StackConflict::BackdropReadThroughSpaces(_)) => {
+                let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), None);
+                stack.placement_at_every_anchor = placement_at_every_anchor;
+                return stack;
+            }
+            None => {
+                let layers_with_content = stack
+                    .layers
+                    .iter()
+                    .skip(stack.base_layer)
+                    .filter(|layer| layer.may_hold_content)
+                    .count();
+                if layers_with_content <= MAXIMUM_LAYER_COUNT || anchors.is_empty() {
+                    stack.placement_at_every_anchor = placement_at_every_anchor;
+                    stack.update_window_server_placements(
+                        inputs.list,
+                        inputs.tree,
+                        inputs.scroll_offsets,
+                        inputs.viewport_rect,
+                    );
+                    return stack;
+                }
+                anchors.pop();
+            }
+        }
+        let (_, geometries) = spaces_with_geometries(
+            inputs.tree,
+            &anchors,
+            inputs.scroll_offsets,
+            inputs.viewport_rect,
+            inputs.raster_transform,
+        );
+        placement = place_list(inputs, &anchors, &geometries, &positions_refused_media_layers);
+    }
+}
+
+/// Works out the layers of a list from scratch, as a dump or a test does.
+pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
+    let anchors = raster_space_anchors(inputs.tree);
+    let (_, geometries) = spaces_with_geometries(
+        inputs.tree,
+        &anchors,
+        inputs.scroll_offsets,
+        inputs.viewport_rect,
+        inputs.raster_transform,
+    );
+    let placement = place_list(inputs, &anchors, &geometries, &[]);
+    build_layer_stack(inputs, &anchors, placement)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_list::builder::{DisplayListBuilder, PendingInlineClip};
-    use crate::display_list::chunks::TapeChunks;
+    use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
-        CanvasId, CompositorBlockingWheelEventRegion, CompositorContextId, ContextRef, DisplayListCommand, DrawCanvas,
-        DrawCompositedContext, FillRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
+        CanvasId, ClipNodeIndex, CompositorContextId, ContextRef, DisplayListCommand, DrawCanvas,
+        DrawCompositedContext, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
-    use crate::display_list::damage::{
-        DisplayListDamage, DisplayListFrame, LayerPlans, LiveContentChanges, compute_display_list_damage,
-    };
-    use crate::display_list::summary::summarize;
+    use crate::display_list::tiles::TileCoord;
     use crate::node_slot_id::NodeSlotId;
-    use crate::visual_context::{EffectsData, ScrollData, TransformData, TransformDataRole};
-    use libgfx_rust::{
-        AffineTransform, Color, CompositingAndBlendingOperator, CornerRadii, ScalingMode, rotation_matrix, scale_matrix,
+    use crate::visual_context::{
+        BackdropFilterData, ClipNodeData, CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData,
+        StickyData, TransformData, TransformDataRole,
     };
+    use libgfx_rust::filter::Filter;
+    use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatRect, ScalingMode};
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
     const CANVAS: LiveContent = LiveContent::Canvas(CanvasId(1));
-    const NESTED_CONTEXT: LiveContent = LiveContent::CompositedContext(CompositorContextId(7));
 
     fn identity_tree() -> VisualContextTree {
         VisualContextTree::create(TransformData {
@@ -961,7 +1671,17 @@ mod tests {
             role: TransformDataRole::CssTransform,
             synthetic_plane: false,
             establishes_sorting_context: false,
-            bounds: FloatRect::default(),
+            bounds: libgfx_rust::FloatRect::default(),
+        })
+    }
+
+    fn effects(opacity: f32, blend_mode: CompositingAndBlendingOperator) -> EffectNodeData {
+        EffectNodeData::Effects(EffectsData {
+            isolation: false,
+            opacity,
+            blend_mode,
+            filter: None,
+            backdrop_filter: None,
         })
     }
 
@@ -977,23 +1697,11 @@ mod tests {
         tree
     }
 
-    fn effects(opacity: f32, blend_mode: CompositingAndBlendingOperator) -> EffectNodeData {
-        EffectNodeData::Effects(EffectsData {
-            isolation: false,
-            opacity,
-            blend_mode,
-            filter: None,
-            backdrop_filter: None,
-        })
-    }
-
-    fn separate_clip(tree: &mut VisualContextTree, parent: ContextRef) -> ContextRef {
-        let clip = tree.append_clip(
-            ClipNodeData::rect_clip(VIEWPORT.to_float()),
-            parent.clip,
-            parent.spatial,
-        );
-        ContextRef { clip, ..parent }
+    fn root_context(tree: &VisualContextTree) -> ContextRef {
+        ContextRef {
+            effect: tree.root_isolation_effect.unwrap(),
+            ..ContextRef::default()
+        }
     }
 
     fn fill(rect: IntRect) -> FillRect {
@@ -1005,8 +1713,12 @@ mod tests {
         }
     }
 
-    fn nested_context(rect: IntRect) -> DrawCompositedContext {
-        nested_context_with_id(rect, CompositorContextId(7))
+    fn canvas(rect: IntRect) -> DrawCanvas {
+        DrawCanvas {
+            dst_rect: rect,
+            canvas_id: CanvasId(1),
+            scaling_mode: ScalingMode::NearestNeighbor,
+        }
     }
 
     fn nested_context_with_id(rect: IntRect, child_context_id: CompositorContextId) -> DrawCompositedContext {
@@ -1019,295 +1731,173 @@ mod tests {
         }
     }
 
-    fn canvas(rect: IntRect) -> DrawCanvas {
-        DrawCanvas {
-            dst_rect: rect,
-            canvas_id: CanvasId(1),
-            scaling_mode: ScalingMode::NearestNeighbor,
-        }
-    }
-
     struct TestList {
         builder: DisplayListBuilder,
+        positions: Vec<ListPosition>,
     }
 
     impl TestList {
         fn new() -> Self {
             Self {
                 builder: DisplayListBuilder::new(),
+                positions: Vec::new(),
             }
         }
 
         fn with<C: DisplayListCommand>(mut self, command: C, context: ContextRef) -> Self {
+            self.positions
+                .push(ListPosition::new(0, self.builder.byte_size() as u32));
             self.builder.append(&command, &[], context);
             self
         }
 
-        fn with_inline_clips<C: DisplayListCommand>(
-            mut self,
-            command: C,
-            context: ContextRef,
-            inline_clips: &[PendingInlineClip],
-        ) -> Self {
-            self.builder
-                .append_with_inline_clips(&command, &[], context, inline_clips);
-            self
-        }
-
-        fn plan(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> Result<LayerPlan, UnlayeredReason> {
-            let (tape, runs) = (self.builder.bytes(), self.builder.command_runs());
-            let summary = summarize(tape, runs);
-            let effect_clips = EffectClipPlan::new(tree, runs).unwrap();
-            build_layer_plan(&LayerPlanInputs {
-                tape,
-                command_runs: runs,
-                summary: &summary,
-                effect_clips: &effect_clips,
+        fn stack(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> LayerStack {
+            layer_stack_of(&LayerStackInputs {
+                list: &DisplayListStorage::of_builder(&self.builder),
                 tree,
                 scroll_offsets,
                 viewport_rect: VIEWPORT,
+                raster_transform: FloatMatrix4x4::identity(),
             })
+        }
+
+        fn layers_of(&self, stack: &LayerStack, record: usize) -> Vec<usize> {
+            stack.layers_of_record(self.positions[record])
         }
     }
 
-    fn damage_with_layer_plans(
-        tree: &VisualContextTree,
-        (old_list, old_plan, old_scroll_offsets): (&TestList, &LayerPlan, &[FloatPoint]),
-        (new_list, new_plan, new_scroll_offsets): (&TestList, &LayerPlan, &[FloatPoint]),
-    ) -> DisplayListDamage {
-        let (old_tape, old_runs) = (old_list.builder.bytes(), old_list.builder.command_runs());
-        let (new_tape, new_runs) = (new_list.builder.bytes(), new_list.builder.command_runs());
-        let (old_summary, new_summary) = (summarize(old_tape, old_runs), summarize(new_tape, new_runs));
-        let old_chunks = TapeChunks::with_a_chunk_per_run(old_tape, old_runs);
-        let new_chunks = TapeChunks::with_a_chunk_per_run(new_tape, new_runs);
-        let old_effect_clips = EffectClipPlan::new(tree, old_runs).unwrap();
-        let new_effect_clips = EffectClipPlan::new(tree, new_runs).unwrap();
-        compute_display_list_damage(
-            DisplayListFrame {
-                command_bytes: old_tape,
-                command_runs: old_runs,
-                chunks: &old_chunks,
-                effect_clip_plan: &old_effect_clips,
-                summary: &old_summary,
-                visual_context_tree: tree,
-                scroll_offsets: old_scroll_offsets,
-            },
-            DisplayListFrame {
-                command_bytes: new_tape,
-                command_runs: new_runs,
-                chunks: &new_chunks,
-                effect_clip_plan: &new_effect_clips,
-                summary: &new_summary,
-                visual_context_tree: tree,
-                scroll_offsets: new_scroll_offsets,
-            },
-            VIEWPORT,
-            LiveContentChanges::default(),
-            Some(LayerPlans {
-                old: old_plan,
-                new: new_plan,
-            }),
-        )
-    }
-
-    fn kinds(plan: &LayerPlan) -> Vec<&'static str> {
-        plan.layers
+    // The layers that can hold something, from the base layer up, each as its kind and what it sits above.
+    fn shape(stack: &LayerStack) -> Vec<String> {
+        stack
+            .layers
             .iter()
-            .map(|layer| match layer.kind {
-                LayerKind::Base => "base",
-                LayerKind::Painted => "painted",
-                LayerKind::Media { .. } => "media",
+            .enumerate()
+            .filter(|(index, layer)| {
+                *index == stack.base_layer || (*index > stack.base_layer && layer.may_hold_content)
+            })
+            .map(|(index, layer)| {
+                let space = stack.name_of_space(stack.nodes[layer.node].space);
+                match layer.key {
+                    LayerKey::Painted { band, above, .. } => {
+                        let kind = if index == stack.base_layer { "base" } else { "painted" };
+                        let above = above.map_or(String::new(), |above| {
+                            format!(" above {}", stack.name_of_barrier(&above))
+                        });
+                        format!("{kind} {space} band {band}{above}")
+                    }
+                    LayerKey::Media { content, ordinal } => format!("{} #{ordinal} {space}", media_name(content)),
+                }
             })
             .collect()
     }
 
     #[test]
-    fn content_over_a_canvas_goes_above_it_and_other_content_stays_in_the_base_layer() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        };
-        let elsewhere = separate_clip(&mut tree, root);
+    fn content_over_a_canvas_goes_above_it_only_in_the_tiles_the_canvas_can_show_in() {
+        let tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
         let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 600)), root)
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(150, 150, 20, 20)), root)
-            .with(fill(IntRect::new(500, 400, 20, 20)), elsewhere);
-        let plan = list.plan(&tree, &[]).unwrap();
-        assert_eq!(kinds(&plan), ["base", "media", "painted"]);
-        assert_eq!(plan.layers[1].rect, IntRect::new(97, 97, 206, 106));
-        assert_eq!(plan.layers[2].rect, IntRect::new(147, 147, 26, 26));
-        let run_end = |run: usize| list.builder.command_runs()[run].offset + list.builder.command_runs()[run].size;
-        let canvas_span = plan.layers[1].record_spans[0];
-        assert_eq!(
-            plan.layers[0].record_spans,
-            [
-                RecordSpan {
-                    begin_offset: 0,
-                    end_offset: canvas_span.begin_offset,
-                },
-                RecordSpan {
-                    begin_offset: run_end(0),
-                    end_offset: run_end(1),
-                },
-            ]
-        );
-        assert_eq!(
-            plan.layers[2].record_spans,
-            [RecordSpan {
-                begin_offset: canvas_span.end_offset,
-                end_offset: run_end(0),
-            }]
-        );
-    }
-
-    fn layers_of_records(list: &TestList, plan: &LayerPlan) -> Vec<usize> {
-        let mut layers = Vec::new();
-        for_each_command(list.builder.bytes(), |_, record_offset, _| {
-            layers.push(plan.layer_of_record(record_offset as u32));
-        });
-        layers
-    }
-
-    fn record_offsets(list: &TestList) -> Vec<u32> {
-        let mut offsets = Vec::new();
-        for_each_command(list.builder.bytes(), |_, record_offset, _| {
-            offsets.push(record_offset as u32);
-        });
-        offsets.push(list.builder.bytes().len() as u32);
-        offsets
-    }
-
-    #[test]
-    fn records_in_the_run_of_a_canvas_are_placed_one_by_one() {
-        let tree = identity_tree();
-        let root = ContextRef::default();
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 600)), root)
+            .with(fill(VIEWPORT), root)
             .with(canvas(IntRect::new(100, 100, 200, 100)), root)
             .with(fill(IntRect::new(150, 150, 20, 20)), root)
             .with(fill(IntRect::new(500, 400, 20, 20)), root)
-            .with(fill(IntRect::new(160, 160, 20, 20)), root);
-        assert_eq!(list.builder.command_runs().len(), 1);
-        let plan = list.plan(&tree, &[]).unwrap();
-        assert_eq!(kinds(&plan), ["base", "media", "painted"]);
-        assert_eq!(layers_of_records(&list, &plan), [0, 1, 2, 0, 2]);
-        assert_eq!(plan.layers[2].rect, IntRect::new(147, 147, 36, 36));
-        let offsets = record_offsets(&list);
-        let span = |first_record: usize, record_after_last: usize| RecordSpan {
-            begin_offset: offsets[first_record],
-            end_offset: offsets[record_after_last],
-        };
-        assert_eq!(plan.layers[0].record_spans, [span(0, 1), span(3, 4)]);
-        assert_eq!(plan.layers[1].record_spans, [span(1, 2)]);
-        assert_eq!(plan.layers[2].record_spans, [span(2, 3), span(4, 5)]);
-    }
-
-    #[test]
-    fn records_in_a_run_that_touches_a_canvas_are_placed_one_by_one() {
-        let mut tree = identity_tree();
-        let root = ContextRef::default();
-        let boxes = separate_clip(&mut tree, root);
-        let list = TestList::new()
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(500, 400, 20, 20)), boxes)
-            .with(fill(IntRect::new(150, 150, 20, 20)), boxes)
-            .with(fill(IntRect::new(600, 400, 20, 20)), boxes);
-        assert_eq!(list.builder.command_runs().len(), 2);
-        let plan = list.plan(&tree, &[]).unwrap();
-        assert_eq!(layers_of_records(&list, &plan), [1, 0, 2, 0]);
-    }
-
-    #[test]
-    fn a_run_under_a_perspective_transform_is_placed_whole() {
-        let mut tree = identity_tree();
-        let mut perspective_matrix = FloatMatrix4x4::identity();
-        perspective_matrix.elements[3][0] = 0.0001;
-        let under_perspective = tree.append_spatial_under(
-            ContextRef::default(),
-            SpatialData::Transform(TransformData {
-                matrix: perspective_matrix,
-                origin: FloatPoint::default(),
-                sorting_context_root_index: None,
-                flattens_inherited_transform: false,
-                role: TransformDataRole::CssTransform,
-                synthetic_plane: false,
-                establishes_sorting_context: false,
-                bounds: FloatRect::default(),
-            }),
+            .with(fill(IntRect::new(250, 150, 20, 200)), root);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(
+            shape(&stack),
+            [
+                "base viewport band 0",
+                "canvas #0 viewport",
+                "painted viewport band 0 above L1"
+            ]
         );
-        let list = TestList::new()
-            .with(canvas(IntRect::new(100, 100, 200, 100)), ContextRef::default())
-            .with(fill(IntRect::new(150, 150, 20, 20)), under_perspective)
-            .with(fill(IntRect::new(500, 400, 20, 20)), under_perspective);
-        let plan = list.plan(&tree, &[]).unwrap();
-        assert_eq!(layers_of_records(&list, &plan), [1, 2, 2]);
-    }
-
-    #[test]
-    fn compositor_metadata_stays_in_the_layer_of_the_record_before_it() {
-        let tree = identity_tree();
-        let root = ContextRef::default();
-        let metadata = CompositorBlockingWheelEventRegion {
-            rect: FloatRect::new(0.0, 0.0, 900.0, 900.0),
-        };
-        let list = TestList::new()
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(150, 150, 20, 20)), root)
-            .with(metadata, root)
-            .with(fill(IntRect::new(160, 160, 20, 20)), root);
-        let plan = list.plan(&tree, &[]).unwrap();
-        assert_eq!(layers_of_records(&list, &plan), [1, 2, 2, 2]);
-        assert_eq!(plan.layers[2].record_spans.len(), 1);
+        let (base, canvas_layer, above_canvas) = (0, 1, 2);
+        assert_eq!(list.layers_of(&stack, 0), [base]);
+        assert_eq!(list.layers_of(&stack, 1), [canvas_layer]);
+        assert_eq!(list.layers_of(&stack, 2), [above_canvas]);
+        assert_eq!(list.layers_of(&stack, 3), [base]);
+        // A box that reaches tiles the canvas can show in and tiles it cannot is in both layers.
+        assert_eq!(list.layers_of(&stack, 4), [base, above_canvas]);
+        let group = &stack.groups[0];
+        let box_position = list.positions[4];
+        assert_eq!(
+            group.layer_at(box_position, TileCoord::new(1, 0).cell_rect()),
+            above_canvas
+        );
+        assert_eq!(group.layer_at(box_position, TileCoord::new(1, 1).cell_rect()), base);
     }
 
     #[test]
     fn a_canvas_under_a_group_effect_is_not_a_layer() {
         let mut tree = tree_with_root_isolation_effect();
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        };
+        let root = root_context(&tree);
         let group = tree.append_effect_node_under(root, effects(0.5, CompositingAndBlendingOperator::Normal));
         let list = TestList::new().with(canvas(IntRect::new(100, 100, 200, 100)), group);
-        assert_eq!(
-            list.plan(&tree, &[]),
-            Err(UnlayeredReason::NoMediaCanBeLayer {
-                first_rejected_media: CANVAS,
-                rejection: MediaLayerRejection::InsideGroupEffect,
-            })
-        );
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(shape(&stack), ["base viewport band 0"]);
+        assert_eq!(stack.rejected_media, [(CANVAS, MediaLayerRejection::InsideGroupEffect)]);
     }
 
     #[test]
-    fn a_nested_context_is_a_layer_that_the_window_server_does_not_show() {
+    fn a_blend_mode_reading_the_root_group_refuses_only_the_media_it_would_read_through() {
         let mut tree = tree_with_root_isolation_effect();
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
+        let root = root_context(&tree);
+        let multiply = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Multiply));
+        let list_with_blend_at = |rect| {
+            TestList::new()
+                .with(fill(VIEWPORT), root)
+                .with(canvas(IntRect::new(100, 100, 200, 100)), root)
+                .with(fill(rect), multiply)
         };
-        let elsewhere = separate_clip(&mut tree, root);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 600)), root)
-            .with(nested_context(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(150, 150, 20, 20)), root)
-            .with(fill(IntRect::new(500, 400, 20, 20)), elsewhere);
-        let plan = list.plan(&tree, &[]).unwrap();
-        assert_eq!(kinds(&plan), ["base", "media", "painted"]);
+        let beside = list_with_blend_at(IntRect::new(500, 400, 20, 20)).stack(&tree, &[]);
+        assert_eq!(beside.unlayered_reason, None);
+        assert_eq!(shape(&beside), ["base viewport band 0", "canvas #0 viewport"]);
+        let over = list_with_blend_at(IntRect::new(150, 150, 20, 20)).stack(&tree, &[]);
+        assert_eq!(shape(&over), ["base viewport band 0"]);
         assert_eq!(
-            plan.layers[1].kind,
-            LayerKind::Media {
-                content: NESTED_CONTEXT
-            }
+            over.rejected_media,
+            [(CANVAS, MediaLayerRejection::UnderContentReadingTheRootGroup)]
         );
-        assert_eq!(plan.layers[1].rect, IntRect::new(97, 97, 206, 106));
-        assert_eq!(plan.layers[1].window_server_placement, None);
-        assert_eq!(plan.layers[2].rect, IntRect::new(147, 147, 26, 26));
     }
 
     #[test]
-    fn a_canvas_keeps_its_layer_when_more_nested_contexts_than_layers_are_drawn_before_it() {
+    fn a_backdrop_filter_reading_through_a_nested_scroller_folds_only_that_scroller() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let scrolled = add_nested_scroller(&mut tree, document);
+        let frosted = tree.append_effect_node_under(document, backdrop_filter_effect());
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
+            .with(fill(IntRect::new(120, 400, 60, 40)), frosted);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(stack.spaces.len(), 2);
+        assert_eq!(shape(&stack), ["base document band 0"]);
+    }
+
+    #[test]
+    fn a_blend_mode_keeps_its_space_over_the_canvas_background_painted_below_the_root_group() {
+        let (mut tree, viewport, document) = tree_with_document_scroll();
+        let multiply = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Multiply));
+        let canvas_background = ContextRef {
+            effect: EffectNodeIndex::NONE,
+            ..viewport
+        };
+        let list_over = |background| {
+            TestList::new()
+                .with(fill(VIEWPORT), background)
+                .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+                .with(fill(IntRect::new(40, 120, 120, 60)), multiply)
+        };
+        let stack = list_over(canvas_background).stack(&tree, &[]);
+        assert_eq!(stack.spaces.len(), 2);
+        assert_eq!(shape(&stack), ["base viewport band 0", "painted document band 0"]);
+
+        let stack = list_over(viewport).stack(&tree, &[]);
+        assert_eq!(stack.spaces.len(), 1);
+        assert_eq!(shape(&stack), ["base viewport band 0"]);
+    }
+
+    #[test]
+    fn nested_contexts_give_way_to_canvases_past_the_most_media_that_get_layers() {
         let tree = identity_tree();
         let mut list = TestList::new();
         for index in 0..=MAXIMUM_MEDIA_LAYER_COUNT {
@@ -1316,553 +1906,388 @@ mod tests {
             list = list.with(nested_context_with_id(rect, child_context_id), ContextRef::default());
         }
         list = list.with(canvas(IntRect::new(0, 300, 200, 100)), ContextRef::default());
-        let plan = list.plan(&tree, &[]).unwrap();
-        let media_of_layers: Vec<LiveContent> = plan
+        let stack = list.stack(&tree, &[]);
+        let media: Vec<LiveContent> = stack
             .layers
             .iter()
-            .filter_map(|layer| match layer.kind {
-                LayerKind::Media { content } => Some(content),
-                _ => None,
+            .filter_map(|layer| match layer.key {
+                LayerKey::Media { content, .. } => Some(content),
+                LayerKey::Painted { .. } => None,
             })
             .collect();
-        assert_eq!(media_of_layers.len(), MAXIMUM_MEDIA_LAYER_COUNT);
-        assert_eq!(media_of_layers.last(), Some(&CANVAS));
-    }
-
-    #[test]
-    fn a_nested_context_under_a_group_effect_is_not_a_layer() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        };
-        let group = tree.append_effect_node_under(root, effects(0.5, CompositingAndBlendingOperator::Normal));
-        let list = TestList::new().with(nested_context(IntRect::new(100, 100, 200, 100)), group);
+        assert_eq!(media.len(), MAXIMUM_MEDIA_LAYER_COUNT);
+        assert_eq!(media.last(), Some(&CANVAS));
         assert_eq!(
-            list.plan(&tree, &[]),
-            Err(UnlayeredReason::NoMediaCanBeLayer {
-                first_rejected_media: NESTED_CONTEXT,
-                rejection: MediaLayerRejection::InsideGroupEffect,
-            })
+            stack.rejected_media,
+            [
+                (
+                    LiveContent::CompositedContext(CompositorContextId(10 + MAXIMUM_MEDIA_LAYER_COUNT as u64 - 1)),
+                    MediaLayerRejection::MoreMediaThanLayersFor
+                ),
+                (
+                    LiveContent::CompositedContext(CompositorContextId(10 + MAXIMUM_MEDIA_LAYER_COUNT as u64)),
+                    MediaLayerRejection::MoreMediaThanLayersFor
+                )
+            ]
         );
     }
 
     #[test]
-    fn a_canvas_between_the_runs_of_one_group_is_not_a_layer() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        };
-        let group = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal));
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 10, 10)), group)
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(20, 0, 10, 10)), group);
-        assert_eq!(
-            list.plan(&tree, &[]),
-            Err(UnlayeredReason::NoMediaCanBeLayer {
-                first_rejected_media: CANVAS,
-                rejection: MediaLayerRejection::BetweenRunsOfOneGroupEffect,
-            })
-        );
-    }
-
-    #[test]
-    fn a_blend_mode_reading_the_root_group_leaves_the_list_unlayered() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        };
-        let multiply = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Multiply));
-        let list = TestList::new()
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(500, 400, 20, 20)), multiply);
-        assert_eq!(list.plan(&tree, &[]), Err(UnlayeredReason::BlendModeReadsRootGroup));
-    }
-
-    #[test]
-    fn a_list_without_canvases_videos_or_nested_contexts_is_not_layered() {
+    fn the_window_server_is_asked_about_canvases_and_videos_only() {
         let tree = identity_tree();
-        let list = TestList::new().with(fill(IntRect::new(100, 100, 200, 100)), ContextRef::default());
-        assert_eq!(list.plan(&tree, &[]), Err(UnlayeredReason::NoMedia));
+        let list = TestList::new()
+            .with(
+                nested_context_with_id(IntRect::new(100, 100, 200, 100), CompositorContextId(7)),
+                ContextRef::default(),
+            )
+            .with(canvas(IntRect::new(400, 100, 200, 100)), ContextRef::default());
+        let stack = list.stack(&tree, &[]);
+        let placements: Vec<bool> = stack
+            .layers
+            .iter()
+            .filter_map(|layer| match &layer.content {
+                LayerContent::Media {
+                    window_server_placement,
+                    ..
+                } => Some(window_server_placement.is_some()),
+                LayerContent::Painted { .. } => None,
+            })
+            .collect();
+        assert_eq!(placements, [false, true]);
     }
 
-    fn list_with_scrolled_box(tree: &mut VisualContextTree) -> (TestList, SpatialNodeIndex) {
-        let scroll_node = tree.append_spatial(
+    fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
+        let mut tree = tree_with_root_isolation_effect();
+        let document_scroll_node = tree.append_spatial(
             SpatialData::Scroll(ScrollData {
                 state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
                 owner_paintable: NodeSlotId::INVALID,
             }),
             VISUAL_VIEWPORT_NODE_INDEX,
         );
-        let scrolled = ContextRef {
+        assert!(
+            tree.set_compositor_scroll_table(CompositorScrollTable {
+                nodes: vec![CompositorScrollNodeRecord {
+                    scroll_node_index: document_scroll_node,
+                    parent_scroll_node_index: VISUAL_VIEWPORT_NODE_INDEX,
+                    scrollport_rect: VIEWPORT,
+                    max_scroll_offset: FloatPoint { x: 0.0, y: 2000.0 },
+                    is_viewport: true,
+                    ..CompositorScrollNodeRecord::default()
+                }]
+                .into(),
+                ..CompositorScrollTable::default()
+            })
+        );
+        let viewport = root_context(&tree);
+        let document = ContextRef {
+            spatial: document_scroll_node,
+            ..viewport
+        };
+        (tree, viewport, document)
+    }
+
+    fn add_nested_scroller(tree: &mut VisualContextTree, document: ContextRef) -> ContextRef {
+        let scrollport = tree.append_clip(
+            ClipNodeData::rect_clip(FloatRect::new(20.0, 300.0, 200.0, 200.0)),
+            document.clip,
+            document.spatial,
+        );
+        let scroll_node = tree.append_spatial(
+            SpatialData::Scroll(ScrollData {
+                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
+                owner_paintable: NodeSlotId::INVALID,
+            }),
+            document.spatial,
+        );
+        let mut table = tree.compositor_scroll_table().clone();
+        let mut nodes = table.nodes.to_vec();
+        nodes.push(CompositorScrollNodeRecord {
+            scroll_node_index: scroll_node,
+            parent_scroll_node_index: document.spatial,
+            scrollport_rect: IntRect::new(20, 300, 200, 200),
+            max_scroll_offset: FloatPoint { x: 0.0, y: 1800.0 },
+            ..CompositorScrollNodeRecord::default()
+        });
+        nodes.sort_by_key(|node| node.scroll_node_index);
+        table.nodes = nodes.into();
+        assert!(tree.set_compositor_scroll_table(table));
+        ContextRef {
             spatial: scroll_node,
-            ..ContextRef::default()
-        };
+            clip: scrollport,
+            ..document
+        }
+    }
+
+    fn document_offsets(tree: &VisualContextTree, document: ContextRef, y: f32) -> Vec<FloatPoint> {
+        let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
+        offsets[document.spatial.0 as usize] = FloatPoint { x: 0.0, y };
+        offsets
+    }
+
+    #[test]
+    fn content_that_scrolls_with_the_document_is_rastered_in_its_space_as_the_base_layer() {
+        let (tree, viewport, document) = tree_with_document_scroll();
         let list = TestList::new()
-            .with(canvas(IntRect::new(100, 100, 200, 100)), ContextRef::default())
-            .with(fill(IntRect::new(500, 120, 20, 20)), scrolled);
-        (list, scroll_node)
-    }
-
-    #[test]
-    fn scrolling_content_over_a_canvas_moves_it_above_the_canvas() {
-        let mut tree = identity_tree();
-        let (list, scroll_node) = list_with_scrolled_box(&mut tree);
-        let mut scroll_offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
-        let unscrolled = list.plan(&tree, &scroll_offsets).unwrap();
-        assert_eq!(kinds(&unscrolled), ["base", "media"]);
-        scroll_offsets[scroll_node.0 as usize] = FloatPoint { x: -300.0, y: 0.0 };
-        let scrolled = list.plan(&tree, &scroll_offsets).unwrap();
-        assert_eq!(kinds(&scrolled), ["base", "media", "painted"]);
-        assert!(!scrolled.has_same_layers_as(&unscrolled));
-    }
-
-    #[test]
-    fn content_scrolled_within_its_layer_damages_only_that_layer() {
-        let mut tree = identity_tree();
-        let (list, scroll_node) = list_with_scrolled_box(&mut tree);
-        let unscrolled_offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
-        let mut scrolled_offsets = unscrolled_offsets.clone();
-        scrolled_offsets[scroll_node.0 as usize] = FloatPoint { x: 0.0, y: 50.0 };
-        let before = list.plan(&tree, &unscrolled_offsets).unwrap();
-        let after = list.plan(&tree, &scrolled_offsets).unwrap();
-        assert!(after.has_same_layers_as(&before));
-        let damage = damage_with_layer_plans(
-            &tree,
-            (&list, &before, &unscrolled_offsets),
-            (&list, &after, &scrolled_offsets),
-        );
-        assert_eq!(damage.layer_rects, [damage.rect, Some(IntRect::default())]);
-    }
-
-    struct ContextsAroundACanvas {
-        under_box: ContextRef,
-        canvas: ContextRef,
-        boxes_after_canvas: Vec<ContextRef>,
-    }
-
-    // Each box gets a clip of its own, so that it is a run of its own.
-    fn contexts_around_a_canvas(tree: &mut VisualContextTree, box_count_after_canvas: usize) -> ContextsAroundACanvas {
-        let root = ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        };
-        ContextsAroundACanvas {
-            under_box: separate_clip(tree, root),
-            canvas: root,
-            boxes_after_canvas: (0..box_count_after_canvas).map(|_| separate_clip(tree, root)).collect(),
-        }
-    }
-
-    fn list_around_a_canvas(
-        contexts: &ContextsAroundACanvas,
-        (under, under_color): (IntRect, Color),
-        boxes_after_canvas: &[IntRect],
-    ) -> TestList {
-        let mut list = TestList::new()
-            .with(
-                FillRect {
-                    color: under_color,
-                    ..fill(under)
-                },
-                contexts.under_box,
-            )
-            .with(canvas(IntRect::new(100, 100, 200, 100)), contexts.canvas);
-        for (rect, context) in boxes_after_canvas.iter().zip(&contexts.boxes_after_canvas) {
-            list = list.with(fill(*rect), *context);
-        }
-        list
-    }
-
-    #[test]
-    fn content_that_changes_under_a_canvas_damages_only_the_base_layer() {
-        let mut tree = tree_with_root_isolation_effect();
-        let contexts = contexts_around_a_canvas(&mut tree, 2);
-        let list_with_under_color = |color| {
-            list_around_a_canvas(
-                &contexts,
-                (IntRect::new(50, 50, 400, 300), color),
-                &[IntRect::new(150, 150, 20, 20), IntRect::new(600, 500, 20, 20)],
-            )
-        };
-        let old_list = list_with_under_color(Color::from_rgb(255, 0, 0));
-        let new_list = list_with_under_color(Color::from_rgb(0, 0, 255));
-        let old_plan = old_list.plan(&tree, &[]).unwrap();
-        let new_plan = new_list.plan(&tree, &[]).unwrap();
-        assert_eq!(kinds(&new_plan), ["base", "media", "painted"]);
-        let damage = damage_with_layer_plans(&tree, (&old_list, &old_plan, &[]), (&new_list, &new_plan, &[]));
-        let under_rect = Some(IntRect::new(49, 49, 402, 302));
-        assert_eq!(damage.rect, under_rect);
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(100, 1500, 20, 20)), document)
+            .with(fill(IntRect::new(10, 10, 100, 30)), viewport);
+        let stack = list.stack(&tree, &[]);
         assert_eq!(
-            damage.layer_rects,
-            [under_rect, Some(IntRect::default()), Some(IntRect::default())]
-        );
-    }
-
-    const SMALL_RED_BOX: (IntRect, Color) = (IntRect::new(0, 0, 10, 10), Color::from_rgb(255, 0, 0));
-
-    #[test]
-    fn a_box_that_moves_off_a_canvas_damages_the_layer_it_leaves_and_the_one_it_enters() {
-        let mut tree = tree_with_root_isolation_effect();
-        let contexts = contexts_around_a_canvas(&mut tree, 2);
-        let list_with_second_box_at =
-            |second| list_around_a_canvas(&contexts, SMALL_RED_BOX, &[IntRect::new(150, 150, 20, 20), second]);
-        let old_list = list_with_second_box_at(IntRect::new(160, 160, 20, 20));
-        let new_list = list_with_second_box_at(IntRect::new(600, 500, 20, 20));
-        let old_plan = old_list.plan(&tree, &[]).unwrap();
-        let new_plan = new_list.plan(&tree, &[]).unwrap();
-        assert_eq!(kinds(&old_plan), ["base", "media", "painted"]);
-        assert!(new_plan.has_same_layers_as(&old_plan));
-        let damage = damage_with_layer_plans(&tree, (&old_list, &old_plan, &[]), (&new_list, &new_plan, &[]));
-        assert_eq!(
-            damage.layer_rects,
+            shape(&stack),
             [
-                Some(IntRect::new(599, 499, 22, 22)),
-                Some(IntRect::default()),
-                Some(IntRect::new(159, 159, 22, 22)),
+                "base document band 0",
+                "painted viewport band 0 above band 0 of document"
+            ]
+        );
+        assert_eq!(
+            stack.spaces[stack.space_of_layer(stack.base_layer)].anchor,
+            document.spatial
+        );
+    }
+
+    #[test]
+    fn document_content_painted_after_a_fixed_box_starts_a_band_above_the_box() {
+        let (tree, viewport, document) = tree_with_document_scroll();
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(10, 10, 100, 30)), viewport)
+            .with(fill(IntRect::new(50, 1500, 20, 20)), document);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(
+            shape(&stack),
+            [
+                "base document band 0",
+                "painted viewport band 0 above band 0 of document",
+                "painted document band 1",
             ]
         );
     }
 
-    // The first box grows over an unchanged box, which the layer above the canvas then takes in. With `last_box`, a
-    // box after the unchanged one changes too, so that the diff compares the unchanged box command by command.
-    fn assert_unchanged_box_taken_in_by_a_growing_layer_damages_both_layers(last_box: Option<(IntRect, IntRect)>) {
+    #[test]
+    fn layers_keep_their_keys_and_the_stack_its_placement_as_the_document_scrolls() {
+        let (tree, viewport, document) = tree_with_document_scroll();
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(canvas(IntRect::new(100, 900, 200, 100)), document)
+            .with(fill(IntRect::new(10, 10, 100, 30)), viewport);
+        let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
+        let scrolled = list.stack(&tree, &document_offsets(&tree, document, -700.0));
+        assert_eq!(
+            unscrolled.keys().collect::<Vec<_>>(),
+            scrolled.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(unscrolled.placement_at_every_anchor, scrolled.placement_at_every_anchor);
+    }
+
+    #[test]
+    fn a_sticky_box_leaves_the_placement_alike_as_it_sticks() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let sticky_node = tree.append_spatial(
+            SpatialData::Sticky(StickyData::unconstrained(
+                document.spatial,
+                None,
+                1,
+                NodeSlotId::INVALID,
+            )),
+            document.spatial,
+        );
+        let sticky = ContextRef {
+            spatial: sticky_node,
+            ..document
+        };
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(canvas(IntRect::new(100, 900, 200, 100)), document)
+            .with(fill(IntRect::new(0, 0, 800, 50)), sticky);
+        let mut offsets = document_offsets(&tree, document, -700.0);
+        let unstuck = list.stack(&tree, &offsets);
+        offsets[sticky_node.0 as usize] = FloatPoint { x: 0.0, y: 700.0 };
+        let stuck = list.stack(&tree, &offsets);
+        assert_eq!(unstuck.placement_at_every_anchor, stuck.placement_at_every_anchor);
+        assert_eq!(
+            shape(&stuck),
+            [
+                "base document band 0",
+                "canvas #0 document",
+                "painted document band 0 above L2"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nested_scroller_is_one_band_while_document_content_painted_after_it_misses_its_scrollport() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let scrolled = add_nested_scroller(&mut tree, document);
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
+            .with(fill(IntRect::new(400, 300, 100, 100)), document)
+            .with(fill(IntRect::new(30, 400, 50, 50)), scrolled);
+        let stack = list.stack(&tree, &[]);
+        // The box painted after the scroller's content misses the tiles of its scrollport, so the layer above the
+        // band holds nothing.
+        assert_eq!(
+            shape(&stack),
+            ["base document band 0", "painted scroller@2 in document band 0"]
+        );
+        let scroller_layer = 2;
+        assert_eq!(
+            stack.nodes[stack.layers[scroller_layer].node].composite_clips,
+            [CompositeClip {
+                space: stack.space_of_layer(stack.base_layer),
+                rect: IntRect::new(20, 300, 200, 200),
+            }]
+        );
+        assert_eq!(list.layers_of(&stack, 3), [scroller_layer]);
+    }
+
+    #[test]
+    fn a_band_ends_where_document_content_painted_after_it_reaches_its_scrollport() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let scrolled = add_nested_scroller(&mut tree, document);
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
+            .with(fill(IntRect::new(100, 350, 300, 50)), document)
+            .with(fill(IntRect::new(30, 400, 50, 50)), scrolled);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(
+            shape(&stack),
+            [
+                "base document band 0",
+                "painted scroller@2 in document band 0",
+                "painted document band 0 above band 0 of scroller@2 in document",
+                "painted scroller@2 in document band 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn samples_of_a_transform_animation_leave_the_placement_alike() {
+        use crate::animation_timing::{AnimationEffectTiming, TimeValue};
+        use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
+        use crate::visual_animation::{
+            VisualAnimation, VisualAnimationKeyframe, VisualAnimationTransformOperation, VisualAnimationValue,
+        };
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let moving_node = tree.append_spatial(
+            SpatialData::Transform(TransformData {
+                matrix: FloatMatrix4x4::identity(),
+                origin: FloatPoint::default(),
+                sorting_context_root_index: None,
+                flattens_inherited_transform: false,
+                role: TransformDataRole::CssTransform,
+                synthetic_plane: false,
+                establishes_sorting_context: false,
+                bounds: FloatRect::new(0.0, 0.0, 50.0, 50.0),
+            }),
+            document.spatial,
+        );
+        let translate_x = |pixels: f32| VisualAnimationKeyframe {
+            offset: f64::from(pixels) / 400.0,
+            easing: crate::easing::Easing::default(),
+            value: VisualAnimationValue::Transform(vec![
+                VisualAnimationTransformOperation::new(FfiVisualAnimationTransformOperationKind::TranslateX, &[pixels])
+                    .unwrap(),
+            ]),
+        };
+        tree.set_visual_animations(vec![VisualAnimation {
+            target_kind: FfiVisualAnimationTargetKind::Transform,
+            node_indices: vec![moving_node.0],
+            timing: AnimationEffectTiming {
+                iteration_duration: TimeValue::milliseconds(1000.0),
+                ..VisualAnimation::default().timing
+            },
+            keyframes: vec![translate_x(0.0), translate_x(400.0)],
+            ..VisualAnimation::default()
+        }]);
+        let moving = ContextRef {
+            spatial: moving_node,
+            ..document
+        };
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(canvas(IntRect::new(500, 300, 200, 100)), document)
+            .with(fill(IntRect::new(100, 300, 50, 50)), moving);
+        let at_start = list.stack(&tree.with_visual_animation_samples(0), &[]);
+        let halfway = list.stack(&tree.with_visual_animation_samples(500_000_000), &[]);
+        assert_eq!(at_start.placement_at_every_anchor, halfway.placement_at_every_anchor);
+        // Wherever the animation takes the box, it can go over the canvas, so it sits above it.
+        assert_eq!(
+            shape(&halfway),
+            [
+                "base document band 0",
+                "canvas #0 document",
+                "painted document band 0 above L2"
+            ]
+        );
+    }
+
+    fn backdrop_filter_effect() -> EffectNodeData {
+        EffectNodeData::Effects(EffectsData {
+            isolation: false,
+            opacity: 1.0,
+            blend_mode: CompositingAndBlendingOperator::Normal,
+            filter: None,
+            backdrop_filter: Some(BackdropFilterData {
+                filter: std::sync::Arc::new(Filter::blur(4.0, 4.0, None).serialize()),
+                region: IntRect::new(120, 120, 60, 40),
+                corner_radii: CornerRadii::default(),
+            }),
+        })
+    }
+
+    #[test]
+    fn a_canvas_under_a_backdrop_filter_reading_the_root_group_gets_no_layer() {
         let mut tree = tree_with_root_isolation_effect();
-        let contexts = contexts_around_a_canvas(&mut tree, 3);
-        let unchanged_box = IntRect::new(400, 150, 20, 20);
-        let list_with = |first_box, last_box: Option<IntRect>| {
-            let mut boxes = vec![first_box, unchanged_box];
-            boxes.extend(last_box);
-            list_around_a_canvas(&contexts, SMALL_RED_BOX, &boxes)
+        let root = root_context(&tree);
+        let frosted = tree.append_effect_node_under(root, backdrop_filter_effect());
+        let list = TestList::new()
+            .with(fill(VIEWPORT), root)
+            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
+            .with(canvas(IntRect::new(500, 400, 200, 100)), root)
+            .with(fill(IntRect::new(120, 120, 60, 40)), frosted);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(shape(&stack), ["base viewport band 0", "canvas #0 viewport"]);
+        assert_eq!(
+            stack.rejected_media,
+            [(CANVAS, MediaLayerRejection::UnderContentReadingTheRootGroup)]
+        );
+        let LayerContent::Media { record_span, .. } = &stack.layers[1].content else {
+            panic!("the second layer is the canvas");
         };
-        let old_list = list_with(IntRect::new(150, 150, 20, 20), last_box.map(|(old, _)| old));
-        let new_list = list_with(IntRect::new(150, 150, 300, 20), last_box.map(|(_, new)| new));
-        let old_plan = old_list.plan(&tree, &[]).unwrap();
-        let new_plan = new_list.plan(&tree, &[]).unwrap();
-        let unchanged_box_record = new_list.builder.command_runs()[3].offset;
-        assert_eq!(old_plan.layer_of_record(unchanged_box_record), 0);
-        assert_eq!(new_plan.layer_of_record(unchanged_box_record), 2);
-        let damage = damage_with_layer_plans(&tree, (&old_list, &old_plan, &[]), (&new_list, &new_plan, &[]));
-        assert!(damage.layer_rects[0].unwrap().contains_rect(unchanged_box));
-        assert!(damage.layer_rects[2].unwrap().contains_rect(unchanged_box));
+        assert_eq!(record_span.begin, list.positions[2]);
     }
 
     #[test]
-    fn an_unchanged_box_that_a_growing_layer_takes_in_damages_the_layer_it_leaves() {
-        assert_unchanged_box_taken_in_by_a_growing_layer_damages_both_layers(None);
+    fn content_of_a_scroller_that_is_not_a_raster_space_is_placed_wherever_it_can_scroll_to() {
+        let (mut tree, viewport, document) = tree_with_document_scroll();
+        let frosted = tree.append_effect_node_under(viewport, backdrop_filter_effect());
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(canvas(IntRect::new(100, 300, 200, 100)), document)
+            .with(fill(IntRect::new(120, 320, 20, 20)), document)
+            .with(fill(IntRect::new(600, 10, 60, 40)), frosted);
+        let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
+        let scrolled = list.stack(&tree, &document_offsets(&tree, document, -250.0));
+        // The backdrop filter keeps the document in the viewport's space, where it scrolls without a new stack, so
+        // nothing of the stack may hold only at one scroll offset.
+        assert_eq!(unscrolled.spaces.len(), 1);
+        assert_eq!(unscrolled.placement_at_every_anchor, scrolled.placement_at_every_anchor);
+        assert_eq!(unscrolled.groups, scrolled.groups);
+        assert_eq!(unscrolled.layers, scrolled.layers);
     }
 
     #[test]
-    fn an_unchanged_box_between_changed_boxes_that_a_growing_layer_takes_in_damages_the_layer_it_leaves() {
-        assert_unchanged_box_taken_in_by_a_growing_layer_damages_both_layers(Some((
-            IntRect::new(600, 500, 20, 20),
-            IntRect::new(620, 500, 20, 20),
-        )));
-    }
-
-    #[test]
-    fn an_unchanged_run_that_a_growing_layer_splits_differently_damages_the_layers_its_record_moves_between() {
-        let mut tree = identity_tree();
-        let root = ContextRef::default();
-        let growing_box = separate_clip(&mut tree, root);
-        let unchanged_box = IntRect::new(400, 150, 20, 20);
-        let list_with_growing_box = |growing_box_rect| {
-            TestList::new()
-                .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-                .with(fill(growing_box_rect), growing_box)
-                .with(fill(unchanged_box), root)
-                .with(fill(IntRect::new(160, 160, 20, 20)), root)
-        };
-        let old_list = list_with_growing_box(IntRect::new(150, 150, 20, 20));
-        let new_list = list_with_growing_box(IntRect::new(150, 150, 300, 20));
-        let old_plan = old_list.plan(&tree, &[]).unwrap();
-        let new_plan = new_list.plan(&tree, &[]).unwrap();
-        assert_eq!(layers_of_records(&old_list, &old_plan), [1, 2, 0, 2]);
-        assert_eq!(layers_of_records(&new_list, &new_plan), [1, 2, 2, 2]);
-        assert!(new_plan.has_same_layers_as(&old_plan));
-        let damage = damage_with_layer_plans(&tree, (&old_list, &old_plan, &[]), (&new_list, &new_plan, &[]));
-        assert!(damage.layer_rects[0].unwrap().contains_rect(unchanged_box));
-        assert!(damage.layer_rects[2].unwrap().contains_rect(unchanged_box));
-    }
-
-    fn placement_of_only_media_layer(plan: &LayerPlan) -> Result<WindowServerPlacement, WindowServerRejection> {
-        let media_layers: Vec<&Layer> = plan
-            .layers
-            .iter()
-            .filter(|layer| matches!(layer.kind, LayerKind::Media { .. }))
-            .collect();
-        assert_eq!(media_layers.len(), 1);
-        media_layers[0].window_server_placement.unwrap()
-    }
-
-    fn rounded_rect_clip(rect: FloatRect, corner_radii: CornerRadii) -> ClipNodeData {
-        ClipNodeData::Rect(crate::visual_context::ClipData {
-            rect,
-            corner_radii,
-            mode: ClipMode::Intersect,
-        })
-    }
-
-    fn transform(matrix: FloatMatrix4x4) -> SpatialData {
-        SpatialData::Transform(TransformData {
-            matrix,
-            origin: FloatPoint::default(),
-            sorting_context_root_index: None,
-            flattens_inherited_transform: false,
-            role: TransformDataRole::CssTransform,
-            synthetic_plane: false,
-            establishes_sorting_context: false,
-            bounds: FloatRect::default(),
-        })
-    }
-
-    #[test]
-    fn rect_clips_of_a_canvas_intersect_into_one_clip_for_the_window_server() {
-        let mut tree = identity_tree();
-        let clip = tree.append_clip(
-            ClipNodeData::rect_clip(FloatRect::new(50.0, 50.0, 200.0, 300.0)),
-            ClipNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-        );
-        let clipped = ContextRef {
-            clip,
-            ..ContextRef::default()
-        };
-        let list = TestList::new().with_inline_clips(
-            canvas(IntRect::new(100, 100, 200, 100)),
-            clipped,
-            &[PendingInlineClip::intersecting_float_rect(FloatRect::new(
-                0.0, 0.0, 220.0, 150.0,
-            ))],
-        );
-        let placement = placement_of_only_media_layer(&list.plan(&tree, &[]).unwrap()).unwrap();
-        assert_eq!(placement.content_rect, IntRect::new(100, 100, 200, 100));
-        assert!(placement.content_to_viewport.is_identity());
-        assert_eq!(placement.clip_rect, FloatRect::new(50.0, 50.0, 170.0, 100.0));
-        assert_eq!(placement.rounded_clip, None);
-        assert_eq!(placement.scaling_mode, ScalingMode::NearestNeighbor);
-    }
-
-    #[test]
-    fn a_rounded_clip_whose_corners_miss_the_content_clips_it_as_a_rect() {
-        let mut tree = identity_tree();
-        let clip = tree.append_clip(
-            rounded_rect_clip(FloatRect::new(10.0, 10.0, 320.0, 240.0), CornerRadii::uniform(16)),
-            ClipNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-        );
-        // The clip is in another space than the content, as a scroller's is, and the corners are above and below the
-        // letterboxed picture.
-        let scrolled = tree.append_spatial_under(
-            ContextRef {
-                clip,
-                ..ContextRef::default()
-            },
-            transform(FloatMatrix4x4::identity()),
-        );
-        let list = TestList::new().with(canvas(IntRect::new(10, 40, 320, 180)), scrolled);
-        let placement = placement_of_only_media_layer(&list.plan(&tree, &[]).unwrap()).unwrap();
-        assert_eq!(placement.clip_rect, FloatRect::new(10.0, 10.0, 320.0, 240.0));
-        assert_eq!(placement.rounded_clip, None);
-    }
-
-    #[test]
-    fn a_rounded_clip_that_cuts_the_content_keeps_its_radius_and_corners() {
-        let mut tree = identity_tree();
-        let mut corner_radii = CornerRadii::uniform(8);
-        corner_radii.bottom_left = Default::default();
-        let scaled = tree.append_spatial_under(ContextRef::default(), transform(scale_matrix(2.0, 2.0, 1.0)));
-        let list = TestList::new().with_inline_clips(
-            canvas(IntRect::new(10, 10, 100, 50)),
-            scaled,
-            &[PendingInlineClip::intersecting_rounded_rect(
-                FloatRect::new(10.0, 10.0, 100.0, 50.0),
-                corner_radii,
-            )],
-        );
-        let placement = placement_of_only_media_layer(&list.plan(&tree, &[]).unwrap()).unwrap();
-        assert_eq!(placement.clip_rect, FloatRect::new(20.0, 20.0, 200.0, 100.0));
-        let rounded_clip = placement.rounded_clip.unwrap();
-        assert_eq!(rounded_clip.rect, FloatRect::new(20.0, 20.0, 200.0, 100.0));
-        assert_eq!(rounded_clip.radius, 16.0);
-        assert_eq!(
-            rounded_clip.rounded_corners,
-            crate::display_list::window_server_placement::RoundedCorners {
-                top_left: true,
-                top_right: true,
-                bottom_right: true,
-                bottom_left: false,
-            }
-        );
-    }
-
-    #[test]
-    fn a_rotated_canvas_under_a_clip_of_an_unrotated_box_is_shown_by_the_window_server() {
-        let mut tree = identity_tree();
-        let clip = tree.append_clip(
-            ClipNodeData::rect_clip(FloatRect::new(0.0, 0.0, 400.0, 300.0)),
-            ClipNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-        );
-        let rotated = tree.append_spatial_under(
-            ContextRef {
-                clip,
-                ..ContextRef::default()
-            },
-            transform(rotation_matrix([0.0, 0.0, 1.0], std::f32::consts::FRAC_PI_2)),
-        );
-        let list = TestList::new().with(canvas(IntRect::new(100, -300, 200, 100)), rotated);
-        let placement = placement_of_only_media_layer(&list.plan(&tree, &[]).unwrap()).unwrap();
-        let [a, b, c, d, _, _] = placement.content_to_viewport.values;
-        assert!(a.abs() < 1e-6 && (b - 1.0).abs() < 1e-6 && (c + 1.0).abs() < 1e-6 && d.abs() < 1e-6);
-        assert_eq!(placement.clip_rect, FloatRect::new(0.0, 0.0, 400.0, 300.0));
-    }
-
-    #[test]
-    fn a_clip_in_the_rotated_space_of_a_video_that_leaves_it_whole_needs_no_layer() {
-        let mut tree = identity_tree();
-        let rotated =
-            tree.append_spatial_under(ContextRef::default(), transform(rotation_matrix([0.0, 0.0, 1.0], 0.3)));
-        let list = TestList::new().with_inline_clips(
-            canvas(IntRect::new(100, 100, 200, 100)),
-            rotated,
-            &[PendingInlineClip::intersecting_rounded_rect(
-                FloatRect::new(100.0, 80.0, 200.0, 140.0),
-                CornerRadii::uniform(10),
-            )],
-        );
-        let placement = placement_of_only_media_layer(&list.plan(&tree, &[]).unwrap()).unwrap();
-        assert_eq!(placement.clip_rect, VIEWPORT.to_float());
-        assert_eq!(placement.rounded_clip, None);
-    }
-
-    #[test]
-    fn a_clip_around_a_canvas_that_its_inline_transform_moves_out_of_stays() {
-        let tree = identity_tree();
-        let mut builder = DisplayListBuilder::new();
-        builder.append_with_inline_state(
-            &canvas(IntRect::new(0, 0, 100, 100)),
-            &[],
-            ContextRef::default(),
-            &[PendingInlineClip::intersecting_float_rect(FloatRect::new(
-                0.0, 0.0, 100.0, 100.0,
-            ))],
-            Some(AffineTransform::identity().translated(20.0, 0.0)),
-        );
-        let list = TestList { builder };
-        let placement = placement_of_only_media_layer(&list.plan(&tree, &[]).unwrap()).unwrap();
-        assert_eq!(placement.clip_rect, FloatRect::new(0.0, 0.0, 100.0, 100.0));
-        assert_eq!(placement.content_to_viewport.values, [1.0, 0.0, 0.0, 1.0, 20.0, 0.0]);
-    }
-
-    #[test]
-    fn media_layers_that_the_window_server_cannot_clip_are_replayed() {
-        let rejection_for = |tree: &VisualContextTree, context: ContextRef, inline_clips: &[PendingInlineClip]| {
-            let list =
-                TestList::new().with_inline_clips(canvas(IntRect::new(100, 100, 200, 100)), context, inline_clips);
-            placement_of_only_media_layer(&list.plan(tree, &[]).unwrap()).unwrap_err()
-        };
-        let tree = identity_tree();
-        let root = ContextRef::default();
-        let content = FloatRect::new(100.0, 100.0, 200.0, 100.0);
-
-        let mut triangle = libgfx_rust::path::Path::new();
-        triangle.move_to(FloatPoint { x: 100.0, y: 100.0 });
-        triangle.line_to(FloatPoint { x: 300.0, y: 100.0 });
-        triangle.line_to(FloatPoint { x: 100.0, y: 200.0 });
-        triangle.close();
-        assert_eq!(
-            rejection_for(
-                &tree,
-                root,
-                &[PendingInlineClip::intersecting_path(
-                    &triangle,
-                    libgfx_rust::WindingRule::Nonzero
-                )]
-            ),
-            WindowServerRejection::ClippedByPath
-        );
-        assert_eq!(
-            rejection_for(
-                &tree,
-                root,
-                &[PendingInlineClip::subtracting_rect(FloatRect::new(
-                    150.0, 120.0, 20.0, 20.0
-                ))]
-            ),
-            WindowServerRejection::ClippedByExcludingClip
-        );
-
-        let mut differing_radii = CornerRadii::uniform(8);
-        differing_radii.top_left = libgfx_rust::CornerRadius {
-            horizontal_radius: 12,
-            vertical_radius: 12,
-        };
-        assert_eq!(
-            rejection_for(
-                &tree,
-                root,
-                &[PendingInlineClip::intersecting_rounded_rect(content, differing_radii)]
-            ),
-            WindowServerRejection::RoundedCornersOfDifferingRadii
-        );
-        let mut elliptical_radii = CornerRadii::uniform(8);
-        elliptical_radii.bottom_right.vertical_radius = 4;
-        assert_eq!(
-            rejection_for(
-                &tree,
-                root,
-                &[PendingInlineClip::intersecting_rounded_rect(content, elliptical_radii)]
-            ),
-            WindowServerRejection::RoundedCornersOfDifferingRadii
-        );
-        assert_eq!(
-            rejection_for(
-                &tree,
-                root,
-                &[
-                    PendingInlineClip::intersecting_rounded_rect(content, CornerRadii::uniform(8)),
-                    PendingInlineClip::intersecting_rounded_rect(
-                        FloatRect::new(90.0, 90.0, 220.0, 120.0),
-                        CornerRadii::uniform(30)
-                    ),
-                ]
-            ),
-            WindowServerRejection::MoreThanOneRoundedClip
-        );
-
-        let mut tree_with_rotated_clip = identity_tree();
-        let rotated =
-            tree_with_rotated_clip.append_spatial_under(root, transform(rotation_matrix([0.0, 0.0, 1.0], 0.3)));
-        let clip = tree_with_rotated_clip.append_clip(
-            ClipNodeData::rect_clip(FloatRect::new(0.0, 0.0, 150.0, 300.0)),
-            ClipNodeIndex::NONE,
-            rotated.spatial,
-        );
-        assert_eq!(
-            rejection_for(&tree_with_rotated_clip, ContextRef { clip, ..rotated }, &[]),
-            WindowServerRejection::ClippedInRotatedOrSkewedSpace
-        );
-
-        let mut tree_with_rounded_clip_node = identity_tree();
-        let rounded = tree_with_rounded_clip_node.append_clip(
-            rounded_rect_clip(content, CornerRadii::uniform(10)),
-            ClipNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-        );
-        assert_eq!(
-            rejection_for(
-                &tree_with_rounded_clip_node,
-                ContextRef { clip: rounded, ..root },
-                &[PendingInlineClip::intersecting_rounded_rect(
-                    content,
-                    CornerRadii::uniform(10)
-                )]
-            ),
-            WindowServerRejection::MoreThanOneRoundedClip
-        );
+    fn a_fixed_backdrop_filter_over_the_document_rasters_everything_in_the_viewport() {
+        let (mut tree, viewport, document) = tree_with_document_scroll();
+        let frosted = tree.append_effect_node_under(viewport, backdrop_filter_effect());
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(120, 120, 60, 40)), frosted);
+        let stack = list.stack(&tree, &[]);
+        assert_eq!(shape(&stack), ["base viewport band 0"]);
+        assert_eq!(stack.spaces.len(), 1);
     }
 }

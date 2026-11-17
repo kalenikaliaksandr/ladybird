@@ -8,9 +8,10 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
-Layers: none (3D sorting context)
+Layers:
+  [L0] single layer replaying the whole list: 3D sorting context
 
 DisplayList:
-DrawCanvas@s1/e0 dst_rect=[8,8 200x120]
-FillRect@s4/e0 rect=[8,131 100x100] color=rgb(255, 165, 0)
+L0 DrawCanvas@s1/e0 dst_rect=[8,8 200x120]
+L0 FillRect@s4/e0 rect=[8,131 100x100] color=rgb(255, 165, 0)
 

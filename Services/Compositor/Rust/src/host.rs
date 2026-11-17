@@ -32,6 +32,7 @@ pub enum ContextTimer {
     BackingStoreShrink,
     SurplusStoreRetirement,
     LayerDrop,
+    TileRasterSurfaceRelease,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -6,9 +6,11 @@ AccumulatedVisualContext Tree:
     [e0 in s0] effects=[]
       [e1 in s1] effects=[blend_mode=2] (BlockContainer<DIV>)
 
-Layers: none (blend mode reads the root group)
+Layers:
+  [L0] base space=viewport
+  no layer for canvas: under content that reads the root group below it
 
 DisplayList:
-DrawCanvas@s1/e0 dst_rect=[8,8 200x120]
-FillRect@s1/e1 rect=[8,131 50x50] color=rgb(255, 165, 0)
+L0 DrawCanvas@s1/e0 dst_rect=[8,8 200x120]
+L0 FillRect@s1/e1 rect=[8,131 50x50] color=rgb(255, 165, 0)
 

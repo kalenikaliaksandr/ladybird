@@ -6,7 +6,7 @@
 
 //! What a frame repaints of the frame painted before it, and of what each backing store holds.
 
-use super::layers::LayerUpdate;
+use super::layers::{LayerUpdate, TileInvalidation};
 use super::{ContextPresenting, FrameToPaint, PresentingEnvironment, rect_of_size};
 use crate::frame_inputs::FrameInputs;
 use crate::host::PendingFrame;
@@ -14,8 +14,6 @@ use crate::raster_host::LiveContent;
 use libcompositing_rust::display_list::commands::{
     CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle,
 };
-use libcompositing_rust::display_list::damage::{DisplayListDamage, LayerPlans, LiveContentChanges};
-use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
 use libcompositing_rust::scrolling::DisplayList;
 use libgfx_rust::{IntRect, IntSize};
 use std::collections::{HashMap, HashSet};
@@ -85,18 +83,8 @@ pub struct LiveContentChangesSinceLastPaint {
     pub repaints_everything: bool,
 }
 
-impl LiveContentChangesSinceLastPaint {
-    pub fn changed(&self, content: LiveMedia) -> bool {
-        match content {
-            LiveMedia::Canvas(id) => self.canvases.contains(&id),
-            LiveMedia::VideoFrame(id) => self.video_sinks.contains(&id),
-            LiveMedia::ImageFrame(id) => self.image_frames.contains(&id),
-            LiveMedia::CompositedContext(id) => self.nested_contexts.contains(&id),
-        }
-    }
-}
-
 pub struct FrameDamage {
+    // In the device pixels of the raster.
     pub rect: IntRect,
     pub layers: LayerUpdate,
     pub live_media_changed: bool,
@@ -251,145 +239,42 @@ impl ContextPresenting {
             height: pending_frame.viewport_rect.height,
         };
         let viewport_rect = rect_of_size(viewport_size);
+        let raster_rect = self.raster_rect();
         let forced_damage_rect = pending_frame.forced_damage_rect.intersected(viewport_rect);
         let changes = self.live_content_changes_since_last_paint(env, viewport_size, frame.display_list, live_content);
-
-        let mut layers = self.layer_update_for(frame, viewport_rect);
-        let shown_by_window_server = match layers.plan(&self.layers) {
-            Some(plan) => self.window_server_can_show_media_layers_of(env, plan, live_content),
-            None => false,
-        };
-        layers.shown_by_window_server = shown_by_window_server;
-        let layers_hold_last_frame = self.layers.has_plan() && self.painted_frame.is_some();
-        let keeps_layer_rasters = match (layers.plan(&self.layers), self.layers.plan()) {
-            (Some(plan), Some(last_plan)) => layers_hold_last_frame && plan.has_same_layers_as(last_plan),
-            _ => false,
-        };
-        let repaints_everything = changes.repaints_everything || forced_damage_rect.contains_rect(viewport_rect);
-        let damage = if repaints_everything {
-            DisplayListDamage {
-                rect: None,
-                layer_rects: Vec::new(),
-            }
-        } else {
-            self.damage_since_last_paint(
-                viewport_rect,
-                frame,
-                forced_damage_rect,
-                &changes,
-                &layers,
-                keeps_layer_rasters,
-            )
-        };
-        layers.painted_damage = damage.rect.unwrap_or(viewport_rect).intersected(viewport_rect);
-
-        let layer_count = layers.plan(&self.layers).map(|plan| plan.layers.len());
-        match layer_count {
-            None => {
-                layers.repaints_everything =
-                    layers_hold_last_frame || self.layers.repaint_everything_after_dropping_layers;
-            }
-            Some(_) if !keeps_layer_rasters => {
-                layers.fully_repainted_layer_bits = u32::MAX;
-                layers.repaints_everything = true;
-            }
-            Some(layer_count) => {
-                for index in 0..layer_count {
-                    let layer_damage = if damage.layer_rects.is_empty() {
-                        Some(layers.painted_damage)
-                    } else {
-                        damage.layer_rects[index]
-                    };
-                    if layer_damage.is_none() {
-                        layers.fully_repainted_layer_bits |= 1 << index;
-                    }
-                    layers
-                        .damage_of_layers
-                        .push(layer_damage.unwrap_or(viewport_rect).intersected(viewport_rect));
-                }
-            }
-        }
-
-        // A frame holds the canvases and videos only while the window server does not show them, so a switch either
-        // way repaints all of it.
-        if self.painted_frame.is_some() && layers.shown_by_window_server != self.layers.window_server_shows_media() {
-            layers.repaints_everything = true;
-            layers.fully_repainted_layer_bits = u32::MAX;
-        }
-
+        let mut layer_update = self.layer_update_for(env, frame, raster_rect, live_content);
         let live_media_changed = !changes.canvases.is_empty() || !changes.video_sinks.is_empty();
-        if layers.repaints_everything {
-            return FrameDamage {
-                rect: viewport_rect,
-                layers,
-                live_media_changed,
-            };
-        }
-        let mut damage_rect = layers.painted_damage;
-        if let Some(plan) = layers.plan(&self.layers)
-            && !layers.shown_by_window_server
-        {
-            damage_rect = damage_rect
-                .united(super::layers::rect_of_media_layers_showing_changes(plan, &changes).intersected(viewport_rect));
-        }
+
+        let scrolled_compositor_scrollbars = self.painted_frame.as_ref().map_or(IntRect::default(), |painted_frame| {
+            frame
+                .frame_inputs
+                .gutters_of_compositor_painted_scrollbars_that_scrolled_since(&painted_frame.frame_inputs)
+        });
+        let forced_damage_rect =
+            self.raster_rect_of(forced_damage_rect.united(scrolled_compositor_scrollbars.intersected(viewport_rect)));
+        let invalidates_every_tile = changes.repaints_everything || forced_damage_rect.contains_rect(raster_rect);
+        layer_update.tile_invalidation = if invalidates_every_tile {
+            TileInvalidation::Everywhere
+        } else if !forced_damage_rect.is_empty() {
+            TileInvalidation::WithinViewportRect(forced_damage_rect)
+        } else {
+            TileInvalidation::Nothing
+        };
+        // Layers that come or go, or move as their spaces scroll, repaint all of the frame. So does a switch of who
+        // shows the layers above the base layer, as the frame holds them only while the window server does not.
+        let composites_like_last_frame = self.painted_frame.is_some()
+            && self.layers.compositing_of_latest_frame() == layer_update.compositing.as_slice();
+        let window_server_switched = layer_update.shown_by_window_server != self.layers.window_server_shows_media();
+        let repaints_everything = invalidates_every_tile || !composites_like_last_frame || window_server_switched;
+        let stale_rect = self.prepare_tile_pass(env, frame, live_content, &mut layer_update, raster_rect);
         FrameDamage {
-            rect: damage_rect,
-            layers,
+            rect: if repaints_everything {
+                raster_rect
+            } else {
+                forced_damage_rect.united(stale_rect)
+            },
+            layers: layer_update,
             live_media_changed,
         }
-    }
-
-    fn damage_since_last_paint(
-        &self,
-        viewport_rect: IntRect,
-        frame: &FrameToPaint<'_>,
-        forced_damage_rect: IntRect,
-        changes: &LiveContentChangesSinceLastPaint,
-        layers: &LayerUpdate,
-        keeps_layer_rasters: bool,
-    ) -> DisplayListDamage {
-        let painted_frame = self
-            .painted_frame
-            .as_ref()
-            .expect("a frame that does not repaint everything has a frame painted before it");
-        let plan = layers.plan(&self.layers);
-        let media_record_offsets: Vec<u32> = plan.map_or_else(Vec::new, |plan| plan.media_record_offsets().collect());
-        let layer_plans = match (plan, self.layers.plan()) {
-            (Some(plan), Some(last_plan)) if keeps_layer_rasters => Some(LayerPlans {
-                old: last_plan,
-                new: plan,
-            }),
-            _ => None,
-        };
-        let mut damage = frame.frame_inputs.damage_since(
-            frame.display_list.storage(),
-            &painted_frame.frame_inputs,
-            painted_frame.display_list.storage(),
-            viewport_rect,
-            LiveContentChanges {
-                canvases: &changes.canvases,
-                video_sinks: &changes.video_sinks,
-                image_frames: &changes.image_frames,
-                composited_contexts: &changes.nested_contexts,
-                forced_damage_rect,
-                offsets_of_records_composited_as_media_layers: &media_record_offsets,
-            },
-            layer_plans,
-        );
-        if let Some(rect) = damage.rect {
-            damage.rect = Some(rect.intersected(viewport_rect));
-        }
-        damage
-    }
-
-    pub(super) fn layers_keep_plan_for(&self, frame: &FrameToPaint<'_>, viewport_rect: IntRect) -> bool {
-        let Some(painted_frame) = &self.painted_frame else {
-            return false;
-        };
-        self.layers.has_plan()
-            && Rc::ptr_eq(&painted_frame.display_list, frame.display_list)
-            && painted_frame.viewport_size.width == viewport_rect.width
-            && painted_frame.viewport_size.height == viewport_rect.height
-            && frame.frame_inputs.places_content_like(&painted_frame.frame_inputs)
     }
 }

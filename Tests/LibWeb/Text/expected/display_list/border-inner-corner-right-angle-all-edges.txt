@@ -5,13 +5,16 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-FillPath@s1/e0 path_bounding_rect=[166,12.651531 20x110.696945]
-FillPath@s1/e0 path_bounding_rect=[11.232849,113 168.56511x15]
-FillPath@s1/e0 path_bounding_rect=[7.999998,14.061594 8.000002x107.876816]
-FillPath@s1/e0 path_bounding_rect=[11.232849,8 168.56511x15]
-FillPath@s1/e0 path_bounding_rect=[173,134.20204 15x117.59592]
-FillPath@s1/e0 path_bounding_rect=[12.651531,238 170.69693x20]
-FillPath@s1/e0 path_bounding_rect=[8,134.20204 15x117.59592]
-FillPath@s1/e0 path_bounding_rect=[12.651531,128 170.69693x20]
+L0 FillPath@s1/e0 path_bounding_rect=[166,12.651531 20x110.696945]
+L0 FillPath@s1/e0 path_bounding_rect=[11.232849,113 168.56511x15]
+L0 FillPath@s1/e0 path_bounding_rect=[7.999998,14.061594 8.000002x107.876816]
+L0 FillPath@s1/e0 path_bounding_rect=[11.232849,8 168.56511x15]
+L0 FillPath@s1/e0 path_bounding_rect=[173,134.20204 15x117.59592]
+L0 FillPath@s1/e0 path_bounding_rect=[12.651531,238 170.69693x20]
+L0 FillPath@s1/e0 path_bounding_rect=[8,134.20204 15x117.59592]
+L0 FillPath@s1/e0 path_bounding_rect=[12.651531,128 170.69693x20]
 

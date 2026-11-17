@@ -6,8 +6,11 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-PaintLinearGradient@s1/e0 rect=[0,0 200x600] inline_clips=[clip=[0,0 200x200]]
+L0 PaintLinearGradient@s1/e0 rect=[0,0 200x600] inline_clips=[clip=[0,0 200x200]]
 
 After background-attachment change:
 AccumulatedVisualContext Tree:
@@ -16,6 +19,9 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-PaintLinearGradient@s0/e0 rect=[0,0 800x600] inline_clips=[clip=[0,0 200x200] in s1]
+L0 PaintLinearGradient@s0/e0 rect=[0,0 800x600] inline_clips=[clip=[0,0 200x200] in s1]
 

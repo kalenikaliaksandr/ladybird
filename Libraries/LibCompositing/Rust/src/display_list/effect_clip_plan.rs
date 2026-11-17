@@ -5,7 +5,7 @@
  */
 
 use super::commands::{ClipNodeIndex, ContextRef, DisplayListCommandRun, EffectNodeIndex};
-use crate::visual_context::{VisualContextTree, clip_lowest_common_ancestor_with_depths};
+use crate::visual_context::{EffectNodeData, VisualContextTree, clip_lowest_common_ancestor_with_depths};
 
 /// Layer placement belongs to a complete display list, before replay culls any runs.
 /// The tree supplies the clip where each effect begins; recorded contexts can widen
@@ -17,8 +17,11 @@ pub struct EffectClipPlan {
 }
 
 impl EffectClipPlan {
-    pub fn new(tree: &VisualContextTree, runs: &[DisplayListCommandRun]) -> Option<Self> {
-        Self::from_contexts(tree, runs.iter().map(|run| run.context))
+    pub fn new<'a>(
+        tree: &VisualContextTree,
+        runs: impl IntoIterator<Item = &'a DisplayListCommandRun>,
+    ) -> Option<Self> {
+        Self::from_contexts(tree, runs.into_iter().map(|run| run.context))
     }
 
     pub fn from_contexts(tree: &VisualContextTree, contexts: impl IntoIterator<Item = ContextRef>) -> Option<Self> {
@@ -85,6 +88,21 @@ impl EffectClipPlan {
 
     pub fn output_clip_if_participating(&self, effect: EffectNodeIndex) -> Option<ClipNodeIndex> {
         self.output_clips.get(effect.0 as usize).copied().flatten()
+    }
+
+    pub fn clip_outside_every_filter(&self, tree: &VisualContextTree, context: ContextRef) -> ClipNodeIndex {
+        let mut clip = context.clip;
+        let mut effect = context.effect;
+        while !effect.is_none() {
+            let node = &tree.effect_nodes[effect.0 as usize];
+            if let EffectNodeData::Effects(effects) = &node.data
+                && (effects.filter.is_some() || effects.backdrop_filter.is_some())
+            {
+                clip = self.output_clip(effect);
+            }
+            effect = node.parent;
+        }
+        clip
     }
 }
 

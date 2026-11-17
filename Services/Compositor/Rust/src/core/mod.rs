@@ -128,10 +128,9 @@ impl CompositorCore {
         &self,
         client: WebContentClientId,
         context_id: CompositorContextId,
-        sent: Vec<libcompositing_rust::display_list::storage::ReceivedChunk>,
+        sent: Vec<libcompositing_rust::display_list::storage::ListChunk>,
         chunks_in_paint_order: &[libcompositing_rust::display_list::chunks::ChunkId],
-    ) -> Result<Option<Vec<std::sync::Arc<libcompositing_rust::display_list::storage::ReceivedChunk>>>, &'static str>
-    {
+    ) -> Result<Option<Vec<std::sync::Arc<libcompositing_rust::display_list::storage::ListChunk>>>, &'static str> {
         self.display_list_chunk_stores
             .borrow_mut()
             .take_in(client, context_id, sent, chunks_in_paint_order)
@@ -796,6 +795,11 @@ impl CompositorCore {
                         &libcompositing_rust::display_list::replay::NoCompositedContexts,
                     );
                     presenting.borrow_mut().layer_drop_timer_fired(&environment);
+                }
+            }
+            ContextTimer::TileRasterSurfaceRelease => {
+                if let Some(presenting) = self.presenting_of(context_id) {
+                    presenting.borrow_mut().tile_raster_surface_release_timer_fired();
                 }
             }
             _ => {

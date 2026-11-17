@@ -8,6 +8,9 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-FillPath@s2/c0/e0 path_bounding_rect=[10,10 100x100]
+L0 FillPath@s2/c0/e0 path_bounding_rect=[10,10 100x100]
 

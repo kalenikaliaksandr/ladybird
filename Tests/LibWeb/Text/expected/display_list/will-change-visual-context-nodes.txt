@@ -9,10 +9,13 @@ AccumulatedVisualContext Tree:
       [e1 in s1] effects=[] (BlockContainer<DIV>#opacity)
       [e2 in s1] effects=[] (BlockContainer<DIV>#filter)
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-FillRect@s1/e0 rect=[0,200 50x50] color=rgb(128, 128, 128)
-FillRect@s2/e0 rect=[0,0 50x50] color=rgb(0, 128, 0)
-FillRect@s3/e0 rect=[0,50 50x50] color=rgb(0, 0, 255)
-FillRect@s1/e1 rect=[0,100 50x50] color=rgb(255, 0, 0)
-FillRect@s1/e2 rect=[0,150 50x50] color=rgb(255, 255, 0)
+L0 FillRect@s1/e0 rect=[0,200 50x50] color=rgb(128, 128, 128)
+L0 FillRect@s2/e0 rect=[0,0 50x50] color=rgb(0, 128, 0)
+L0 FillRect@s3/e0 rect=[0,50 50x50] color=rgb(0, 0, 255)
+L0 FillRect@s1/e1 rect=[0,100 50x50] color=rgb(255, 0, 0)
+L0 FillRect@s1/e2 rect=[0,150 50x50] color=rgb(255, 255, 0)
 

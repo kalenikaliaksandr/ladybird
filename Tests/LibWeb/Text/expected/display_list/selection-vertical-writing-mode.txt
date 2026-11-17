@@ -5,9 +5,12 @@ AccumulatedVisualContext Tree:
   effects:
     [e0 in s0] effects=[]
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-DrawGlyphRun@s1/e0 rect=[760,0 20x56] translation=[760,16] color=rgb(0, 0, 0) inline_clips=[clip=[762,0 18x12]]
-DrawGlyphRun@s1/e0 rect=[760,0 20x56] translation=[760,16] color=rgb(0, 0, 0) inline_clips=[clip=[762,44 18x11]]
-FillRect@s1/e0 rect=[760,12 20x32] color=rgb(1, 2, 3)
-DrawGlyphRun@s1/e0 rect=[760,0 20x56] translation=[760,16] color=rgb(0, 0, 0) inline_clips=[clip=[762,12 18x32]]
+L0 DrawGlyphRun@s1/e0 rect=[760,0 20x56] translation=[760,16] color=rgb(0, 0, 0) inline_clips=[clip=[762,0 18x12]]
+L0 DrawGlyphRun@s1/e0 rect=[760,0 20x56] translation=[760,16] color=rgb(0, 0, 0) inline_clips=[clip=[762,44 18x11]]
+L0 FillRect@s1/e0 rect=[760,12 20x32] color=rgb(1, 2, 3)
+L0 DrawGlyphRun@s1/e0 rect=[760,0 20x56] translation=[760,16] color=rgb(0, 0, 0) inline_clips=[clip=[762,12 18x32]]
 

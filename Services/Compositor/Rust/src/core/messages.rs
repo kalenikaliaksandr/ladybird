@@ -226,7 +226,7 @@ impl MessagesFromWebContent<'_> {
         let storage = match raster
             .receive_display_list_chunks(packed_chunks, &packed_chunk_sizes)
             .and_then(|sent| chunks_of_list_sent_whole(sent, &chunks_in_paint_order))
-            .and_then(|chunks| DisplayListStorage::of_received_chunks(&chunks))
+            .and_then(DisplayListStorage::of_chunks)
         {
             Ok(storage) => storage,
             Err(error) => {
@@ -242,7 +242,7 @@ impl MessagesFromWebContent<'_> {
         };
         let tree = message.visual_context_tree;
         if properties.compatible_visual_context_tree_structural_epoch != tree.structural_epoch
-            || !tree.display_list_references_only_live_nodes(storage.command_runs())
+            || !tree.display_list_references_only_live_nodes(storage.runs())
         {
             return not_rasterized("Display list does not match its visual context tree");
         }
@@ -257,8 +257,7 @@ impl MessagesFromWebContent<'_> {
             let frame = ReplayFrame::unscrolled(time_ns);
             replay_display_list(
                 &tree,
-                storage.bytes(),
-                storage.command_runs(),
+                &storage,
                 storage.effect_clip_plan(&tree),
                 properties.root_group_color,
                 &frame,
@@ -309,7 +308,8 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
             Ok(None) => return Ok(()),
             Err(error) => return Err(Misbehavior(error)),
         };
-        let storage = match DisplayListStorage::of_received_chunks(&chunks) {
+        let chunk_count = chunks.len();
+        let storage = match DisplayListStorage::of_chunks(chunks) {
             Ok(storage) => storage,
             Err(error) => {
                 let _ = writeln!(
@@ -333,7 +333,7 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
             );
             return Ok(());
         }
-        if !tree.display_list_references_only_live_nodes(storage.command_runs()) {
+        if !tree.display_list_references_only_live_nodes(storage.runs()) {
             let _ = writeln!(
                 std::io::stderr(),
                 "Compositor: Dropping display list update that names nodes its visual context tree does not hold"
@@ -375,7 +375,7 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
             window => window.flatten(),
         };
         let scroll_state_snapshot = message.scroll_state;
-        let storage_size = storage.bytes().len();
+        let storage_size = storage.byte_size();
         let display_list = DisplayList::new(
             storage,
             properties.id,
@@ -400,7 +400,7 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
                 std::io::stderr(),
                 "DISPLAY_LIST_RECEIVE bytes={} chunks={} sent={sent_chunk_count} adopt={} µs install={} µs",
                 storage_size,
-                chunks.len(),
+                chunk_count,
                 adopt_time.as_micros(),
                 (started_at.elapsed() - adopt_time).as_micros()
             );

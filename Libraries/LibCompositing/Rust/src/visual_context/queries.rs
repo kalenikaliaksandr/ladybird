@@ -500,13 +500,6 @@ impl VisualContextTree {
         self.content_under_effect_composites_into_root_group(self.effect_nodes[reader.0 as usize].parent)
     }
 
-    pub fn has_blend_mode_reading_root_group(&self) -> bool {
-        self.effect_nodes.iter().enumerate().any(|(index, node)| {
-            matches!(&node.data, EffectNodeData::Effects(effects) if effects.blend_mode != CompositingAndBlendingOperator::Normal)
-                && self.effect_backdrop_is_root_group(EffectNodeIndex(index as u32))
-        })
-    }
-
     // A blend mode or a backdrop filter reads what the canvas holds outside the effect's own layer.
     pub fn has_unisolated_destination_reading_effect(&self) -> bool {
         self.effect_nodes.iter().any(|node| {
@@ -590,11 +583,11 @@ impl VisualContextTree {
         }
     }
 
-    pub fn display_list_references_only_live_nodes(
+    pub fn display_list_references_only_live_nodes<'a>(
         &self,
-        command_runs: &[crate::display_list::commands::DisplayListCommandRun],
+        command_runs: impl IntoIterator<Item = &'a crate::display_list::commands::DisplayListCommandRun>,
     ) -> bool {
-        command_runs.iter().all(|run| self.context_is_valid(run.context))
+        command_runs.into_iter().all(|run| self.context_is_valid(run.context))
     }
 
     // Bound every possible angle, rather than just the current sample: content outside the viewport now

@@ -12,12 +12,15 @@ AccumulatedVisualContext Tree:
 ScrollNodes:
 ScrollNode scroll_node_index=s2 parent_scroll_node_index=s0 scrollport_rect=[0,0 100x100] min_scroll_offset=[0,0] max_scroll_offset=[0,0] is_viewport=false
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-CompositorWheelHitTestTarget@s0/e0 target_scroll_node_index=s0 rect=[0,0 800x600]
-CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,0 800x213]
-CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,0 800x200]
-CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s2 rect=[0,0 100x100]
-CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[0,0 50x50]
-CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,100 100x100]
-CompositorWheelHitTestTarget@s1/c1/e0 target_scroll_node_index=s0 rect=[0,100 50x50]
+L0 CompositorWheelHitTestTarget@s0/e0 target_scroll_node_index=s0 rect=[0,0 800x600]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,0 800x213]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,0 800x200]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s2 rect=[0,0 100x100]
+L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[0,0 50x50]
+L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[0,100 100x100]
+L0 CompositorWheelHitTestTarget@s1/c1/e0 target_scroll_node_index=s0 rect=[0,100 50x50]
 

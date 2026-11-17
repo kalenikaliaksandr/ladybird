@@ -1688,7 +1688,6 @@ RustFFI::FfiRasterHost CompositorState::raster_host(CompositorState& state)
             return &surface.release_value().leak_ref();
         },
         .surfaces_share_backend = [](void* a, void* b) { return painting_surface_of(a).skia_backend_context() == painting_surface_of(b).skia_backend_context(); },
-        .surface_uses_gpu = [](void* surface) { return painting_surface_of(surface).skia_backend_context() != nullptr; },
         .surface_save = [](void* surface) { return canvas_of(surface).save(); },
         .surface_restore_to_count = [](void* surface, i32 count) { canvas_of(surface).restoreToCount(count); },
         .surface_translate = [](void* surface, float x, float y) { canvas_of(surface).translate(x, y); },

@@ -293,8 +293,8 @@ fn bounds_of_mapped_rect(matrix: FloatMatrix4x4, rect: FloatRect) -> FloatRect {
     FloatRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
 }
 
-fn partition_command_runs_into_plane_chunks(
-    command_runs: &[DisplayListCommandRun],
+fn partition_command_runs_into_plane_chunks<'a>(
+    command_runs: impl IntoIterator<Item = &'a DisplayListCommandRun>,
     contexts: &SortingContexts,
     transform_palette: &[FloatMatrix4x4],
     draw_space: &[SpatialNodeIndex],
@@ -307,7 +307,7 @@ fn partition_command_runs_into_plane_chunks(
     // A run's ink bounds already leave out clips; mapping their union once per level is
     // conservative, as it can only widen a plane's bounds.
     let mut chunks: Vec<CommandChunk> = Vec::new();
-    for (run_index, run) in command_runs.iter().enumerate() {
+    for (run_index, run) in command_runs.into_iter().enumerate() {
         let spatial = run.context.spatial;
         let leaf = contexts.leaf_by_node[spatial.0 as usize];
         let sorting_context = contexts.context_by_node[spatial.0 as usize];
@@ -409,8 +409,8 @@ fn place_chunk_within(
 // planes are ordered back to front with a BSP tree over their content bounds; a plane cut by another's plane is
 // replayed once per piece under a device-space polygon clip. Chunks in a nested context sort among themselves
 // inside the plane of the outer context they render into.
-pub fn build_depth_sorted_replay_plan(
-    command_runs: &[DisplayListCommandRun],
+pub fn build_depth_sorted_replay_plan<'a>(
+    command_runs: impl IntoIterator<Item = &'a DisplayListCommandRun>,
     contexts: &SortingContexts,
     transform_palette: &[FloatMatrix4x4],
     leaf_to_context_palette: &[FloatMatrix4x4],

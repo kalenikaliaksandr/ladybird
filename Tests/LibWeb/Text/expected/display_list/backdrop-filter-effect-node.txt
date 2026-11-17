@@ -12,8 +12,11 @@ AccumulatedVisualContext Tree:
       [e2 in s1] effects=[opacity=0.5] (BlockContainer<DIV>#plain)
       [e3 in s1] effects=[backdrop-filter=[400,20 50x50]] (BlockContainer<DIV>#empty)
 
+Layers:
+  [L0] base space=viewport
+
 DisplayList:
-BackdropFilterRegion@s2/c0/e1 rect=[20,20 100x100]
-FillRect@s3/e2 rect=[200,20 100x100] color=rgb(0, 128, 0)
-BackdropFilterRegion@s1/e3 rect=[400,20 50x50]
+L0 BackdropFilterRegion@s2/c0/e1 rect=[20,20 100x100]
+L0 FillRect@s3/e2 rect=[200,20 100x100] color=rgb(0, 128, 0)
+L0 BackdropFilterRegion@s1/e3 rect=[400,20 50x50]
 
