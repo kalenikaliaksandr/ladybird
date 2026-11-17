@@ -19,6 +19,7 @@ pub mod ids;
 pub mod layers;
 pub mod nested_records;
 pub mod placement;
+pub mod reach;
 pub mod replay;
 pub mod storage;
 pub mod summary;

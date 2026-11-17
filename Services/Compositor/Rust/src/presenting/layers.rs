@@ -23,12 +23,13 @@ use libcompositing_rust::display_list::commands::{
     CanvasId, CompositorContextId, ImageFrameResourceId, SpatialNodeIndex, VideoSinkHandle,
 };
 use libcompositing_rust::display_list::layers::{
-    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, RootGroupBackdropRead, StackLayer,
-    VIEWPORT_RASTER_SPACE, backdrop_filter_read_area, build_layer_stack, place_list, raster_space_anchors,
+    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, StackLayer, VIEWPORT_RASTER_SPACE,
+    backdrop_filter_read_area, build_layer_stack, place_list, raster_space_anchors,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaces, SpaceGeometry, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
 };
+use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::ReplaySelection;
 use libcompositing_rust::display_list::storage::ListSpan;
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
@@ -586,8 +587,11 @@ fn surface_sublayer(identity: u64, surface: &PresentableSurfaceHandle, rect: Int
 // The scroll offsets with those of the nodes that the compositor scrolls or that move on their own left out: what the
 // placement of a list depends on of the offsets, as content that moves with those is rastered in a space that follows
 // them or placed wherever they could take it.
-fn scroll_offsets_placement_depends_on(tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> Vec<FloatPoint> {
-    let moves_on_its_own = spatial_nodes_that_move_on_their_own(tree);
+fn scroll_offsets_placement_depends_on(
+    tree: &VisualContextTree,
+    scroll_offsets: &[FloatPoint],
+    moves_on_its_own: &[bool],
+) -> Vec<FloatPoint> {
     let scrolled_by_the_compositor = &tree.compositor_scroll_table().nodes;
     scroll_offsets
         .iter()
@@ -635,30 +639,32 @@ impl ContextPresenting {
             raster_transform,
         };
 
+        let moves_on_its_own = spatial_nodes_that_move_on_their_own(tree);
         // A space that scrolls composites at whole device pixels of the viewport, which a raster that scales them or
         // shifts them by a fraction does not have, so such a raster has the viewport's space alone.
         let anchors = if raster_transform == FloatMatrix4x4::identity() {
-            raster_space_anchors(tree, scroll_offsets)
+            raster_space_anchors(tree, scroll_offsets, &moves_on_its_own)
         } else {
             Vec::new()
         };
+        let offsets_placement_depends_on = scroll_offsets_placement_depends_on(tree, scroll_offsets, &moves_on_its_own);
         let placement_is_known = self.layers.placement_of_latest_frame.as_ref().is_some_and(|known| {
             Rc::ptr_eq(&known.display_list, frame.display_list)
                 && known.tree_copy == tree.copy.number()
                 && known.viewport_rect == viewport_rect
                 && known.raster_transform == raster_transform
                 && known.anchors == anchors
-                && known.scroll_offsets_placement_depends_on
-                    == scroll_offsets_placement_depends_on(tree, scroll_offsets)
+                && known.scroll_offsets_placement_depends_on == offsets_placement_depends_on
         });
         if !placement_is_known {
             let spaces = RasterSpaces::at_anchors(tree, &anchors, viewport_rect);
-            let mut raster_spaces = None;
-            let geometries: Vec<Rc<SpaceGeometry>> = (0..spaces.len())
+            let spaces_at_anchors = spaces.spaces().to_vec();
+            let mut raster_spaces = Some(spaces);
+            let geometries: Vec<Rc<SpaceGeometry>> = (0..spaces_at_anchors.len())
                 .map(|space| {
                     self.layers.geometry_of_space(
                         tree,
-                        spaces.spaces(),
+                        &spaces_at_anchors,
                         &mut raster_spaces,
                         space,
                         scroll_offsets,
@@ -669,13 +675,14 @@ impl ContextPresenting {
                     )
                 })
                 .collect();
-            let placement = place_list(&inputs, &anchors, &geometries, &[], &[]);
+            let spaces = raster_spaces.expect("the spaces stay until the list is placed among them");
+            let placement = place_list(&inputs, spaces, &geometries, &[], &[]);
             self.layers.placement_of_latest_frame = Some(PlacementOfFrame {
                 display_list: frame.display_list.clone(),
                 tree_copy: tree.copy.number(),
                 viewport_rect,
                 raster_transform,
-                scroll_offsets_placement_depends_on: scroll_offsets_placement_depends_on(tree, scroll_offsets),
+                scroll_offsets_placement_depends_on: offsets_placement_depends_on,
                 anchors,
                 placement,
             });
@@ -786,6 +793,7 @@ impl ContextPresenting {
         let list = ListOfFrame::new(
             storage,
             tree,
+            stack.layering_obstacles,
             ReplayReadsOutsideTheList {
                 scrollbars: &scrollbars,
                 time_ns: frame.frame_inputs.painted_at.nanoseconds(),
@@ -928,9 +936,9 @@ impl ContextPresenting {
                 }
                 pass.digests_of_replayed_records[layer_index] = Some(digest);
                 let read_area_in_this_frame = match backdrop_filter_read_area(tree, &geometries[space], *effect) {
-                    RootGroupBackdropRead::Within(read_area) => clip_in_viewport(read_area),
-                    RootGroupBackdropRead::Nothing => IntRect::default(),
-                    RootGroupBackdropRead::Anywhere => clip_in_viewport(*area_it_can_read),
+                    Reach::Within(read_area) => clip_in_viewport(read_area),
+                    Reach::Nothing => IntRect::default(),
+                    Reach::Anywhere => clip_in_viewport(*area_it_can_read),
                 };
                 backdrop_read_areas.push(read_area_in_this_frame);
                 continue;

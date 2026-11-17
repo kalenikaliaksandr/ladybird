@@ -24,12 +24,15 @@ pub use crate::display_list::placement::{
 };
 use crate::display_list::placement::{
     PlacementTables, RasterSpaces, RunGroups, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space,
-    lowest_common_space, raster_scroll_offsets, rect_swept_over_translations, space_is_ancestor_or_self,
-    spaces_with_geometries,
+    is_finite_rect, lowest_common_space, raster_scroll_offsets, rect_swept_over_translations,
+    space_is_ancestor_or_self, spaces_with_geometries, spatial_nodes_that_move_on_their_own,
 };
+use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
-use crate::display_list::tiles::{TILE_SIZE_IN_DEVICE_PIXELS, tile_coords_touching, tile_count_touching};
+use crate::display_list::tiles::{
+    TILE_SIZE_IN_DEVICE_PIXELS, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching,
+};
 use crate::display_list::window_server_placement::{WindowServerPlacement, WindowServerRejection};
 use crate::visual_context::{EffectNodeData, SpatialData, VisualContextTree, WorldTransforms, device_offset_for_index};
 use libgfx_rust::{FloatMatrix4x4, FloatPoint, IntPoint, IntRect};
@@ -41,8 +44,6 @@ pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
 pub const MAXIMUM_BACKDROP_LAYER_COUNT: usize = 4;
 // Beyond this, the innermost space that scrolls is rastered in the space around it instead.
 const MAXIMUM_LAYER_COUNT: usize = 24;
-// Beyond this, a unit is taken to reach every layer of its band painted before it, rather than followed tile by tile.
-const MAXIMUM_TILES_A_UNIT_IS_FOLLOWED_INTO: u64 = 4096;
 
 pub(crate) fn media_name(content: LiveContent) -> &'static str {
     match content {
@@ -194,9 +195,8 @@ pub struct PlacementNode {
     /// At most one per space, ordered by space.
     pub composite_clips: Vec<CompositeClip>,
     pub parent: Option<usize>,
-    /// Where content of the node and of the nodes in it can show, in the raster coordinates of the parent node, or
-    /// none where that is not bounded.
-    pub region_in_parent: Option<IntRect>,
+    /// Where content of the node and of the nodes in it can show, in the raster coordinates of the parent node.
+    pub region_in_parent: Reach<IntRect>,
 }
 
 /// Where a barrier cuts the tiles of a group.
@@ -205,14 +205,14 @@ pub struct Cut {
     pub barrier: BarrierKey,
     /// Where the barrier's first record is.
     pub position: ListPosition,
-    /// The barrier cuts the tiles of the group's space this reaches, every tile where it is none.
-    pub region: Option<IntRect>,
+    /// The barrier cuts the tiles of the group's space this reaches.
+    pub region: Reach<IntRect>,
     pub layer_above: usize,
 }
 
 impl Cut {
     pub fn cuts_cell(&self, cell: IntRect) -> bool {
-        self.region.is_none_or(|region| !region.intersected(cell).is_empty())
+        self.region.touches(cell)
     }
 }
 
@@ -297,6 +297,7 @@ pub struct LayerStack {
     pub base_layer: usize,
     /// Why the stack is one layer that replays the whole list, if it is.
     pub unlayered_reason: Option<UnlayeredReason>,
+    pub layering_obstacles: LayeringObstacles,
     /// The canvases, videos and nested contexts that were not given layers, and why.
     pub rejected_media: Vec<(LiveContent, MediaLayerRejection)>,
     /// The effects whose backdrop filter reads the root group and is applied within the layer of what it reads, and
@@ -334,7 +335,7 @@ impl LayerStack {
             space: VIEWPORT_RASTER_SPACE,
             composite_clips: Vec::new(),
             parent: None,
-            region_in_parent: None,
+            region_in_parent: Reach::Anywhere,
         };
         Self {
             layers: vec![StackLayer {
@@ -359,6 +360,7 @@ impl LayerStack {
             spaces,
             base_layer: 0,
             unlayered_reason: reason,
+            layering_obstacles: LayeringObstacles::default(),
             rejected_media: Vec::new(),
             rejected_backdrop_filters: Vec::new(),
             placement: ListPlacement::default(),
@@ -422,6 +424,7 @@ impl LayerStack {
                 })
         };
         self.unlayered_reason == other.unlayered_reason
+            && self.layering_obstacles == other.layering_obstacles
             && self.base_layer == other.base_layer
             && self.nodes == other.nodes
             && self.spaces.len() == other.spaces.len()
@@ -735,7 +738,7 @@ impl LayerStack {
             return Vec::new();
         };
         let group = &self.groups[group];
-        let mut layers: Vec<usize> = if tile_count_touching(unit.reach) > MAXIMUM_TILES_A_UNIT_IS_FOLLOWED_INTO {
+        let mut layers: Vec<usize> = if reaches_too_many_cells_to_follow_one_by_one(unit.reach) {
             std::iter::once(group.layer_below_every_cut)
                 .chain(
                     group
@@ -798,10 +801,7 @@ fn effect_chain_contains(tree: &VisualContextTree, mut effect: EffectNodeIndex, 
 
 // A tile replays the declaration of a mask's content along with what the mask holds, and so opens the effects the
 // declaration is under there, which draw nothing only when they are the mask's own or those around it.
-pub(crate) fn mask_declarations_sit_on_the_chains_of_their_masks(
-    list: &DisplayListStorage,
-    tree: &VisualContextTree,
-) -> bool {
+fn mask_declarations_sit_on_the_chains_of_their_masks(list: &DisplayListStorage, tree: &VisualContextTree) -> bool {
     list.summary().mask_declarations.iter().all(|record| {
         let (_, payload) = list.record_at(record.position());
         let mask = read_command::<DeclareMaskContent>(payload).effect;
@@ -812,22 +812,50 @@ pub(crate) fn mask_declarations_sit_on_the_chains_of_their_masks(
     })
 }
 
+/// What of a tree and its list keeps the list from being layered, or the tiles of its layers from replaying only the
+/// records that reach them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayeringObstacles {
+    pub has_3d_sorting_contexts: bool,
+    pub root_isolation_effect_is_not_a_plain_group: bool,
+    pub mask_declared_under_effects_its_mask_is_not_under: bool,
+}
+
+impl LayeringObstacles {
+    pub fn of(list: &DisplayListStorage, tree: &VisualContextTree) -> Self {
+        Self {
+            has_3d_sorting_contexts: tree_has_sorting_contexts(tree),
+            root_isolation_effect_is_not_a_plain_group: !root_isolation_effect_is_plain_group(tree),
+            mask_declared_under_effects_its_mask_is_not_under: !mask_declarations_sit_on_the_chains_of_their_masks(
+                list, tree,
+            ),
+        }
+    }
+
+    /// Whether every tile replays every record of its group, as which records can show in a tile cannot be told.
+    pub fn every_tile_replays_every_record(&self) -> bool {
+        self.has_3d_sorting_contexts || self.mask_declared_under_effects_its_mask_is_not_under
+    }
+}
+
 /// Why a list cannot be layered at all.
-pub fn why_list_is_unlayered(inputs: &LayerStackInputs<'_>) -> Option<UnlayeredReason> {
-    let tree = inputs.tree;
+pub fn why_list_is_unlayered(
+    inputs: &LayerStackInputs<'_>,
+    layering_obstacles: &LayeringObstacles,
+) -> Option<UnlayeredReason> {
     if inputs.viewport_rect.is_empty() {
         return Some(UnlayeredReason::EmptyViewport);
     }
     if inputs.list.run_count() == 0 {
         return Some(UnlayeredReason::EmptyDisplayList);
     }
-    if tree_has_sorting_contexts(tree) {
+    if layering_obstacles.has_3d_sorting_contexts {
         return Some(UnlayeredReason::SortingContext3D);
     }
-    if !root_isolation_effect_is_plain_group(tree) {
+    if layering_obstacles.root_isolation_effect_is_not_a_plain_group {
         return Some(UnlayeredReason::RootIsolationEffectIsNotPlainGroup);
     }
-    if !mask_declarations_sit_on_the_chains_of_their_masks(inputs.list, tree) {
+    if layering_obstacles.mask_declared_under_effects_its_mask_is_not_under {
         return Some(UnlayeredReason::MaskDeclaredUnderEffectsItsMaskIsNotUnder);
     }
     None
@@ -880,24 +908,7 @@ pub struct PlacedRunGroup {
     /// Whether the group paints within the root group, rather than below it as the canvas background is.
     pub paints_within_the_root_group: bool,
     /// Where the backdrop filters of the group that read the root group read, in the space's raster coordinates.
-    pub root_group_backdrop_read: RootGroupBackdropRead,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RootGroupBackdropRead {
-    Nothing,
-    Within(IntRect),
-    Anywhere,
-}
-
-impl RootGroupBackdropRead {
-    fn united(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Nothing, read) | (read, Self::Nothing) => read,
-            (Self::Within(rect), Self::Within(other)) => Self::Within(rect.united(other)),
-            _ => Self::Anywhere,
-        }
-    }
+    pub root_group_backdrop_read: Reach<IntRect>,
 }
 
 /// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
@@ -906,28 +917,28 @@ pub fn backdrop_filter_read_area(
     tree: &VisualContextTree,
     geometry: &SpaceGeometry,
     effect: EffectNodeIndex,
-) -> RootGroupBackdropRead {
+) -> Reach<IntRect> {
     let node = &tree.effect_nodes[effect.0 as usize];
     let EffectNodeData::Effects(effects) = &node.data else {
-        return RootGroupBackdropRead::Anywhere;
+        return Reach::Anywhere;
     };
     let Some(backdrop) = &effects.backdrop_filter else {
-        return RootGroupBackdropRead::Anywhere;
+        return Reach::Anywhere;
     };
     let effect_to_device = geometry.world.draw_matrix(node.spatial);
     let Some(reach) = crate::display_list::tile_keys::backdrop_filter_read_reach_in_device_pixels(
         &backdrop.filter,
         &effect_to_device,
     ) else {
-        return RootGroupBackdropRead::Anywhere;
+        return Reach::Anywhere;
     };
     let region = geometry
         .world
         .map_rect_to_root(node.spatial, backdrop.region.to_float());
-    if !(region.x.is_finite() && region.y.is_finite() && region.width.is_finite() && region.height.is_finite()) {
-        return RootGroupBackdropRead::Anywhere;
+    if !is_finite_rect(region) {
+        return Reach::Anywhere;
     }
-    RootGroupBackdropRead::Within(libgfx_rust::enclosing_int_rect(region).inflated_edges(reach, reach, reach, reach))
+    Reach::Within(libgfx_rust::enclosing_int_rect(region).inflated_edges(reach, reach, reach, reach))
 }
 
 /// A stretch of records of one group that is placed as one: the whole group, or the records of a run between the
@@ -967,6 +978,7 @@ pub struct PlacedMedia {
 /// placement compares equal to the one a stack was worked out from keeps the stack.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListPlacement {
+    pub layering_obstacles: LayeringObstacles,
     pub spaces: Vec<RasterSpace>,
     pub groups: Vec<PlacedRunGroup>,
     pub units: Vec<PlacedUnit>,
@@ -1129,8 +1141,8 @@ fn backdrop_layer_of_reader(
         .map(|reach| group.device_rect.inflated_edges(reach, reach, reach, reach))
     } else {
         match backdrop_filter_read_area(tree, geometry, reader) {
-            RootGroupBackdropRead::Within(read_area) => Some(read_area),
-            RootGroupBackdropRead::Nothing | RootGroupBackdropRead::Anywhere => None,
+            Reach::Within(read_area) => Some(read_area),
+            Reach::Nothing | Reach::Anywhere => None,
         }
     };
     let Some(read_area) = read_area else {
@@ -1147,12 +1159,12 @@ fn backdrop_layer_of_reader(
     })
 }
 
-/// Where each part of the list is placed among the spaces at `anchors`, given the geometry of each of those spaces,
-/// leaving out of the media layers the drawings at `positions_refused_media_layers`, and out of the backdrop layers the
-/// backdrop filters of `effects_refused_backdrop_layers`.
+/// Where each part of the list is placed among `spaces`, given the geometry of each of them, leaving out of the media
+/// layers the drawings at `positions_refused_media_layers`, and out of the backdrop layers the backdrop filters of
+/// `effects_refused_backdrop_layers`.
 pub fn place_list(
     inputs: &LayerStackInputs<'_>,
-    anchors: &[SpatialNodeIndex],
+    spaces: RasterSpaces,
     geometries: &[Rc<SpaceGeometry>],
     positions_refused_media_layers: &[ListPosition],
     effects_refused_backdrop_layers: &[EffectNodeIndex],
@@ -1161,7 +1173,6 @@ pub fn place_list(
     let list = inputs.list;
     let effect_clips = list.effect_clip_plan(tree);
     let run_groups = list.run_groups(tree);
-    let spaces = RasterSpaces::at_anchors(tree, anchors, inputs.viewport_rect);
     let tables = PlacementTables::new(tree, spaces, geometries);
     let spaces = tables.spaces();
     let runs_reaching_outside = RunsReachingOutsideTheirContext::new(list);
@@ -1221,7 +1232,7 @@ pub fn place_list(
                 .clone()
                 .any(|run_index| tables.context_moves_within_space(tree, list.run(run_index).context, space));
             let mut device_rect = IntRect::default();
-            let mut root_group_backdrop_read = RootGroupBackdropRead::Nothing;
+            let mut root_group_backdrop_read = Reach::Nothing;
             let mut backdrop_readers = Vec::new();
             for run_index in runs {
                 let run = list.run(run_index);
@@ -1246,7 +1257,7 @@ pub fn place_list(
                     || (!run.context.effect.is_none()
                         && blend_reading_root_group_on_chain[run.context.effect.0 as usize]);
                 if blends_with_root_group {
-                    root_group_backdrop_read = root_group_backdrop_read.united(RootGroupBackdropRead::Within(run_rect));
+                    root_group_backdrop_read = root_group_backdrop_read.united(Reach::Within(run_rect));
                 }
                 if !run.context.effect.is_none() {
                     let backdrop_filter = backdrop_filter_reading_root_group_on_chain[run.context.effect.0 as usize];
@@ -1489,6 +1500,7 @@ pub fn place_list(
     }
 
     ListPlacement {
+        layering_obstacles: LayeringObstacles::of(list, tree),
         spaces: spaces.to_vec(),
         groups,
         units,
@@ -1513,14 +1525,6 @@ enum BarrierBeingBuilt {
     Media { unit: usize },
     Band { band: usize },
     Backdrop { unit: usize },
-}
-
-fn regions_meet(first: Option<IntRect>, second: Option<IntRect>) -> bool {
-    match (first, second) {
-        (Some(first), Some(second)) => !first.intersected(second).is_empty(),
-        (Some(rect), None) | (None, Some(rect)) => !rect.is_empty(),
-        (None, None) => true,
-    }
 }
 
 fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
@@ -1558,13 +1562,13 @@ impl StackBeingBuilt<'_> {
         }
         let spaces = &self.placement.spaces;
         let (parent, region_in_parent) = if space == VIEWPORT_RASTER_SPACE {
-            (None, None)
+            (None, Reach::Anywhere)
         } else {
             let parent_space = spaces[space].parent;
             let region = composite_clips
                 .iter()
                 .find(|clip| clip.space == parent_space)
-                .map(|clip| clip.rect);
+                .map_or(Reach::Anywhere, |clip| Reach::Within(clip.rect));
             let clips_of_parent = composite_clips
                 .iter()
                 .filter(|clip| clip.space != parent_space)
@@ -1604,7 +1608,7 @@ impl StackBeingBuilt<'_> {
             }
             let swept =
                 rect_swept_over_translations(reach, space.lowest_anchor_translation, space.highest_anchor_translation);
-            node.region_in_parent = Some(node.region_in_parent.map_or(swept, |clip| clip.intersected(swept)));
+            node.region_in_parent = node.region_in_parent.limited_to(swept);
         }
     }
 
@@ -1651,13 +1655,13 @@ impl StackBeingBuilt<'_> {
                 let child_on_path = path.get(level + 1).copied();
                 let reach = match child_on_path {
                     Some(child) => self.nodes[child].region_in_parent,
-                    None => Some(unit.reach),
+                    None => Reach::Within(unit.reach),
                 };
                 for &child in &self.children_of_node[node] {
                     if Some(child) == child_on_path || open_band_of_node[child].is_none() {
                         continue;
                     }
-                    if regions_meet(reach, self.nodes[child].region_in_parent) {
+                    if reach.meets(self.nodes[child].region_in_parent) {
                         self.close_band_of(child, &mut open_band_of_node);
                     }
                 }
@@ -1752,7 +1756,7 @@ impl StackBeingBuilt<'_> {
                             ordinal: media.ordinal,
                         },
                         unit_position(unit),
-                        Some(placed_unit.reach),
+                        Reach::Within(placed_unit.reach),
                     )
                 }
                 BarrierBeingBuilt::Band { band } => {
@@ -1790,7 +1794,7 @@ impl StackBeingBuilt<'_> {
                             ordinal,
                         },
                         unit_position(unit),
-                        Some(backdrop.read_area),
+                        Reach::Within(backdrop.read_area),
                     )
                 }
             };
@@ -1836,7 +1840,7 @@ impl StackBeingBuilt<'_> {
             let cuts_before = group_so_far.cuts.iter().take_while(|cut| cut.position <= position);
             if cuts_before.clone().next().is_none() {
                 mark(layer_below_every_cut);
-            } else if tile_count_touching(placed_unit.reach) > MAXIMUM_TILES_A_UNIT_IS_FOLLOWED_INTO {
+            } else if reaches_too_many_cells_to_follow_one_by_one(placed_unit.reach) {
                 mark(layer_below_every_cut);
                 for cut in cuts_before {
                     mark(cut.layer_above);
@@ -1862,7 +1866,7 @@ impl StackBeingBuilt<'_> {
 // replace what is below it.
 fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node: usize) -> bool {
     let placement_node = &nodes[node];
-    if !placement_node.composite_clips.is_empty() || placement_node.region_in_parent.is_some() {
+    if !placement_node.composite_clips.is_empty() || placement_node.region_in_parent != Reach::Anywhere {
         return false;
     }
     match placement_node.parent {
@@ -1954,9 +1958,9 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
     for unit in &placement.units {
         let group_of_unit = &placement.groups[unit.group];
         let read_area = match group_of_unit.root_group_backdrop_read {
-            RootGroupBackdropRead::Nothing => continue,
-            RootGroupBackdropRead::Within(rect) => Some(rect),
-            RootGroupBackdropRead::Anywhere => None,
+            Reach::Nothing => continue,
+            Reach::Within(rect) => Some(rect),
+            Reach::Anywhere => None,
         };
         if unit.reach.is_empty() {
             continue;
@@ -2058,6 +2062,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         layers,
         base_layer,
         unlayered_reason: None,
+        layering_obstacles: placement.layering_obstacles,
         rejected_media: placement.rejected_media.clone(),
         rejected_backdrop_filters: placement.rejected_backdrop_filters.clone(),
         placement,
@@ -2067,14 +2072,20 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
 }
 
 /// Works out the layers of a list from where its parts are placed among the spaces at every anchor the tree offers,
-/// which `place_list` gave for `anchors`.
+/// which `place_list` gave for the spaces at `anchors`. Where the window server can show the media of the stack is left
+/// to be worked out for each frame.
 pub fn build_layer_stack(
     inputs: &LayerStackInputs<'_>,
     anchors: &[SpatialNodeIndex],
     placement_at_every_anchor: ListPlacement,
 ) -> LayerStack {
-    if let Some(reason) = why_list_is_unlayered(inputs) {
-        let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), Some(reason));
+    let single_layer = |reason: Option<UnlayeredReason>| {
+        let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), reason);
+        stack.layering_obstacles = placement_at_every_anchor.layering_obstacles;
+        stack
+    };
+    if let Some(reason) = why_list_is_unlayered(inputs, &placement_at_every_anchor.layering_obstacles) {
+        let mut stack = single_layer(Some(reason));
         stack.placement_at_every_anchor = placement_at_every_anchor;
         return stack;
     }
@@ -2111,7 +2122,7 @@ pub fn build_layer_stack(
             }
             Some(StackConflict::BackdropReadThroughSpaces(_)) => {
                 let rejected_backdrop_filters = std::mem::take(&mut stack.rejected_backdrop_filters);
-                let mut stack = LayerStack::single_layer(inputs.viewport_rect, inputs.list.whole_span(), None);
+                let mut stack = single_layer(None);
                 stack.rejected_backdrop_filters = rejected_backdrop_filters;
                 stack.placement_at_every_anchor = placement_at_every_anchor;
                 return stack;
@@ -2125,18 +2136,12 @@ pub fn build_layer_stack(
                     .count();
                 if layers_with_content <= MAXIMUM_LAYER_COUNT || anchors.is_empty() {
                     stack.placement_at_every_anchor = placement_at_every_anchor;
-                    stack.update_window_server_placements(
-                        inputs.list,
-                        inputs.tree,
-                        inputs.scroll_offsets,
-                        inputs.viewport_rect,
-                    );
                     return stack;
                 }
                 anchors.pop();
             }
         }
-        let (_, geometries) = spaces_with_geometries(
+        let (spaces, geometries) = spaces_with_geometries(
             inputs.tree,
             &anchors,
             inputs.scroll_offsets,
@@ -2145,7 +2150,7 @@ pub fn build_layer_stack(
         );
         placement = place_list(
             inputs,
-            &anchors,
+            spaces,
             &geometries,
             &positions_refused_media_layers,
             &effects_refused_backdrop_layers,
@@ -2153,18 +2158,25 @@ pub fn build_layer_stack(
     }
 }
 
-/// Works out the layers of a list from scratch, as a dump or a test does.
+/// Works out the layers of a list from scratch, and where the window server can show their media, as a dump or a test
+/// does.
 pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
-    let anchors = raster_space_anchors(inputs.tree, inputs.scroll_offsets);
-    let (_, geometries) = spaces_with_geometries(
+    let anchors = raster_space_anchors(
+        inputs.tree,
+        inputs.scroll_offsets,
+        &spatial_nodes_that_move_on_their_own(inputs.tree),
+    );
+    let (spaces, geometries) = spaces_with_geometries(
         inputs.tree,
         &anchors,
         inputs.scroll_offsets,
         inputs.viewport_rect,
         inputs.raster_transform,
     );
-    let placement = place_list(inputs, &anchors, &geometries, &[], &[]);
-    build_layer_stack(inputs, &anchors, placement)
+    let placement = place_list(inputs, spaces, &geometries, &[], &[]);
+    let mut stack = build_layer_stack(inputs, &anchors, placement);
+    stack.update_window_server_placements(inputs.list, inputs.tree, inputs.scroll_offsets, inputs.viewport_rect);
+    stack
 }
 
 #[cfg(test)]

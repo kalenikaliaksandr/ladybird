@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! Where the window server can show a canvas or a video that a layer plan draws by itself. The window server places
+//! Where the window server can show by itself a canvas or a video that is a layer of its own. The window server places
 //! an image with a 2D affine transform and clips it to rectangles, one of which can have rounded corners of a single
 //! radius. A media layer drawn under any other clip has to be replayed instead.
 

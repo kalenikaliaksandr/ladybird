@@ -305,11 +305,39 @@ fn sticky_box_is_held(sticky: &StickyData, offset: FloatPoint) -> bool {
     is_held_along(offset.x, lowest.x, highest.x) || is_held_along(offset.y, lowest.y, highest.y)
 }
 
+// As `spatial_nodes_that_move_on_their_own` gave it, where the nodes under a scroll node the compositor scrolls that is
+// not one of `scrollers` move on their own too, as the rasters of the space they are placed in do not follow it.
+fn moving_on_their_own_under_scrollers_without_spaces(
+    tree: &VisualContextTree,
+    spatial_nodes_that_move_on_their_own: &[bool],
+    scrollers: &[SpatialNodeIndex],
+) -> Vec<bool> {
+    let mut moves = spatial_nodes_that_move_on_their_own.to_vec();
+    let scrolled_by_the_compositor_without_a_space: Vec<SpatialNodeIndex> = tree
+        .compositor_scroll_table()
+        .nodes
+        .iter()
+        .map(|record| record.scroll_node_index)
+        .filter(|node| *node != VISUAL_VIEWPORT_NODE_INDEX && !scrollers.contains(node))
+        .collect();
+    if scrolled_by_the_compositor_without_a_space.is_empty() {
+        return moves;
+    }
+    tree.visit_spatial_nodes_parents_first(|index| {
+        let from_parent =
+            index != VISUAL_VIEWPORT_NODE_INDEX.0 as usize && moves[tree.spatial_nodes[index].parent.0 as usize];
+        moves[index] |=
+            from_parent || scrolled_by_the_compositor_without_a_space.contains(&SpatialNodeIndex(index as u32));
+    });
+    moves
+}
+
 // The sticky boxes held at their sticky edge under `scroll_offsets` whose content lands on whole device pixels, and
 // whose scroller is one of `scrollers`, so that the box translates the content of its scroller's space alone.
 fn held_sticky_boxes(
     tree: &VisualContextTree,
     scroll_offsets: &[FloatPoint],
+    spatial_nodes_that_move_on_their_own: &[bool],
     scrollers: &[SpatialNodeIndex],
 ) -> Vec<(usize, SpatialNodeIndex)> {
     if !tree
@@ -319,7 +347,8 @@ fn held_sticky_boxes(
     {
         return Vec::new();
     }
-    let moves_on_its_own = spatial_nodes_that_move_on_their_own_at_anchors(tree, Some(scrollers));
+    let moves_on_its_own =
+        moving_on_their_own_under_scrollers_without_spaces(tree, spatial_nodes_that_move_on_their_own, scrollers);
     tree.spatial_nodes
         .iter()
         .enumerate()
@@ -347,11 +376,16 @@ fn held_sticky_boxes(
 /// scroll range, whose content lands on whole device pixels of the viewport wherever they are scrolled to, since
 /// nothing between them and the viewport transforms, or can be animated to. Then the sticky boxes held at their sticky
 /// edge under `scroll_offsets` within those scrollers, which change only as a box starts or stops being held.
-pub fn raster_space_anchors(tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> Vec<SpatialNodeIndex> {
+/// `spatial_nodes_that_move_on_their_own` is what the function of that name gives for the tree.
+pub fn raster_space_anchors(
+    tree: &VisualContextTree,
+    scroll_offsets: &[FloatPoint],
+    spatial_nodes_that_move_on_their_own: &[bool],
+) -> Vec<SpatialNodeIndex> {
     if !visual_viewport_only_translates(tree) {
         return Vec::new();
     }
-    let moves_on_its_own = spatial_nodes_that_move_on_their_own(tree);
+    let moves_on_its_own = spatial_nodes_that_move_on_their_own;
     let scrollers_with_depths: Vec<(usize, SpatialNodeIndex)> = tree
         .compositor_scroll_table()
         .nodes
@@ -364,11 +398,11 @@ pub fn raster_space_anchors(tree: &VisualContextTree, scroll_offsets: &[FloatPoi
             if !matches!(tree.spatial_nodes.get(node.0 as usize)?.data, SpatialData::Scroll(_)) {
                 return None;
             }
-            Some((depth_on_whole_device_pixels(tree, node, &moves_on_its_own)?, node))
+            Some((depth_on_whole_device_pixels(tree, node, moves_on_its_own)?, node))
         })
         .collect();
     let mut anchors = shallowest_first(scrollers_with_depths, MAXIMUM_SCROLLER_SPACE_COUNT);
-    let held_sticky_boxes = held_sticky_boxes(tree, scroll_offsets, &anchors);
+    let held_sticky_boxes = held_sticky_boxes(tree, scroll_offsets, moves_on_its_own, &anchors);
     anchors.extend(shallowest_first(held_sticky_boxes, MAXIMUM_STICKY_BOX_SPACE_COUNT));
     anchors
 }
@@ -462,7 +496,7 @@ fn extent_of_space(
         port.width + (maximum.x.max(0.0) - minimum.x.min(0.0)),
         port.height + (maximum.y.max(0.0) - minimum.y.min(0.0)),
     );
-    if !(extent.x.is_finite() && extent.y.is_finite() && extent.width.is_finite() && extent.height.is_finite()) {
+    if !is_finite_rect(extent) {
         return unbounded;
     }
     limited_to_extent_limit(extent)
@@ -627,7 +661,7 @@ impl RasterSpaces {
     }
 }
 
-fn is_finite_rect(rect: FloatRect) -> bool {
+pub(crate) fn is_finite_rect(rect: FloatRect) -> bool {
     rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
 }
 
@@ -764,34 +798,6 @@ impl SpaceGeometry {
         self.device_rect(Some(rect), run.context.clip)
     }
 
-    pub fn backdrop_filter_reads_device_rect(
-        &self,
-        tree: &VisualContextTree,
-        effect: EffectNodeIndex,
-        rect: IntRect,
-    ) -> bool {
-        let node = &tree.effect_nodes[effect.0 as usize];
-        let EffectNodeData::Effects(effects) = &node.data else {
-            return false;
-        };
-        let Some(backdrop_filter) = &effects.backdrop_filter else {
-            return false;
-        };
-        if rect.is_empty() {
-            return false;
-        }
-        let to_device = self.world.draw_matrix(node.spatial);
-        if !to_device.is_2d_affine() {
-            return true;
-        }
-        let Some(from_device) = to_device.extract_2d_affine().inverse() else {
-            return true;
-        };
-        let rect_in_effect_space = from_device.map_rect(rect.to_float());
-        crate::filter_bytes::changed_output_bounds(&backdrop_filter.filter, rect_in_effect_space)
-            .is_none_or(|reached| !reached.intersected(backdrop_filter.region.to_float()).is_empty())
-    }
-
     pub fn group_device_rect(
         &self,
         tree: &VisualContextTree,
@@ -811,7 +817,7 @@ impl SpaceGeometry {
     }
 }
 
-fn intersect_bounds(bounds: Option<FloatRect>, limit: Option<FloatRect>) -> Option<FloatRect> {
+pub(crate) fn intersect_bounds(bounds: Option<FloatRect>, limit: Option<FloatRect>) -> Option<FloatRect> {
     match (bounds, limit) {
         (Some(bounds), Some(limit)) => Some(bounds.intersected(limit)),
         (bounds, limit) => bounds.or(limit),
@@ -1165,7 +1171,6 @@ pub struct RunGroups {
     /// Per effect node, the outermost effect of its chain that composites its content as a group.
     outermost_grouping_effects: Vec<EffectNodeIndex>,
     group_is_under_mask: Vec<bool>,
-    mask_outside_every_grouping_effect: bool,
 }
 
 // The structure decides the grouping effect rather than the effect values, so groups stay put while an opacity animates.
@@ -1248,23 +1253,20 @@ impl RunGroups {
             group_of_run[first as usize..=last as usize].fill(group as u32);
         }
 
-        let mut group_is_under_mask = Vec::with_capacity(ranges.len());
-        let mut mask_outside_every_grouping_effect = false;
-        for &(first, last) in &ranges {
-            let runs = first as usize..=last as usize;
-            group_is_under_mask.push(run_is_under_mask[runs.clone()].iter().any(|&under_mask| under_mask));
-            mask_outside_every_grouping_effect |= run_is_under_mask[runs.clone()]
-                .iter()
-                .zip(&grouping_effect_of_run[runs])
-                .any(|(&under_mask, grouping)| grouping.is_none() && under_mask);
-        }
+        let group_is_under_mask = ranges
+            .iter()
+            .map(|&(first, last)| {
+                run_is_under_mask[first as usize..=last as usize]
+                    .iter()
+                    .any(|&under_mask| under_mask)
+            })
+            .collect();
         Self {
             ranges,
             group_of_run,
             grouping_effect_of_run,
             outermost_grouping_effects,
             group_is_under_mask,
-            mask_outside_every_grouping_effect,
         }
     }
 
@@ -1296,10 +1298,5 @@ impl RunGroups {
     /// Whether the group is under a mask, whose content is replayed whole wherever any of it shows.
     pub fn group_is_under_mask(&self, group: usize) -> bool {
         self.group_is_under_mask[group]
-    }
-
-    /// Whether a run is under a mask that no group effect holds, so the mask reaches past what one group holds.
-    pub fn mask_outside_every_grouping_effect(&self) -> bool {
-        self.mask_outside_every_grouping_effect
     }
 }

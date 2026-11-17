@@ -8,6 +8,7 @@ use libgfx_rust::IntRect;
 use std::cmp::Ordering;
 
 pub const TILE_SIZE_IN_DEVICE_PIXELS: i32 = 256;
+const MOST_CELLS_CONTENT_IS_FOLLOWED_INTO_ONE_BY_ONE: u64 = 4096;
 
 /// A cell of the tile grid of a layer's raster space, which starts at the space's origin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -61,6 +62,12 @@ pub fn tile_coords_touching(rect: IntRect) -> impl Iterator<Item = TileCoord> {
         rows.flat_map(move |row| columns.clone().map(move |column| TileCoord::new(column, row)))
     });
     coords.into_iter().flatten()
+}
+
+/// Whether content within `rect` reaches too many cells to be followed into each of them, and is taken to reach every
+/// cell it can instead.
+pub fn reaches_too_many_cells_to_follow_one_by_one(rect: IntRect) -> bool {
+    tile_count_touching(rect) > MOST_CELLS_CONTENT_IS_FOLLOWED_INTO_ONE_BY_ONE
 }
 
 /// How many cells `rect` reaches into.

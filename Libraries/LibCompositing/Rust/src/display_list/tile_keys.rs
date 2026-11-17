@@ -19,15 +19,16 @@ use super::commands::{
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{Extent, changed_extent_through_filters, nearest_spreading_effects};
-use super::layers::{LayerGroup, LayerStack, mask_declarations_sit_on_the_chains_of_their_masks};
+use super::layers::{LayerGroup, LayerStack, LayeringObstacles};
 use super::nested_records::for_each_command_including_nested;
-use super::placement::{RunGroups, SpaceGeometry};
+use super::placement::{RunGroups, SpaceGeometry, intersect_bounds, is_finite_rect};
+use super::reach::Reach;
 use super::replay::{ScrollbarShownByFrame, caret_is_visible_at_time};
 use super::storage::{ChunkName, DisplayListStorage, ListChunk, ListPosition, ListSpan};
 use super::summary::{LiveContent, live_content_of};
-use super::tiles::{TileCoord, tile_coords_touching, tile_count_touching};
+use super::tiles::{TileCoord, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
-use crate::visual_context::{ClipNodeData, EffectNodeData, SpatialData, VisualContextTree, device_offset_for_index};
+use crate::visual_context::{ClipNodeData, EffectNodeData, VisualContextTree, device_offset_for_index};
 use foldhash::fast::{FixedState, FoldHasher};
 use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect};
 use std::cell::{Cell, RefCell};
@@ -42,8 +43,6 @@ const HIGH_HALF_SEED: u64 = 0x1319_8a2e_0370_7344;
 const INFLUENCE_MARGIN_IN_DEVICE_PIXELS: i32 = 3;
 const LARGEST_BACKDROP_READ_REACH_IN_DEVICE_PIXELS: f32 = 2048.0;
 const INFLUENCE_COORDINATE_LIMIT: f32 = 16777216.0;
-// Beyond this, the cells an entry reaches are not listed, and the chunk is taken to reach every cell its entry can.
-const MAXIMUM_CELLS_AN_ENTRY_IS_LISTED_IN: u64 = 1024;
 
 struct KeyHasher {
     low: FoldHasher<'static>,
@@ -130,14 +129,14 @@ impl KeyHasher {
         }
     }
 
-    fn write_influence(&mut self, influence: Influence) {
-        match influence {
-            Influence::Nowhere => self.write_u32(0),
-            Influence::Within(rect) => {
+    fn write_reach(&mut self, reach: Reach<IntRect>) {
+        match reach {
+            Reach::Nothing => self.write_u32(0),
+            Reach::Within(rect) => {
                 self.write_u32(1);
                 self.write_int_rect(rect);
             }
-            Influence::Everywhere => self.write_u32(2),
+            Reach::Anywhere => self.write_u32(2),
         }
     }
 
@@ -316,18 +315,14 @@ pub struct ListOfFrame<'a> {
 }
 
 impl<'a> ListOfFrame<'a> {
+    /// The list of a frame, whose stack worked out `layering_obstacles` from the list and the tree.
     pub fn new(
         display_list: &'a DisplayListStorage,
         tree: &'a VisualContextTree,
+        layering_obstacles: LayeringObstacles,
         reads_outside_the_list: ReplayReadsOutsideTheList<'a>,
     ) -> Self {
         let run_groups = display_list.run_groups(tree);
-        let tree_has_sorting_contexts = tree.spatial_nodes.iter().any(|node| {
-            matches!(&node.data, SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
-        });
-        let replays_every_record_into_every_tile = tree_has_sorting_contexts
-            || run_groups.mask_outside_every_grouping_effect()
-            || !mask_declarations_sit_on_the_chains_of_their_masks(display_list, tree);
         let mask_declarations = display_list
             .summary()
             .mask_declarations
@@ -347,8 +342,8 @@ impl<'a> ListOfFrame<'a> {
             tree,
             reads_outside_the_list,
             nearest_spreading_effects: nearest_spreading_effects(tree),
-            replays_every_record_into_every_tile,
-            tree_has_sorting_contexts,
+            replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record(),
+            tree_has_sorting_contexts: layering_obstacles.has_3d_sorting_contexts,
             live_stamp: live_stamp_of(display_list, &reads_outside_the_list),
             mask_declarations,
         }
@@ -396,51 +391,12 @@ fn live_stamp_of(display_list: &DisplayListStorage, outside: &ReplayReadsOutside
     hasher.finish()
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Influence {
-    #[default]
-    Nowhere,
-    Within(IntRect),
-    Everywhere,
-}
-
-impl Influence {
-    fn touches(self, rect: IntRect) -> bool {
-        match self {
-            Influence::Nowhere => false,
-            Influence::Within(within) => !within.intersected(rect).is_empty(),
-            Influence::Everywhere => true,
-        }
-    }
-
-    fn united(self, other: Influence) -> Influence {
-        match (self, other) {
-            (Influence::Nowhere, influence) | (influence, Influence::Nowhere) => influence,
-            (Influence::Within(rect), Influence::Within(other)) => Influence::Within(rect.united(other)),
-            _ => Influence::Everywhere,
-        }
-    }
-
-    // The part of `area` it reaches.
-    fn within(self, area: IntRect) -> IntRect {
-        match self {
-            Influence::Nowhere => IntRect::default(),
-            Influence::Within(rect) => rect.intersected(area),
-            Influence::Everywhere => area,
-        }
-    }
-}
-
-fn is_finite_rect(rect: FloatRect) -> bool {
-    rect.x.is_finite() && rect.y.is_finite() && rect.width.is_finite() && rect.height.is_finite()
-}
-
-fn influence_of_device_rect(rect: Option<FloatRect>) -> Influence {
+fn influence_of_device_rect(rect: Option<FloatRect>) -> Reach<IntRect> {
     let Some(rect) = rect else {
-        return Influence::Everywhere;
+        return Reach::Anywhere;
     };
     if !is_finite_rect(rect) {
-        return Influence::Everywhere;
+        return Reach::Anywhere;
     }
     let rect = rect.intersected(FloatRect::new(
         -INFLUENCE_COORDINATE_LIMIT,
@@ -449,9 +405,9 @@ fn influence_of_device_rect(rect: Option<FloatRect>) -> Influence {
         2.0 * INFLUENCE_COORDINATE_LIMIT,
     ));
     if rect.is_empty() {
-        return Influence::Nowhere;
+        return Reach::Nothing;
     }
-    Influence::Within(enclosing_int_rect(rect).inflated_edges(
+    Reach::Within(enclosing_int_rect(rect).inflated_edges(
         INFLUENCE_MARGIN_IN_DEVICE_PIXELS,
         INFLUENCE_MARGIN_IN_DEVICE_PIXELS,
         INFLUENCE_MARGIN_IN_DEVICE_PIXELS,
@@ -459,17 +415,10 @@ fn influence_of_device_rect(rect: Option<FloatRect>) -> Influence {
     ))
 }
 
-fn intersect_bounds(bounds: Option<FloatRect>, limit: Option<FloatRect>) -> Option<FloatRect> {
-    match (bounds, limit) {
-        (Some(bounds), Some(limit)) => Some(bounds.intersected(limit)),
-        (bounds, limit) => bounds.or(limit),
-    }
-}
-
 struct BackdropReadInLayer {
     first_record_position: ListPosition,
-    region_influence: Influence,
-    read_rect: Influence,
+    region_influence: Reach<IntRect>,
+    read_rect: Reach<IntRect>,
     read_reach_in_device_pixels: Option<i32>,
     spread_past_region_in_device_pixels: i32,
 }
@@ -477,10 +426,10 @@ struct BackdropReadInLayer {
 // Where content painted at `position` can show once the backdrop filters of the layer that read it after it are taken
 // in: what a filter reads beyond the part of its region a tile holds has to be in the tile too.
 fn influence_extended_through_backdrops(
-    mut influence: Influence,
+    mut influence: Reach<IntRect>,
     position: ListPosition,
     backdrops: &[BackdropReadInLayer],
-) -> Influence {
+) -> Reach<IntRect> {
     if backdrops.is_empty() {
         return influence;
     }
@@ -490,16 +439,16 @@ fn influence_extended_through_backdrops(
             if position >= backdrop.first_record_position {
                 continue;
             }
-            let Influence::Within(rect) = influence else {
+            let Reach::Within(rect) = influence else {
                 continue;
             };
             if !backdrop.read_rect.touches(rect) {
                 continue;
             }
             let reached = match (backdrop.region_influence, backdrop.read_reach_in_device_pixels) {
-                (Influence::Within(region), Some(reach)) => {
+                (Reach::Within(region), Some(reach)) => {
                     let distance = reach + backdrop.spread_past_region_in_device_pixels;
-                    Influence::Within(
+                    Reach::Within(
                         rect.inflated_edges(distance, distance, distance, distance)
                             .intersected(region),
                     )
@@ -526,7 +475,7 @@ struct ChunkEntry {
     end_record: u32,
     begin_offset: u32,
     end_offset: u32,
-    influence: Influence,
+    influence: Reach<IntRect>,
     // What the records hold, as the geometry of the space places them.
     static_digest: TileKey,
     reads_outside_the_list: bool,
@@ -536,7 +485,7 @@ struct ChunkEntry {
 struct PlacedRun {
     // The entries the run's records are binned as one by one, and the union of where they can show.
     entries: (u32, u32),
-    reach: Influence,
+    reach: Reach<IntRect>,
     // The entry that holds every record of the run, which is binned when the run is replayed whole.
     whole: u32,
 }
@@ -552,7 +501,7 @@ pub struct PlacedChunk {
     // The cells that the entries binned record by record reach, and where those that reach too many cells to list them
     // can show.
     reached_cells: Vec<TileCoord>,
-    reach_past_listed_cells: Influence,
+    reach_past_listed_cells: Reach<IntRect>,
 }
 
 impl PlacedChunk {
@@ -650,9 +599,9 @@ struct BoundChunk {
     held_runs: Vec<u32>,
     // Where what the group holds of the chunk can show: within its listed cells, where those are listed, and within
     // `reach_past_listed_cells`, and nowhere outside `reach` in any case.
-    reach: Influence,
+    reach: Reach<IntRect>,
     lists_reached_cells: bool,
-    reach_past_listed_cells: Influence,
+    reach_past_listed_cells: Reach<IntRect>,
     // What binning reads of the chunk.
     digest: TileKey,
 }
@@ -660,7 +609,7 @@ struct BoundChunk {
 // A run whose group effect is under a mask: it is replayed whole wherever any of its group shows, with the records
 // that declare the content of the masks it is under.
 struct WholeRun {
-    influence: Influence,
+    influence: Reach<IntRect>,
     companions: Vec<TileEntry>,
 }
 
@@ -683,9 +632,9 @@ impl GroupBinding {
     }
 
     // Where an entry can show, as binning places it.
-    fn influence_of(&self, entry: TileEntry) -> Influence {
+    fn influence_of(&self, entry: TileEntry) -> Reach<IntRect> {
         let TileEntry::Placed { chunk, entry } = entry else {
-            return Influence::Nowhere;
+            return Reach::Nothing;
         };
         let bound = &self.chunks[self.bound_chunk_at[&chunk]];
         let placed = &bound.placed.entries[entry as usize];
@@ -733,7 +682,7 @@ impl GroupBinding {
             .keys()
             .fold(IntRect::default(), |area, coord| area.united(coord.cell_rect()));
         for (index, chunk) in self.chunks.iter().enumerate() {
-            if chunk.reach.within(area).is_empty() {
+            if chunk.reach.part_of(area).is_empty() {
                 continue;
             }
             let mut note = |coord: TileCoord| {
@@ -748,7 +697,7 @@ impl GroupBinding {
                     note(*coord);
                 }
             }
-            let reached_past_listed_cells = chunk.reach_past_listed_cells.within(area);
+            let reached_past_listed_cells = chunk.reach_past_listed_cells.part_of(area);
             if !reached_past_listed_cells.is_empty() {
                 for coord in tile_coords_touching(reached_past_listed_cells) {
                     note(coord);
@@ -905,12 +854,12 @@ impl<'a> RasterSpaceOfFrame<'a> {
         }
     }
 
-    fn influence_of_content_within(&self, rect: FloatRect, context: ContextRef) -> Influence {
+    fn influence_of_content_within(&self, rect: FloatRect, context: ContextRef) -> Reach<IntRect> {
         if rect.is_empty()
             || self.geometry.culling.context_culls_everything(context)
             || self.geometry.world.backface_culled[context.spatial.0 as usize]
         {
-            return Influence::Nowhere;
+            return Reach::Nothing;
         }
         let list = self.list;
         let spread_by_filters =
@@ -926,7 +875,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
         let content_maps_affinely = self.geometry.world.draw_matrix(space).is_2d_affine()
             && self.geometry.world.draw_matrix(context.spatial).is_2d_affine();
         let bounds = match extent {
-            Extent::Nothing => return Influence::Nowhere,
+            Extent::Nothing => return Reach::Nothing,
             Extent::Within(rect) if content_maps_affinely => {
                 Some(self.geometry.world.map_rect_to_root(space, rect)).filter(|rect| is_finite_rect(*rect))
             }
@@ -970,11 +919,11 @@ impl<'a> RasterSpaceOfFrame<'a> {
             .filter(|rect| is_finite_rect(*rect))
             .map(enclosing_int_rect);
         let read_rect = match (region_in_device_pixels, read_reach) {
-            (Some(region), Some(reach)) => Influence::Within(region.inflated_edges(reach, reach, reach, reach)),
-            _ => Influence::Everywhere,
+            (Some(region), Some(reach)) => Reach::Within(region.inflated_edges(reach, reach, reach, reach)),
+            _ => Reach::Anywhere,
         };
         let spread_past_region = match (region_influence, region_in_device_pixels) {
-            (Influence::Within(spread), Some(region)) => [
+            (Reach::Within(spread), Some(region)) => [
                 region.x - spread.x,
                 spread.right() - region.right(),
                 region.y - spread.y,
@@ -1262,7 +1211,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
         chunk: &ListChunk,
         run: u32,
         records: std::ops::Range<u32>,
-        influence: Influence,
+        influence: Reach<IntRect>,
     ) -> ChunkEntry {
         let table = chunk.record_table();
         ChunkEntry {
@@ -1288,8 +1237,8 @@ impl<'a> RasterSpaceOfFrame<'a> {
             let records = table.records_of_run(run_index as usize);
             let run_influence = self.influence_of_content_within(run.ink_bounds.to_float(), run.context);
             let first_entry = entries.len() as u32;
-            let mut reach = Influence::Nowhere;
-            if run_influence != Influence::Nowhere {
+            let mut reach = Reach::Nothing;
+            if run_influence != Reach::Nothing {
                 if !self.geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
                     entries.push(self.entry_of_records(chunk, run_index, records.clone(), run_influence));
                     reach = run_influence;
@@ -1300,7 +1249,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
                             continue;
                         }
                         let influence = self.influence_of_content_within(record.bounding_rect.to_float(), run.context);
-                        if influence == Influence::Nowhere {
+                        if influence == Reach::Nothing {
                             continue;
                         }
                         entries.push(self.entry_of_records(
@@ -1322,11 +1271,12 @@ impl<'a> RasterSpaceOfFrame<'a> {
             };
         }
         let mut reached_cells = Vec::new();
-        let mut reach_past_listed_cells = Influence::Nowhere;
+        let mut reach_past_listed_cells = Reach::Nothing;
         for placed_run in &placed_runs {
             for entry in &entries[placed_run.entries.0 as usize..placed_run.entries.1 as usize] {
                 match entry.influence {
-                    Influence::Within(rect) if tile_count_touching(rect) <= MAXIMUM_CELLS_AN_ENTRY_IS_LISTED_IN => {
+                    // Beyond that, the chunk is taken to reach every cell its entry can.
+                    Reach::Within(rect) if !reaches_too_many_cells_to_follow_one_by_one(rect) => {
                         reached_cells.extend(tile_coords_touching(rect));
                     }
                     influence => reach_past_listed_cells = reach_past_listed_cells.united(influence),
@@ -1577,9 +1527,9 @@ impl<'a> RasterSpaceOfFrame<'a> {
                 placed,
                 held,
                 held_runs,
-                reach: Influence::Nowhere,
+                reach: Reach::Nothing,
                 lists_reached_cells: false,
-                reach_past_listed_cells: Influence::Nowhere,
+                reach_past_listed_cells: Reach::Nothing,
                 digest: 0,
             });
         }
@@ -1623,15 +1573,15 @@ impl<'a> RasterSpaceOfFrame<'a> {
             let position = backdrop.first_record_position;
             digest_hasher.write_chunk_name(chunk_names[position.chunk as usize]);
             digest_hasher.write_u32(position.offset);
-            digest_hasher.write_influence(backdrop.region_influence);
-            digest_hasher.write_influence(backdrop.read_rect);
+            digest_hasher.write_reach(backdrop.region_influence);
+            digest_hasher.write_reach(backdrop.read_rect);
             digest_hasher.write_i32(backdrop.read_reach_in_device_pixels.unwrap_or(-1));
             digest_hasher.write_i32(backdrop.spread_past_region_in_device_pixels);
         }
 
         // The runs of a group effect under a mask are replayed whole wherever any of the group shows.
         let run_groups = list.run_groups;
-        let mut masked_groups: BTreeMap<usize, (Influence, ListPosition)> = BTreeMap::new();
+        let mut masked_groups: BTreeMap<usize, (Reach<IntRect>, ListPosition)> = BTreeMap::new();
         for chunk in &chunks {
             for &run in &chunk.held_runs {
                 let group = run_groups.group_of_run(display_list.first_run_of_chunk(chunk.position) + run as usize);
@@ -1724,8 +1674,8 @@ impl<'a> RasterSpaceOfFrame<'a> {
         // Where what the group holds of each chunk can show, and what binning reads of the chunk.
         for index in 0..binding.chunks.len() {
             let chunk = &binding.chunks[index];
-            let mut reach = Influence::Nowhere;
-            let mut reach_of_runs_binned_by_record = Influence::Nowhere;
+            let mut reach = Reach::Nothing;
+            let mut reach_of_runs_binned_by_record = Reach::Nothing;
             let mut hasher = KeyHasher::new();
             hasher.write_chunk_name(binding.chunk_names[chunk.position as usize]);
             hasher.write_key(chunk.placed.key);
@@ -1738,7 +1688,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
                     Some(whole_run) => {
                         reach = reach.united(whole_run.influence);
                         hasher.write_u32(run);
-                        hasher.write_influence(whole_run.influence);
+                        hasher.write_reach(whole_run.influence);
                     }
                     None => {
                         reach_of_runs_binned_by_record =
@@ -1773,7 +1723,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
     fn for_each_held_entry(
         binding: &GroupBinding,
         chunk: &BoundChunk,
-        mut visit: impl FnMut(ListPosition, TileEntry, Influence, &[TileEntry]),
+        mut visit: impl FnMut(ListPosition, TileEntry, Reach<IntRect>, &[TileEntry]),
     ) {
         for &run in &chunk.held_runs {
             let placed_run = &chunk.placed.runs[run as usize];
@@ -1915,11 +1865,11 @@ impl<'a> RasterSpaceOfFrame<'a> {
             .iter()
             .fold(IntRect::default(), |cells, coord| cells.united(coord.cell_rect()));
         // Per new cell, the layers that hold something there, each with its entries and where they are painted.
-        type Bin = Vec<(usize, Vec<(ListPosition, TileEntry, Influence)>)>;
+        type Bin = Vec<(usize, Vec<(ListPosition, TileEntry, Reach<IntRect>)>)>;
         let mut bins: BTreeMap<TileCoord, Bin> = new_coords.iter().map(|coord| (*coord, Vec::new())).collect();
         let mut add_to_bins =
-            |position: ListPosition, entry: TileEntry, influence: Influence, companions: &[TileEntry]| {
-                let reached = influence.within(new_cells);
+            |position: ListPosition, entry: TileEntry, influence: Reach<IntRect>, companions: &[TileEntry]| {
+                let reached = influence.part_of(new_cells);
                 if reached.is_empty() {
                     return;
                 }
@@ -1928,6 +1878,13 @@ impl<'a> RasterSpaceOfFrame<'a> {
                         continue;
                     };
                     let layer = layer_group.layer_at(position, coord.cell_rect());
+                    // The stack composites only the layers its units reach, and units work out where content can
+                    // show apart from entries, as `SpaceGeometry::ink_device_rect` rather than
+                    // `influence_of_content_within`, so an entry has to stay within the reach of its unit.
+                    debug_assert!(
+                        stack.layers[layer].may_hold_content,
+                        "an entry at {position:?} goes into L{layer}, which no unit reaches, in the tile at {coord}"
+                    );
                     let layer_entries = match bin.iter_mut().position(|(bin_layer, _)| *bin_layer == layer) {
                         Some(index) => &mut bin[index].1,
                         None => {
@@ -1945,12 +1902,12 @@ impl<'a> RasterSpaceOfFrame<'a> {
         match &binding.replayed_everywhere {
             Some(entries) => {
                 for &(position, entry) in entries {
-                    add_to_bins(position, entry, Influence::Everywhere, &[]);
+                    add_to_bins(position, entry, Reach::Anywhere, &[]);
                 }
             }
             None => {
                 for chunk in &binding.chunks {
-                    if chunk.reach.within(new_cells).is_empty() {
+                    if chunk.reach.part_of(new_cells).is_empty() {
                         continue;
                     }
                     Self::for_each_held_entry(binding, chunk, &mut add_to_bins);
@@ -1986,9 +1943,9 @@ impl<'a> RasterSpaceOfFrame<'a> {
                 let content_bounds = layer_entries
                     .iter()
                     .fold(IntRect::default(), |bounds, (_, _, influence)| match influence {
-                        Influence::Within(rect) => bounds.united(rect.intersected(cell)),
-                        Influence::Everywhere => cell,
-                        Influence::Nowhere => bounds,
+                        Reach::Within(rect) => bounds.united(rect.intersected(cell)),
+                        Reach::Anywhere => cell,
+                        Reach::Nothing => bounds,
                     });
                 let entries: Vec<TileEntry> = layer_entries.into_iter().map(|(_, entry, _)| entry).collect();
                 let reads_outside_the_list = entries
@@ -2023,7 +1980,7 @@ mod tests {
     use crate::display_list::commands::{CanvasId, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
     use crate::display_list::layers::{LayerStack, LayerStackInputs, layer_stack_of};
     use crate::display_list::placement::RasterSpaces;
-    use crate::visual_context::{EffectsData, TransformData, TransformDataRole};
+    use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::CompositingAndBlendingOperator;
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
@@ -2148,6 +2105,7 @@ mod tests {
         let list_of_frame = ListOfFrame::new(
             &display_list,
             &tree,
+            stack.layering_obstacles,
             ReplayReadsOutsideTheList {
                 scrollbars: &[],
                 time_ns: 0,
@@ -2218,6 +2176,7 @@ mod tests {
         let list_of_frame = ListOfFrame::new(
             display_list,
             tree,
+            stack.layering_obstacles,
             ReplayReadsOutsideTheList {
                 scrollbars: &[],
                 time_ns: 0,
@@ -2251,6 +2210,7 @@ mod tests {
                 let list_of_frame = ListOfFrame::new(
                     display_list,
                     tree,
+                    stack.layering_obstacles,
                     ReplayReadsOutsideTheList {
                         scrollbars: &[],
                         time_ns: 0,
