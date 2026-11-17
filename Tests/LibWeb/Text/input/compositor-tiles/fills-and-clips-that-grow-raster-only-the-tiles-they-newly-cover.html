@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    /* A background as tall as the page, which grows as the page loads. */
+    #background { position: absolute; left: 0; top: 0; width: 100%; height: 1000px; background: rgb(240, 230, 200); }
+    /* A box that clips what it holds, and grows as the page loads. */
+    #clipping { position: absolute; left: 40px; top: 100px; width: 200px; height: 1000px; overflow: clip; }
+    #clipped { height: 3000px; background: rgb(90, 140, 200); }
+    #growing { position: absolute; left: 300px; top: 100px; width: 100px; height: 200px; }
+</style>
+<div id="background"></div>
+<div id="clipping"><div id="clipped"></div></div>
+<div id="growing"></div>
+<script>
+    asyncTest(async done => {
+        // A color no earlier load drew, so that no tile the compositor still keeps holds the box.
+        growing.style.background = colorUniqueToThisPageLoad();
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        background.style.height = "2000px";
+        const backgroundGrewBelowTheView = await presentedFrameState();
+        clipping.style.height = "2000px";
+        const clipGrewBelowTheView = await presentedFrameState();
+        // From 300 to 500 pixels down, which only the second row of tiles holds.
+        growing.style.height = "400px";
+        const boxGrewWithinTheView = await presentedFrameState();
+        println(layersOfTheDisplayList());
+        for (const [what, state] of [
+            ["background grew below the view", backgroundGrewBelowTheView],
+            ["clip grew below the view", clipGrewBelowTheView],
+            ["box grew within the second row of tiles", boxGrewWithinTheView],
+        ]) {
+            printPresentedFrameState(state);
+            println(`${what}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

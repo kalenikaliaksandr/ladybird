@@ -1,0 +1,7 @@
+[L1] base space=document
+compared: true, matches a direct raster: true
+background grew below the view, tiles rasterized: 0
+compared: true, matches a direct raster: true
+clip grew below the view, tiles rasterized: 0
+compared: true, matches a direct raster: true
+box grew within the second row of tiles, tiles rasterized: 1

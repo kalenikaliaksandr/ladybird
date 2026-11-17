@@ -16,6 +16,7 @@ use super::builder::{HEADER_SIZE, for_each_command, has_inline_clip_in_its_own_s
 use super::commands::{
     ClipNodeIndex, ContextRef, DeclareMaskContent, DisplayListCommandRun, DisplayListCommandType,
     DrawCompositedContext, EffectNodeIndex, FillRect, FillRectWithRoundedCorners, PaintCaret, PaintScrollBar,
+    SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{Extent, changed_extent_through_filters, nearest_spreading_effects};
@@ -28,9 +29,11 @@ use super::storage::{ChunkName, DisplayListStorage, ListChunk, ListPosition, Lis
 use super::summary::{LiveContent, live_content_of};
 use super::tiles::{TileCoord, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
-use crate::visual_context::{ClipNodeData, EffectNodeData, VisualContextTree, device_offset_for_index};
+use crate::visual_context::{
+    ClipData, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
+};
 use foldhash::fast::{FixedState, FoldHasher};
-use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect};
+use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasher, Hasher};
@@ -503,6 +506,95 @@ fn influence_extended_through_backdrops(
     influence
 }
 
+/// A rect that the space maps to a rect of device pixels without rotating, skewing or mirroring it, with the radii of its
+/// corners in device pixels, top left first. What it draws or clips within a part of the space depends only on where its
+/// edges and corners are near that part.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RectInDevicePixels {
+    rect: FloatRect,
+    horizontal_and_vertical_corner_radii: [(f32, f32); 4],
+}
+
+impl RectInDevicePixels {
+    fn of(
+        world: &WorldTransforms,
+        spatial: SpatialNodeIndex,
+        rect: FloatRect,
+        corner_radii: &CornerRadii,
+    ) -> Option<Self> {
+        let matrix = world.draw_matrix(spatial);
+        if !matrix.is_2d_affine() {
+            return None;
+        }
+        let affine = matrix.extract_2d_affine();
+        if affine.b() != 0.0 || affine.c() != 0.0 || affine.a() <= 0.0 || affine.d() <= 0.0 {
+            return None;
+        }
+        let rect = world.map_rect_to_root(spatial, rect);
+        if !is_finite_rect(rect) {
+            return None;
+        }
+        let in_device_pixels = |radius: &libgfx_rust::CornerRadius| {
+            (
+                radius.horizontal_radius as f32 * affine.a(),
+                radius.vertical_radius as f32 * affine.d(),
+            )
+        };
+        Some(Self {
+            rect,
+            horizontal_and_vertical_corner_radii: [
+                in_device_pixels(&corner_radii.top_left),
+                in_device_pixels(&corner_radii.top_right),
+                in_device_pixels(&corner_radii.bottom_right),
+                in_device_pixels(&corner_radii.bottom_left),
+            ],
+        })
+    }
+
+    // The rect clipped to `area`, or the whole rect where a rounded corner of it reaches into `area`.
+    fn write_part_within(&self, hasher: &mut KeyHasher, area: FloatRect) {
+        let rect = self.rect;
+        let [top_left, top_right, bottom_right, bottom_left] = self.horizontal_and_vertical_corner_radii;
+        let corners = [
+            FloatRect::new(rect.x, rect.y, top_left.0, top_left.1),
+            FloatRect::new(rect.right() - top_right.0, rect.y, top_right.0, top_right.1),
+            FloatRect::new(
+                rect.right() - bottom_right.0,
+                rect.bottom() - bottom_right.1,
+                bottom_right.0,
+                bottom_right.1,
+            ),
+            FloatRect::new(rect.x, rect.bottom() - bottom_left.1, bottom_left.0, bottom_left.1),
+        ];
+        for (horizontal, vertical) in self.horizontal_and_vertical_corner_radii {
+            hasher.write_f32(horizontal);
+            hasher.write_f32(vertical);
+        }
+        if corners
+            .iter()
+            .any(|corner| !corner.is_empty() && !corner.intersected(area).is_empty())
+        {
+            hasher.write_u32(1);
+            hasher.write_float_rect(rect);
+            return;
+        }
+        let part = rect.intersected(area);
+        if part.is_empty() {
+            hasher.write_u32(2);
+            return;
+        }
+        hasher.write_u32(3);
+        hasher.write_float_rect(part);
+    }
+}
+
+/// A fill of one color over a rect in device pixels, which shows in a tile only as far as the part of the rect near it.
+#[derive(Clone, Copy, Debug)]
+struct FillOfARectInDevicePixels {
+    rect: RectInDevicePixels,
+    digest_of_the_fill_without_its_rect: TileKey,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ChunkEntry {
     run: u32,
@@ -514,6 +606,30 @@ struct ChunkEntry {
     // What the records hold, as the geometry of the space places them.
     static_digest: TileKey,
     reads_outside_the_list: bool,
+    context: ContextRef,
+    // Whether the records show in a tile only as far as they reach near it, as no filter spreads them, so that the rects
+    // of their clips and fills are told by their parts near the tile.
+    shows_in_a_tile_only_as_far_as_it_reaches_near_it: bool,
+    // For an entry that is one fill of a rect in device pixels, that fill.
+    fill_of_a_rect_in_device_pixels: Option<FillOfARectInDevicePixels>,
+}
+
+// The digests of clips and effects, with the rects of clips told by their parts within `area`, as a tile near the area
+// shows them, worked out once per tile.
+struct DigestsWithinAnArea {
+    area: FloatRect,
+    clips: HashMap<u32, TileKey>,
+    effects: HashMap<u32, TileKey>,
+}
+
+impl DigestsWithinAnArea {
+    fn new(area: FloatRect) -> Self {
+        Self {
+            area,
+            clips: HashMap::new(),
+            effects: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1028,6 +1144,14 @@ impl<'a> RasterSpaceOfFrame<'a> {
         }
         let mut hasher = KeyHasher::new();
         hasher.write_key(self.clip_digest(node.parent));
+        self.write_clip_node(&mut hasher, clip);
+        let digest = hasher.finish();
+        self.clip_digests.borrow_mut()[clip.0 as usize] = Some(digest);
+        digest
+    }
+
+    fn write_clip_node(&self, hasher: &mut KeyHasher, clip: ClipNodeIndex) {
+        let node = &self.list.tree.clip_nodes[clip.0 as usize];
         hasher.write_key(self.spatial_digest(node.spatial));
         hasher.write_bool(node.clips_everything);
         match &node.data {
@@ -1045,8 +1169,51 @@ impl<'a> RasterSpaceOfFrame<'a> {
             }
             ClipNodeData::Dead => hasher.write_u32(3),
         }
-        let digest = hasher.finish();
-        self.clip_digests.borrow_mut()[clip.0 as usize] = Some(digest);
+    }
+
+    // As `clip_digest`, with the rect of each clip that the space maps to a rect of device pixels told by its part
+    // within `within.area`, which is all of it that a tile near the area shows.
+    fn clip_digest_within(&self, clip: ClipNodeIndex, within: &mut DigestsWithinAnArea) -> TileKey {
+        if clip.is_none() {
+            return 0;
+        }
+        if let Some(&digest) = within.clips.get(&clip.0) {
+            return digest;
+        }
+        let node = &self.list.tree.clip_nodes[clip.0 as usize];
+        let left_to_composite = self
+            .geometry
+            .clips_left_to_composite
+            .get(clip.0 as usize)
+            .copied()
+            .unwrap_or(false);
+        let parent_digest = self.clip_digest_within(node.parent, within);
+        let digest = if left_to_composite {
+            parent_digest
+        } else {
+            let mut hasher = KeyHasher::new();
+            hasher.write_key(parent_digest);
+            let rect_in_device_pixels = match &node.data {
+                ClipNodeData::Rect(ClipData {
+                    rect,
+                    corner_radii,
+                    mode,
+                }) => RectInDevicePixels::of(&self.geometry.world, node.spatial, *rect, corner_radii)
+                    .map(|rect| (rect, *mode)),
+                _ => None,
+            };
+            match rect_in_device_pixels {
+                Some((rect, mode)) => {
+                    hasher.write_u32(4);
+                    hasher.write_bool(node.clips_everything);
+                    hasher.write_u32(mode as u32);
+                    rect.write_part_within(&mut hasher, within.area);
+                }
+                None => self.write_clip_node(&mut hasher, clip),
+            }
+            hasher.finish()
+        };
+        within.clips.insert(clip.0, digest);
         digest
     }
 
@@ -1057,12 +1224,44 @@ impl<'a> RasterSpaceOfFrame<'a> {
         if let Some(digest) = self.effect_digests.borrow()[effect.0 as usize] {
             return digest;
         }
+        let node = &self.list.tree.effect_nodes[effect.0 as usize];
+        let digest = self.digest_of_effect_node(
+            effect,
+            self.effect_digest(node.parent),
+            self.clip_digest(self.list.effect_clips.output_clip(effect)),
+        );
+        self.effect_digests.borrow_mut()[effect.0 as usize] = Some(digest);
+        digest
+    }
+
+    // As `effect_digest`, with the clips of the effects told as `clip_digest_within` tells them.
+    fn effect_digest_within(&self, effect: EffectNodeIndex, within: &mut DigestsWithinAnArea) -> TileKey {
+        if effect.is_none() {
+            return 0;
+        }
+        if let Some(&digest) = within.effects.get(&effect.0) {
+            return digest;
+        }
+        let node = &self.list.tree.effect_nodes[effect.0 as usize];
+        let parent_digest = self.effect_digest_within(node.parent, within);
+        let output_clip_digest = self.clip_digest_within(self.list.effect_clips.output_clip(effect), within);
+        let digest = self.digest_of_effect_node(effect, parent_digest, output_clip_digest);
+        within.effects.insert(effect.0, digest);
+        digest
+    }
+
+    fn digest_of_effect_node(
+        &self,
+        effect: EffectNodeIndex,
+        parent_digest: TileKey,
+        output_clip_digest: TileKey,
+    ) -> TileKey {
         let tree = self.list.tree;
         let node = &tree.effect_nodes[effect.0 as usize];
         let mut hasher = KeyHasher::new();
-        hasher.write_key(self.effect_digest(node.parent));
+        hasher.write_key(parent_digest);
         hasher.write_key(self.spatial_digest(node.spatial));
-        hasher.write_key(self.clip_digest(self.list.effect_clips.output_clip(effect)));
+        hasher.write_key(output_clip_digest);
         hasher.write_bool(tree.root_isolation_effect == Some(effect));
         // A tile replays content under an effect the compositor composites without the effect.
         hasher.write_bool(self.list.effects_the_compositor_composites[effect.0 as usize]);
@@ -1095,9 +1294,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
             EffectNodeData::BackgroundColorAnimation => hasher.write_u32(3),
             EffectNodeData::Dead => hasher.write_u32(4),
         }
-        let digest = hasher.finish();
-        self.effect_digests.borrow_mut()[effect.0 as usize] = Some(digest);
-        digest
+        hasher.finish()
     }
 
     fn context_digest(&self, context: ContextRef) -> TileKey {
@@ -1105,6 +1302,32 @@ impl<'a> RasterSpaceOfFrame<'a> {
         hasher.write_key(self.spatial_digest(context.spatial));
         hasher.write_key(self.clip_digest(context.clip));
         hasher.write_key(self.effect_digest(context.effect));
+        hasher.finish()
+    }
+
+    // What an entry holds as a tile near `within.area` shows it: its fill, or each of its records, under its context,
+    // with the rects of its fill and its clips told by their parts within the area.
+    fn digest_of_placed_entry_within(
+        &self,
+        chunk: &ListChunk,
+        entry: &ChunkEntry,
+        within: &mut DigestsWithinAnArea,
+    ) -> TileKey {
+        let mut hasher = KeyHasher::new();
+        hasher.write_key(self.spatial_digest(entry.context.spatial));
+        hasher.write_key(self.clip_digest_within(entry.context.clip, within));
+        hasher.write_key(self.effect_digest_within(entry.context.effect, within));
+        match &entry.fill_of_a_rect_in_device_pixels {
+            Some(fill) => {
+                hasher.write_key(fill.digest_of_the_fill_without_its_rect);
+                fill.rect.write_part_within(&mut hasher, within.area);
+            }
+            None => {
+                for record in &chunk.record_table().records[entry.first_record as usize..entry.end_record as usize] {
+                    hasher.write_key(record.content_hash);
+                }
+            }
+        }
         hasher.finish()
     }
 
@@ -1275,6 +1498,9 @@ impl<'a> RasterSpaceOfFrame<'a> {
         influence: Reach<IntRect>,
     ) -> ChunkEntry {
         let table = chunk.record_table();
+        let context = chunk.runs()[run as usize].context;
+        let spread_by_filters =
+            !context.effect.is_none() && !self.list.nearest_spreading_effects[context.effect.0 as usize].is_none();
         ChunkEntry {
             run,
             first_record: records.start,
@@ -1286,7 +1512,47 @@ impl<'a> RasterSpaceOfFrame<'a> {
             reads_outside_the_list: table.records[records.start as usize..records.end as usize]
                 .iter()
                 .any(|record| record.reads_outside_the_list != 0),
+            context,
+            shows_in_a_tile_only_as_far_as_it_reaches_near_it: !spread_by_filters,
+            fill_of_a_rect_in_device_pixels: (records.len() == 1)
+                .then(|| self.fill_of_a_rect_in_device_pixels(chunk, &table.records[records.start as usize], context))
+                .flatten(),
         }
+    }
+
+    // A record that fills a rect with one color, wherever its space maps the rect to one of device pixels.
+    fn fill_of_a_rect_in_device_pixels(
+        &self,
+        chunk: &ListChunk,
+        record: &ChunkRecord,
+        context: ContextRef,
+    ) -> Option<FillOfARectInDevicePixels> {
+        let (header, payload) = chunk.record_at(record.offset);
+        if header.inline_clip_count != 0 || header.has_inline_transform {
+            return None;
+        }
+        let mut hasher = KeyHasher::new();
+        hasher.write_u32(header.command_type as u32);
+        let (rect, corner_radii) = match header.command_type {
+            DisplayListCommandType::FillRect => {
+                let fill = read_command::<FillRect>(payload);
+                hasher.write_u32(fill.color.0);
+                hasher.write_u32(fill.compositing_and_blending_operator as u32);
+                hasher.write_u32(fill.background_color_animation_effect.0);
+                (fill.rect, CornerRadii::default())
+            }
+            DisplayListCommandType::FillRectWithRoundedCorners => {
+                let fill = read_command::<FillRectWithRoundedCorners>(payload);
+                hasher.write_u32(fill.color.0);
+                hasher.write_u32(fill.background_color_animation_effect.0);
+                (fill.rect, fill.corner_radii)
+            }
+            _ => return None,
+        };
+        Some(FillOfARectInDevicePixels {
+            rect: RectInDevicePixels::of(&self.geometry.world, context.spatial, rect.to_float(), &corner_radii)?,
+            digest_of_the_fill_without_its_rect: hasher.finish(),
+        })
     }
 
     fn place_chunk(&self, chunk: &ListChunk, runs: &[u32], key: TileKey) -> PlacedChunk {
@@ -1372,13 +1638,27 @@ impl<'a> RasterSpaceOfFrame<'a> {
         placed
     }
 
-    fn digest_of_tile_entry(&self, binding: &GroupBinding, entry: TileEntry, live: bool) -> TileKey {
+    // What an entry holds and reads, with what it holds told as a tile near `within` shows it where that is given and
+    // the entry shows only as far as it reaches near the tile.
+    fn digest_of_tile_entry(
+        &self,
+        binding: &GroupBinding,
+        entry: TileEntry,
+        live: bool,
+        within: Option<&mut DigestsWithinAnArea>,
+    ) -> TileKey {
         let display_list = self.list.display_list;
         let chunk = display_list.chunk(entry.chunk());
         let (static_digest, records) = match entry {
             TileEntry::Placed { chunk: position, entry } => {
                 let placed = binding.placed_entry(position, entry);
-                (placed.static_digest, placed.first_record..placed.end_record)
+                let digest = match within {
+                    Some(within) if placed.shows_in_a_tile_only_as_far_as_it_reaches_near_it => {
+                        self.digest_of_placed_entry_within(chunk, placed, within)
+                    }
+                    _ => placed.static_digest,
+                };
+                (digest, placed.first_record..placed.end_record)
             }
             TileEntry::Record { record, .. } => (
                 self.static_digest_of_records(chunk, record..record + 1),
@@ -1440,8 +1720,14 @@ impl<'a> RasterSpaceOfFrame<'a> {
             Some(frame) => hasher.write_int_rect(frame),
             None => hasher.write_u32(0),
         }
+        // A record shows in the tile as far as it reaches within antialiasing of the cell, and past that as far as a
+        // backdrop filter in the tile reads.
+        let mut within = tile.raster_margin_in_device_pixels.map(|raster_margin| {
+            let margin = 2.0 * (INFLUENCE_MARGIN_IN_DEVICE_PIXELS + raster_margin) as f32;
+            DigestsWithinAnArea::new(tile.coord.cell_rect().to_float().inflated(margin, margin))
+        });
         for &entry in &tile.entries {
-            hasher.write_key(self.digest_of_tile_entry(binding, entry, tile.reads_outside_the_list));
+            hasher.write_key(self.digest_of_tile_entry(binding, entry, tile.reads_outside_the_list, within.as_mut()));
         }
         hasher.finish()
     }
@@ -1727,7 +2013,7 @@ impl<'a> RasterSpaceOfFrame<'a> {
             for (run, companions) in companions_of_runs {
                 for &companion in &companions {
                     digest_hasher.write_chunk_name(binding.chunk_names[companion.chunk() as usize]);
-                    digest_hasher.write_key(self.digest_of_tile_entry(&binding, companion, false));
+                    digest_hasher.write_key(self.digest_of_tile_entry(&binding, companion, false, None));
                 }
                 binding
                     .whole_runs
