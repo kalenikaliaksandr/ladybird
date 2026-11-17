@@ -652,7 +652,7 @@ mod tests {
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
         BackfaceVisibilityData, ClipData, ClipMode, EffectsData, PerspectiveData, ScrollData, SpatialData, SpatialNode,
-        StickyData, TransformData, TransformDataRole, scroll_state::NO_SCROLL_STATE_SLOT,
+        StickyData, TransformData, TransformDataRole, UniqueNodeId, scroll_state::NO_SCROLL_STATE_SLOT,
     };
     use libgfx_rust::{CornerRadii, FloatMatrix4x4, FloatSize, perspective_matrix, scale_matrix, translation_matrix};
 
@@ -1274,6 +1274,8 @@ mod tests {
                 inset_right: None,
                 inset_bottom: None,
                 inset_left: None,
+                box_node_id: UniqueNodeId(0),
+                box_pseudo_element_type: 0,
                 state_slot: NO_SCROLL_STATE_SLOT,
                 owner_paintable: NodeSlotId::INVALID,
             }),
@@ -1301,6 +1303,8 @@ mod tests {
                 inset_right: None,
                 inset_bottom: None,
                 inset_left: None,
+                box_node_id: UniqueNodeId(0),
+                box_pseudo_element_type: 0,
                 state_slot: NO_SCROLL_STATE_SLOT,
                 owner_paintable: NodeSlotId::INVALID,
             }),
@@ -1351,6 +1355,8 @@ mod tests {
             inset_right: None,
             inset_bottom: None,
             inset_left: None,
+            box_node_id: UniqueNodeId(0),
+            box_pseudo_element_type: 0,
             state_slot: NO_SCROLL_STATE_SLOT,
             owner_paintable: NodeSlotId::INVALID,
         })

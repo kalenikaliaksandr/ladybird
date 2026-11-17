@@ -406,7 +406,7 @@ mod node_dump_tests {
     use crate::painting::visual_context::{
         AnchorScrollShift, BackfaceVisibilityData, ClipData, ClipMode, ClipNodeData, ClipNodeIndex, EffectNodeData,
         EffectNodeIndex, EffectsData, MaskData, MaskLayerOrigin, PerspectiveData, ScrollData, SpatialData, StickyData,
-        TransformData, TransformDataRole, VISUAL_VIEWPORT_NODE_INDEX, VisualContextTree,
+        TransformData, TransformDataRole, UniqueNodeId, VISUAL_VIEWPORT_NODE_INDEX, VisualContextTree,
         scroll_state::NO_SCROLL_STATE_SLOT,
     };
     use libgfx_rust::{
@@ -500,6 +500,8 @@ mod node_dump_tests {
                 inset_right: None,
                 inset_bottom: Some(1.5),
                 inset_left: None,
+                box_node_id: UniqueNodeId(0),
+                box_pseudo_element_type: 0,
                 state_slot: NO_SCROLL_STATE_SLOT,
                 owner_paintable: NodeSlotId::INVALID,
             }),

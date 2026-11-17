@@ -23,7 +23,7 @@ use libgfx_rust::{
 use scroll_state::{NO_SCROLL_STATE_SLOT, ScrollStateSlot};
 
 pub use crate::display_list::commands::{
-    ClipMode, ClipNodeIndex, ContextRef, EffectNodeIndex, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
+    ClipMode, ClipNodeIndex, ContextRef, EffectNodeIndex, SpatialNodeIndex, UniqueNodeId, VISUAL_VIEWPORT_NODE_INDEX,
 };
 pub use queries::{ClipBehavior, should_cull_back_face};
 pub use scroll_table::{
@@ -184,6 +184,10 @@ pub struct StickyData {
     pub inset_right: Option<f32>,
     pub inset_bottom: Option<f32>,
     pub inset_left: Option<f32>,
+    // The element the box is generated for, which names the box across relayouts, trees and processes as it names a
+    // scroll node.
+    pub box_node_id: UniqueNodeId,
+    pub box_pseudo_element_type: u8,
     pub state_slot: ScrollStateSlot,
     pub owner_paintable: NodeSlotId,
 }
@@ -209,6 +213,8 @@ impl StickyData {
             inset_right: None,
             inset_bottom: None,
             inset_left: None,
+            box_node_id: UniqueNodeId(0),
+            box_pseudo_element_type: 0,
             state_slot,
             owner_paintable,
         }
