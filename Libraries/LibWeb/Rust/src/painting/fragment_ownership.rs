@@ -152,7 +152,8 @@ pub(crate) fn compute_fragment_ownership_for_block(
     layout_arena: &impl PaintRead,
     block: NodeSlotId,
 ) -> Vec<(NodeSlotId, FragmentOwnershipFilter)> {
-    let pieces = layout_arena.committed_side_data(block).inline_box_pieces().to_vec();
+    let side = layout_arena.committed_side_data(block);
+    let pieces = side.inline_box_pieces();
     let mut block_filter = FragmentOwnershipFilter::everything();
 
     let mut owners: Vec<NodeSlotId> = Vec::new();
@@ -167,7 +168,7 @@ pub(crate) fn compute_fragment_ownership_for_block(
             owners.len() - 1
         };
 
-    for piece in &pieces {
+    for piece in pieces {
         if piece.fragment_count == 0 {
             continue;
         }
@@ -207,6 +208,14 @@ fn take_previous_fragment_ownership(
     layout_arena: &mut impl PaintableRowsWrite,
     paintable: NodeSlotId,
 ) -> Option<std::sync::Arc<FragmentOwnershipFilter>> {
+    let holds_fragment_ownership = layout_arena.committed_side_data(paintable).fragment_ownership.is_some()
+        || layout_arena
+            .paintable_side_data(paintable)
+            .fragment_ownership_before_recommit
+            .is_some();
+    if !holds_fragment_ownership {
+        return None;
+    }
     let assigned = layout_arena
         .committed_side_data_mut(paintable)
         .fragment_ownership
@@ -224,29 +233,42 @@ fn assign_for_block(layout_arena: &mut impl PaintableRowsWrite, block: NodeSlotI
     let owners_with_filters = compute_fragment_ownership_for_block(&*layout_arena, block);
     // Start every piece's box from a clean slate. A box whose filter changes paints a
     // different selection of the block's fragments.
-    let pieces = layout_arena.committed_side_data(block).inline_box_pieces().to_vec();
+    let inline_boxes: Vec<NodeSlotId> = layout_arena
+        .committed_side_data(block)
+        .inline_content
+        .as_ref()
+        .map(|content| content.inline_boxes.boxes().map(|(inline_box, _)| inline_box).collect())
+        .unwrap_or_default();
     let mut boxes_with_previous_filters = Vec::new();
-    for piece in &pieces {
-        if let Some(paintable) = piece_paintable_of(&*layout_arena, piece.node)
+    for inline_box in inline_boxes {
+        if let Some(paintable) = piece_paintable_of(&*layout_arena, inline_box)
             && let Some(previous) = take_previous_fragment_ownership(layout_arena, paintable)
         {
             boxes_with_previous_filters.push((paintable, previous));
         }
     }
-    if let Some(previous) = take_previous_fragment_ownership(layout_arena, block) {
-        boxes_with_previous_filters.push((block, previous));
-    }
+    // A line root without a filter paints every fragment on its lines.
+    let previous_block_filter = take_previous_fragment_ownership(layout_arena, block);
     for (owner, filter) in owners_with_filters {
-        let unchanged = boxes_with_previous_filters
-            .iter()
-            .any(|(previous_owner, previous)| *previous_owner == owner && **previous == filter);
+        let block_paints_every_fragment = owner == block && filter == FragmentOwnershipFilter::everything();
+        let unchanged = if owner == block {
+            previous_block_filter
+                .as_deref()
+                .map_or(block_paints_every_fragment, |previous| *previous == filter)
+        } else {
+            boxes_with_previous_filters
+                .iter()
+                .any(|(previous_owner, previous)| *previous_owner == owner && **previous == filter)
+        };
         if !unchanged {
             layout_arena.note_paint_change(
                 owner,
                 RowPaintChange::DRAWING | RowPaintChange::HIT_TESTING | RowPaintChange::ORDER,
             );
         }
-        layout_arena.committed_side_data_mut(owner).fragment_ownership = Some(std::sync::Arc::new(filter));
+        if !block_paints_every_fragment {
+            layout_arena.committed_side_data_mut(owner).fragment_ownership = Some(std::sync::Arc::new(filter));
+        }
     }
     for (previous_owner, _) in boxes_with_previous_filters {
         if layout_arena
