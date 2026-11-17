@@ -446,6 +446,9 @@ pub struct InlineBoxPieceRecord {
     pub accumulated_vertical_shift: CssPixels,
     pub present_edges: u8,
     pub is_geometry_only_placeholder: bool,
+    /// The border and padding widths of the piece's box, in the plane of `border_box_rect`.
+    pub(crate) border_widths: super::geometry::Sides,
+    pub(crate) padding_widths: super::geometry::Sides,
 }
 
 fn pieces_only_moved<'a>(
@@ -461,6 +464,8 @@ fn pieces_only_moved<'a>(
         if previous_piece.is_geometry_only_placeholder
             || piece.is_geometry_only_placeholder
             || previous_piece.present_edges != piece.present_edges
+            || previous_piece.border_widths != piece.border_widths
+            || previous_piece.padding_widths != piece.padding_widths
             || (previous_rect.width, previous_rect.height) != (rect.width, rect.height)
         {
             return false;
@@ -894,6 +899,8 @@ impl InlineContent {
                 .into_iter()
                 .filter(|side| piece.present_edges & (1 << *side as u8) != 0)
                 .fold(0, |edges, side| edges | (1 << frame.physical_side(side) as u8));
+            piece.border_widths = piece.border_widths.in_frame(frame, super::geometry::Frame::PHYSICAL);
+            piece.padding_widths = piece.padding_widths.in_frame(frame, super::geometry::Frame::PHYSICAL);
         }
         content
     }

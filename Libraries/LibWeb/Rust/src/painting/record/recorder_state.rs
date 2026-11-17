@@ -81,33 +81,41 @@ impl RecorderState {
     }
 }
 
-const ABSOLUTE_RECTS_PER_PAGE: usize = 64;
+const MEMOIZED_ROWS_PER_PAGE: usize = 64;
 
-type MemoizedAbsoluteRect = Option<(NodeSlotId, u64, CssPixelRect)>;
+/// Each row's absolute rect, with the geometry epoch of the frame it was computed from.
+pub(crate) type AbsoluteRectMemo = RowMemo<CssPixelRect>;
 
-/// Each row's absolute rect, with the geometry epoch of the frame it was computed from, in pages of rows made as a rect
-/// in them is memoized: a memo of a few rows costs their pages, wherever the rows are in the arena.
-#[derive(Default)]
-pub(crate) struct AbsoluteRectMemo {
-    pages: Vec<Option<Box<[MemoizedAbsoluteRect; ABSOLUTE_RECTS_PER_PAGE]>>>,
+/// A value of each row, with the geometry epoch of the frame it was computed from, in pages of rows made as a value in
+/// them is memoized: a memo of a few rows costs their pages, wherever the rows are in the arena.
+pub(crate) struct RowMemo<T> {
+    pages: Vec<Option<Box<[MemoizedRow<T>; MEMOIZED_ROWS_PER_PAGE]>>>,
 }
 
-impl AbsoluteRectMemo {
-    pub(crate) fn get(&self, id: NodeSlotId, epoch: u64) -> Option<CssPixelRect> {
+type MemoizedRow<T> = Option<(NodeSlotId, u64, T)>;
+
+impl<T> Default for RowMemo<T> {
+    fn default() -> Self {
+        Self { pages: Vec::new() }
+    }
+}
+
+impl<T: Copy> RowMemo<T> {
+    pub(crate) fn get(&self, id: NodeSlotId, epoch: u64) -> Option<T> {
         let index = id.slot_index() as usize;
-        let page = self.pages.get(index / ABSOLUTE_RECTS_PER_PAGE)?.as_deref()?;
-        let (memoized_id, memoized_epoch, rect) = page[index % ABSOLUTE_RECTS_PER_PAGE]?;
-        (memoized_id == id && memoized_epoch == epoch).then_some(rect)
+        let page = self.pages.get(index / MEMOIZED_ROWS_PER_PAGE)?.as_deref()?;
+        let (memoized_id, memoized_epoch, value) = page[index % MEMOIZED_ROWS_PER_PAGE]?;
+        (memoized_id == id && memoized_epoch == epoch).then_some(value)
     }
 
-    pub(crate) fn set(&mut self, id: NodeSlotId, epoch: u64, rect: CssPixelRect) {
+    pub(crate) fn set(&mut self, id: NodeSlotId, epoch: u64, value: T) {
         let index = id.slot_index() as usize;
-        let page_index = index / ABSOLUTE_RECTS_PER_PAGE;
+        let page_index = index / MEMOIZED_ROWS_PER_PAGE;
         if self.pages.len() <= page_index {
             self.pages.resize_with(page_index + 1, || None);
         }
-        let page = self.pages[page_index].get_or_insert_with(|| Box::new([None; ABSOLUTE_RECTS_PER_PAGE]));
-        page[index % ABSOLUTE_RECTS_PER_PAGE] = Some((id, epoch, rect));
+        let page = self.pages[page_index].get_or_insert_with(|| Box::new([None; MEMOIZED_ROWS_PER_PAGE]));
+        page[index % MEMOIZED_ROWS_PER_PAGE] = Some((id, epoch, value));
     }
 }
 

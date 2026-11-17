@@ -720,6 +720,7 @@ pub(crate) fn compute(
             )
         };
         let sides = context.sides_of_entered_inline_box(node);
+        let (border_widths, padding_widths) = border_and_padding_widths(&sides);
         let reversed = context.facts(node).inline_axis_is_reverse();
         let (
             border_padding_low,
@@ -779,6 +780,8 @@ pub(crate) fn compute(
                             accumulated_vertical_shift: inline_box_vertical_shift,
                             present_edges: edge_bits(true, true),
                             is_geometry_only_placeholder: true,
+                            border_widths,
+                            padding_widths,
                         },
                         depth,
                         discovery_index: node_index,
@@ -846,6 +849,8 @@ pub(crate) fn compute(
                     accumulated_vertical_shift: inline_box_vertical_shift,
                     present_edges: edge_bits(has_low_edge, has_high_edge),
                     is_geometry_only_placeholder: line.is_strut,
+                    border_widths,
+                    padding_widths,
                 },
                 depth,
                 discovery_index: node_index,
@@ -906,6 +911,7 @@ pub(crate) fn compute(
             "a fragmented inline without fragments is an inline box the context entered"
         );
         let style = context.style(node);
+        let (border_widths, padding_widths) = border_and_padding_widths(&context.sides_of_entered_inline_box(node));
         let mut placeholder_rect = FfiCssPixelRect {
             height: style.line_height(),
             ..Default::default()
@@ -955,6 +961,8 @@ pub(crate) fn compute(
                 accumulated_vertical_shift: CssPixels::default(),
                 present_edges: edge_bits(true, true),
                 is_geometry_only_placeholder: true,
+                border_widths,
+                padding_widths,
             },
             depth: nesting_depth(context, node),
             discovery_index: per_nodes.len() + index,
@@ -963,6 +971,23 @@ pub(crate) fn compute(
     sort_for_emission(&mut staged);
     let pieces = staged.into_iter().map(|staged| staged.piece).collect();
     (pieces, inline_containing_block_rect_candidates)
+}
+
+fn border_and_padding_widths(sides: &used_values::RootInputCells) -> (geometry::Sides, geometry::Sides) {
+    (
+        geometry::Sides {
+            top: sides.border_top,
+            right: sides.border_right,
+            bottom: sides.border_bottom,
+            left: sides.border_left,
+        },
+        geometry::Sides {
+            top: sides.padding_top,
+            right: sides.padding_right,
+            bottom: sides.padding_bottom,
+            left: sides.padding_left,
+        },
+    )
 }
 
 fn padding_box_rect_spanning_first_and_last_content_lines(

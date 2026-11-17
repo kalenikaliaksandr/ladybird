@@ -296,6 +296,7 @@ pub(crate) struct PaintableRows<Arena> {
     arena: Arena,
     /// The absolute rects this view computed, each valid for the geometry epoch of the arena it was computed at.
     absolute_rects: RefCell<crate::painting::record::recorder_state::AbsoluteRectMemo>,
+    inline_box_unions: RefCell<crate::painting::inline_box_geometry::InlineBoxUnionsMemo>,
 }
 
 pub(crate) type PaintableRowsRef<'a> = PaintableRows<&'a LayoutNodeArena>;
@@ -306,6 +307,7 @@ impl Clone for PaintableRowsRef<'_> {
         Self {
             arena: self.arena,
             absolute_rects: RefCell::default(),
+            inline_box_unions: RefCell::default(),
         }
     }
 }
@@ -485,6 +487,24 @@ where
         let epoch = self.arena.absolute_rect_memo_epoch();
         self.absolute_rects.borrow_mut().set(id, epoch, rect);
     }
+
+    pub(crate) fn memoized_inline_box_unions_of_view(
+        &self,
+        id: NodeSlotId,
+    ) -> Option<Option<crate::painting::inline_box_geometry::InlineBoxUnions>> {
+        self.inline_box_unions
+            .borrow()
+            .get(id, self.arena.absolute_rect_memo_epoch())
+    }
+
+    pub(crate) fn memoize_inline_box_unions_of_view(
+        &self,
+        id: NodeSlotId,
+        unions: Option<crate::painting::inline_box_geometry::InlineBoxUnions>,
+    ) {
+        let epoch = self.arena.absolute_rect_memo_epoch();
+        self.inline_box_unions.borrow_mut().set(id, epoch, unions);
+    }
 }
 
 impl<Arena> PaintableRowsWrite for PaintableRows<Arena>
@@ -655,6 +675,7 @@ impl LayoutNodeArena {
         PaintableRows {
             arena: self,
             absolute_rects: RefCell::default(),
+            inline_box_unions: RefCell::default(),
         }
     }
 
@@ -704,6 +725,7 @@ impl LayoutNodeArena {
         PaintableRows {
             arena: self,
             absolute_rects: RefCell::default(),
+            inline_box_unions: RefCell::default(),
         }
     }
 

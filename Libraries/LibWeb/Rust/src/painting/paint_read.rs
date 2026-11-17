@@ -22,6 +22,7 @@ use crate::layout::node_facts::{self, NodeShape};
 use crate::layout::text_chunker::GraphemeSegmenter;
 use crate::layout::{RenderedText, RenderedTextBoundary, TextFragments};
 use crate::painting::host::FfiLayerImageList;
+use crate::painting::inline_box_geometry::InlineBoxUnions;
 use crate::painting::layer_image_paint_facts::{LayerImagePaintFacts, layer_image_paint_facts_in};
 use crate::painting::paint_order_plan::PaintOrderInputs;
 use crate::painting::paintable_data::{CommittedSideData, PaintableData};
@@ -161,6 +162,11 @@ pub(crate) trait GeometryRead: Sized {
     /// The absolute rect memoized for a box, if any.
     fn memoized_absolute_rect(&self, id: NodeSlotId) -> Option<CssPixelRect>;
     fn memoize_absolute_rect(&self, id: NodeSlotId, rect: CssPixelRect);
+
+    fn memoized_inline_box_unions(&self, _: NodeSlotId) -> Option<Option<InlineBoxUnions>> {
+        None
+    }
+    fn memoize_inline_box_unions(&self, _: NodeSlotId, _: Option<InlineBoxUnions>) {}
 
     /// The line root whose side data holds an inline box's pieces.
     fn inline_pieces_root(&self, inline_paintable: NodeSlotId) -> Option<NodeSlotId> {
@@ -420,9 +426,54 @@ impl<Reader: LiveAbsoluteRects + ?Sized> LiveAbsoluteRects for &mut Reader {
     }
 }
 
+pub(crate) trait LiveInlineBoxUnions {
+    fn memoized_live_inline_box_unions(&self, id: NodeSlotId) -> Option<Option<InlineBoxUnions>>;
+    fn memoize_live_inline_box_unions(&self, id: NodeSlotId, unions: Option<InlineBoxUnions>);
+}
+
+impl LiveInlineBoxUnions for LayoutNodeArena {
+    fn memoized_live_inline_box_unions(&self, _: NodeSlotId) -> Option<Option<InlineBoxUnions>> {
+        None
+    }
+
+    fn memoize_live_inline_box_unions(&self, _: NodeSlotId, _: Option<InlineBoxUnions>) {}
+}
+
+impl<Arena: Deref<Target = LayoutNodeArena>> LiveInlineBoxUnions
+    for crate::painting::paintable_rows::PaintableRows<Arena>
+{
+    fn memoized_live_inline_box_unions(&self, id: NodeSlotId) -> Option<Option<InlineBoxUnions>> {
+        self.memoized_inline_box_unions_of_view(id)
+    }
+
+    fn memoize_live_inline_box_unions(&self, id: NodeSlotId, unions: Option<InlineBoxUnions>) {
+        self.memoize_inline_box_unions_of_view(id, unions);
+    }
+}
+
+impl<Reader: LiveInlineBoxUnions + ?Sized> LiveInlineBoxUnions for &Reader {
+    fn memoized_live_inline_box_unions(&self, id: NodeSlotId) -> Option<Option<InlineBoxUnions>> {
+        (**self).memoized_live_inline_box_unions(id)
+    }
+
+    fn memoize_live_inline_box_unions(&self, id: NodeSlotId, unions: Option<InlineBoxUnions>) {
+        (**self).memoize_live_inline_box_unions(id, unions);
+    }
+}
+
+impl<Reader: LiveInlineBoxUnions + ?Sized> LiveInlineBoxUnions for &mut Reader {
+    fn memoized_live_inline_box_unions(&self, id: NodeSlotId) -> Option<Option<InlineBoxUnions>> {
+        (**self).memoized_live_inline_box_unions(id)
+    }
+
+    fn memoize_live_inline_box_unions(&self, id: NodeSlotId, unions: Option<InlineBoxUnions>) {
+        (**self).memoize_live_inline_box_unions(id, unions);
+    }
+}
+
 // The live arena, and every view that borrows it, answers each read with the arena's own method of
 // the same name.
-impl<Live: AsRef<LayoutNodeArena> + LiveAbsoluteRects> GeometryRead for Live {
+impl<Live: AsRef<LayoutNodeArena> + LiveAbsoluteRects + LiveInlineBoxUnions> GeometryRead for Live {
     type Row<'a>
         = crate::layout::LiveRow<'a>
     where
@@ -472,9 +523,17 @@ impl<Live: AsRef<LayoutNodeArena> + LiveAbsoluteRects> GeometryRead for Live {
     fn memoize_absolute_rect(&self, id: NodeSlotId, rect: CssPixelRect) {
         self.memoize_live_absolute_rect(id, rect);
     }
+
+    fn memoized_inline_box_unions(&self, id: NodeSlotId) -> Option<Option<InlineBoxUnions>> {
+        self.memoized_live_inline_box_unions(id)
+    }
+
+    fn memoize_inline_box_unions(&self, id: NodeSlotId, unions: Option<InlineBoxUnions>) {
+        self.memoize_live_inline_box_unions(id, unions);
+    }
 }
 
-impl<Live: AsRef<LayoutNodeArena> + LiveAbsoluteRects> PaintRead for Live {
+impl<Live: AsRef<LayoutNodeArena> + LiveAbsoluteRects + LiveInlineBoxUnions> PaintRead for Live {
     fn rendered_text(&self, id: NodeSlotId) -> Option<&RenderedText> {
         self.as_ref().text_content(id).map(|content| &**content)
     }

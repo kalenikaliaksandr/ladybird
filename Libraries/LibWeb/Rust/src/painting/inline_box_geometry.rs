@@ -10,10 +10,12 @@
 use crate::css::css_pixels::{CssPixelPoint, CssPixelRect};
 use crate::layout::node_data::NodeSlotId;
 use crate::painting::paint_read::GeometryRead;
+use crate::painting::paintable_data::FfiPixelBox;
 use crate::painting::paintable_geometry;
 
 /// The rects an inline box's pieces unite to, relative to the content box of its line root's fragment that holds the
 /// box.
+#[derive(Clone, Copy)]
 pub(crate) struct InlineBoxUnions {
     pub(crate) content: CssPixelRect,
     pub(crate) padding: CssPixelRect,
@@ -35,16 +37,25 @@ fn unite(target: &mut Option<CssPixelRect>, rect: CssPixelRect) {
     }
 }
 
+pub(crate) type InlineBoxUnionsMemo = crate::painting::record::recorder_state::RowMemo<Option<InlineBoxUnions>>;
+
 /// The unions of the pieces of the inline box `inline_box`, or None where it has no line root or no pieces.
 pub(crate) fn unions(arena: &impl GeometryRead, inline_box: NodeSlotId) -> Option<InlineBoxUnions> {
+    if let Some(unions) = arena.memoized_inline_box_unions(inline_box) {
+        return unions;
+    }
+    let unions = unions_of_pieces(arena, inline_box);
+    arena.memoize_inline_box_unions(inline_box, unions);
+    unions
+}
+
+fn unions_of_pieces(arena: &impl GeometryRead, inline_box: NodeSlotId) -> Option<InlineBoxUnions> {
     let root = arena.inline_pieces_root(inline_box)?;
     let root_positions = (paintable_geometry::fragment_count(arena, root) > 1)
         .then(|| paintable_geometry::LineRootPositions::new(arena, root));
     let origin = root_positions
         .as_ref()
         .map(|positions| positions.of_fragment(arena.committed_side_data(inline_box).containing_block_fragment));
-    let padding_widths = paintable_geometry::committed_padding(arena, inline_box);
-    let border_widths = paintable_geometry::committed_border(arena, inline_box);
     let side = arena.committed_side_data(root);
     let mut content_union = None;
     let mut padding_union = None;
@@ -63,6 +74,8 @@ pub(crate) fn unions(arena: &impl GeometryRead, inline_box: NodeSlotId) -> Optio
                     }
                 });
         let border_rect = CssPixelRect::from(piece.border_box_rect).translated_by(root_fragment_offset);
+        let border_widths = FfiPixelBox::from(piece.border_widths);
+        let padding_widths = FfiPixelBox::from(piece.padding_widths);
         if piece.is_geometry_only_placeholder {
             let padding_rect = border_rect.inflated(
                 padding_widths.top,
