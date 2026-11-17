@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+    #scroller { position: absolute; left: 600px; top: 300px; width: 120px; height: 120px; overflow: auto; scrollbar-width: none; }
+    #scroller > div { height: 400px; background: teal; }
+    #card { position: absolute; left: 60px; top: 150px; width: 300px; height: 180px; border-radius: 30px; background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(8px); }
+    #bar { position: fixed; left: 0; top: 0; width: 800px; height: 60px; background: rgba(255, 255, 255, 0.4); backdrop-filter: blur(4px); }
+</style>
+<div id="stripes"></div>
+<div id="scroller"><div></div></div>
+<div id="card"></div>
+<div id="bar"></div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            stripes.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [100, 200, 300]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

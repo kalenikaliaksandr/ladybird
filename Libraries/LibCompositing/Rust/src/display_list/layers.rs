@@ -1087,10 +1087,12 @@ fn backdrop_layer_of_reader(
     let group_index = run_groups.group_of_run(first_run);
     let (chunk, run_in_chunk) = list.chunk_of_run(first_run);
     let table = list.chunk(chunk).record_table();
+    // Compositor metadata, which draws nothing, may come before the marker: a box records where it takes the wheel
+    // ahead of what it paints.
     let marker = table
         .records_of_run(run_in_chunk)
-        .next()
-        .map(|record| &table.records()[record as usize]);
+        .map(|record| &table.records()[record as usize])
+        .find(|record| !record.command_type.is_compositor_metadata());
     let is_one_stretch_starting_with_the_marker = last_run - first_run + 1 == runs_under_reader.len()
         && run_groups.ranges()[group_index] == (first_run as u32, last_run as u32)
         && marker.is_some_and(|marker| marker.command_type == DisplayListCommandType::BackdropFilterRegion);
