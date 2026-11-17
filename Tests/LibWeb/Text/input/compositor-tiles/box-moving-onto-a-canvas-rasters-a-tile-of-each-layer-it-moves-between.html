@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    canvas { position: absolute; left: 100px; top: 100px; }
+    #over-the-canvas { position: absolute; left: 150px; top: 150px; width: 20px; height: 20px; background: rgba(255, 255, 255, 0.5); }
+    /* A transform of its own keeps the moving box apart from the box over the canvas in the dump. */
+    #moving { position: absolute; left: 600px; top: 400px; width: 20px; height: 20px; background: rgb(0, 0, 200); transform: translateX(0px); }
+</style>
+<canvas id="canvas" width="200" height="100"></canvas>
+<div id="over-the-canvas"></div>
+<div id="moving"></div>
+<script>
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        context.fillStyle = "teal";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const awayFromTheCanvas = layersOfTheFillOfColor("rgb(0, 0, 200)");
+        // From a tile of the base layer to one of the layer above the canvas.
+        moving.style.left = "160px";
+        moving.style.top = "120px";
+        const state = await presentedFrameState();
+        const overTheCanvas = layersOfTheFillOfColor("rgb(0, 0, 200)");
+        println(layersOfTheDisplayList());
+        println(`moving box away from the canvas: ${awayFromTheCanvas}`);
+        println(`moving box over the canvas: ${overTheCanvas}`);
+        printPresentedFrameState(state, 2);
+        println(`moved the box, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, layers created: ${state.layersCreatedSinceLastCheck}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

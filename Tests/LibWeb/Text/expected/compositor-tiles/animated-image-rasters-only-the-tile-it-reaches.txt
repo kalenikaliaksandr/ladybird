@@ -1,0 +1,1 @@
+the image showed another frame, most tiles rasterized by a frame: 1, tiles binned: 0

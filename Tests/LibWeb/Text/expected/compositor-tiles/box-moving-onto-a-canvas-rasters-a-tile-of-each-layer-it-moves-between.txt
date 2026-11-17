@@ -1,0 +1,7 @@
+[L0] base space=viewport
+[L1] canvas #0 space=viewport region=[97,97 206x106] shown by the window server: clip=[0,0 800x600]
+[L2] painted space=viewport above L1
+moving box away from the canvas: [L0] base space=viewport
+moving box over the canvas: [L2] painted space=viewport above L1
+compared: true, matches a direct raster: true
+moved the box, layer stacks computed: 0, layers created: 0, tiles rasterized: 2

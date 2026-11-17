@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    img { position: absolute; left: 300px; top: 300px; }
+</style>
+<img id="image" src="../../data/animated-image-loops-forever.gif">
+<script>
+    const imageURL = "../../data/animated-image-loops-forever.gif";
+
+    asyncTest(async done => {
+        await waitForImageAnimationState(imageURL, state => state.isAnimating);
+        // Leaves out the rasters of the first frames of the page.
+        await presentedFrameState();
+        // The image shows another frame every 50 ms, which no rendering update of the page records.
+        let state;
+        for (let attempt = 0; attempt < 10; ++attempt) {
+            const shownFrameIndex = internals.imageAnimationStateForURL(imageURL).shownFrameIndex;
+            await waitForImageAnimationState(imageURL, state => state.shownFrameIndex !== shownFrameIndex);
+            state = await presentedFrameState();
+            if (state.mostTilesRasterizedByAFrameSinceLastCheck !== 0)
+                break;
+        }
+        println(`the image showed another frame, most tiles rasterized by a frame: ${state.mostTilesRasterizedByAFrameSinceLastCheck}, tiles binned: ${state.tilesBinnedSinceLastCheck}`);
+        done();
+    });
+</script>

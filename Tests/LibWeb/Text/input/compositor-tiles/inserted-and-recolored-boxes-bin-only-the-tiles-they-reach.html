@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    .box { position: absolute; width: 20px; height: 20px; background: red; }
+    #container { position: absolute; left: 0; top: 0; }
+</style>
+<div class="box" style="left: 10px; top: 10px"></div>
+<div id="container"></div>
+<div class="box" id="far" style="left: 600px; top: 400px"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // A color no earlier load drew, so that no tile the compositor still keeps holds the changed boxes.
+        const uniqueColor = colorUniqueToThisPageLoad();
+        const inserted = document.createElement("div");
+        inserted.className = "box";
+        inserted.style.left = "300px";
+        inserted.style.top = "10px";
+        inserted.style.background = uniqueColor;
+        container.appendChild(inserted);
+        far.style.background = uniqueColor;
+        const state = await presentedFrameState();
+        printPresentedFrameState(state);
+        println(`layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        println(`layers created: ${state.layersCreatedSinceLastCheck}`);
+        println(`tiles binned: ${state.tilesBinnedSinceLastCheck}`);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>
