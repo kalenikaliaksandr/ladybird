@@ -6,23 +6,26 @@
 
 //! The layers a display list is painted in, bottom to top.
 //!
-//! Content is rastered in the space of the scroll node it moves with, and its raster is composited within the clips it
-//! leaves to apply then: content of one space and one set of such clips makes a placement node. Within a node, a
-//! canvas, video or nested context that is a layer of its own, a backdrop filter that filters what is composited below
-//! it, and each band of content of a node inside it, sits between the node's records as a barrier. A barrier cuts the
-//! tiles of the node it can show in, or for a backdrop filter that it reads, at its paint position: there, the node's
-//! records painted before it go into the node's layer below it and those painted after it into the node's layer above
-//! it. Elsewhere it cuts nothing. A band of a node inside ends where content outside it that can show where the band
-//! can is painted, so the layers stacked in paint order of their barriers paint every pixel in the order the list does,
-//! as long as nothing within a layer reads what is below the layer.
+//! Content is rastered in the space of the scroll node or held sticky box it moves with, and its raster is composited
+//! within the clips it leaves to apply then: content of one space and one set of such clips makes a placement node.
+//! Within a node, a canvas, video or nested context that is a layer of its own, a backdrop filter that filters what is
+//! composited below it, and each band of content of a node inside it, sits between the node's records as a barrier. A
+//! barrier cuts the tiles of the node it can show in, or for a backdrop filter that it reads, at its paint position:
+//! there, the node's records painted before it go into the node's layer below it and those painted after it into the
+//! node's layer above it. Elsewhere it cuts nothing. A band of a node inside ends where content outside it that can
+//! show where the band can is painted, so the layers stacked in paint order of their barriers paint every pixel in the
+//! order the list does, as long as nothing within a layer reads what is below the layer.
 
 use crate::display_list::builder::read_command;
 use crate::display_list::commands::{DeclareMaskContent, DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{EffectGeometry, compute_effect_geometry};
-pub use crate::display_list::placement::{CompositeClip, RasterSpace, VIEWPORT_RASTER_SPACE, raster_space_anchors};
+pub use crate::display_list::placement::{
+    CompositeClip, RasterSpace, RasterSpaceAnchorKind, VIEWPORT_RASTER_SPACE, raster_space_anchors,
+};
 use crate::display_list::placement::{
     PlacementTables, RasterSpaces, RunGroups, RunsReachingOutsideTheirContext, SpaceGeometry, chain_of_space,
-    lowest_common_space, raster_scroll_offsets, space_is_ancestor_or_self, spaces_with_geometries,
+    lowest_common_space, raster_scroll_offsets, rect_swept_over_translations, space_is_ancestor_or_self,
+    spaces_with_geometries,
 };
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
@@ -379,7 +382,7 @@ impl LayerStack {
             space.anchor == other.anchor
                 && space.identity == other.identity
                 && space.parent == other.parent
-                && space.anchor_scrolls_the_viewport == other.anchor_scrolls_the_viewport
+                && space.anchor_kind == other.anchor_kind
         };
         let layer_is_alike = |layer: &StackLayer, other: &StackLayer| {
             layer.key == other.key
@@ -449,14 +452,18 @@ impl LayerStack {
         raster_scroll_offsets(&self.spaces, space, scroll_offsets)
     }
 
-    /// Where the frame composites the rasters of a space: translated by the scroll offsets of the anchors of its chain,
-    /// rounded to whole device pixels.
+    /// Where the frame composites the rasters of a space: translated by the offsets of the anchors of its chain, on the
+    /// whole device pixels a direct raster translates their content by.
     pub fn composite_offset(&self, space: usize, scroll_offsets: &[FloatPoint]) -> IntPoint {
         chain_of_space(&self.spaces, space).fold(IntPoint::default(), |sum, space| {
-            let offset = device_offset_for_index(scroll_offsets, self.spaces[space].anchor);
+            let raster_space = &self.spaces[space];
+            let translation = raster_space.anchor_translation_on_whole_device_pixels(device_offset_for_index(
+                scroll_offsets,
+                raster_space.anchor,
+            ));
             IntPoint {
-                x: sum.x + offset.x.round() as i32,
-                y: sum.y + offset.y.round() as i32,
+                x: sum.x + translation.x,
+                y: sum.y + translation.y,
             }
         })
     }
@@ -550,17 +557,17 @@ impl LayerStack {
 
     fn name_of_space(&self, space: usize) -> String {
         let raster_space = &self.spaces[space];
-        if space == VIEWPORT_RASTER_SPACE {
-            "viewport".into()
-        } else if raster_space.anchor_scrolls_the_viewport {
-            "document".into()
-        } else {
-            format!(
-                "scroller@{} in {}",
-                raster_space.anchor.0,
-                self.name_of_space(raster_space.parent)
-            )
-        }
+        let kind = match raster_space.anchor_kind {
+            RasterSpaceAnchorKind::Viewport => return "viewport".into(),
+            RasterSpaceAnchorKind::ViewportScroller => return "document".into(),
+            RasterSpaceAnchorKind::Scroller => "scroller",
+            RasterSpaceAnchorKind::HeldStickyBox { .. } => "sticky",
+        };
+        format!(
+            "{kind}@{} in {}",
+            raster_space.anchor.0,
+            self.name_of_space(raster_space.parent)
+        )
     }
 
     fn name_of_barrier(&self, barrier: &BarrierKey) -> String {
@@ -1580,6 +1587,27 @@ impl StackBeingBuilt<'_> {
         node
     }
 
+    // The content of a held sticky box shows in the space around it wherever the box's offset takes it, so the region of
+    // its node there is what the node's units reach swept over the box's offset range, within the clips the node is
+    // composited within there.
+    fn bound_the_regions_of_held_sticky_boxes(&mut self) {
+        let placement = self.placement;
+        let mut reach_of_nodes = vec![IntRect::default(); self.nodes.len()];
+        for unit in &placement.units {
+            let node = self.node_of_group[unit.group];
+            reach_of_nodes[node] = reach_of_nodes[node].united(unit.reach);
+        }
+        for (node, reach) in self.nodes.iter_mut().zip(reach_of_nodes) {
+            let space = &placement.spaces[node.space];
+            if !matches!(space.anchor_kind, RasterSpaceAnchorKind::HeldStickyBox { .. }) {
+                continue;
+            }
+            let swept =
+                rect_swept_over_translations(reach, space.lowest_anchor_translation, space.highest_anchor_translation);
+            node.region_in_parent = Some(node.region_in_parent.map_or(swept, |clip| clip.intersected(swept)));
+        }
+    }
+
     fn path_to(&self, mut node: usize) -> Vec<usize> {
         let mut path = vec![node];
         while let Some(parent) = self.nodes[node].parent {
@@ -1840,7 +1868,8 @@ fn node_covers_the_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], nod
     match placement_node.parent {
         None => true,
         Some(parent) => {
-            spaces[placement_node.space].anchor_scrolls_the_viewport && node_covers_the_viewport(nodes, spaces, parent)
+            spaces[placement_node.space].anchor_kind == RasterSpaceAnchorKind::ViewportScroller
+                && node_covers_the_viewport(nodes, spaces, parent)
         }
     }
 }
@@ -1886,6 +1915,7 @@ fn assemble_stack(placement: ListPlacement) -> (LayerStack, Option<StackConflict
         .into_iter()
         .map(|(clips, space)| built.node_of(space, clips))
         .collect();
+    built.bound_the_regions_of_held_sticky_boxes();
     let mut backdrops_of_nodes = vec![0u32; built.nodes.len()];
     built.ordinals_of_backdrops = placement
         .backdrops
@@ -2125,7 +2155,7 @@ pub fn build_layer_stack(
 
 /// Works out the layers of a list from scratch, as a dump or a test does.
 pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
-    let anchors = raster_space_anchors(inputs.tree);
+    let anchors = raster_space_anchors(inputs.tree, inputs.scroll_offsets);
     let (_, geometries) = spaces_with_geometries(
         inputs.tree,
         &anchors,

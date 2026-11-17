@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #spacer { height: 100.5px; background: lightblue; }
+    #header { position: sticky; top: 0; margin-left: 10.25px; width: 400.5px; height: 40.25px; border: 1px solid orange; background: navy; color: white; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div id="spacer"></div>
+<div id="header">header at a fractional position</div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            document.body.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [120, 133.5, 250.25, 401.75]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}`);
+        }
+        done();
+    });
+</script>

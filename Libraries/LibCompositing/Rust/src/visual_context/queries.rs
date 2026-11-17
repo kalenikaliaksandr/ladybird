@@ -7,8 +7,8 @@
 use super::world_transforms::MINIMUM_PROJECTION_W;
 use super::{
     ClipData, ClipMode, ClipNode, ClipNodeData, ClipNodeIndex, ContextRef, EffectNodeData, EffectNodeIndex,
-    IncludeVisualViewportTransform, SpatialData, SpatialNodeIndex, TransformDataRole, VISUAL_VIEWPORT_NODE_INDEX,
-    VisualContextTree, WorldTransforms, device_offset_for_index,
+    IncludeVisualViewportTransform, SpatialData, SpatialNodeIndex, StickyData, TransformDataRole,
+    VISUAL_VIEWPORT_NODE_INDEX, VisualContextTree, WorldTransforms, device_offset_for_index,
 };
 use ak::math;
 use libgfx_rust::{CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, IntPoint, IntRect};
@@ -444,6 +444,36 @@ impl VisualContextTree {
 
             record_entry(offsets, node_index, sticky_offset);
         }
+    }
+}
+
+impl StickyData {
+    /// The lowest and the highest offset that resolving can give the box, on each axis, where no sticky box on its
+    /// spatial chain moves it within its scroller. An inset pushes the box from where it is laid out to as far as its
+    /// containing block lets it go, the way resolving does.
+    pub fn offset_range_without_sticky_ancestors(&self) -> (FloatPoint, FloatPoint) {
+        let position_in_scroller = self.position_relative_to_scroller;
+        let containing_block_region = self.containing_block_region;
+        let min_offset_within_containing_block = containing_block_region.top_left();
+        let max_offset_within_containing_block = FloatPoint {
+            x: containing_block_region.right() - self.border_box_size.width,
+            y: containing_block_region.bottom() - self.border_box_size.height,
+        };
+        let mut lowest = FloatPoint::default();
+        let mut highest = FloatPoint::default();
+        if self.inset_top.is_some() {
+            highest.y = (max_offset_within_containing_block.y - position_in_scroller.y).max(0.0);
+        }
+        if self.inset_left.is_some() {
+            highest.x = (max_offset_within_containing_block.x - position_in_scroller.x).max(0.0);
+        }
+        if self.inset_bottom.is_some() {
+            lowest.y = (min_offset_within_containing_block.y - position_in_scroller.y).min(0.0);
+        }
+        if self.inset_right.is_some() {
+            lowest.x = (min_offset_within_containing_block.x - position_in_scroller.x).min(0.0);
+        }
+        (lowest, highest)
     }
 }
 

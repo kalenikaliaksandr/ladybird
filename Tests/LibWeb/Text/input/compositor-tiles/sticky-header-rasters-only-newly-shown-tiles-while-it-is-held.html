@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #header { position: sticky; top: 0; height: 40px; background: navy; color: white; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div class="stripe"></div>
+<div id="header">sticky header</div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            document.body.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // The header sits at 100px, so the first scroll starts to hold it.
+        window.scrollTo(0, 120);
+        const startState = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [140, 160, 200, 260, 380]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(startState);
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

@@ -1,0 +1,23 @@
+[L1] base space=document
+[L2] painted space=sticky@3 in document
+[L3] painted space=document above band 0 of sticky@3 in document
+compared: true, matches a direct raster: true
+scrolled to 150, the first heading is held, tiles rasterized: 0
+    heading 0: [L2] painted space=sticky@2 in document
+    heading 1: [L1] base space=document, [L3] painted space=document above band 0 of sticky@2 in document
+compared: true, matches a direct raster: true
+scrolled to 250, the first heading is held, tiles rasterized: 4
+    heading 0: [L2] painted space=sticky@2 in document
+    heading 1: [L1] base space=document, [L3] painted space=document above band 0 of sticky@2 in document
+compared: true, matches a direct raster: true
+scrolled to 280, the first heading is pushed to the end of its section, tiles rasterized: 4
+    heading 0: [L1] base space=document
+    heading 1: [L1] base space=document
+compared: true, matches a direct raster: true
+scrolled to 320, the second heading is held, tiles rasterized: 16
+    heading 0: [L1] base space=document
+    heading 1: [L2] painted space=sticky@3 in document
+compared: true, matches a direct raster: true
+scrolled to 400, the second heading is held, tiles rasterized: 0
+    heading 0: [L1] base space=document
+    heading 1: [L2] painted space=sticky@3 in document

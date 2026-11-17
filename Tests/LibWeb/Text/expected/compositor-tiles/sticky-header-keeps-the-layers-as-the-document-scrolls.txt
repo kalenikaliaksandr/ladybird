@@ -1,4 +1,4 @@
 compared: true, matches a direct raster: true
-scrolled to 200, layer stacks computed: 0, layers created: 0
+scrolled to 200, layer stacks computed: 1, layers created: 1
 compared: true, matches a direct raster: true
 scrolled to 400, layer stacks computed: 0, layers created: 0

@@ -33,6 +33,23 @@ pub struct WorldTransforms {
     pub translations_snap_to_device_pixels: Vec<bool>,
 }
 
+/// The translation by `offset` of a scroll, sticky or anchor scroll shift node under no transform, on whole device
+/// pixels. A sticky offset carries the fraction of the box's own position, which replay rounds the box by already, so
+/// for a sticky box recorded at `sticky_box_origin` where the box lands is rounded, not the offset, or a box at a half
+/// pixel would round twice.
+pub fn translation_on_whole_device_pixels(offset: FloatPoint, sticky_box_origin: Option<FloatPoint>) -> FloatPoint {
+    match sticky_box_origin {
+        Some(origin) => FloatPoint {
+            x: (origin.x + offset.x).round() - origin.x.round(),
+            y: (origin.y + offset.y).round() - origin.y.round(),
+        },
+        None => FloatPoint {
+            x: offset.x.round(),
+            y: offset.y.round(),
+        },
+    }
+}
+
 // The cull state of the element that establishes the 3D rendering context rooted at root: the cull state of the
 // plane the context is flattened into.
 fn backface_culled_outside_sorting_context(
@@ -105,21 +122,11 @@ impl WorldTransforms {
             if let LocalTransformKind::Translation(offset) = local.kind
                 && snaps
             {
-                let snapped = match &tree.spatial_nodes[i].data {
-                    // A sticky offset carries the fraction of the box's own position, which replay rounds the box
-                    // by already. So snap where the box lands, not the offset — or a box at a half pixel rounds twice.
-                    SpatialData::Sticky(sticky) => {
-                        let origin = sticky.border_box_origin;
-                        FloatPoint {
-                            x: (origin.x + offset.x).round() - origin.x.round(),
-                            y: (origin.y + offset.y).round() - origin.y.round(),
-                        }
-                    }
-                    _ => FloatPoint {
-                        x: offset.x.round(),
-                        y: offset.y.round(),
-                    },
+                let sticky_box_origin = match &tree.spatial_nodes[i].data {
+                    SpatialData::Sticky(sticky) => Some(sticky.border_box_origin),
+                    _ => None,
                 };
+                let snapped = translation_on_whole_device_pixels(offset, sticky_box_origin);
                 local.matrix = translation_matrix(snapped.x, snapped.y, 0.0);
             }
             self.to_root[i] = match (i, root_parent_matrix) {

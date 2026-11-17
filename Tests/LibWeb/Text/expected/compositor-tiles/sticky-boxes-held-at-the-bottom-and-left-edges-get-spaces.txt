@@ -1,0 +1,12 @@
+at the top of the page:
+footer: [L4] painted space=sticky@4 in document
+first column: [L2] painted space=scroller@2 in document composited within [20,100 300x100] of document
+compared: true, matches a direct raster: true
+with the scroller scrolled to the left by 150:
+footer: [L6] painted space=sticky@4 in document
+first column: [L3] painted space=sticky@3 in scroller@2 in document composited within [20,100 300x100] of document
+compared: true, matches a direct raster: true
+with the page scrolled to its end:
+footer: [L1] base space=document, [L5] painted space=document above band 0 of scroller@2 in document
+first column: [L3] painted space=sticky@3 in scroller@2 in document composited within [20,100 300x100] of document
+compared: true, matches a direct raster: true

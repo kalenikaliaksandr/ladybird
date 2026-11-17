@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #bar { position: sticky; top: 0; height: 50px; background: rgba(255, 255, 255, 0.4); backdrop-filter: blur(5px) saturate(2); }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div class="stripe">first stripe</div>
+<div id="bar"></div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            document.body.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // The bar sits at 100px, so the first scroll starts to hold it.
+        window.scrollTo(0, 120);
+        const startState = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [140, 160, 200, 260, 380]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(startState);
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

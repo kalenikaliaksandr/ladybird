@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .column { position: absolute; top: 60px; width: 240px; height: 1500px; background: lightblue; }
+    .item { height: 50px; }
+    .item:nth-child(odd) { background: lightyellow; }
+    .header { position: sticky; top: 0; height: 40px; background: navy; color: white; }
+    #hidden { left: 10px; overflow: hidden; }
+    #clipped { left: 270px; overflow: clip; }
+    #rounded { left: 530px; overflow: clip; border-radius: 30px; }
+</style>
+<!-- An overflow: hidden ancestor is the box's scroll container, which never scrolls, so scrolls of the document do not hold
+     the box. An overflow: clip ancestor is not, and its clip does not move with the box, so the box's space is composited
+     within it, or where it has rounded corners, the box stays in the space around it. -->
+<div class="column" id="hidden"><div class="header">overflow: hidden</div></div>
+<div class="column" id="clipped"><div class="header">overflow: clip</div></div>
+<div class="column" id="rounded"><div class="header">rounded overflow: clip</div></div>
+<script>
+    asyncTest(async done => {
+        for (const column of document.querySelectorAll(".column")) {
+            for (let index = 0; index < 25; ++index) {
+                const item = document.createElement("div");
+                item.className = "item";
+                item.textContent = `item ${index}`;
+                column.appendChild(item);
+            }
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [100, 300, 700]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}`);
+        }
+        done();
+    });
+</script>

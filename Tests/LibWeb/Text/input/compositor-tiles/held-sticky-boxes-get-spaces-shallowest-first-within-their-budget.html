@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .column { position: absolute; top: 100px; width: 100px; height: 1500px; background: lightblue; }
+    .header { position: sticky; top: 0; height: 40px; }
+    /* An identity transform puts the header of this column a node deeper than the others. */
+    #deeper { transform: translateX(0px); }
+    #scroller { position: absolute; left: 640px; top: 100px; width: 140px; height: 200px; overflow: auto; scrollbar-width: none; }
+    #scroller > div { height: 600px; background: rgb(0, 100, 0); }
+</style>
+<div class="column" id="deeper" style="left: 0px"><div class="header" style="background: rgb(200, 0, 1)"></div></div>
+<div class="column" style="left: 105px"><div class="header" style="background: rgb(200, 0, 2)"></div></div>
+<div class="column" style="left: 210px"><div class="header" style="background: rgb(200, 0, 3)"></div></div>
+<div class="column" style="left: 315px"><div class="header" style="background: rgb(200, 0, 4)"></div></div>
+<div class="column" style="left: 420px"><div class="header" style="background: rgb(200, 0, 5)"></div></div>
+<div class="column" style="left: 525px"><div class="header" style="background: rgb(200, 0, 6)"></div></div>
+<div id="scroller"><div></div></div>
+<script>
+    function spacesOfTheHeadersAndTheScroller() {
+        const lines = [];
+        for (let index = 1; index <= 6; ++index)
+            lines.push(`header ${index}: ${layersOfTheFillOfColor(`rgb(200, 0, ${index})`)}`);
+        lines.push(`scroller content: ${layersOfTheFillOfColor("rgb(0, 100, 0)")}`);
+        return lines.join("\n");
+    }
+
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const atTheTop = spacesOfTheHeadersAndTheScroller();
+        // Every header is held from here on, and four of them get a space: the first four of the five shallow ones,
+        // ahead of the deeper header of the first column.
+        window.scrollTo(0, 300);
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const held = spacesOfTheHeadersAndTheScroller();
+        println("At the top of the page:");
+        println(atTheTop);
+        println("With every header held:");
+        println(held);
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

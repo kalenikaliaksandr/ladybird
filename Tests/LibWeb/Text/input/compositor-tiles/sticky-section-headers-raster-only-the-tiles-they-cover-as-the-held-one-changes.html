@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    section { height: 300px; }
+    section:nth-child(odd) { background: lightblue; }
+    section:nth-child(even) { background: lightyellow; }
+    h2 { position: sticky; top: 0; height: 40px; margin: 0; background: teal; color: white; font-size: 20px; }
+</style>
+<div id="sections"></div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 12; ++index) {
+            const section = document.createElement("section");
+            const heading = document.createElement("h2");
+            heading.textContent = `section ${index}`;
+            heading.style.background = `rgb(0, 128, ${100 + index})`;
+            section.appendChild(heading);
+            section.appendChild(document.createTextNode(`content of section ${index}`));
+            if (index % 2)
+                section.style.background = uniqueColor;
+            sections.appendChild(section);
+        }
+        // Each heading is held while the page scrolls through the first 260px of its section, and the next one is held
+        // from 300px on.
+        window.scrollTo(0, 100);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const [y, what] of [[150, "the first heading is held"], [250, "the first heading is held"], [280, "the first heading is pushed to the end of its section"], [320, "the second heading is held"], [400, "the second heading is held"]]) {
+            window.scrollTo(0, y);
+            const state = await presentedFrameState();
+            const headings = [0, 1].map(index => `heading ${index}: ${layersOfTheFillOfColor(`rgb(0, 128, ${100 + index})`)}`);
+            results.push([y, what, state, headings]);
+        }
+        println(layersOfTheDisplayList());
+        for (const [y, what, state, headings] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, ${what}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+            for (const heading of headings)
+                println(`    ${heading}`);
+        }
+        done();
+    });
+</script>

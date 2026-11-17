@@ -1,0 +1,13 @@
+[L1] base space=document
+[L2] painted space=sticky@2 in document
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled to 60, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 100, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 140, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 200, tiles rasterized: 4, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 300, tiles rasterized: 0, layer stacks computed: 0

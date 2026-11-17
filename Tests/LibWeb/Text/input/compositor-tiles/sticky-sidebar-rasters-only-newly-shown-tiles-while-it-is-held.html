@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; display: flex; align-items: flex-start; }
+    #sidebar { position: sticky; top: 0; width: 200px; height: 600px; flex: none; background: darkslategray; color: white; }
+    #sidebar > div { height: 50px; border-bottom: 2px solid white; }
+    main { flex: 1; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div id="sidebar"><div>first item</div><div>second item</div><div>third item</div></div>
+<main id="content"></main>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            content.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // The sidebar sits at the top of the page, so the first scroll starts to hold it.
+        window.scrollTo(0, 20);
+        const startState = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [60, 100, 140, 200, 300]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(startState);
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

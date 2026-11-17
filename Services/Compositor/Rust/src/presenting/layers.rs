@@ -278,8 +278,9 @@ struct ViewportRaster {
     transform: FloatMatrix4x4,
 }
 
-// Where the parts of a list were placed for a frame, and what that depended on: the list, the tree copy, and the scroll
-// offsets of the nodes that neither anchor a space nor move on their own.
+// Where the parts of a list were placed for a frame, and what that depended on: the list, the tree copy, the anchors of
+// the spaces, which change as a sticky box starts or stops being held, and the scroll offsets of the nodes that neither
+// anchor a space nor move on their own.
 struct PlacementOfFrame {
     display_list: Rc<DisplayList>,
     tree_copy: u64,
@@ -634,22 +635,23 @@ impl ContextPresenting {
             raster_transform,
         };
 
+        // A space that scrolls composites at whole device pixels of the viewport, which a raster that scales them or
+        // shifts them by a fraction does not have, so such a raster has the viewport's space alone.
+        let anchors = if raster_transform == FloatMatrix4x4::identity() {
+            raster_space_anchors(tree, scroll_offsets)
+        } else {
+            Vec::new()
+        };
         let placement_is_known = self.layers.placement_of_latest_frame.as_ref().is_some_and(|known| {
             Rc::ptr_eq(&known.display_list, frame.display_list)
                 && known.tree_copy == tree.copy.number()
                 && known.viewport_rect == viewport_rect
                 && known.raster_transform == raster_transform
+                && known.anchors == anchors
                 && known.scroll_offsets_placement_depends_on
                     == scroll_offsets_placement_depends_on(tree, scroll_offsets)
         });
         if !placement_is_known {
-            // A space that scrolls composites at whole device pixels of the viewport, which a raster that scales them
-            // or shifts them by a fraction does not have, so such a raster has the viewport's space alone.
-            let anchors = if raster_transform == FloatMatrix4x4::identity() {
-                raster_space_anchors(tree)
-            } else {
-                Vec::new()
-            };
             let spaces = RasterSpaces::at_anchors(tree, &anchors, viewport_rect);
             let mut raster_spaces = None;
             let geometries: Vec<Rc<SpaceGeometry>> = (0..spaces.len())

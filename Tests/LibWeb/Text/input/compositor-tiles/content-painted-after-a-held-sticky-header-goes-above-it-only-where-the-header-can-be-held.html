@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; background: lightyellow; }
+    section { height: 600px; background: lightblue; }
+    #header { position: sticky; top: 0; height: 40px; background: rgb(0, 0, 120); }
+    #late { position: absolute; left: 100px; top: 1500px; width: 100px; height: 50px; background: rgb(150, 0, 0); }
+</style>
+<!-- The header can be held anywhere in the first 600px of the page, and the box after it is painted above it. -->
+<section><div id="header"></div></section>
+<div id="late"></div>
+<script>
+    asyncTest(async done => {
+        window.scrollTo(0, 150);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const boxPastTheSection = layersOfTheFillOfColor("rgb(150, 0, 0)");
+        const layersWithTheBoxPastTheSection = layersOfTheDisplayList();
+        late.style.top = "300px";
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const boxWithinTheSection = layersOfTheFillOfColor("rgb(150, 0, 0)");
+        const layersWithTheBoxWithinTheSection = layersOfTheDisplayList();
+        const headerLayers = layersOfTheFillOfColor("rgb(0, 0, 120)");
+        println(`header: ${headerLayers}`);
+        println("With the box past the section:");
+        println(layersWithTheBoxPastTheSection);
+        println(`box: ${boxPastTheSection}`);
+        println("With the box within the section:");
+        println(layersWithTheBoxWithinTheSection);
+        println(`box: ${boxWithinTheSection}`);
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

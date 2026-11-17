@@ -1,0 +1,14 @@
+[L1] base space=document
+[L3] backdrop #0 of e1 space=sticky@2 in document reads=[-33,67 866x116]
+[L4] painted space=sticky@2 in document above L3
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled to 140, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 160, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 200, tiles rasterized: 4, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 260, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled to 380, tiles rasterized: 0, layer stacks computed: 0

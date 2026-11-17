@@ -5,8 +5,9 @@
  */
 
 //! Where the content of a display list can be rastered: the raster spaces a visual context tree offers, anchored at
-//! the scroll nodes the compositor scrolls, the space each visual context is placed in and the clips left to apply
-//! when its rasters are composited, and the runs that are placed together because they hold whole group effects.
+//! the scroll nodes the compositor scrolls and at the sticky boxes held at their sticky edge, the space each visual
+//! context is placed in and the clips left to apply when its rasters are composited, and the runs that are placed
+//! together because they hold whole group effects.
 
 use crate::display_list::chunks::ReachOutsideChunk;
 use crate::display_list::commands::{
@@ -17,32 +18,57 @@ use crate::display_list::effect_geometry::Extent;
 use crate::display_list::storage::DisplayListStorage;
 use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::queries::TreeCullingScratch;
+use crate::visual_context::world_transforms::translation_on_whole_device_pixels;
 use crate::visual_context::{
-    ClipNodeData, CompositorScrollNodeRecord, EffectNodeData, SpatialData, VisualContextTree, WorldTransforms,
+    ClipNodeData, CompositorScrollNodeRecord, EffectNodeData, SpatialData, StickyData, VisualContextTree,
+    WorldTransforms, device_offset_for_index,
 };
-use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, IntRect, enclosing_int_rect};
+use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, IntPoint, IntRect, enclosing_int_rect};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::rc::Rc;
 
 pub const VIEWPORT_RASTER_SPACE: usize = 0;
-pub const MAXIMUM_RASTER_SPACE_COUNT: usize = 8;
+// Besides the viewport's, scrollers have spaces of their own up to the first of these, and the sticky boxes held at the
+// time up to the second, so that which scrollers have one stays put while boxes start and stop being held.
+const MAXIMUM_SCROLLER_SPACE_COUNT: usize = 7;
+const MAXIMUM_STICKY_BOX_SPACE_COUNT: usize = 4;
 const BOUNDS_MARGIN_IN_DEVICE_PIXELS: i32 = 3;
 const EXTENT_LIMIT: f32 = 16777216.0;
 const LARGEST_FRACTION_OF_A_DEVICE_PIXEL_A_COMPOSITE_CLIP_EDGE_MAY_BE_OFF_BY: f32 = 1.0 / 64.0;
+// How far rounding the translation of an anchor to whole device pixels can take it past its range.
+const ROUNDING_OF_AN_ANCHOR_TRANSLATION_IN_DEVICE_PIXELS: i32 = 1;
+
+/// What the anchor of a space is, which decides how its translation is rounded and what the dump calls the space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RasterSpaceAnchorKind {
+    Viewport,
+    /// The scroll node that scrolls the viewport, whose content is the document.
+    ViewportScroller,
+    Scroller,
+    /// A sticky box held at its sticky edge, laid out at `border_box_origin`, which its translation is rounded relative
+    /// to as world transforms round it.
+    HeldStickyBox {
+        border_box_origin: FloatPoint,
+    },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RasterSpace {
     pub anchor: SpatialNodeIndex,
-    /// Names the space by its anchor's scroll node as the page knows it, which outlives the tree and its indices.
+    /// Names the space by its anchor's scroll node or sticky box as the page knows it, which outlives the tree and its
+    /// indices.
     pub identity: u64,
     pub parent: usize,
-    pub anchor_scrolls_the_viewport: bool,
+    pub anchor_kind: RasterSpaceAnchorKind,
+    /// How far the anchor can translate its content: the negated scroll range of a scroller, the offset range of a
+    /// sticky box.
     pub lowest_anchor_translation: FloatPoint,
     pub highest_anchor_translation: FloatPoint,
-    /// Where content that scrolls with the anchor can show, in the space's raster coordinates: its scrollport over the
-    /// whole scroll range. For the viewport's space, the viewport.
+    /// Where content that moves with the anchor can show, in the space's raster coordinates: a scroller's scrollport
+    /// over the whole scroll range, and for a sticky box the extent of the space around it wherever the box is held.
+    /// For the viewport's space, the viewport.
     pub extent: IntRect,
 }
 
@@ -52,12 +78,49 @@ impl RasterSpace {
             anchor: VISUAL_VIEWPORT_NODE_INDEX,
             identity: 0,
             parent: VIEWPORT_RASTER_SPACE,
-            anchor_scrolls_the_viewport: false,
+            anchor_kind: RasterSpaceAnchorKind::Viewport,
             lowest_anchor_translation: FloatPoint::default(),
             highest_anchor_translation: FloatPoint::default(),
             extent: viewport_rect,
         }
     }
+
+    /// The translation of the anchor at `offset`, on the whole device pixels a direct raster translates it by.
+    pub fn anchor_translation_on_whole_device_pixels(&self, offset: FloatPoint) -> IntPoint {
+        let sticky_box_origin = match self.anchor_kind {
+            RasterSpaceAnchorKind::HeldStickyBox { border_box_origin } => Some(border_box_origin),
+            _ => None,
+        };
+        let translation = translation_on_whole_device_pixels(offset, sticky_box_origin);
+        IntPoint {
+            x: translation.x as i32,
+            y: translation.y as i32,
+        }
+    }
+}
+
+/// The rect that content within `rect` covers wherever a translation between `lowest` and `highest` takes it, with the
+/// rounding of that translation to whole device pixels.
+pub(crate) fn rect_swept_over_translations(rect: IntRect, lowest: FloatPoint, highest: FloatPoint) -> IntRect {
+    if rect.is_empty() {
+        return rect;
+    }
+    let swept = FloatRect::new(
+        rect.x as f32 + lowest.x,
+        rect.y as f32 + lowest.y,
+        rect.width as f32 + highest.x - lowest.x,
+        rect.height as f32 + highest.y - lowest.y,
+    );
+    if !is_finite_rect(swept) {
+        return limited_to_extent_limit(FloatRect::new(
+            -EXTENT_LIMIT,
+            -EXTENT_LIMIT,
+            2.0 * EXTENT_LIMIT,
+            2.0 * EXTENT_LIMIT,
+        ));
+    }
+    let margin = ROUNDING_OF_AN_ANCHOR_TRANSLATION_IN_DEVICE_PIXELS;
+    limited_to_extent_limit(swept).inflated_edges(margin, margin, margin, margin)
 }
 
 /// A rect that rasters of content are clipped to as they are composited, in the raster coordinates of a space whose
@@ -137,7 +200,8 @@ pub fn spatial_nodes_that_move_on_their_own(tree: &VisualContextTree) -> Vec<boo
 }
 
 /// As `spatial_nodes_that_move_on_their_own`, where nodes under a scroll node the compositor scrolls that is not one of
-/// `anchors` move on their own too, as rasters of the space they are placed in do not follow it.
+/// `anchors` move on their own too, as rasters of the space they are placed in do not follow it, and a sticky box that
+/// is one of `anchors` does not, as rasters of its space follow it.
 fn spatial_nodes_that_move_on_their_own_at_anchors(
     tree: &VisualContextTree,
     anchors: Option<&[SpatialNodeIndex]>,
@@ -158,12 +222,17 @@ fn spatial_nodes_that_move_on_their_own_at_anchors(
             .collect(),
         None => Vec::new(),
     };
+    let is_anchor = |node: SpatialNodeIndex| anchors.is_some_and(|anchors| anchors.contains(&node));
     let mut moves = vec![false; tree.spatial_nodes.len()];
     tree.visit_spatial_nodes_parents_first(|index| {
         let node = &tree.spatial_nodes[index];
-        let own = matches!(node.data, SpatialData::Sticky(_) | SpatialData::AnchorScrollShift(_))
-            || animated.contains(&SpatialNodeIndex(index as u32))
-            || scrolled_by_the_compositor_without_a_space.contains(&SpatialNodeIndex(index as u32));
+        let node_index = SpatialNodeIndex(index as u32);
+        let own = match node.data {
+            SpatialData::Sticky(_) => !is_anchor(node_index),
+            SpatialData::AnchorScrollShift(_) => true,
+            _ => false,
+        } || animated.contains(&node_index)
+            || scrolled_by_the_compositor_without_a_space.contains(&node_index);
         let from_parent = index != VISUAL_VIEWPORT_NODE_INDEX.0 as usize && moves[node.parent.0 as usize];
         moves[index] = own || from_parent;
     });
@@ -195,15 +264,95 @@ fn visual_viewport_only_translates(tree: &VisualContextTree) -> bool {
     translation_of(&transform.matrix_including_origin()).is_some()
 }
 
-/// The scroll nodes that layers can be rastered at, parents first: those the compositor scrolls, over a scroll range,
-/// whose content lands on whole device pixels of the viewport wherever they are scrolled to, since nothing between
-/// them and the viewport transforms, or can be animated to.
-pub fn raster_space_anchors(tree: &VisualContextTree) -> Vec<SpatialNodeIndex> {
+// How deep `node` is below the viewport, where its content lands on whole device pixels of the viewport wherever the
+// node itself translates it, since nothing between it and the viewport transforms, moves on its own or can be animated
+// to.
+fn depth_on_whole_device_pixels(
+    tree: &VisualContextTree,
+    node: SpatialNodeIndex,
+    moves_on_its_own: &[bool],
+) -> Option<usize> {
+    let mut depth = 1;
+    let mut ancestor = tree.spatial_nodes.get(node.0 as usize)?.parent;
+    while ancestor != VISUAL_VIEWPORT_NODE_INDEX {
+        let ancestor_node = tree.spatial_nodes.get(ancestor.0 as usize)?;
+        if depth > tree.spatial_nodes.len()
+            || !node_keeps_whole_pixel_translations_below_it(&ancestor_node.data)
+            || moves_on_its_own[ancestor.0 as usize]
+        {
+            return None;
+        }
+        depth += 1;
+        ancestor = ancestor_node.parent;
+    }
+    Some(depth)
+}
+
+fn shallowest_first(mut nodes_with_depths: Vec<(usize, SpatialNodeIndex)>, most: usize) -> Vec<SpatialNodeIndex> {
+    nodes_with_depths.sort_by_key(|&(depth, node)| (depth, node.0));
+    nodes_with_depths.truncate(most);
+    nodes_with_depths.into_iter().map(|(_, node)| node).collect()
+}
+
+// Whether a sticky box at `offset` is held at its sticky edge on some axis: pushed off where it is laid out, and short
+// of where its containing block stops it, so that it stays put in its scrollport as its scroller scrolls. Elsewhere it
+// moves with the content around it.
+fn sticky_box_is_held(sticky: &StickyData, offset: FloatPoint) -> bool {
+    let (lowest, highest) = sticky.offset_range_without_sticky_ancestors();
+    let is_held_along = |offset: f32, lowest: f32, highest: f32| {
+        (lowest < offset && offset < 0.0) || (0.0 < offset && offset < highest)
+    };
+    is_held_along(offset.x, lowest.x, highest.x) || is_held_along(offset.y, lowest.y, highest.y)
+}
+
+// The sticky boxes held at their sticky edge under `scroll_offsets` whose content lands on whole device pixels, and
+// whose scroller is one of `scrollers`, so that the box translates the content of its scroller's space alone.
+fn held_sticky_boxes(
+    tree: &VisualContextTree,
+    scroll_offsets: &[FloatPoint],
+    scrollers: &[SpatialNodeIndex],
+) -> Vec<(usize, SpatialNodeIndex)> {
+    if !tree
+        .spatial_nodes
+        .iter()
+        .any(|node| matches!(node.data, SpatialData::Sticky(_)))
+    {
+        return Vec::new();
+    }
+    let moves_on_its_own = spatial_nodes_that_move_on_their_own_at_anchors(tree, Some(scrollers));
+    tree.spatial_nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            let SpatialData::Sticky(sticky) = &node.data else {
+                return None;
+            };
+            let node_index = SpatialNodeIndex(index as u32);
+            if !sticky.non_scrolling_scroll_container.is_invalid() || !scrollers.contains(&sticky.scroller) {
+                return None;
+            }
+            let depth = depth_on_whole_device_pixels(tree, node_index, &moves_on_its_own)?;
+            let mut ancestor = node.parent;
+            while ancestor != sticky.scroller && ancestor != VISUAL_VIEWPORT_NODE_INDEX {
+                ancestor = tree.spatial_nodes[ancestor.0 as usize].parent;
+            }
+            let moves_with_its_scroller = ancestor == sticky.scroller;
+            (moves_with_its_scroller && sticky_box_is_held(sticky, device_offset_for_index(scroll_offsets, node_index)))
+                .then_some((depth, node_index))
+        })
+        .collect()
+}
+
+/// The nodes that layers can be rastered at, parents first. First the scroll nodes the compositor scrolls, over a
+/// scroll range, whose content lands on whole device pixels of the viewport wherever they are scrolled to, since
+/// nothing between them and the viewport transforms, or can be animated to. Then the sticky boxes held at their sticky
+/// edge under `scroll_offsets` within those scrollers, which change only as a box starts or stops being held.
+pub fn raster_space_anchors(tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> Vec<SpatialNodeIndex> {
     if !visual_viewport_only_translates(tree) {
         return Vec::new();
     }
     let moves_on_its_own = spatial_nodes_that_move_on_their_own(tree);
-    let mut anchors_with_depths: Vec<(usize, SpatialNodeIndex)> = tree
+    let scrollers_with_depths: Vec<(usize, SpatialNodeIndex)> = tree
         .compositor_scroll_table()
         .nodes
         .iter()
@@ -215,25 +364,13 @@ pub fn raster_space_anchors(tree: &VisualContextTree) -> Vec<SpatialNodeIndex> {
             if !matches!(tree.spatial_nodes.get(node.0 as usize)?.data, SpatialData::Scroll(_)) {
                 return None;
             }
-            let mut depth = 1;
-            let mut ancestor = tree.spatial_nodes[node.0 as usize].parent;
-            while ancestor != VISUAL_VIEWPORT_NODE_INDEX {
-                let ancestor_node = tree.spatial_nodes.get(ancestor.0 as usize)?;
-                if depth > tree.spatial_nodes.len()
-                    || !node_keeps_whole_pixel_translations_below_it(&ancestor_node.data)
-                    || moves_on_its_own[ancestor.0 as usize]
-                {
-                    return None;
-                }
-                depth += 1;
-                ancestor = ancestor_node.parent;
-            }
-            Some((depth, node))
+            Some((depth_on_whole_device_pixels(tree, node, &moves_on_its_own)?, node))
         })
         .collect();
-    anchors_with_depths.sort_by_key(|&(depth, node)| (depth, node.0));
-    anchors_with_depths.truncate(MAXIMUM_RASTER_SPACE_COUNT - 1);
-    anchors_with_depths.into_iter().map(|(_, node)| node).collect()
+    let mut anchors = shallowest_first(scrollers_with_depths, MAXIMUM_SCROLLER_SPACE_COUNT);
+    let held_sticky_boxes = held_sticky_boxes(tree, scroll_offsets, &anchors);
+    anchors.extend(shallowest_first(held_sticky_boxes, MAXIMUM_STICKY_BOX_SPACE_COUNT));
+    anchors
 }
 
 fn scroll_record_of(tree: &VisualContextTree, node: SpatialNodeIndex) -> Option<&CompositorScrollNodeRecord> {
@@ -255,6 +392,17 @@ fn identity_of_anchor(record: &CompositorScrollNodeRecord) -> u64 {
     hasher.finish() | 1
 }
 
+// Seeded apart from the identities of scroll nodes, as a box can be both sticky and a scroller.
+fn identity_of_sticky_box_anchor(sticky: &StickyData, node: SpatialNodeIndex) -> u64 {
+    let mut hasher = foldhash::fast::FixedState::with_seed(0x7374_6963_6b79_5f62).build_hasher();
+    hasher.write_i64(sticky.box_node_id.0);
+    hasher.write_u8(sticky.box_pseudo_element_type);
+    if sticky.box_node_id.0 == 0 {
+        hasher.write_u32(node.0);
+    }
+    hasher.finish() | 1
+}
+
 fn limited_to_extent_limit(rect: FloatRect) -> IntRect {
     enclosing_int_rect(rect.intersected(FloatRect::new(
         -EXTENT_LIMIT,
@@ -264,13 +412,38 @@ fn limited_to_extent_limit(rect: FloatRect) -> IntRect {
     )))
 }
 
-fn extent_of_space(tree: &VisualContextTree, space: &RasterSpace, world: &WorldTransforms) -> IntRect {
+// The extent of `space` under `world`, in which the anchors of its chain are at their origin.
+fn extent_of_space(
+    tree: &VisualContextTree,
+    spaces: &[RasterSpace],
+    space: usize,
+    world: &WorldTransforms,
+    viewport_rect: IntRect,
+) -> IntRect {
     let unbounded = limited_to_extent_limit(FloatRect::new(
         -EXTENT_LIMIT,
         -EXTENT_LIMIT,
         2.0 * EXTENT_LIMIT,
         2.0 * EXTENT_LIMIT,
     ));
+    let space = &spaces[space];
+    if let RasterSpaceAnchorKind::HeldStickyBox { .. } = space.anchor_kind {
+        // Content of a held box shows where it is in the space around it, translated back by the box's offset.
+        let extent_of_parent = if space.parent == VIEWPORT_RASTER_SPACE {
+            viewport_rect
+        } else {
+            extent_of_space(tree, spaces, space.parent, world, viewport_rect)
+        };
+        let negated = |point: FloatPoint| FloatPoint {
+            x: -point.x,
+            y: -point.y,
+        };
+        return rect_swept_over_translations(
+            extent_of_parent,
+            negated(space.highest_anchor_translation),
+            negated(space.lowest_anchor_translation),
+        );
+    }
     let Some(record) = scroll_record_of(tree, space.anchor) else {
         return unbounded;
     };
@@ -310,9 +483,6 @@ impl RasterSpaces {
     pub fn at_anchors(tree: &VisualContextTree, anchors: &[SpatialNodeIndex], viewport_rect: IntRect) -> Self {
         let mut spaces = vec![RasterSpace::of_the_viewport(viewport_rect)];
         for &anchor in anchors {
-            let Some(record) = scroll_record_of(tree, anchor) else {
-                continue;
-            };
             let mut parent = VIEWPORT_RASTER_SPACE;
             let mut ancestor = tree.spatial_nodes[anchor.0 as usize].parent;
             while ancestor != VISUAL_VIEWPORT_NODE_INDEX {
@@ -322,6 +492,25 @@ impl RasterSpaces {
                 }
                 ancestor = tree.spatial_nodes[ancestor.0 as usize].parent;
             }
+            if let SpatialData::Sticky(sticky) = &tree.spatial_nodes[anchor.0 as usize].data {
+                let (lowest_anchor_translation, highest_anchor_translation) =
+                    sticky.offset_range_without_sticky_ancestors();
+                spaces.push(RasterSpace {
+                    anchor,
+                    identity: identity_of_sticky_box_anchor(sticky, anchor),
+                    parent,
+                    anchor_kind: RasterSpaceAnchorKind::HeldStickyBox {
+                        border_box_origin: sticky.border_box_origin,
+                    },
+                    lowest_anchor_translation,
+                    highest_anchor_translation,
+                    extent: IntRect::default(),
+                });
+                continue;
+            }
+            let Some(record) = scroll_record_of(tree, anchor) else {
+                continue;
+            };
             let mut lowest_anchor_translation = FloatPoint {
                 x: -record.max_scroll_offset.x,
                 y: -record.max_scroll_offset.y,
@@ -342,7 +531,11 @@ impl RasterSpaces {
                 anchor,
                 identity: identity_of_anchor(record),
                 parent,
-                anchor_scrolls_the_viewport: record.is_viewport,
+                anchor_kind: if record.is_viewport {
+                    RasterSpaceAnchorKind::ViewportScroller
+                } else {
+                    RasterSpaceAnchorKind::Scroller
+                },
                 lowest_anchor_translation,
                 highest_anchor_translation,
                 extent: IntRect::default(),
@@ -509,7 +702,7 @@ impl SpaceGeometry {
         let extent = if space == VIEWPORT_RASTER_SPACE {
             viewport_rect
         } else {
-            extent_of_space(tree, &spaces.spaces()[space], &world)
+            extent_of_space(tree, spaces.spaces(), space, &world, viewport_rect)
         };
         Self {
             raster_scroll_offsets,

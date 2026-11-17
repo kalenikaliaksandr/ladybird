@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #content { height: 2000px; background: lightblue; }
+    #footer { position: sticky; bottom: 0; height: 40px; background: rgb(120, 0, 0); }
+    #scroller { position: absolute; left: 20px; top: 100px; width: 300px; height: 100px; overflow: auto; scrollbar-width: none; }
+    #row { display: flex; width: 1200px; height: 100px; background: lightyellow; }
+    #first-column { position: sticky; left: 0; flex: none; width: 80px; background: rgb(0, 120, 0); }
+</style>
+<div id="content"><div id="scroller"><div id="row"><div id="first-column"></div></div></div></div>
+<div id="footer"></div>
+<script>
+    function spacesOfTheStickyBoxes() {
+        return [
+            `footer: ${layersOfTheFillOfColor("rgb(120, 0, 0)")}`,
+            `first column: ${layersOfTheFillOfColor("rgb(0, 120, 0)")}`,
+        ].join("\n");
+    }
+
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        // The footer, laid out below the view, is held at its bottom until the view reaches it.
+        results.push(["at the top of the page", await presentedFrameState(), spacesOfTheStickyBoxes()]);
+        scroller.scrollLeft = 150;
+        results.push(["with the scroller scrolled to the left by 150", await presentedFrameState(), spacesOfTheStickyBoxes()]);
+        window.scrollTo(0, 1500);
+        results.push(["with the page scrolled to its end", await presentedFrameState(), spacesOfTheStickyBoxes()]);
+        for (const [what, state, spaces] of results) {
+            println(`${what}:`);
+            println(spaces);
+            printPresentedFrameState(state);
+        }
+        done();
+    });
+</script>

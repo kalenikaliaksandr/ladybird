@@ -1,0 +1,17 @@
+At the top of the page:
+header 1: [L1] base space=document
+header 2: [L1] base space=document
+header 3: [L1] base space=document
+header 4: [L1] base space=document
+header 5: [L1] base space=document
+header 6: [L1] base space=document
+scroller content: [L2] painted space=scroller@9 in document composited within [640,100 140x200] of document
+With every header held:
+header 1: [L1] base space=document
+header 2: [L2] painted space=sticky@4 in document
+header 3: [L4] painted space=sticky@5 in document
+header 4: [L6] painted space=sticky@6 in document
+header 5: [L8] painted space=sticky@7 in document
+header 6: [L1] base space=document, [L5] painted space=document above band 0 of sticky@5 in document, [L9] painted space=document above band 0 of sticky@7 in document
+scroller content: [L10] painted space=scroller@9 in document composited within [640,100 140x200] of document
+compared: true, matches a direct raster: true

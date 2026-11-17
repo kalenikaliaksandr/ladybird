@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    #scroller { position: absolute; left: 20px; top: 20px; width: 400px; height: 300px; overflow: auto; scrollbar-width: none; }
+    #header { position: sticky; top: 0; height: 40px; background: darkred; color: white; }
+    .row { height: 50px; }
+    .row:nth-child(odd) { background: lightgreen; }
+</style>
+<div id="scroller"><div id="header">sticky table header</div></div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 40; ++index) {
+            const row = document.createElement("div");
+            row.className = "row";
+            row.textContent = `row ${index}`;
+            if (index % 2)
+                row.style.background = uniqueColor;
+            scroller.appendChild(row);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        // The header sits at the top of the scroller's content, so the first scroll starts to hold it.
+        scroller.scrollTop = 50;
+        const startState = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [100, 150, 200, 260]) {
+            scroller.scrollTop = y;
+            results.push([y, await presentedFrameState()]);
+        }
+        println(layersOfTheDisplayList());
+        printPresentedFrameState(startState);
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled the scroller to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

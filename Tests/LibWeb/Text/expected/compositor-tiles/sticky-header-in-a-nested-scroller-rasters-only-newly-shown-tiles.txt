@@ -1,0 +1,12 @@
+[L0] base space=viewport
+[L2] painted space=scroller@2 in document composited within [20,20 400x300] of document
+[L3] painted space=sticky@3 in scroller@2 in document composited within [20,20 400x300] of document
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+scrolled the scroller to 100, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled the scroller to 150, tiles rasterized: 0, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled the scroller to 200, tiles rasterized: 2, layer stacks computed: 0
+compared: true, matches a direct raster: true
+scrolled the scroller to 260, tiles rasterized: 0, layer stacks computed: 0

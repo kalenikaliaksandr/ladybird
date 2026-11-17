@@ -60,3 +60,18 @@ function colorUniqueToThisPageLoad() {
     const stamp = Math.floor(performance.timeOrigin + performance.now());
     return `rgb(${stamp & 255}, ${(stamp >> 8) & 255}, ${(stamp >> 16) & 255})`;
 }
+
+// The layers the display list dump draws the fill of `color` into, each as the `Layers:` section names it.
+function layersOfTheFillOfColor(color) {
+    const fill = internals
+        .dumpDisplayList()
+        .split("\n")
+        .find(line => / FillRect@/.test(line) && line.includes(`color=${color}`));
+    if (!fill) return `no fill of ${color}`;
+    const layerLines = layersOfTheDisplayList().split("\n");
+    return fill
+        .split(" ")[0]
+        .split(",")
+        .map(layer => layerLines.find(line => line.startsWith(`[${layer}] `)) ?? layer)
+        .join(", ");
+}

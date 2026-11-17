@@ -1,0 +1,12 @@
+header before the tree is compacted: [L2] painted space=sticky@602 in document
+as presented: [L2] painted space=sticky@602 in document: 4 tiles, 145 KiB
+header after the tree is compacted: [L2] painted space=sticky@2 in document
+as presented: [L2] painted space=sticky@2 in document: 4 tiles, 145 KiB
+compared: true, matches a direct raster: true
+scrolled while the header is held, layer stacks computed: 0, layers created: 0, tiles rasterized: 4
+compared: true, matches a direct raster: true
+changed a stripe far below the view, layer stacks computed: 0, layers created: 0, tiles rasterized: 0
+compared: true, matches a direct raster: true
+removed the boxes ahead of the header, layer stacks computed: 0, layers created: 0, tiles rasterized: 0
+compared: true, matches a direct raster: true
+changed a stripe once the boxes are gone, layer stacks computed: 1, layers created: 0, tiles rasterized: 0

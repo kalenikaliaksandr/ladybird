@@ -1,0 +1,13 @@
+header: [L2] painted space=sticky@2 in document
+With the box past the section:
+[L0] base space=viewport
+[L1] painted space=document
+[L2] painted space=sticky@2 in document
+box: [L1] painted space=document
+With the box within the section:
+[L0] base space=viewport
+[L1] painted space=document
+[L2] painted space=sticky@2 in document
+[L3] painted space=document above band 0 of sticky@2 in document
+box: [L3] painted space=document above band 0 of sticky@2 in document
+compared: true, matches a direct raster: true

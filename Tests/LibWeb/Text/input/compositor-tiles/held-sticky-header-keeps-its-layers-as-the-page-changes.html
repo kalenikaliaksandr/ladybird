@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #header { position: sticky; top: 0; height: 40px; background: rgb(0, 0, 120); color: white; }
+    #boxes > div { transform: translateX(0px); }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div class="stripe"></div>
+<div id="boxes"></div>
+<script>
+    // Empty boxes with a transform of their own, each a node of the tree ahead of the header's. Once they are gone, more
+    // than half of the tree's nodes are dead, so it is compacted and the header's node takes another index.
+    for (let index = 0; index < 600; ++index)
+        boxes.appendChild(document.createElement("div"));
+</script>
+<div id="header">sticky header</div>
+<script>
+    // What the overlay of the presented frame says of the header's layer, with a line for each of its tiles rastered
+    // since the overlay was switched on.
+    function compositorLayerOfTheHeader() {
+        const lines = compositorLayersWithoutTiming().split("\n");
+        const first = lines.findIndex(line => line.includes("space=sticky@"));
+        if (first === -1)
+            return "no layer of a sticky box";
+        const next = lines.findIndex((line, index) => index > first && line.startsWith("["));
+        return lines.slice(first, next === -1 ? lines.length : next).join("\n");
+    }
+
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        const stripes = [];
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            document.body.appendChild(stripe);
+            stripes.push(stripe);
+        }
+        window.scrollTo(0, 150);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+
+        window.scrollTo(0, 250);
+        results.push(["scrolled while the header is held", await presentedFrameState()]);
+
+        stripes[25].textContent = "changed far below the view";
+        results.push(["changed a stripe far below the view", await presentedFrameState()]);
+
+        const headerBeforeCompaction = layersOfTheFillOfColor("rgb(0, 0, 120)");
+        const compositorLayerBeforeCompaction = compositorLayerOfTheHeader();
+        boxes.replaceChildren();
+        results.push(["removed the boxes ahead of the header", await presentedFrameState()]);
+        // The next update of the tree compacts it, and the list recorded with it names the header's node anew.
+        stripes[26].textContent = "changed once the boxes are gone";
+        results.push(["changed a stripe once the boxes are gone", await presentedFrameState()]);
+        const headerAfterCompaction = layersOfTheFillOfColor("rgb(0, 0, 120)");
+        const compositorLayerAfterCompaction = compositorLayerOfTheHeader();
+        internals.setShowCompositorLayers(false);
+
+        println(`header before the tree is compacted: ${headerBeforeCompaction}`);
+        println(`as presented: ${compositorLayerBeforeCompaction}`);
+        println(`header after the tree is compacted: ${headerAfterCompaction}`);
+        println(`as presented: ${compositorLayerAfterCompaction}`);
+        for (const [what, state] of results) {
+            printPresentedFrameState(state);
+            println(`${what}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, layers created: ${state.layersCreatedSinceLastCheck}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>
