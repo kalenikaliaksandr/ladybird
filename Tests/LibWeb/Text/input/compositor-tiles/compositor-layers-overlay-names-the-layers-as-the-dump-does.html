@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; background: white; }
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 40px; background: navy; }
+    #scroller { position: absolute; left: 20px; top: 100px; width: 200px; height: 200px; overflow: scroll; }
+    #scrolled { height: 1000px; background: linear-gradient(lightblue, lightyellow); }
+    canvas { position: absolute; left: 300px; top: 100px; }
+</style>
+<div id="scroller"><div id="scrolled"></div></div>
+<canvas id="canvas" width="200" height="100"></canvas>
+<div id="header"></div>
+<script>
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        context.fillStyle = "teal";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateWithCompositorLayers();
+        println(compositorLayersWithoutTiming());
+        internals.setShowCompositorLayers(false);
+        done();
+    });
+</script>

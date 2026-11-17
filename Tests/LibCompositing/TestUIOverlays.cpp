@@ -41,6 +41,7 @@ TEST_CASE(overlays_survive_ipc)
         .shown = true,
         .hovered_control = PictureInPictureControl::BackToTab,
     };
+    overlays.compositor_layers = true;
 
     auto decoded = MUST(decode_overlays([&](IPC::Encoder& encoder) { return encoder.encode(overlays); }));
     EXPECT(decoded == overlays);

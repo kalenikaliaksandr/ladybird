@@ -9,6 +9,7 @@
 //! host.
 
 mod damage;
+mod layer_overlay;
 mod layers;
 pub mod pacing;
 
@@ -19,6 +20,7 @@ use crate::raster_host::{
     SurfaceHandle,
 };
 use damage::{PaintedFrame, StoreDamage};
+use layer_overlay::LayerOverlaySwitch;
 use layers::ContextLayers;
 use libcompositing_rust::display_list::commands::CompositorContextId;
 use libcompositing_rust::display_list::replay::{
@@ -166,6 +168,7 @@ pub struct ContextPresenting {
 
     painted_frame: Option<PaintedFrame>,
     layers: ContextLayers,
+    layer_overlay: LayerOverlaySwitch,
 }
 
 impl ContextPresenting {
@@ -204,6 +207,7 @@ impl ContextPresenting {
             raster_translation: FloatPoint::default(),
             painted_frame: None,
             layers: ContextLayers::default(),
+            layer_overlay: LayerOverlaySwitch::default(),
         }
     }
 
@@ -585,6 +589,8 @@ impl ContextPresenting {
         }
         let display_list = display_list.expect("a frame that can render has a display list");
         let frame_inputs = frame_inputs.expect("a context with a display list has frame inputs");
+        self.layer_overlay
+            .switch_for_frame(self.presents_to_client && frame_inputs.overlays.shows_compositor_layers);
         let live_content = self.live_content(env, display_list);
         let frame = FrameToPaint {
             display_list,
@@ -622,7 +628,15 @@ impl ContextPresenting {
         };
         let store_rect = rect_of_size(env.raster.surface_size(&store));
         let repaint_rect = self.store_damage.take(bitmap_id, damage_rect, store_rect);
-        let painted_rect = self.paint_layered_frame(env, &store, &frame, repaint_rect, &mut frame_damage.layers);
+        let painted_rect = self.paint_layered_frame(
+            env,
+            &store,
+            &frame,
+            repaint_rect,
+            &mut frame_damage.layers,
+            &live_content,
+        );
+        self.layer_overlay.did_paint_frame();
         // The other stores miss all of what this one now holds.
         if painted_rect != repaint_rect {
             damage_rect = rect_of_size(IntSize {
@@ -659,6 +673,8 @@ impl ContextPresenting {
             return;
         };
         let frame_inputs = frame_inputs.expect("a context with a display list has frame inputs");
+        // What the parent draws of the frame can go into the parent's tiles, which the overlay must stay out of.
+        self.layer_overlay.switch_for_frame(false);
         let pending_frame = match self.pending_present_frame {
             Some(pending_frame) => pending_frame,
             None => match self.presented_frame {
@@ -682,7 +698,15 @@ impl ContextPresenting {
                 (surface, rect_of_size(raster_size))
             }
         };
-        let _ = self.paint_layered_frame(env, &surface, &frame, repaint_rect, &mut frame_damage.layers);
+        let _ = self.paint_layered_frame(
+            env,
+            &surface,
+            &frame,
+            repaint_rect,
+            &mut frame_damage.layers,
+            &live_content,
+        );
+        self.layer_overlay.did_paint_frame();
         self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
             env,
@@ -874,6 +898,7 @@ impl ContextPresenting {
                 };
                 self.composite_layers_above_base(&snapshot_env, &composited, &frame, source_rect);
                 paint_overlays(&snapshot_env, &composited, &painted_frame.frame_inputs, true);
+                self.paint_layer_overlay(&snapshot_env, &composited);
                 source = composited;
             }
             self.painted_frame = Some(painted_frame);
@@ -912,11 +937,38 @@ impl ContextPresenting {
         }
         replay_into(env, surface, frame, ReplaySelection::default());
         paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
+        if paints_ui_overlays {
+            self.paint_layer_overlay(env, surface);
+        }
         raster.restore_to_count(surface, save_count);
     }
 
     fn apply_raster_transform(&self, raster: &RasterHost, surface: &SurfaceHandle) {
         apply_raster_transform(raster, surface, self.raster_scale, self.raster_translation);
+    }
+
+    // Paints the compositor layers overlay as the frame painted last worked it out, over the overlays of the browser.
+    fn paint_layer_overlay(&self, env: &PresentingEnvironment<'_>, target: &SurfaceHandle) {
+        let Some(frame) = self.layer_overlay.latest_frame() else {
+            return;
+        };
+        env.raster
+            .paint(env.context_id, target, PaintingResources::Overlays, |painter| {
+                frame.records.paint(painter);
+            });
+    }
+
+    /// Until when the compositor layers overlay highlights a tile the frame painted last showed as rastered.
+    pub fn layer_overlay_highlights_fade_until(&self) -> Option<MonotonicTime> {
+        self.layer_overlay.highlights_fade_until()
+    }
+
+    /// The compositor layers overlay of the frame painted last, as text, or nothing while it is switched off.
+    pub fn layer_overlay_text_for_testing(&self) -> String {
+        self.layer_overlay
+            .latest_frame()
+            .map(|frame| frame.model.to_string())
+            .unwrap_or_default()
     }
 }
 

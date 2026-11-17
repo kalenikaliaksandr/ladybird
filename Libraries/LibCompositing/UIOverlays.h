@@ -36,6 +36,8 @@ struct PictureInPictureControlsState {
 struct UIOverlays {
     Optional<PausedDebuggerOverlayState> paused_debugger;
     Optional<PictureInPictureControlsState> picture_in_picture_controls;
+    // The layers the compositor composites the frames from, the tiles each holds, and the tiles it rastered lately.
+    bool compositor_layers { false };
 
     bool operator==(UIOverlays const&) const = default;
 };

@@ -20,10 +20,11 @@ use libcompositing_rust::ipc_types::compositor_presentation_server::messages::{
 use libcompositing_rust::ipc_types::compositor_web_content_client::messages::DidRasterizeDisplayList;
 use libcompositing_rust::ipc_types::compositor_web_content_server::messages::{
     ApplyScrollRequests, BeginInputTraceForTesting, BeginInputTraceForTestingResponse,
-    ClearPerTestInputStateForTesting, ClearPerTestInputStateForTestingResponse, InvalidateKeyboardScrollState,
-    InvalidateKeyboardScrollStateResponse, InvalidateWheelEventListenerState, PresentedFrameStateForTesting,
-    PresentedFrameStateForTestingResponse, RasterizeDisplayList, RouteFirstWheelStepForTesting,
-    RouteFirstWheelStepForTestingResponse, ScrollStateForTesting, ScrollStateForTestingResponse,
+    ClearPerTestInputStateForTesting, ClearPerTestInputStateForTestingResponse, CompositorLayersForTesting,
+    CompositorLayersForTestingResponse, InvalidateKeyboardScrollState, InvalidateKeyboardScrollStateResponse,
+    InvalidateWheelEventListenerState, PresentedFrameStateForTesting, PresentedFrameStateForTestingResponse,
+    RasterizeDisplayList, RouteFirstWheelStepForTesting, RouteFirstWheelStepForTestingResponse, ScrollStateForTesting,
+    ScrollStateForTestingResponse, SetCompositorLayersShownForTesting, SetCompositorLayersShownForTestingResponse,
     TakeInputTraceForTesting, TakeInputTraceForTestingResponse, TakePendingAsyncScrollUpdates,
     TakePendingAsyncScrollUpdatesResponse, TakeWheelEventFromMainThread, TakeWheelEventFromMainThreadResponse,
     UpdateDisplayList, UpdateScrollState, UpdateVisualContextTree, WheelEventCanceled, WheelEventLetThrough,
@@ -581,6 +582,31 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
             layers_created_since_last_check: state.layers_created_since_last_check,
             chunks_placed_since_last_check: state.chunks_placed_since_last_check,
             tiles_binned_since_last_check: state.tiles_binned_since_last_check,
+        })
+    }
+
+    fn set_compositor_layers_shown_for_testing(
+        &mut self,
+        message: SetCompositorLayersShownForTesting,
+    ) -> Result<SetCompositorLayersShownForTestingResponse, Misbehavior> {
+        if self.context_is_owned_by_sender(message.context_id)? {
+            self.core
+                .set_compositor_layers_shown_for_testing(message.context_id, message.shown, self.now);
+        }
+        Ok(SetCompositorLayersShownForTestingResponse)
+    }
+
+    fn compositor_layers_for_testing(
+        &mut self,
+        message: CompositorLayersForTesting,
+    ) -> Result<CompositorLayersForTestingResponse, Misbehavior> {
+        let compositor_layers = if self.context_is_owned_by_sender(message.context_id)? {
+            self.core.compositor_layers_for_testing(message.context_id)
+        } else {
+            String::new()
+        };
+        Ok(CompositorLayersForTestingResponse {
+            compositor_layers: compositor_layers.into(),
         })
     }
 

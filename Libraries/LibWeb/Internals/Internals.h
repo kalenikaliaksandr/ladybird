@@ -305,6 +305,8 @@ public:
     Utf16String frame_scheduler_state() const;
     void synchronize_compositor();
     GC::Ref<JS::Object> presented_frame_state();
+    void set_show_compositor_layers(bool shown);
+    String compositor_layers();
     void hold_next_frame(Utf16String const& hold);
     Utf16String last_frame_presented_by(DOM::Document&);
     void inject_clock_tick(double frame_time_ms, Optional<double> viewport_scroll_y);
@@ -394,6 +396,7 @@ private:
 
     GC::Root<JS::Cell> m_actions_executor;
     bool m_actions_running { false };
+    bool m_shows_compositor_layers { false };
     Optional<Utf16String> m_pending_action_test_result;
     Vector<GC::Ref<InternalGamepad>> m_gamepads;
     Optional<HTML::DevToolsObjectTable> m_devtools_object_table;

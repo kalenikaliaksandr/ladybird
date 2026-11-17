@@ -284,7 +284,10 @@ impl ContextPresenting {
         let composites_like_last_frame = self.painted_frame.is_some()
             && self.layers.compositing_of_latest_frame() == layer_update.compositing.as_slice();
         let window_server_switched = layer_update.shown_by_window_server != self.layers.window_server_shows_media();
-        let repaints_everything = invalidates_every_tile || !composites_like_last_frame || window_server_switched;
+        let repaints_everything = invalidates_every_tile
+            || !composites_like_last_frame
+            || window_server_switched
+            || self.layer_overlay.repaints_everything();
         let stale_rect = self.prepare_tile_pass(env, frame, live_content, &mut layer_update, raster_rect);
         FrameDamage {
             rect: if repaints_everything {

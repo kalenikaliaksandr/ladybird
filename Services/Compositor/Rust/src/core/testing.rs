@@ -37,6 +37,32 @@ impl CompositorCore {
         self.presented_frame_state_for_testing_inner(context_id, now)
     }
 
+    pub fn set_compositor_layers_shown_for_testing(
+        &self,
+        context_id: CompositorContextId,
+        shown: bool,
+        now: MonotonicTime,
+    ) {
+        let _entered = self.enter();
+
+        let Some(context) = self.context_if_present(context_id) else {
+            return;
+        };
+        if context.borrow_mut().set_compositor_layers_shown_for_testing(shown) {
+            self.request_present_keeping_the_tiles(context_id);
+        }
+        self.finish_entry(now);
+    }
+
+    /// The compositor layers overlay of the frame painted last, as text, or nothing while it is switched off.
+    pub fn compositor_layers_for_testing(&self, context_id: CompositorContextId) -> String {
+        let _entered = self.enter();
+
+        self.presenting_of(context_id)
+            .map(|presenting| presenting.borrow().layer_overlay_text_for_testing())
+            .unwrap_or_default()
+    }
+
     pub fn route_first_wheel_step_for_testing(
         &self,
         context_id: CompositorContextId,

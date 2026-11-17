@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .box { position: absolute; width: 20px; height: 20px; background: red; }
+    #near { left: 10px; top: 10px; }
+    #far { left: 600px; top: 400px; }
+</style>
+<div class="box" id="near"></div>
+<div class="box" id="far"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+
+        near.style.background = "blue";
+        far.style.background = "blue";
+        results.push(["two boxes changed without the overlay", await presentedFrameState()]);
+
+        internals.setShowCompositorLayers(true);
+        results.push(["overlay switched on", await presentedFrameStateWithCompositorLayers()]);
+
+        near.style.background = "green";
+        far.style.background = "green";
+        results.push(["two boxes changed with the overlay", await presentedFrameStateWithCompositorLayers()]);
+
+        internals.setShowCompositorLayers(false);
+        results.push(["overlay switched off", await presentedFrameStateWithCompositorLayers()]);
+        const compositorLayersOnceSwitchedOff = internals.compositorLayers();
+
+        for (const [what, state] of results) {
+            println(`${what}: compared: ${state.compared}, matches a direct raster: ${state.maxChannelDifference === 0}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        println(`overlay once switched off: "${compositorLayersOnceSwitchedOff}"`);
+        done();
+    });
+</script>

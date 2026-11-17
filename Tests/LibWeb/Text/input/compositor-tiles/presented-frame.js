@@ -26,6 +26,23 @@ async function presentedFrameStateOnceNothingIsLeftToRasterize() {
     return state;
 }
 
+// While the highlights of the compositor layers overlay fade, the compositor presents a frame with every display tick,
+// which can keep a frame on its way to the screen whenever it is asked until they have faded.
+async function presentedFrameStateWithCompositorLayers() {
+    let state = await presentedFrameState();
+    for (let attempt = 0; attempt < 50 && !state.compared; ++attempt) state = await presentedFrameState();
+    return state;
+}
+
+// The compositor layers overlay of the frame painted last, without the lines that depend on when it was painted.
+function compositorLayersWithoutTiming() {
+    return internals
+        .compositorLayers()
+        .split("\n")
+        .filter(line => line !== "" && !line.startsWith("last frame:") && !line.startsWith("highlighted:"))
+        .join("\n");
+}
+
 function colorUniqueToThisPageLoad() {
     const stamp = Math.floor(performance.timeOrigin + performance.now());
     return `rgb(${stamp & 255}, ${(stamp >> 8) & 255}, ${(stamp >> 16) & 255})`;

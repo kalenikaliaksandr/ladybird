@@ -173,6 +173,7 @@ void CompositorCore::set_ui_overlays(Web::CompositorContextId context_id, Compos
         .picture_in_picture_controls_shown = picture_in_picture_controls.has_value() && picture_in_picture_controls->shown,
         .picture_in_picture_controls_has_hovered_control = picture_in_picture_controls.has_value() && picture_in_picture_controls->hovered_control.has_value(),
         .picture_in_picture_controls_hovered_control = picture_in_picture_controls.has_value() && picture_in_picture_controls->hovered_control.has_value() ? to_underlying(*picture_in_picture_controls->hovered_control) : u8 { 0 },
+        .compositor_layers = overlays.compositor_layers,
     };
     RustFFI::compositor_core_set_ui_overlays(m_core, context_id.value(), &ffi_overlays, now().nanoseconds());
 }

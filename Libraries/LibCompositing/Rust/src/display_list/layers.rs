@@ -491,45 +491,57 @@ impl LayerStack {
         }
     }
 
+    /// What the dump calls a layer: its index, what it holds, the space it is rastered in, and what it sits above.
+    pub fn name_of_layer(&self, index: usize) -> String {
+        if self.unlayered_reason.is_some() {
+            return "[L0] single layer replaying the whole list".into();
+        }
+        let layer = &self.layers[index];
+        let space = self.name_of_space(self.nodes[layer.node].space);
+        match (&layer.key, &layer.content) {
+            (LayerKey::Painted { band, above, .. }, _) => {
+                let kind = if index == self.base_layer { "base" } else { "painted" };
+                let mut name = format!("[L{index}] {kind} space={space}");
+                if *band != 0 {
+                    name.push_str(&format!(" band={band}"));
+                }
+                if let Some(above) = above {
+                    name.push_str(&format!(" above {}", self.name_of_barrier(above)));
+                }
+                name
+            }
+            (LayerKey::Media { content, ordinal }, LayerContent::Media { region, .. }) => format!(
+                "[L{index}] {} #{ordinal} space={space} region=[{},{} {}x{}]",
+                media_name(*content),
+                region.x,
+                region.y,
+                region.width,
+                region.height
+            ),
+            (LayerKey::Media { .. }, LayerContent::Painted { .. }) => unreachable!("a media key names media"),
+        }
+    }
+
+    /// What the dump says of a canvas, video or nested context that was not given a layer, and why.
+    pub fn names_of_media_without_layers(&self) -> impl Iterator<Item = String> + '_ {
+        self.rejected_media
+            .iter()
+            .map(|(content, rejection)| format!("no layer for {}: {rejection}", media_name(*content)))
+    }
+
     /// One line per layer, bottom to top, after `indent`: its index, what it holds, the space it is rastered in, what it
     /// sits above, what it is clipped to as it is composited, and for a canvas or video whether the window server
     /// shows it. A layer below the base layer, or one that can hold nothing, is left out.
     pub fn write_layer_lines(&self, output: &mut impl std::fmt::Write, indent: &str) -> std::fmt::Result {
         if let Some(reason) = self.unlayered_reason {
-            return writeln!(output, "{indent}[L0] single layer replaying the whole list: {reason}");
+            return writeln!(output, "{indent}{}: {reason}", self.name_of_layer(0));
         }
         for (index, layer) in self.layers.iter().enumerate() {
             if index < self.base_layer || (index != self.base_layer && !layer.may_hold_content) {
                 continue;
             }
             let node = &self.nodes[layer.node];
-            write!(output, "{indent}[L{index}] ")?;
-            match (&layer.key, &layer.content) {
-                (LayerKey::Painted { band, above, .. }, _) => {
-                    let kind = if index == self.base_layer { "base" } else { "painted" };
-                    write!(output, "{kind} space={}", self.name_of_space(node.space))?;
-                    if *band != 0 {
-                        write!(output, " band={band}")?;
-                    }
-                    if let Some(above) = above {
-                        write!(output, " above {}", self.name_of_barrier(above))?;
-                    }
-                }
-                (LayerKey::Media { content, ordinal }, LayerContent::Media { region, .. }) => {
-                    write!(
-                        output,
-                        "{} #{ordinal} space={}",
-                        media_name(*content),
-                        self.name_of_space(node.space)
-                    )?;
-                    write!(
-                        output,
-                        " region=[{},{} {}x{}]",
-                        region.x, region.y, region.width, region.height
-                    )?;
-                }
-                (LayerKey::Media { .. }, LayerContent::Painted { .. }) => unreachable!("a media key names media"),
-            }
+            write!(output, "{indent}{}", self.name_of_layer(index))?;
             for clip in &node.composite_clips {
                 let clip_rect = clip.rect;
                 write!(
@@ -554,8 +566,8 @@ impl LayerStack {
                 _ => writeln!(output)?,
             }
         }
-        for (content, rejection) in &self.rejected_media {
-            writeln!(output, "{indent}no layer for {}: {rejection}", media_name(*content))?;
+        for name in self.names_of_media_without_layers() {
+            writeln!(output, "{indent}{name}")?;
         }
         Ok(())
     }

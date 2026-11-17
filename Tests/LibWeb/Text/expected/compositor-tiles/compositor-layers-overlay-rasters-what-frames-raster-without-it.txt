@@ -1,0 +1,5 @@
+two boxes changed without the overlay: compared: true, matches a direct raster: true, tiles rasterized: 2
+overlay switched on: compared: true, matches a direct raster: true, tiles rasterized: 0
+two boxes changed with the overlay: compared: true, matches a direct raster: true, tiles rasterized: 2
+overlay switched off: compared: true, matches a direct raster: true, tiles rasterized: 0
+overlay once switched off: ""

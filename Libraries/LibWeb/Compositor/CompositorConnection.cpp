@@ -626,6 +626,26 @@ PresentedFrameStateForTesting CompositorConnection::presented_frame_state_for_te
     return { .compared = response->compared(), .max_channel_difference = response->max_channel_difference(), .differing_pixel_count = response->differing_pixel_count(), .tiles_rasterized_since_last_check = response->tiles_rasterized_since_last_check(), .most_tiles_rasterized_by_a_frame_since_last_check = response->most_tiles_rasterized_by_a_frame_since_last_check(), .layer_stacks_computed_since_last_check = response->layer_stacks_computed_since_last_check(), .layers_created_since_last_check = response->layers_created_since_last_check(), .chunks_placed_since_last_check = response->chunks_placed_since_last_check(), .tiles_binned_since_last_check = response->tiles_binned_since_last_check() };
 }
 
+void CompositorConnection::set_compositor_layers_shown_for_testing(Web::CompositorContextId context_id, bool shown)
+{
+    if (!can_send_message_to_compositor())
+        return;
+    if (!send_sync_but_allow_failure<Messages::CompositorWebContentServer::SetCompositorLayersShownForTesting>(context_id, shown))
+        did_lose_compositor();
+}
+
+String CompositorConnection::compositor_layers_for_testing(Web::CompositorContextId context_id)
+{
+    if (!can_send_message_to_compositor())
+        return {};
+    auto response = send_sync_but_allow_failure<Messages::CompositorWebContentServer::CompositorLayersForTesting>(context_id);
+    if (!response) {
+        did_lose_compositor();
+        return {};
+    }
+    return response->take_compositor_layers();
+}
+
 Optional<Compositing::FirstWheelStepRouteForTesting> CompositorConnection::route_first_wheel_step_for_testing(Web::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels)
 {
     if (!can_send_message_to_compositor())

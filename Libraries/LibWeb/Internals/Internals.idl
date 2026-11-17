@@ -416,6 +416,14 @@ interface Internals {
     // before, and a tile is binned where it is newly shown or a chunk that can reach it changed. Nothing is compared
     // while a frame is on its way to the screen.
     object presentedFrameState();
+    // Switches the compositor layers overlay of this page on or off, which the compositor then draws over the frames it
+    // presents, but not into screenshots. It counts the rasters of each tile from when it is switched on.
+    undefined setShowCompositorLayers(boolean shown);
+    // Once the compositor has every frame rendered so far, the compositor layers overlay of the frame it painted last, as
+    // text: a line per layer from the base layer up, each followed by a line per tile of it rastered since the overlay
+    // was switched on, then the media without layers, why the list is a single layer if it is, and lastly what the last
+    // frame did and which tiles are highlighted, which depend on when the frame was painted. Empty while it is off.
+    DOMString compositorLayers();
     // Keeps the next recording that flies in flight, before it reads its frame, until releaseHeldFrame(), or until a
     // read waits for it. With "layout", only the next rendering update's layout that flies, or recording, is held,
     // before it reads anything. With "style", the next style update that flies is held, before it reads anything.

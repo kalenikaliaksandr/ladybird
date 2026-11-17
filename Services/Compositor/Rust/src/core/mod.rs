@@ -17,7 +17,7 @@ use crate::host::{
     ContextTimer, DisplayTickInputs, DisplayTickResult, Host, PendingFrame, PresentRequest, PresentScheduling,
     PresentationId, WebContentClientId,
 };
-use crate::overlays::UIOverlays;
+use crate::overlays::{UIOverlays, UIOverlaysChange};
 use crate::presenting::ContextPresenting;
 use crate::raster_host::{RasterHost, SurfaceHandle};
 use crate::wheel_gesture_routing::WheelGestureIdAllocator;
@@ -327,10 +327,23 @@ impl CompositorCore {
         let Some(context) = self.context_if_present(context_id) else {
             return;
         };
-        if context.borrow_mut().set_ui_overlays(ui_overlays, now) {
-            self.request_present_repainting_everything(context_id, context);
+        let change = context.borrow_mut().set_ui_overlays(ui_overlays, now);
+        match change {
+            UIOverlaysChange::Nothing => {}
+            UIOverlaysChange::OnlyCompositorLayers => self.request_present_keeping_the_tiles(context_id),
+            UIOverlaysChange::RepaintsEverything => self.request_present_repainting_everything(context_id, context),
         }
         self.finish_entry(now);
+    }
+
+    // A frame at the viewport rect the context is presented at, which rasters no tile again unless what it shows changed.
+    fn request_present_keeping_the_tiles(&self, context_id: CompositorContextId) {
+        self.present_requests.borrow_mut().push(PresentRequest {
+            context_id,
+            viewport_rect: None,
+            forced_damage_rect: Default::default(),
+            scheduling: PresentScheduling::OnNextDisplayTick,
+        });
     }
 
     // A frame at the viewport rect the context is presented at, which repaints all of it.
@@ -948,6 +961,14 @@ impl CompositorCore {
                     context_id,
                     viewport_rect: None,
                     forced_damage_rect: overlay_fade_damage_rect,
+                    scheduling: PresentScheduling::WithDisplayTickInProgress,
+                });
+            }
+            if context.borrow_mut().advance_compositor_layers_fade(frame_time) {
+                self.present_requests.borrow_mut().push(PresentRequest {
+                    context_id,
+                    viewport_rect: None,
+                    forced_damage_rect: Default::default(),
                     scheduling: PresentScheduling::WithDisplayTickInProgress,
                 });
             }

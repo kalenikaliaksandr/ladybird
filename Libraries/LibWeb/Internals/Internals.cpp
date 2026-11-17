@@ -697,6 +697,22 @@ GC::Ref<JS::Object> Internals::presented_frame_state()
     return object;
 }
 
+void Internals::set_show_compositor_layers(bool shown)
+{
+    let_compositor_take_in_every_rendered_frame(window());
+    if (auto* compositor_context = compositor_context_routing_input_for(window()))
+        compositor_context->set_compositor_layers_shown_for_testing(shown);
+    m_shows_compositor_layers = shown;
+}
+
+String Internals::compositor_layers()
+{
+    let_compositor_take_in_every_rendered_frame(window());
+    if (auto* compositor_context = compositor_context_routing_input_for(window()))
+        return compositor_context->compositor_layers_for_testing();
+    return {};
+}
+
 void Internals::send_text_through_ui_process(Utf16String const& text)
 {
     let_compositor_take_in_every_rendered_frame(window());
@@ -2526,8 +2542,12 @@ void Internals::perform_per_test_cleanup()
         local_root->event_handler().clear_per_test_input_state();
         WebDriver::reset_input_state(*local_root->top_level_traversable());
     }
-    if (auto* compositor_context = compositor_context_routing_input_for(window()))
+    if (auto* compositor_context = compositor_context_routing_input_for(window())) {
         compositor_context->clear_per_test_input_state_for_testing();
+        if (m_shows_compositor_layers)
+            compositor_context->set_compositor_layers_shown_for_testing(false);
+    }
+    m_shows_compositor_layers = false;
     if (page().input_trace().is_recording())
         (void)take_input_trace_records(window());
 

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            document.body.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateWithCompositorLayers();
+        const results = [];
+        for (const y of [100, 300]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameStateWithCompositorLayers()]);
+        }
+        const compositorLayers = compositorLayersWithoutTiming();
+        internals.setShowCompositorLayers(false);
+
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        println(compositorLayers);
+        done();
+    });
+</script>

@@ -1,0 +1,10 @@
+switched on:
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+after a change:
+compared: true, matches a direct raster: true
+tiles rasterized: 1
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+    tile 2,1: rastered 1 time, last key changed over [512,256 256x256]
+after another change:
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+    tile 2,1: rastered 2 times, last key changed over [512,256 256x256]

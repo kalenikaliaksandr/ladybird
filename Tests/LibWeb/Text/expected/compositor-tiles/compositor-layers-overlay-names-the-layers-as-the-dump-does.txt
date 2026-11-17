@@ -1,0 +1,6 @@
+[L0] base space=viewport: 12 tiles, 1.8 MiB
+[L1] painted space=document: 12 tiles, 2.4 MiB
+[L2] painted space=scroller@2 in document: 2 tiles, 334 KiB
+[L3] painted space=document above band 0 of scroller@2 in document: 2 tiles, 17 KiB
+[L4] canvas #0 space=document region=[297,97 206x106]: replayed: the context is not shown in a remote layer
+[L6] painted space=viewport above band 0 of document: 4 tiles, 135 KiB

@@ -88,6 +88,16 @@ PresentedFrameStateForTesting CompositorContextHandle::presented_frame_state_for
     return m_host.presented_frame_state_for_testing(m_context_id);
 }
 
+void CompositorContextHandle::set_compositor_layers_shown_for_testing(bool shown)
+{
+    m_host.set_compositor_layers_shown_for_testing(m_context_id, shown);
+}
+
+String CompositorContextHandle::compositor_layers_for_testing()
+{
+    return m_host.compositor_layers_for_testing(m_context_id);
+}
+
 Optional<Compositing::FirstWheelStepRouteForTesting> CompositorContextHandle::route_first_wheel_step_for_testing(Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels)
 {
     return m_host.route_first_wheel_step_for_testing(m_context_id, position, delta_in_css_pixels);
@@ -571,6 +581,19 @@ PresentedFrameStateForTesting CompositorHost::presented_frame_state_for_testing(
 {
     if (auto* connection = compositor_connection())
         return connection->presented_frame_state_for_testing(context_id);
+    return {};
+}
+
+void CompositorHost::set_compositor_layers_shown_for_testing(Web::CompositorContextId context_id, bool shown)
+{
+    if (auto* connection = compositor_connection())
+        connection->set_compositor_layers_shown_for_testing(context_id, shown);
+}
+
+String CompositorHost::compositor_layers_for_testing(Web::CompositorContextId context_id)
+{
+    if (auto* connection = compositor_connection())
+        return connection->compositor_layers_for_testing(context_id);
     return {};
 }
 

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .box { position: absolute; width: 20px; height: 20px; background: red; }
+    #near { left: 10px; top: 10px; }
+    #far { left: 600px; top: 400px; }
+</style>
+<div class="box" id="near"></div>
+<div class="box" id="far"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        internals.setShowCompositorLayers(true);
+        await presentedFrameStateWithCompositorLayers();
+        const switchedOn = compositorLayersWithoutTiming();
+
+        far.style.background = "blue";
+        const state = await presentedFrameStateWithCompositorLayers();
+        const afterAChange = compositorLayersWithoutTiming();
+
+        far.style.background = "green";
+        await presentedFrameStateWithCompositorLayers();
+        const afterAnotherChange = compositorLayersWithoutTiming();
+        internals.setShowCompositorLayers(false);
+
+        println("switched on:");
+        println(switchedOn);
+        println("after a change:");
+        printPresentedFrameState(state);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        println(afterAChange);
+        println("after another change:");
+        println(afterAnotherChange);
+        done();
+    });
+</script>

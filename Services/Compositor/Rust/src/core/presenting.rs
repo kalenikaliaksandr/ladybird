@@ -437,9 +437,15 @@ impl CompositorCore {
         };
         let environment = self.environment(context_id, now, &nested_contexts);
         let mut presenting = presenting.borrow_mut();
-        let Some(prepared_frame) =
-            presenting.prepare_frame(&environment, pending_frame, display_list.as_ref(), frame_inputs)
-        else {
+        let prepared_frame = presenting.prepare_frame(&environment, pending_frame, display_list.as_ref(), frame_inputs);
+        let highlights_fade_until = presenting.layer_overlay_highlights_fade_until();
+        context
+            .borrow_mut()
+            .set_compositor_layers_highlights_fade_until(highlights_fade_until);
+        if highlights_fade_until.is_some() {
+            self.host.request_display_ticks(context_id);
+        }
+        let Some(prepared_frame) = prepared_frame else {
             return;
         };
 

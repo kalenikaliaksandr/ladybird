@@ -7,6 +7,9 @@
 //! The layers a frame is painted in, each kept as tiles under its key from one frame and one list to the next, and what
 //! of them the window server shows above the frame by itself.
 
+use super::layer_overlay::{
+    FrameCounts, FrameOfLayerOverlay, LayerOfFrame, LayerOfFrameContent, MediaPresentation, RasterCause,
+};
 use super::{
     ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform, paint_overlays,
     rect_of_size, replay_into, replay_with_scroll_offsets, replaying_only,
@@ -20,8 +23,8 @@ use libcompositing_rust::display_list::commands::{
     CanvasId, CompositorContextId, ImageFrameResourceId, SpatialNodeIndex, VideoSinkHandle,
 };
 use libcompositing_rust::display_list::layers::{
-    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, VIEWPORT_RASTER_SPACE, build_layer_stack,
-    place_list, raster_space_anchors,
+    LayerContent, LayerKey, LayerStack, LayerStackInputs, ListPlacement, StackLayer, VIEWPORT_RASTER_SPACE,
+    build_layer_stack, place_list, raster_space_anchors,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaces, SpaceGeometry, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
@@ -34,7 +37,7 @@ use libcompositing_rust::display_list::tile_keys::{
     ReplayReadsOutsideTheList, TileKey,
 };
 use libcompositing_rust::display_list::tiles::TileCoord;
-use libcompositing_rust::display_list::window_server_placement::WindowServerPlacement;
+use libcompositing_rust::display_list::window_server_placement::{WindowServerPlacement, WindowServerRejection};
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libcompositing_rust::visual_context::VisualContextTree;
@@ -99,6 +102,46 @@ impl LayerState {
             }
         }
         self.digest_of_replayed_media = None;
+    }
+}
+
+/// Why the window server does not show a canvas, video or nested context layer by itself, which the frame then replays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WhyMediaIsReplayed {
+    ContextIsNotShownInARemoteLayer,
+    NoGpu,
+    ContextIsPresentedFromCpuMemory,
+    Placement(WindowServerRejection),
+    NoPlacement(LiveMedia),
+    CanvasHasNoPresentableSurface,
+    VideoHasNoFrame,
+    HighDynamicRangeIsNotShownNow,
+    WindowServerCannotShowThePlacement,
+    TilesWerePaintedStraightIntoTheFrame,
+    AnotherMediaLayerIsReplayed,
+}
+
+impl std::fmt::Display for WhyMediaIsReplayed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            WhyMediaIsReplayed::ContextIsNotShownInARemoteLayer => "the context is not shown in a remote layer",
+            WhyMediaIsReplayed::NoGpu => "the compositor has no GPU",
+            WhyMediaIsReplayed::ContextIsPresentedFromCpuMemory => "the context is presented from CPU memory",
+            WhyMediaIsReplayed::Placement(rejection) => return write!(formatter, "{rejection}"),
+            WhyMediaIsReplayed::NoPlacement(LiveMedia::ImageFrame(_)) => "the window server does not show images",
+            WhyMediaIsReplayed::NoPlacement(LiveMedia::CompositedContext(_)) => {
+                "the window server does not show nested contexts"
+            }
+            WhyMediaIsReplayed::NoPlacement(_) => "where the window server would show it is not worked out",
+            WhyMediaIsReplayed::CanvasHasNoPresentableSurface => "the canvas has no surface the window server can show",
+            WhyMediaIsReplayed::VideoHasNoFrame => "the video has no frame",
+            WhyMediaIsReplayed::HighDynamicRangeIsNotShownNow => {
+                "the window server does not show high dynamic range now"
+            }
+            WhyMediaIsReplayed::WindowServerCannotShowThePlacement => "the window server cannot show it where it is",
+            WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame => "tiles were painted straight into the frame",
+            WhyMediaIsReplayed::AnotherMediaLayerIsReplayed => "another media layer is replayed",
+        })
     }
 }
 
@@ -240,6 +283,9 @@ pub struct ContextLayers {
     layers_created_since_last_check: u64,
     chunks_placed_since_last_check: u64,
     tiles_binned_since_last_check: u64,
+    chunks_placed_by_this_frame: u64,
+    tiles_binned_by_this_frame: u64,
+    stack_changed_shape_with_this_frame: bool,
     // Whether the window server shows the layers above the base layer of the latest frame.
     window_server_shows_media: bool,
     latest_overlay_surface: Option<PresentableSurfaceHandle>,
@@ -429,6 +475,28 @@ fn tile_area_of(space: usize, rect_shown: IntRect, viewport_rect: IntRect) -> In
     rect_shown.inflated_edges(half_height, half_width, half_height, half_width)
 }
 
+// Why a tile that holds pixels of another key than the one it needs, or that is not held, is rastered.
+fn raster_cause_of(
+    held: Option<&Tile>,
+    rect_needed: IntRect,
+    raster: &RasterHost,
+    like: &SurfaceHandle,
+) -> RasterCause {
+    let Some(held) = held else {
+        return RasterCause::NewlyShown;
+    };
+    if !held.rect.contains_rect(rect_needed) {
+        return RasterCause::HeldLessThanNeeded;
+    }
+    if !raster.surfaces_share_backend(&held.surface, like) {
+        return RasterCause::HeldOnAnotherBackend;
+    }
+    match held.key_of_held_pixels {
+        None => RasterCause::HeldPixelsInvalidated,
+        Some(_) => RasterCause::KeyChanged,
+    }
+}
+
 // Draws the tiles over `damage_rect` of the surface, with the layer's space translated by `offset` into the surface's.
 fn composite_layer_tiles(
     raster: &RasterHost,
@@ -529,6 +597,9 @@ impl ContextPresenting {
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
+        self.layers.chunks_placed_by_this_frame = 0;
+        self.layers.tiles_binned_by_this_frame = 0;
+        self.layers.stack_changed_shape_with_this_frame = false;
         let inputs = LayerStackInputs {
             list: storage,
             tree,
@@ -603,6 +674,7 @@ impl ContextPresenting {
             if !keeps_its_shape {
                 self.layers.stack_generation += 1;
                 self.layers.layer_stacks_computed_since_last_check += 1;
+                self.layers.stack_changed_shape_with_this_frame = true;
             }
             self.layers.stack = Some(stack);
         }
@@ -759,6 +831,7 @@ impl ContextPresenting {
                 tile_area_of(space, shown_rect, viewport_rect),
             );
             self.layers.tiles_binned_since_last_check += keying.cells_binned as u64;
+            self.layers.tiles_binned_by_this_frame += keying.cells_binned as u64;
             keyed.shown_tiles = keyed
                 .keys
                 .tiles_within(shown_rect)
@@ -793,10 +866,12 @@ impl ContextPresenting {
             pass.groups.push(keyed);
         }
 
-        self.layers.chunks_placed_since_last_check += raster_spaces
+        let chunks_placed = raster_spaces
             .iter()
             .map(|raster_space| raster_space.chunks_placed())
             .sum::<u64>();
+        self.layers.chunks_placed_since_last_check += chunks_placed;
+        self.layers.chunks_placed_by_this_frame += chunks_placed;
 
         let mut stale_rect = IntRect::default();
         for compositing in &layer_update.compositing {
@@ -872,54 +947,166 @@ impl ContextPresenting {
         stack: &LayerStack,
         live_content: &LiveContent,
     ) -> bool {
-        if !self.remote_layer_may_show_media(env.has_gpu) {
-            return false;
+        self.why_window_server_shows_no_media_of_this_context(env).is_none()
+            && stack.layers[stack.base_layer..]
+                .iter()
+                .all(|layer| self.why_window_server_does_not_show(env, layer, live_content).is_none())
+    }
+
+    fn why_window_server_shows_no_media_of_this_context(
+        &self,
+        env: &PresentingEnvironment<'_>,
+    ) -> Option<WhyMediaIsReplayed> {
+        if !self.shown_in_remote_layer {
+            return Some(WhyMediaIsReplayed::ContextIsNotShownInARemoteLayer);
         }
-        for layer in &stack.layers[stack.base_layer..] {
-            let LayerContent::Media {
-                content,
-                window_server_placement,
-                ..
-            } = &layer.content
-            else {
-                continue;
-            };
-            let Some(Ok(placement)) = window_server_placement else {
-                return false;
-            };
-            let (kind, id) = match content {
-                LiveMedia::Canvas(id) => {
-                    let has_presentable_surface = live_content
-                        .canvases
-                        .get(&id.0)
-                        .is_some_and(|canvas| canvas.has_presentable_surface);
-                    if !has_presentable_surface {
-                        return false;
-                    }
-                    (MediaKind::Canvas, id.0)
+        if !env.has_gpu {
+            return Some(WhyMediaIsReplayed::NoGpu);
+        }
+        if self.presents_from_cpu_memory {
+            return Some(WhyMediaIsReplayed::ContextIsPresentedFromCpuMemory);
+        }
+        debug_assert!(self.remote_layer_may_show_media(env.has_gpu));
+        None
+    }
+
+    // Why the window server cannot show the content of a canvas, video or nested context layer by itself, if it cannot.
+    fn why_window_server_does_not_show(
+        &self,
+        env: &PresentingEnvironment<'_>,
+        layer: &StackLayer,
+        live_content: &LiveContent,
+    ) -> Option<WhyMediaIsReplayed> {
+        let LayerContent::Media {
+            content,
+            window_server_placement,
+            ..
+        } = &layer.content
+        else {
+            return None;
+        };
+        let placement = match window_server_placement {
+            Some(Ok(placement)) => placement,
+            Some(Err(rejection)) => return Some(WhyMediaIsReplayed::Placement(*rejection)),
+            None => return Some(WhyMediaIsReplayed::NoPlacement(*content)),
+        };
+        let (kind, id) = match content {
+            LiveMedia::Canvas(id) => {
+                let has_presentable_surface = live_content
+                    .canvases
+                    .get(&id.0)
+                    .is_some_and(|canvas| canvas.has_presentable_surface);
+                if !has_presentable_surface {
+                    return Some(WhyMediaIsReplayed::CanvasHasNoPresentableSurface);
                 }
-                LiveMedia::VideoFrame(id) => {
-                    let Some(sink) = live_content.video_sinks.get(&id.0).filter(|sink| sink.has_frame) else {
-                        return false;
-                    };
-                    if !env.window_server_may_show_high_dynamic_range && sink.frame_holds_high_dynamic_range {
-                        return false;
-                    }
-                    (MediaKind::Video, id.0)
-                }
-                LiveMedia::ImageFrame(_) | LiveMedia::CompositedContext(_) => return false,
-            };
-            if !env.raster.remote_layer_can_show(
-                env.context_id,
-                kind,
-                id,
-                &sublayer_placement_of(placement),
-                self.device_pixel_ratio,
-            ) {
-                return false;
+                (MediaKind::Canvas, id.0)
             }
+            LiveMedia::VideoFrame(id) => {
+                let Some(sink) = live_content.video_sinks.get(&id.0).filter(|sink| sink.has_frame) else {
+                    return Some(WhyMediaIsReplayed::VideoHasNoFrame);
+                };
+                if !env.window_server_may_show_high_dynamic_range && sink.frame_holds_high_dynamic_range {
+                    return Some(WhyMediaIsReplayed::HighDynamicRangeIsNotShownNow);
+                }
+                (MediaKind::Video, id.0)
+            }
+            LiveMedia::ImageFrame(_) | LiveMedia::CompositedContext(_) => {
+                return Some(WhyMediaIsReplayed::NoPlacement(*content));
+            }
+        };
+        if !env.raster.remote_layer_can_show(
+            env.context_id,
+            kind,
+            id,
+            &sublayer_placement_of(placement),
+            self.device_pixel_ratio,
+        ) {
+            return Some(WhyMediaIsReplayed::WindowServerCannotShowThePlacement);
         }
-        true
+        None
+    }
+
+    // Works out the compositor layers overlay of the frame, while it is switched on.
+    #[allow(clippy::too_many_arguments)]
+    fn take_layer_overlay_frame(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        frame: &FrameToPaint<'_>,
+        stack: &LayerStack,
+        compositing: &[CompositingOfLayer],
+        shown_by_window_server: bool,
+        tiles_painted_straight: bool,
+        live_content: &LiveContent,
+    ) {
+        if self.layer_overlay.overlay().is_none() {
+            return;
+        }
+        let context_shows_no_media = self.why_window_server_shows_no_media_of_this_context(env);
+        let layers = compositing
+            .iter()
+            .filter_map(|compositing| {
+                let index = stack.layers.iter().position(|layer| layer.key == compositing.key)?;
+                let layer = &stack.layers[index];
+                let content = match &layer.content {
+                    LayerContent::Painted { .. } => LayerOfFrameContent::Painted {
+                        held_tiles: self
+                            .layers
+                            .states
+                            .get(&compositing.key)
+                            .map(|state| state.tiles.iter().map(|(coord, tile)| (*coord, tile.rect)).collect())
+                            .unwrap_or_default(),
+                    },
+                    LayerContent::Media { region, .. } => LayerOfFrameContent::Media {
+                        region: *region,
+                        presentation: if shown_by_window_server {
+                            MediaPresentation::ShownByWindowServer
+                        } else {
+                            let why = context_shows_no_media
+                                .or_else(|| self.why_window_server_does_not_show(env, layer, live_content))
+                                .unwrap_or(if tiles_painted_straight {
+                                    WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame
+                                } else {
+                                    WhyMediaIsReplayed::AnotherMediaLayerIsReplayed
+                                });
+                            MediaPresentation::Replayed { why: why.to_string() }
+                        },
+                    },
+                };
+                Some(LayerOfFrame {
+                    key: compositing.key,
+                    name: stack.name_of_layer(index),
+                    composite_offset: compositing.offset,
+                    composite_clip: compositing.clip,
+                    content,
+                })
+            })
+            .collect();
+        let layers_kept_out_of_the_stack = self
+            .layers
+            .states
+            .keys()
+            .filter(|key| compositing.iter().all(|compositing| compositing.key != **key))
+            .copied()
+            .collect();
+        let overlay_frame = FrameOfLayerOverlay {
+            viewport_rect: self.raster_rect(),
+            painted_at: frame.frame_inputs.painted_at,
+            layers,
+            layers_kept_out_of_the_stack,
+            single_layer_reason: stack.unlayered_reason.map(|reason| reason.to_string()),
+            media_without_layers: stack.names_of_media_without_layers().collect(),
+            counts: FrameCounts {
+                tiles_rastered: self.layers.tiles_rasterized_by_this_frame,
+                tiles_binned: self.layers.tiles_binned_by_this_frame,
+                chunks_placed: self.layers.chunks_placed_by_this_frame,
+                stack_changed_shape: self.layers.stack_changed_shape_with_this_frame,
+            },
+        };
+        let device_pixel_ratio = self.device_pixel_ratio;
+        let shaper = env.host.overlay_label_shaper(env.context_id);
+        if let Some(overlay) = self.layer_overlay.overlay_mut() {
+            overlay.take_frame(overlay_frame, device_pixel_ratio, &shaper);
+        }
     }
 
     /// Takes in what the frame painted of its layers: how it composited them, and which layers left the stack, which
@@ -970,13 +1157,15 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
         layer_update: &mut LayerUpdate,
+        live_content: &LiveContent,
     ) -> IntRect {
         let stack = self.layers.stack.take().expect("a layered frame has a stack");
-        let painted_rect = self.paint_layers(env, surface, frame, damage_rect, layer_update, &stack);
+        let painted_rect = self.paint_layers(env, surface, frame, damage_rect, layer_update, &stack, live_content);
         self.layers.stack = Some(stack);
         painted_rect
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_layers(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -985,6 +1174,7 @@ impl ContextPresenting {
         mut damage_rect: IntRect,
         layer_update: &mut LayerUpdate,
         stack: &LayerStack,
+        live_content: &LiveContent,
     ) -> IntRect {
         let raster = env.raster;
         let surface_clear_color = frame.display_list.surface_clear_color().unwrap_or(Color::TRANSPARENT);
@@ -1030,6 +1220,19 @@ impl ContextPresenting {
             self.layers.states.insert(compositing.key, state);
         }
 
+        // The overlay goes into the surface the window server shows the overlays from, so it is worked out first, as if
+        // that went well.
+        let expected_shown_by_window_server = layer_update.shown_by_window_server && painted_straight.is_empty();
+        self.take_layer_overlay_frame(
+            env,
+            frame,
+            stack,
+            &layer_update.compositing,
+            expected_shown_by_window_server,
+            !painted_straight.is_empty(),
+            live_content,
+        );
+
         // The window server shows everything above the base layer from surfaces of its own, unless some could not be
         // made, when the frame holds all of it instead.
         if layer_update.shown_by_window_server {
@@ -1040,6 +1243,17 @@ impl ContextPresenting {
                 layer_update.shown_by_window_server = false;
                 damage_rect = self.raster_rect();
             }
+        }
+        if layer_update.shown_by_window_server != expected_shown_by_window_server {
+            self.take_layer_overlay_frame(
+                env,
+                frame,
+                stack,
+                &layer_update.compositing,
+                layer_update.shown_by_window_server,
+                !painted_straight.is_empty(),
+                live_content,
+            );
         }
 
         let save_count = raster.save(surface);
@@ -1080,6 +1294,7 @@ impl ContextPresenting {
             }
             self.apply_raster_transform(raster, surface);
             paint_overlays(env, surface, frame.frame_inputs, true);
+            self.paint_layer_overlay(env, surface);
         }
         raster.restore_to_count(surface, save_count);
         damage_rect
@@ -1135,10 +1350,15 @@ impl ContextPresenting {
             }
             return Vec::new();
         };
+        let painted_at = frame.frame_inputs.painted_at;
+        let records_rasters = self.layer_overlay.overlay().is_some();
+        let mut causes_of_rasters: Vec<(usize, RasterCause)> = Vec::new();
         let mut unrastered = Vec::new();
         let mut tiles_to_raster = Vec::new();
         for (&tile_index, &rect_needed) in shown.tiles.iter().zip(&shown.rects_needed) {
             let keyed_tile = keyed.tile(tile_index);
+            let cause =
+                records_rasters.then(|| raster_cause_of(state.tiles.get(&keyed_tile.coord), rect_needed, raster, like));
             let tile_fits = state.tiles.get(&keyed_tile.coord).is_some_and(|tile| {
                 tile.rect.contains_rect(rect_needed) && raster.surfaces_share_backend(&tile.surface, like)
             });
@@ -1146,6 +1366,15 @@ impl ContextPresenting {
                 let Some(surface) = create_surface_like(raster, size_of(rect_needed), like) else {
                     tiles_changed |= state.tiles.remove(&keyed_tile.coord).is_some();
                     unrastered.push(shown_in_raster(rect_needed));
+                    if let Some(overlay) = self.layer_overlay.overlay_mut() {
+                        overlay.record_raster(
+                            compositing.key,
+                            keyed_tile.coord,
+                            RasterCause::PaintedStraightIntoTheFrame,
+                            rect_needed,
+                            painted_at,
+                        );
+                    }
                     continue;
                 };
                 state.tiles.insert(
@@ -1160,6 +1389,9 @@ impl ContextPresenting {
             }
             if state.tiles[&keyed_tile.coord].key_of_held_pixels != Some(keyed_tile.key) {
                 tiles_to_raster.push(tile_index);
+                if let Some(cause) = cause {
+                    causes_of_rasters.push((tile_index, cause));
+                }
             }
         }
         if tiles_changed || !tiles_to_raster.is_empty() {
@@ -1251,12 +1483,19 @@ impl ContextPresenting {
                 .collect();
             if !self.raster_through_scratch(env, like, &tiles, bounds, clear_color, &|target| replay(target, &spans)) {
                 for &tile_index in batch {
-                    let tile = state
-                        .tiles
-                        .get_mut(&keyed.tile(tile_index).coord)
-                        .expect("a tile to raster is held");
+                    let coord = keyed.tile(tile_index).coord;
+                    let tile = state.tiles.get_mut(&coord).expect("a tile to raster is held");
                     tile.key_of_held_pixels = None;
                     unrastered.push(shown_in_raster(tile.rect));
+                    if let Some(overlay) = self.layer_overlay.overlay_mut() {
+                        overlay.record_raster(
+                            compositing.key,
+                            coord,
+                            RasterCause::PaintedStraightIntoTheFrame,
+                            tile.rect,
+                            painted_at,
+                        );
+                    }
                 }
                 tiles_rastered.retain(|tile_index| !batch.contains(tile_index));
             }
@@ -1265,6 +1504,17 @@ impl ContextPresenting {
             let keyed_tile = keyed.tile(tile_index);
             if let Some(tile) = state.tiles.get_mut(&keyed_tile.coord) {
                 tile.key_of_held_pixels = Some(keyed_tile.key);
+            }
+        }
+        if let Some(overlay) = self.layer_overlay.overlay_mut() {
+            for (tile_index, cause) in causes_of_rasters {
+                if !tiles_rastered.contains(&tile_index) {
+                    continue;
+                }
+                let coord = keyed.tile(tile_index).coord;
+                if let Some(tile) = state.tiles.get(&coord) {
+                    overlay.record_raster(compositing.key, coord, cause, tile.rect, painted_at);
+                }
             }
         }
         unrastered
@@ -1462,7 +1712,10 @@ impl ContextPresenting {
         like: &SurfaceHandle,
     ) -> bool {
         let raster = env.raster;
-        let bounds = frame.frame_inputs.overlays.bounds;
+        let mut bounds = frame.frame_inputs.overlays.bounds;
+        if self.layer_overlay.latest_frame().is_some() {
+            bounds = bounds.united(self.raster_rect());
+        }
         self.layers.overlay_rect = bounds;
         if bounds.is_empty() {
             self.layers.latest_overlay_surface = None;
@@ -1482,6 +1735,7 @@ impl ContextPresenting {
         let save_count = raster.save(&target);
         raster.translate(&target, -bounds.x as f32, -bounds.y as f32);
         paint_overlays(env, &target, frame.frame_inputs, true);
+        self.paint_layer_overlay(env, &target);
         raster.restore_to_count(&target, save_count);
         self.layers.latest_overlay_surface = Some(presentable);
         true

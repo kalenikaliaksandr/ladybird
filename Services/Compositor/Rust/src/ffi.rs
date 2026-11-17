@@ -498,6 +498,7 @@ pub struct FfiUIOverlays<'a> {
     pub picture_in_picture_controls_shown: bool,
     pub picture_in_picture_controls_has_hovered_control: bool,
     pub picture_in_picture_controls_hovered_control: u8,
+    pub compositor_layers: bool,
 }
 
 #[unsafe(no_mangle)]
@@ -572,6 +573,7 @@ pub extern "C" fn compositor_core_set_ui_overlays(
         UIOverlays {
             paused_debugger,
             picture_in_picture_controls,
+            compositor_layers: ui_overlays.compositor_layers,
         },
         MonotonicTime::from_nanoseconds(now_nanoseconds),
     );

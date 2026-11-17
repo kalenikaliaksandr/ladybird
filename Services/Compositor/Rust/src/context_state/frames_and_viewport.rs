@@ -229,22 +229,34 @@ impl ContextState {
             || (only_the_pixel_ratio_changed && ui_overlays.picture_in_picture_controls.is_some())
     }
 
-    // Returns false, changing nothing, for the overlays already shown.
-    pub fn set_ui_overlays(&mut self, ui_overlays: UIOverlays, now: MonotonicTime) -> bool {
+    pub fn set_ui_overlays(&mut self, ui_overlays: UIOverlays, now: MonotonicTime) -> UIOverlaysChange {
         let shows_paused_debugger = ui_overlays.paused_debugger.is_some();
-        if !self.overlays.set_ui_overlays(ui_overlays, now) {
-            return false;
-        }
-        if shows_paused_debugger {
+        let change = self.overlays.set_ui_overlays(ui_overlays, now);
+        if change == UIOverlaysChange::RepaintsEverything && shows_paused_debugger {
             self.end_keyboard_scroll_gesture();
         }
-        true
+        change
+    }
+
+    /// Answers whether that changes whether the compositor layers overlay is shown.
+    pub fn set_compositor_layers_shown_for_testing(&mut self, shown: bool) -> bool {
+        self.overlays.set_compositor_layers_shown_for_testing(shown)
+    }
+
+    pub fn set_compositor_layers_highlights_fade_until(&mut self, until: Option<MonotonicTime>) {
+        self.overlays.set_compositor_layers_highlights_fade_until(until);
     }
 
     // What the fades of the overlays repaint of the viewport as they advance to the frame.
     pub fn advance_overlay_fades(&mut self, frame_time: MonotonicTime) -> Option<IntRect> {
         self.overlays
             .advance_fades(frame_time, self.viewport_size, self.device_pixel_ratio)
+    }
+
+    /// Whether the frame shows the highlights of the compositor layers overlay as they fade, over tiles it does not
+    /// raster again for that.
+    pub fn advance_compositor_layers_fade(&mut self, frame_time: MonotonicTime) -> bool {
+        self.overlays.advance_compositor_layers_fade(frame_time)
     }
 
     pub fn viewport_rect(&self) -> IntRect {
