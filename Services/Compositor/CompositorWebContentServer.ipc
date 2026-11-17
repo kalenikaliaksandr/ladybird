@@ -99,6 +99,7 @@ endpoint CompositorWebContentServer
     [RustReceiver] scroll_state_for_testing(Web::CompositorContextId context_id, Web::AsyncScrollNodeStableID stretched_scroller) => (String scroll_state)
     // Returns once the compositor has handled every message WebContent sent before it.
     synchronize_for_testing() => ()
+    [RustReceiver] presented_frame_state_for_testing(Web::CompositorContextId context_id) => (bool compared, u32 max_channel_difference, u64 differing_pixel_count, u64 tiles_rasterized_since_last_check, u64 most_tiles_rasterized_by_a_frame_since_last_check, u64 layer_stacks_computed_since_last_check, u64 layers_created_since_last_check, u64 chunks_placed_since_last_check, u64 tiles_binned_since_last_check)
     [RustReceiver] route_first_wheel_step_for_testing(Web::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels) => (Optional<Web::InputRoutingDecision> decision, Optional<Web::AsyncScrollNodeStableID> scroller, Optional<Web::UniqueNodeID> document_id)
     [RustReceiver] begin_input_trace_for_testing(Web::CompositorContextId context_id) => ()
     [RustReceiver] clear_per_test_input_state_for_testing(Web::CompositorContextId context_id) => ()

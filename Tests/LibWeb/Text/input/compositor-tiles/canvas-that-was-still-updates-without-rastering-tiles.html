@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    canvas { position: absolute; left: 20px; top: 20px; }
+    #overlay { position: absolute; left: 100px; top: 60px; width: 100px; height: 40px; background: rgba(255, 255, 255, 0.5); }
+</style>
+<canvas id="canvas" width="400" height="200"></canvas>
+<div id="overlay"></div>
+<script>
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        context.fillStyle = "rgb(0, 0, 100)";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        context.fillStyle = "rgb(0, 100, 0)";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        const state = await presentedFrameState();
+        printPresentedFrameState(state, 2);
+        println(`layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        println(`layers created: ${state.layersCreatedSinceLastCheck}`);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

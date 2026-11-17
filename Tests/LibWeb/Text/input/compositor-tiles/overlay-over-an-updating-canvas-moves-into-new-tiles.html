@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    canvas { position: absolute; left: 0; top: 0; }
+    #overlay { position: absolute; left: 20px; top: 20px; width: 60px; height: 30px; background: rgba(255, 255, 255, 0.5); }
+</style>
+<canvas id="canvas" width="800" height="600"></canvas>
+<div id="overlay"></div>
+<script>
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        for (let frame = 0; frame < 6; ++frame) {
+            context.fillStyle = `rgb(0, 0, ${100 + frame * 20})`;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            overlay.style.left = `${20 + frame * 100}px`;
+            overlay.style.top = `${20 + frame * 80}px`;
+            await animationFrame();
+            await animationFrame();
+        }
+        printPresentedFrameState(await presentedFrameState(), 2);
+        done();
+    });
+</script>

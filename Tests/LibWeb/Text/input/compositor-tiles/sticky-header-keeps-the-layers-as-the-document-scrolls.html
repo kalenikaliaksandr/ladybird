@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #header { position: sticky; top: 0; height: 40px; background: rgba(0, 0, 128, 0.5); }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div class="stripe"></div>
+<div id="header"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            document.body.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        for (const y of [200, 400]) {
+            window.scrollTo(0, y);
+            results.push([y, await presentedFrameState()]);
+        }
+        for (const [y, state] of results) {
+            printPresentedFrameState(state);
+            println(`scrolled to ${y}, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, layers created: ${state.layersCreatedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

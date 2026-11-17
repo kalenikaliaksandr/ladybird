@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #background { position: absolute; left: 0; top: 0; width: 800px; height: 600px; background: linear-gradient(to right, white, lightblue); }
+    #caret { position: absolute; left: 300px; top: 300px; width: 1px; height: 18px; background: black; }
+</style>
+<div id="background"></div>
+<div id="caret"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        caret.style.visibility = "hidden";
+        const state = await presentedFrameState();
+        // A gradient painted into a tile, at an offset from where it is painted on its own, can round a step apart.
+        printPresentedFrameState(state, 1);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

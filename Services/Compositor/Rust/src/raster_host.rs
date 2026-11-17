@@ -222,6 +222,8 @@ pub struct FfiRasterHost {
     /// how it is blended.
     pub surface_draw_surface: unsafe extern "C" fn(*mut c_void, *mut c_void, IntRect, IntRect, SurfaceBlend),
     pub flush_surface: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    /// Reads the pixels of the rect of the surface into the buffer, as rows of premultiplied BGRA8888 without gaps.
+    pub surface_read_pixels: unsafe extern "C" fn(*mut c_void, IntRect, *mut u8),
 
     /// Arguments: the context, the surface, whose resources it draws with, and where the painter is written. The
     /// painting lasts until `end_painting`, and paintings nest.
@@ -508,6 +510,14 @@ impl RasterHost {
     pub fn flush(&self, surface: &SurfaceHandle) {
         // SAFETY: The host outlives this, and the surface is live.
         unsafe { (self.0.flush_surface)(self.host(), surface.as_ptr()) };
+    }
+
+    /// The pixels of the rect of the surface, as rows of premultiplied BGRA8888 without gaps.
+    pub fn read_pixels(&self, surface: &SurfaceHandle, rect: IntRect) -> Vec<u8> {
+        let mut pixels = vec![0; rect.width.max(0) as usize * rect.height.max(0) as usize * 4];
+        // SAFETY: The surface is live, and the buffer holds the rect's pixels.
+        unsafe { (self.0.surface_read_pixels)(surface.as_ptr(), rect, pixels.as_mut_ptr()) };
+        pixels
     }
 
     /// Paints into the surface through a painter, which `paint` drives.

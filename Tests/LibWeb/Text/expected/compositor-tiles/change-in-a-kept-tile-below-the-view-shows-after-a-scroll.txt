@@ -1,0 +1,3 @@
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true
+compared: true, matches a direct raster: true

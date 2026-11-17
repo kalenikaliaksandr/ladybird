@@ -1,0 +1,6 @@
+compared: true, matches a direct raster: true
+scrolled to 100, chunks placed: 0, tiles binned: 0
+compared: true, matches a direct raster: true
+scrolled to 300, chunks placed: 0, tiles binned: 4
+compared: true, matches a direct raster: true
+scrolled to 0, chunks placed: 0, tiles binned: 0

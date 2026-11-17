@@ -1,0 +1,5 @@
+compared: true, matches a direct raster: true
+layer stacks computed: 0
+chunks placed: 1
+tiles binned: 1
+tiles rasterized: 1

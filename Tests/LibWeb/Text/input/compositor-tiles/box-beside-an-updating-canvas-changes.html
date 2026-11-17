@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    canvas { position: absolute; left: 20px; top: 20px; }
+    #overlay { position: absolute; left: 100px; top: 60px; width: 100px; height: 40px; background: rgba(255, 255, 255, 0.5); }
+    #box { position: absolute; left: 600px; top: 400px; width: 20px; height: 20px; background: red; }
+</style>
+<canvas id="canvas" width="400" height="200"></canvas>
+<div id="overlay"></div>
+<div id="box"></div>
+<script>
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        for (let frame = 0; frame < 6; ++frame) {
+            context.fillStyle = `rgb(0, 0, ${100 + frame * 20})`;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            await animationFrame();
+            await animationFrame();
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        box.style.background = "blue";
+        const state = await presentedFrameState();
+        printPresentedFrameState(state, 2);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

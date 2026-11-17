@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    #header { position: fixed; left: 0; top: 0; width: 800px; height: 40px; background: rgba(0, 0, 128, 0.5); }
+    #box { position: absolute; left: 600px; top: 400px; width: 20px; height: 20px; background: red; }
+    .stripe { height: 100px; background: lightyellow; }
+</style>
+<div class="stripe"></div>
+<div class="stripe"></div>
+<div id="box"></div>
+<div id="header"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        box.style.background = "blue";
+        const state = await presentedFrameState();
+        printPresentedFrameState(state);
+        println(`layer stacks computed: ${state.layerStacksComputedSinceLastCheck}`);
+        println(`layers created: ${state.layersCreatedSinceLastCheck}`);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

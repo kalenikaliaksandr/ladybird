@@ -1700,6 +1700,9 @@ RustFFI::FfiRasterHost CompositorState::raster_host(CompositorState& state)
             paint.setBlendMode(blend == RustFFI::SurfaceBlend::Source ? SkBlendMode::kSrc : SkBlendMode::kSrcOver);
             canvas_of(target).drawImageRect(image.get(), Gfx::to_skia_rect(source_rect), Gfx::to_skia_rect(target_rect), SkSamplingOptions {}, &paint, SkCanvas::kStrict_SrcRectConstraint); },
         .flush_surface = [](void*, void* surface) { DisplayListPlayerSkia::flush(painting_surface_of(surface)); },
+        .surface_read_pixels = [](void* surface, Gfx::IntRect rect, u8* pixels) {
+            auto bitmap = MUST(Gfx::Bitmap::create_wrapper(Gfx::BitmapFormat::BGRA8888, Gfx::AlphaType::Premultiplied, rect.size(), rect.width() * 4, pixels));
+            painting_surface_of(surface).read_into_bitmap(*bitmap, rect.location()); },
         .begin_painting = [](void* host, u64 context_id, void* surface, RustFFI::PaintingResources resources, Compositing::RustFFI::FfiRasterPainter* painter) { *painter = state_of(host).begin_painting(Context { context_id }, painting_surface_of(surface), resources); },
         .end_painting = [](void* host) { state_of(host).end_painting(); },
         .start_raster_cache_frame = [](void* host, u64 context_id) { state_of(host).presented_context(Context { context_id }).raster_targets.raster_cache().drop_what_was_not_used_since_last_frame(); },

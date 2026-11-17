@@ -9,7 +9,7 @@
 use super::CompositorCore;
 use crate::context_state::ContextState;
 use crate::host::{PendingFrame, PresentScheduling, PresentationId};
-use crate::presenting::{ContextPresenting, NestedContexts, PresentingEnvironment};
+use crate::presenting::{ContextPresenting, NestedContexts, PresentedFrameStateForTesting, PresentingEnvironment};
 use crate::raster_host::{
     FfiRemoteLayerFrame, FrameHandOff, StorePublication, StoreResizeOutcome, SublayersHandle, SurfaceHandle,
 };
@@ -80,6 +80,16 @@ pub struct GpuBackend {
 }
 
 // The frames of the contexts nested in a context, which its replay draws, painted at once where they are behind.
+// Whether every frame that reaches the screen is compared with its list painted straight into one surface, which
+// LADYBIRD_COMPOSITOR_AUDIT_PRESENTED_FRAMES asks for.
+fn compositor_audits_presented_frames() -> bool {
+    static AUDITS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AUDITS.get_or_init(|| {
+        std::env::var_os("LADYBIRD_COMPOSITOR_AUDIT_PRESENTED_FRAMES")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+    })
+}
+
 struct ContextsNestedIn<'a> {
     core: &'a CompositorCore,
     parent_context_id: CompositorContextId,
@@ -542,6 +552,9 @@ impl CompositorCore {
             }
             presenting.presents_to_client
         };
+        if presents_to_client && !delivery.keeps_shown_store && compositor_audits_presented_frames() {
+            self.audit_presented_frame(context_id, now);
+        }
         let (bound_presentation, page_id) = {
             let context = context.borrow();
             (context.bound_presentation(), context.page_id())
@@ -1163,6 +1176,62 @@ impl CompositorCore {
         }
         let environment = self.environment(context_id, now, &NoCompositedContexts);
         presenting.borrow_mut().presented_frame_for_snapshot(&environment)
+    }
+
+    // Compares the frame that just reached the screen with its list painted straight into one surface, and reports
+    // where they differ.
+    fn audit_presented_frame(&self, context_id: CompositorContextId, now: MonotonicTime) {
+        let (Some(context), Some(presenting)) = (self.context_if_present(context_id), self.presenting_of(context_id))
+        else {
+            return;
+        };
+        // The resources of a list the context replaced may be gone, so only the list it still holds is replayed.
+        let current_display_list = context.borrow().display_list();
+        if !current_display_list.is_some_and(|display_list| presenting.borrow().painted_display_list_is(&display_list))
+        {
+            return;
+        }
+        let nested_contexts = ContextsNestedIn {
+            core: self,
+            parent_context_id: context_id,
+            now,
+        };
+        let environment = self.environment(context_id, now, &nested_contexts);
+        let difference = presenting
+            .borrow_mut()
+            .difference_of_presented_frame_from_direct_raster(&environment);
+        if difference.compared && difference.pixels_differing_past_rounding != 0 {
+            let bounds = difference.bounds_of_pixels_differing_past_rounding;
+            let _ = writeln!(
+                std::io::stderr(),
+                "Compositor: Presented frame of context {} differs from a direct raster in {} pixels within [{},{} \
+                 {}x{}], by up to {}",
+                context_id.0,
+                difference.pixels_differing_past_rounding,
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+                difference.max_channel_difference
+            );
+        }
+    }
+
+    pub(super) fn presented_frame_state_for_testing_inner(
+        &self,
+        context_id: CompositorContextId,
+        now: MonotonicTime,
+    ) -> PresentedFrameStateForTesting {
+        let Some(presenting) = self.presenting_of(context_id) else {
+            return PresentedFrameStateForTesting::default();
+        };
+        let nested_contexts = ContextsNestedIn {
+            core: self,
+            parent_context_id: context_id,
+            now,
+        };
+        let environment = self.environment(context_id, now, &nested_contexts);
+        presenting.borrow_mut().presented_frame_state_for_testing(&environment)
     }
 
     // A video, canvas or image that the context draws changed, so its next frame shows the change.

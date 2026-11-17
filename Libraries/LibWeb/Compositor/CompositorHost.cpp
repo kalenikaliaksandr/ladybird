@@ -83,6 +83,11 @@ void CompositorContextHandle::synchronize_for_testing()
     m_host.synchronize_for_testing();
 }
 
+PresentedFrameStateForTesting CompositorContextHandle::presented_frame_state_for_testing()
+{
+    return m_host.presented_frame_state_for_testing(m_context_id);
+}
+
 Optional<Compositing::FirstWheelStepRouteForTesting> CompositorContextHandle::route_first_wheel_step_for_testing(Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels)
 {
     return m_host.route_first_wheel_step_for_testing(m_context_id, position, delta_in_css_pixels);
@@ -560,6 +565,13 @@ void CompositorHost::synchronize_for_testing()
 {
     if (auto* connection = compositor_connection())
         connection->synchronize_for_testing();
+}
+
+PresentedFrameStateForTesting CompositorHost::presented_frame_state_for_testing(Web::CompositorContextId context_id)
+{
+    if (auto* connection = compositor_connection())
+        return connection->presented_frame_state_for_testing(context_id);
+    return {};
 }
 
 Optional<Compositing::FirstWheelStepRouteForTesting> CompositorHost::route_first_wheel_step_for_testing(Web::CompositorContextId context_id, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels)

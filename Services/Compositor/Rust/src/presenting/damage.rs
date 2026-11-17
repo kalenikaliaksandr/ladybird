@@ -152,6 +152,25 @@ impl ContextPresenting {
         });
     }
 
+    /// Whether every canvas, video, image and nested context the frame painted last drew is as it drew it.
+    pub(super) fn live_content_is_as_painted(
+        &self,
+        env: &PresentingEnvironment<'_>,
+        display_list: &DisplayList,
+        live_content: &LiveContent,
+    ) -> bool {
+        let Some(painted_frame) = &self.painted_frame else {
+            return false;
+        };
+        let changes =
+            self.live_content_changes_since_last_paint(env, painted_frame.viewport_size, display_list, live_content);
+        !changes.repaints_everything
+            && changes.canvases.is_empty()
+            && changes.video_sinks.is_empty()
+            && changes.image_frames.is_empty()
+            && changes.nested_contexts.is_empty()
+    }
+
     fn live_content_changes_since_last_paint(
         &self,
         env: &PresentingEnvironment<'_>,

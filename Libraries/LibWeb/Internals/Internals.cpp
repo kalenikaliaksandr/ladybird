@@ -678,6 +678,25 @@ void Internals::synchronize_compositor()
     let_compositor_take_in_every_rendered_frame(window());
 }
 
+GC::Ref<JS::Object> Internals::presented_frame_state()
+{
+    let_compositor_take_in_every_rendered_frame(window());
+    Compositor::PresentedFrameStateForTesting state;
+    if (auto* compositor_context = compositor_context_routing_input_for(window()))
+        state = compositor_context->presented_frame_state_for_testing();
+    auto object = JS::Object::create(HTML::relevant_realm(window()), nullptr);
+    object->define_direct_property("compared"_utf16_fly_string, JS::Value(state.compared), JS::default_attributes);
+    object->define_direct_property("maxChannelDifference"_utf16_fly_string, JS::Value(state.max_channel_difference), JS::default_attributes);
+    object->define_direct_property("differingPixelCount"_utf16_fly_string, JS::Value(static_cast<double>(state.differing_pixel_count)), JS::default_attributes);
+    object->define_direct_property("tilesRasterizedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.tiles_rasterized_since_last_check)), JS::default_attributes);
+    object->define_direct_property("mostTilesRasterizedByAFrameSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.most_tiles_rasterized_by_a_frame_since_last_check)), JS::default_attributes);
+    object->define_direct_property("layerStacksComputedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.layer_stacks_computed_since_last_check)), JS::default_attributes);
+    object->define_direct_property("layersCreatedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.layers_created_since_last_check)), JS::default_attributes);
+    object->define_direct_property("chunksPlacedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.chunks_placed_since_last_check)), JS::default_attributes);
+    object->define_direct_property("tilesBinnedSinceLastCheck"_utf16_fly_string, JS::Value(static_cast<double>(state.tiles_binned_since_last_check)), JS::default_attributes);
+    return object;
+}
+
 void Internals::send_text_through_ui_process(Utf16String const& text)
 {
     let_compositor_take_in_every_rendered_frame(window());

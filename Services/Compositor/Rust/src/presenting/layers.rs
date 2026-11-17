@@ -233,6 +233,13 @@ pub struct ContextLayers {
     // Where damage reaches several tiles of a layer, the layer is replayed once into this surface, and its damage
     // copied into the tiles.
     tile_raster_surface: Option<SurfaceHandle>,
+    tiles_rasterized_since_last_check: u64,
+    most_tiles_rasterized_by_a_frame_since_last_check: u64,
+    tiles_rasterized_by_this_frame: u64,
+    layer_stacks_computed_since_last_check: u64,
+    layers_created_since_last_check: u64,
+    chunks_placed_since_last_check: u64,
+    tiles_binned_since_last_check: u64,
     // Whether the window server shows the layers above the base layer of the latest frame.
     window_server_shows_media: bool,
     latest_overlay_surface: Option<PresentableSurfaceHandle>,
@@ -243,6 +250,17 @@ pub struct ContextLayers {
     stack_generation: u64,
     // The keys of the tiles of the groups of the latest frame, kept for the next one.
     keyed_groups: Vec<KeyedGroupOfFrame>,
+}
+
+/// What the test hook reports of the layers since it last asked.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayerCountsSinceLastCheck {
+    pub tiles_rasterized: u64,
+    pub most_tiles_rasterized_by_a_frame: u64,
+    pub layer_stacks_computed: u64,
+    pub layers_created: u64,
+    pub chunks_placed: u64,
+    pub tiles_binned: u64,
 }
 
 impl ContextLayers {
@@ -256,6 +274,19 @@ impl ContextLayers {
 
     pub fn compositing_of_latest_frame(&self) -> &[CompositingOfLayer] {
         &self.compositing_of_latest_frame
+    }
+
+    pub fn take_counts_since_last_check(&mut self) -> LayerCountsSinceLastCheck {
+        LayerCountsSinceLastCheck {
+            tiles_rasterized: std::mem::take(&mut self.tiles_rasterized_since_last_check),
+            most_tiles_rasterized_by_a_frame: std::mem::take(
+                &mut self.most_tiles_rasterized_by_a_frame_since_last_check,
+            ),
+            layer_stacks_computed: std::mem::take(&mut self.layer_stacks_computed_since_last_check),
+            layers_created: std::mem::take(&mut self.layers_created_since_last_check),
+            chunks_placed: std::mem::take(&mut self.chunks_placed_since_last_check),
+            tiles_binned: std::mem::take(&mut self.tiles_binned_since_last_check),
+        }
     }
 
     /// Drops the layers that have been out of the stack for long enough, and keeps the timer running for the others.
@@ -571,6 +602,7 @@ impl ContextPresenting {
                 .is_some_and(|current| current.has_the_shape_of(&stack));
             if !keeps_its_shape {
                 self.layers.stack_generation += 1;
+                self.layers.layer_stacks_computed_since_last_check += 1;
             }
             self.layers.stack = Some(stack);
         }
@@ -718,7 +750,7 @@ impl ContextPresenting {
                 keyed.display_list = frame.display_list.clone();
                 keyed.geometry = geometries[space].clone();
             }
-            raster_spaces[space].key_shown_tiles(
+            let keying = raster_spaces[space].key_shown_tiles(
                 &mut keyed.keys,
                 stack,
                 group_index,
@@ -726,6 +758,7 @@ impl ContextPresenting {
                 shown_rect,
                 tile_area_of(space, shown_rect, viewport_rect),
             );
+            self.layers.tiles_binned_since_last_check += keying.cells_binned as u64;
             keyed.shown_tiles = keyed
                 .keys
                 .tiles_within(shown_rect)
@@ -759,6 +792,11 @@ impl ContextPresenting {
             }
             pass.groups.push(keyed);
         }
+
+        self.layers.chunks_placed_since_last_check += raster_spaces
+            .iter()
+            .map(|raster_space| raster_space.chunks_placed())
+            .sum::<u64>();
 
         let mut stale_rect = IntRect::default();
         for compositing in &layer_update.compositing {
@@ -955,12 +993,16 @@ impl ContextPresenting {
             .tile_pass
             .as_ref()
             .expect("a layered frame worked out its tiles before it was painted");
+        self.layers.tiles_rasterized_by_this_frame = 0;
         let mut painted_straight = Vec::new();
         for compositing in &layer_update.compositing {
             let Some(layer_index) = stack.layers.iter().position(|layer| layer.key == compositing.key) else {
                 continue;
             };
-            self.layers.states.entry(compositing.key).or_default();
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.layers.states.entry(compositing.key) {
+                entry.insert(LayerState::default());
+                self.layers.layers_created_since_last_check += 1;
+            }
             if matches!(stack.layers[layer_index].content, LayerContent::Media { .. }) {
                 continue;
             }
@@ -1127,6 +1169,12 @@ impl ContextPresenting {
         if tiles_to_raster.is_empty() {
             return unrastered;
         }
+        self.layers.tiles_rasterized_since_last_check += tiles_to_raster.len() as u64;
+        self.layers.tiles_rasterized_by_this_frame += tiles_to_raster.len() as u64;
+        self.layers.most_tiles_rasterized_by_a_frame_since_last_check = self
+            .layers
+            .most_tiles_rasterized_by_a_frame_since_last_check
+            .max(self.layers.tiles_rasterized_by_this_frame);
         let geometry = &tile_pass.groups[shown.group].geometry;
         let clips_left_to_composite =
             (!geometry.clips_left_to_composite.is_empty()).then_some(&geometry.clips_left_to_composite[..]);

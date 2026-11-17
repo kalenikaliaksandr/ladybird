@@ -7,6 +7,7 @@
 //! Test queries and input tracing for compositor contexts.
 
 use super::*;
+use crate::presenting::PresentedFrameStateForTesting;
 use libcompositing_rust::ipc_types::Web_InputTraceRecord as InputTraceRecord;
 use libcompositing_rust::scrolling::{
     AsyncScrollNodeStableID, FirstWheelStepRouteForTesting, NestedContextRegions, WheelDeltaPrecision,
@@ -24,6 +25,16 @@ impl CompositorCore {
             return String::new();
         };
         context.borrow().scroll_state_for_testing(stretched_scroller)
+    }
+
+    pub fn presented_frame_state_for_testing(
+        &self,
+        context_id: CompositorContextId,
+        now: MonotonicTime,
+    ) -> PresentedFrameStateForTesting {
+        let _entered = self.enter();
+
+        self.presented_frame_state_for_testing_inner(context_id, now)
     }
 
     pub fn route_first_wheel_step_for_testing(

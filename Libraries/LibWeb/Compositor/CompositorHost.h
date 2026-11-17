@@ -75,6 +75,18 @@ struct AnimatedImageState {
     u32 loops_completed { 0 };
 };
 
+struct PresentedFrameStateForTesting {
+    bool compared { false };
+    u32 max_channel_difference { 0 };
+    u64 differing_pixel_count { 0 };
+    u64 tiles_rasterized_since_last_check { 0 };
+    u64 most_tiles_rasterized_by_a_frame_since_last_check { 0 };
+    u64 layer_stacks_computed_since_last_check { 0 };
+    u64 layers_created_since_last_check { 0 };
+    u64 chunks_placed_since_last_check { 0 };
+    u64 tiles_binned_since_last_check { 0 };
+};
+
 class WEB_API CompositorContextHandle {
     AK_MAKE_NONCOPYABLE(CompositorContextHandle);
     AK_MAKE_NONMOVABLE(CompositorContextHandle);
@@ -96,6 +108,7 @@ public:
     void wheel_event_canceled(u64 wheel_gesture_id);
     String scroll_state_for_testing(Web::AsyncScrollNodeStableID stretched_scroller);
     void synchronize_for_testing();
+    PresentedFrameStateForTesting presented_frame_state_for_testing();
     Optional<Compositing::FirstWheelStepRouteForTesting> route_first_wheel_step_for_testing(Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels);
     void begin_input_trace_for_testing();
     void clear_per_test_input_state_for_testing();
@@ -173,6 +186,7 @@ public:
     void wheel_event_canceled(Web::CompositorContextId, u64 wheel_gesture_id);
     String scroll_state_for_testing(Web::CompositorContextId, Web::AsyncScrollNodeStableID stretched_scroller);
     void synchronize_for_testing();
+    PresentedFrameStateForTesting presented_frame_state_for_testing(Web::CompositorContextId);
     Optional<Compositing::FirstWheelStepRouteForTesting> route_first_wheel_step_for_testing(Web::CompositorContextId, Gfx::FloatPoint position, Gfx::FloatPoint delta_in_css_pixels);
     void begin_input_trace_for_testing(Web::CompositorContextId);
     void clear_per_test_input_state_for_testing(Web::CompositorContextId);

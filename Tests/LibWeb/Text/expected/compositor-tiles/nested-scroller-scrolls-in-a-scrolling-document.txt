@@ -1,0 +1,2 @@
+compared: true, matches a direct raster: true
+tiles rasterized: 1

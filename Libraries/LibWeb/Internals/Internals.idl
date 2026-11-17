@@ -408,6 +408,14 @@ interface Internals {
     // Waits until the compositor has received every frame already rendered for this page in this process. This does
     // not start a rendering update or wait for frames hosted by another process.
     undefined synchronizeCompositor();
+    // Once the compositor has every frame rendered so far, how the frame it presented last differs from the display
+    // list it was rasterized from, painted straight into one surface: { compared, maxChannelDifference,
+    // differingPixelCount, tilesRasterizedSinceLastCheck, mostTilesRasterizedByAFrameSinceLastCheck,
+    // layerStacksComputedSinceLastCheck, layersCreatedSinceLastCheck, chunksPlacedSinceLastCheck,
+    // tilesBinnedSinceLastCheck }. A chunk is placed where its records' visual contexts land somewhere it was not placed
+    // before, and a tile is binned where it is newly shown or a chunk that can reach it changed. Nothing is compared
+    // while a frame is on its way to the screen.
+    object presentedFrameState();
     // Keeps the next recording that flies in flight, before it reads its frame, until releaseHeldFrame(), or until a
     // read waits for it. With "layout", only the next rendering update's layout that flies, or recording, is held,
     // before it reads anything. With "style", the next style update that flies is held, before it reads anything.

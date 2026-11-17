@@ -21,12 +21,13 @@ use libcompositing_rust::ipc_types::compositor_web_content_client::messages::Did
 use libcompositing_rust::ipc_types::compositor_web_content_server::messages::{
     ApplyScrollRequests, BeginInputTraceForTesting, BeginInputTraceForTestingResponse,
     ClearPerTestInputStateForTesting, ClearPerTestInputStateForTestingResponse, InvalidateKeyboardScrollState,
-    InvalidateKeyboardScrollStateResponse, InvalidateWheelEventListenerState, RasterizeDisplayList,
-    RouteFirstWheelStepForTesting, RouteFirstWheelStepForTestingResponse, ScrollStateForTesting,
-    ScrollStateForTestingResponse, TakeInputTraceForTesting, TakeInputTraceForTestingResponse,
-    TakePendingAsyncScrollUpdates, TakePendingAsyncScrollUpdatesResponse, TakeWheelEventFromMainThread,
-    TakeWheelEventFromMainThreadResponse, UpdateDisplayList, UpdateScrollState, UpdateVisualContextTree,
-    WheelEventCanceled, WheelEventLetThrough, WheelEventLetThroughResponse,
+    InvalidateKeyboardScrollStateResponse, InvalidateWheelEventListenerState, PresentedFrameStateForTesting,
+    PresentedFrameStateForTestingResponse, RasterizeDisplayList, RouteFirstWheelStepForTesting,
+    RouteFirstWheelStepForTestingResponse, ScrollStateForTesting, ScrollStateForTestingResponse,
+    TakeInputTraceForTesting, TakeInputTraceForTestingResponse, TakePendingAsyncScrollUpdates,
+    TakePendingAsyncScrollUpdatesResponse, TakeWheelEventFromMainThread, TakeWheelEventFromMainThreadResponse,
+    UpdateDisplayList, UpdateScrollState, UpdateVisualContextTree, WheelEventCanceled, WheelEventLetThrough,
+    WheelEventLetThroughResponse,
 };
 use libcompositing_rust::ipc_types::{
     Compositing_WheelEventAnswer as WheelEventAnswer, Compositing_WheelStepLetThrough as WheelStepLetThrough,
@@ -557,6 +558,29 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
         };
         Ok(ScrollStateForTestingResponse {
             scroll_state: scroll_state.into(),
+        })
+    }
+
+    fn presented_frame_state_for_testing(
+        &mut self,
+        message: PresentedFrameStateForTesting,
+    ) -> Result<PresentedFrameStateForTestingResponse, Misbehavior> {
+        let state = if self.context_is_owned_by_sender(message.context_id)? {
+            self.core
+                .presented_frame_state_for_testing(message.context_id, self.now)
+        } else {
+            Default::default()
+        };
+        Ok(PresentedFrameStateForTestingResponse {
+            compared: state.compared,
+            max_channel_difference: state.max_channel_difference,
+            differing_pixel_count: state.differing_pixel_count,
+            tiles_rasterized_since_last_check: state.tiles_rasterized_since_last_check,
+            most_tiles_rasterized_by_a_frame_since_last_check: state.most_tiles_rasterized_by_a_frame_since_last_check,
+            layer_stacks_computed_since_last_check: state.layer_stacks_computed_since_last_check,
+            layers_created_since_last_check: state.layers_created_since_last_check,
+            chunks_placed_since_last_check: state.chunks_placed_since_last_check,
+            tiles_binned_since_last_check: state.tiles_binned_since_last_check,
         })
     }
 

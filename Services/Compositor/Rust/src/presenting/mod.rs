@@ -67,6 +67,28 @@ pub struct PreparedFrame {
     pub sublayers: Vec<FfiSublayer>,
 }
 
+/// How the frame on screen differs from the display list it was painted from, painted straight into one surface.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PresentedFrameStateForTesting {
+    // Nothing is compared while a frame is on its way to the screen.
+    pub compared: bool,
+    pub max_channel_difference: u32,
+    pub differing_pixel_count: u64,
+    // Since the state was last compared.
+    pub tiles_rasterized_since_last_check: u64,
+    pub most_tiles_rasterized_by_a_frame_since_last_check: u64,
+    pub layer_stacks_computed_since_last_check: u64,
+    pub layers_created_since_last_check: u64,
+    pub chunks_placed_since_last_check: u64,
+    pub tiles_binned_since_last_check: u64,
+    // How many pixels differ by more than compositing rasters of one list can round them to, and where.
+    pub pixels_differing_past_rounding: u64,
+    pub bounds_of_pixels_differing_past_rounding: IntRect,
+}
+
+// Rasters composited into a frame round a channel by up to this much, as dithering and blending in steps can.
+const LARGEST_CHANNEL_DIFFERENCE_OF_ROUNDING: u8 = 2;
+
 // The display list and the frame inputs a frame is painted with.
 pub(crate) struct FrameToPaint<'a> {
     pub display_list: &'a Rc<DisplayList>,
@@ -708,6 +730,124 @@ impl ContextPresenting {
             return None;
         }
         Some((source, frame_size))
+    }
+
+    pub fn presented_frame_state_for_testing(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+    ) -> PresentedFrameStateForTesting {
+        let nothing_compared = PresentedFrameStateForTesting::default();
+        if !self.presents_to_client
+            || self.painted_frame.is_none()
+            || self.pending_present_frame.is_some()
+            || self.is_present_blocked(env.raster, env.context_id)
+        {
+            return nothing_compared;
+        }
+        let Some(presented) = self.surface_of_presented_frame(env) else {
+            return nothing_compared;
+        };
+        let painted_frame = self.painted_frame.take().expect("a presented frame was painted");
+        let mut state = self.difference_from_direct_raster(env, &presented, &painted_frame);
+        self.painted_frame = Some(painted_frame);
+        if state.compared {
+            let counts = self.layers.take_counts_since_last_check();
+            state.tiles_rasterized_since_last_check = counts.tiles_rasterized;
+            state.most_tiles_rasterized_by_a_frame_since_last_check = counts.most_tiles_rasterized_by_a_frame;
+            state.layer_stacks_computed_since_last_check = counts.layer_stacks_computed;
+            state.layers_created_since_last_check = counts.layers_created;
+            state.chunks_placed_since_last_check = counts.chunks_placed;
+            state.tiles_binned_since_last_check = counts.tiles_binned;
+        }
+        state
+    }
+
+    pub fn painted_display_list_is(&self, display_list: &Rc<DisplayList>) -> bool {
+        self.painted_frame
+            .as_ref()
+            .is_some_and(|painted_frame| Rc::ptr_eq(&painted_frame.display_list, display_list))
+    }
+
+    /// How the frame that the latest store holds differs from its list painted straight into one surface, whatever
+    /// frame is on its way after it.
+    pub fn difference_of_presented_frame_from_direct_raster(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+    ) -> PresentedFrameStateForTesting {
+        let Some(painted_frame) = self.painted_frame.as_ref().filter(|_| self.presents_to_client) else {
+            return PresentedFrameStateForTesting::default();
+        };
+        // A canvas, video, image or nested context that moved on since the frame was painted would differ for that.
+        let display_list = painted_frame.display_list.clone();
+        let live_content = self.live_content(env, &display_list);
+        if !self.live_content_is_as_painted(env, &display_list, &live_content) {
+            return PresentedFrameStateForTesting::default();
+        }
+        let Some(presented) = self.surface_of_presented_frame(env) else {
+            return PresentedFrameStateForTesting::default();
+        };
+        let painted_frame = self.painted_frame.take().expect("a presented frame was painted");
+        let state = self.difference_from_direct_raster(env, &presented, &painted_frame);
+        self.painted_frame = Some(painted_frame);
+        state
+    }
+
+    fn difference_from_direct_raster(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        presented: &SurfaceHandle,
+        painted_frame: &PaintedFrame,
+    ) -> PresentedFrameStateForTesting {
+        let frame_rect = rect_of_size(painted_frame.viewport_size);
+        let presented_rect = rect_of_size(env.raster.surface_size(presented));
+        if frame_rect.is_empty() || !presented_rect.contains_rect(frame_rect) {
+            return PresentedFrameStateForTesting::default();
+        }
+        let Some(direct) = env
+            .raster
+            .create_surface(env.raster.surface_size(presented), Some(presented))
+        else {
+            return PresentedFrameStateForTesting::default();
+        };
+        let frame = FrameToPaint {
+            display_list: &painted_frame.display_list,
+            frame_inputs: &painted_frame.frame_inputs,
+        };
+        self.paint_current_display_list(env, &direct, &frame, Some(presented_rect), true, true);
+        env.raster.flush(&direct);
+        let presented_pixels = env.raster.read_pixels(presented, frame_rect);
+        let direct_pixels = env.raster.read_pixels(&direct, frame_rect);
+        let mut state = PresentedFrameStateForTesting {
+            compared: true,
+            ..Default::default()
+        };
+        for (index, (presented, direct)) in presented_pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(direct_pixels.as_chunks::<4>().0)
+            .enumerate()
+        {
+            let difference = presented
+                .iter()
+                .zip(direct)
+                .map(|(presented, direct)| presented.abs_diff(*direct))
+                .max()
+                .unwrap_or(0);
+            if difference == 0 {
+                continue;
+            }
+            state.max_channel_difference = state.max_channel_difference.max(difference.into());
+            state.differing_pixel_count += 1;
+            if difference > LARGEST_CHANNEL_DIFFERENCE_OF_ROUNDING {
+                let width = frame_rect.width.max(1) as usize;
+                let pixel = IntRect::new((index % width) as i32, (index / width) as i32, 1, 1);
+                state.pixels_differing_past_rounding += 1;
+                state.bounds_of_pixels_differing_past_rounding =
+                    state.bounds_of_pixels_differing_past_rounding.united(pixel);
+            }
+        }
+        state
     }
 
     // The store that holds the frame on screen, with what the window server shows above it composited in.

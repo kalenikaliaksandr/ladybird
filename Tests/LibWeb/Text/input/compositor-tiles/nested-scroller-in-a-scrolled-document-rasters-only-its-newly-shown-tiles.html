@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    #scroller { position: absolute; left: 20px; top: 300px; width: 200px; height: 200px; overflow: scroll; scrollbar-width: none; }
+    .stripe { height: 50px; }
+    .stripe:nth-child(odd) { background: lightgreen; }
+</style>
+<div id="scroller"></div>
+<script>
+    asyncTest(async done => {
+        const uniqueColor = colorUniqueToThisPageLoad();
+        for (let index = 0; index < 40; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            if (index % 2)
+                stripe.style.background = uniqueColor;
+            scroller.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const results = [];
+        window.scrollTo(0, 100);
+        results.push(["document scrolled to 100", await presentedFrameState()]);
+        scroller.scrollTop = 300;
+        results.push(["scroller scrolled to 300", await presentedFrameState()]);
+        for (const [step, state] of results) {
+            printPresentedFrameState(state);
+            println(`${step}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        }
+        done();
+    });
+</script>

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    #box { position: absolute; left: 100px; top: 700px; width: 20px; height: 20px; background: red; }
+</style>
+<div id="box"></div>
+<script>
+    asyncTest(async done => {
+        const states = [];
+        states.push(await presentedFrameState());
+        box.style.background = "blue";
+        states.push(await presentedFrameState());
+        window.scrollTo(0, 200);
+        states.push(await presentedFrameState());
+        for (const state of states)
+            printPresentedFrameState(state);
+        done();
+    });
+</script>

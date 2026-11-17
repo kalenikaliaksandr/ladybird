@@ -1,0 +1,4 @@
+compared: true, matches a direct raster: true
+document scrolled to 100, tiles rasterized: 0
+compared: true, matches a direct raster: true
+scroller scrolled to 300, tiles rasterized: 2

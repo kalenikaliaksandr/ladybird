@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    #box { position: absolute; left: 100px; top: 1200px; width: 20px; height: 20px; background: red; }
+</style>
+<div id="box"></div>
+<script>
+    asyncTest(async done => {
+        window.scrollTo(0, 1000);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        box.style.background = "blue";
+        const state = await presentedFrameState();
+        printPresentedFrameState(state);
+        println(`tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>
