@@ -1,0 +1,18 @@
+Layers:
+  [L1] base space=document
+  [L2] canvas #0 space=document region=[97,897 206x106] replayed: a backdrop layer filters what is composited below it
+  [L3] painted space=document above L2
+  [L4] backdrop #0 of e1 space=document reads=[-27,-27 855x2167]
+  [L5] painted space=document above L4
+
+DisplayList:
+L1 FillRect@s1/e0 rect=[0,0 800x100] color=rgb(255, 255, 224)
+L2 DrawCanvas@s1/e0 dst_rect=[100,900 200x100]
+L1,L3 FillRect@s2/e0 rect=[0,100 800x2000] color=rgb(173, 216, 230)
+L1,L3 FillRect@s3/e0 rect=[0,100 800x40] color=rgb(0, 0, 120)
+L4 BackdropFilterRegion@s4/e1 rect=[0,150 800x40]
+L5 FillRect@s4/e1 rect=[0,150 800x40] color=rgba(255, 255, 255, 0.3)
+the same with the headers held away from the canvas: true
+the same with the headers held over the canvas: true
+compared: true, matches a direct raster: true
+scrolled while the headers are held, layer stacks computed: 0, layers created: 0

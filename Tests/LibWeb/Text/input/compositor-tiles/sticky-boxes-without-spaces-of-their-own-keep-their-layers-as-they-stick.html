@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 100px; background: lightyellow; }
+    canvas { position: absolute; left: 100px; top: 900px; }
+    /* Content shifted by half a pixel lands between device pixels, so the sticky boxes get no spaces of their own and
+       are rastered in the document's space, wherever they stick. */
+    #shifted-by-half-a-pixel { transform: translateX(0.5px); }
+    #section { height: 2000px; background: lightblue; }
+    #header { position: sticky; top: 0; height: 40px; background: rgb(0, 0, 120); }
+    #frosted-header { position: sticky; top: 50px; height: 40px; margin-top: 10px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px); }
+</style>
+<div class="stripe"></div>
+<canvas id="canvas" width="200" height="100"></canvas>
+<div id="shifted-by-half-a-pixel"><div id="section"><div id="header"></div><div id="frosted-header"></div></div></div>
+<script>
+    asyncTest(async done => {
+        const context = canvas.getContext("2d");
+        context.fillStyle = "blue";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const atTheTop = layersAndCommandsOfTheDisplayList();
+
+        // Both headers are held from here on, far from the canvas.
+        window.scrollTo(0, 200);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const heldAwayFromTheCanvas = layersAndCommandsOfTheDisplayList();
+
+        window.scrollTo(0, 850);
+        const state = await presentedFrameState();
+        const heldOverTheCanvas = layersAndCommandsOfTheDisplayList();
+
+        println(atTheTop);
+        println(`the same with the headers held away from the canvas: ${heldAwayFromTheCanvas === atTheTop}`);
+        println(`the same with the headers held over the canvas: ${heldOverTheCanvas === atTheTop}`);
+        printPresentedFrameState(state, 2);
+        println(`scrolled while the headers are held, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, layers created: ${state.layersCreatedSinceLastCheck}`);
+        done();
+    });
+</script>

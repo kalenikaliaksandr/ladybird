@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    #translucent-frosted-box { position: fixed; left: 600px; top: 10px; width: 60px; height: 40px; z-index: 1; opacity: 0.5; background: rgba(255, 255, 255, 0.5); backdrop-filter: blur(4px); }
+    /* Painted after the frosted box, which so reads neither the canvas nor what is over it. */
+    canvas { position: absolute; left: 100px; top: 300px; z-index: 2; }
+    #over-the-canvas { position: absolute; left: 120px; top: 320px; width: 20px; height: 20px; z-index: 3; background: rgb(255, 255, 1); }
+</style>
+<div id="stripes"></div>
+<div id="translucent-frosted-box"></div>
+<canvas id="canvas" width="200" height="100"></canvas>
+<div id="over-the-canvas"></div>
+<script>
+    // What the window server shows of a canvas moves with the scroll, while the layers stay.
+    function layersAndCommandsWithoutWhatTheWindowServerShows() {
+        return layersAndCommandsOfTheDisplayList().replace(/ shown by the window server: .*$/gm, "");
+    }
+
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const context = canvas.getContext("2d");
+        context.fillStyle = "blue";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const unscrolled = layersAndCommandsWithoutWhatTheWindowServerShows();
+        window.scrollTo(0, 250);
+        const state = await presentedFrameState();
+        const scrolled = layersAndCommandsWithoutWhatTheWindowServerShows();
+        println(unscrolled);
+        println(`the same once scrolled: ${scrolled === unscrolled}`);
+        printPresentedFrameState(state, 2);
+        println(`scrolled, layer stacks computed: ${state.layerStacksComputedSinceLastCheck}, layers created: ${state.layersCreatedSinceLastCheck}, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

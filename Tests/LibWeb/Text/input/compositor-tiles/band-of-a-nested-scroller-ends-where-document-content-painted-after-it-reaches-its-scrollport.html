@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #page { height: 3000px; background: lightyellow; }
+    #scroller { position: absolute; left: 20px; top: 300px; width: 200px; height: 200px; overflow: scroll; scrollbar-width: none; }
+    #scrolled { height: 2000px; background: rgb(0, 100, 0); }
+    /* Painted after the document box, which is painted after the rest of the scroller's content. */
+    #painted-last-in-the-scroller { position: relative; z-index: 2; left: 10px; top: 100px; width: 50px; height: 50px; background: rgb(0, 0, 100); }
+    #document-box { position: absolute; z-index: 1; left: 400px; top: 300px; width: 100px; height: 100px; background: rgb(100, 0, 0); }
+</style>
+<div id="page"></div>
+<div id="scroller"><div id="scrolled"><div id="painted-last-in-the-scroller"></div></div></div>
+<div id="document-box"></div>
+<script>
+    function layersOfTheDocumentBoxAndOfWhatIsPaintedLastInTheScroller() {
+        return [
+            layersOfTheDisplayList(),
+            `document box: ${layersOfTheFillOfColor("rgb(100, 0, 0)")}`,
+            `painted last in the scroller: ${layersOfTheFillOfColor("rgb(0, 0, 100)")}`,
+        ].join("\n");
+    }
+
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const besideTheScroller = layersOfTheDocumentBoxAndOfWhatIsPaintedLastInTheScroller();
+        const documentBox = document.getElementById("document-box");
+        documentBox.style.left = "100px";
+        documentBox.style.top = "350px";
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const overTheScroller = layersOfTheDocumentBoxAndOfWhatIsPaintedLastInTheScroller();
+        println("With the document box beside the scroller:");
+        println(besideTheScroller);
+        println("With the document box over the scroller:");
+        println(overTheScroller);
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

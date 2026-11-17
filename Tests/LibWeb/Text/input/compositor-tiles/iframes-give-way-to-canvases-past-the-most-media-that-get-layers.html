@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    iframe { position: absolute; top: 20px; width: 40px; height: 40px; border: 0; }
+    canvas { position: absolute; left: 20px; top: 300px; }
+</style>
+<script>
+    asyncTest(async done => {
+        // Nine iframes and a canvas painted after them, one more than the eight media that get layers.
+        const loads = [];
+        for (let index = 0; index < 9; ++index) {
+            const frame = document.createElement("iframe");
+            frame.style.left = `${20 + index * 60}px`;
+            loads.push(new Promise(resolve => frame.addEventListener("load", resolve, { once: true })));
+            frame.srcdoc = `<body style='margin: 0; background: rgb(0, 0, ${100 + index})'></body>`;
+            document.body.appendChild(frame);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = 200;
+        canvas.height = 100;
+        document.body.appendChild(canvas);
+        await Promise.all(loads);
+        const context = canvas.getContext("2d");
+        context.fillStyle = "teal";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameState();
+        println(layersAndCommandsOfTheDisplayList());
+        done();
+    });
+</script>

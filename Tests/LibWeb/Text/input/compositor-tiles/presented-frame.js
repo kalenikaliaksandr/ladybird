@@ -47,6 +47,27 @@ function layersOfTheDisplayList() {
         .join("\n");
 }
 
+// The layers the display list dump names, as layersOfTheDisplayList() gives them, with each effect named by the box it
+// belongs to, as the tree of visual contexts in the dump names it, rather than by its index in the tree.
+function layersOfTheDisplayListWithEffectsNamedByTheirBoxes() {
+    const boxesOfEffects = new Map();
+    for (const [, effect, box] of internals.dumpDisplayList().matchAll(/^\s*\[(e\d+) in [^\]]*\].* \(([^()]*)\)$/gm))
+        boxesOfEffects.set(effect, box);
+    return layersOfTheDisplayList().replace(/\be\d+\b/g, effect => boxesOfEffects.get(effect) ?? effect);
+}
+
+// The `Layers:` and `DisplayList:` sections of the display list dump, without the records that draw nothing and only tell
+// the compositor about the page, such as where boxes take the wheel.
+function layersAndCommandsOfTheDisplayList() {
+    const dump = internals.dumpDisplayList();
+    return dump
+        .slice(dump.indexOf("Layers:\n"))
+        .split("\n")
+        .filter(line => !/^\S+ Compositor\w*@/.test(line))
+        .join("\n")
+        .trimEnd();
+}
+
 // The compositor layers overlay of the frame painted last, without the lines that depend on when it was painted.
 function compositorLayersWithoutTiming() {
     return internals

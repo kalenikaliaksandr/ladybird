@@ -1,0 +1,14 @@
+[L1] base space=document
+[L2] canvas #0 space=document region=[497,897 206x106] replayed: a backdrop layer filters what is composited below it
+[L3] painted space=document above L2
+[L4] backdrop #0 of BlockContainer<DIV>#frosted-card space=document reads=[73,873 254x154]
+[L5] painted space=document above L4
+[L7] backdrop #0 of BlockContainer<DIV>#fixed-frosted-header space=viewport reads=[-27,-27 854x94]
+[L8] painted space=viewport above L7
+fixed frosted header: [L8] painted space=viewport above L7
+the layers and the commands drawn into them are the same once scrolled: true
+compared: true, matches a direct raster: true
+scrolled, layer stacks computed: 0, layers created: 0
+the layers are the same once the box moved: true
+compared: true, matches a direct raster: true
+moved the box, layer stacks computed: 0, layers created: 0

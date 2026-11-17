@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    html { background: lightyellow; }
+    body { margin: 0; height: 3000px; }
+    #blend { position: absolute; left: 40px; top: 120px; width: 120px; height: 60px; background: rgb(200, 100, 50); mix-blend-mode: multiply; }
+    #fixed-behind-the-page { position: fixed; left: 0; top: 0; width: 800px; height: 600px; z-index: -1; background: lightblue; display: none; }
+</style>
+<div id="fixed-behind-the-page"></div>
+<div id="blend"></div>
+<script>
+    asyncTest(async done => {
+        const overTheCanvasBackground = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersOverTheCanvasBackground = layersOfTheDisplayList();
+        // A fixed box is painted within the root group, so the blend reads it through the document's layer.
+        document.getElementById("fixed-behind-the-page").style.display = "block";
+        const overAFixedBox = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersOverAFixedBox = layersOfTheDisplayList();
+        println("Over the canvas background:");
+        println(layersOverTheCanvasBackground);
+        printPresentedFrameState(overTheCanvasBackground);
+        println("Over a fixed box behind the page:");
+        println(layersOverAFixedBox);
+        printPresentedFrameState(overAFixedBox);
+        done();
+    });
+</script>

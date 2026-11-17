@@ -2172,20 +2172,17 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
-        BackdropFilterRegion, CanvasId, ClipNodeIndex, CompositorContextId, ContextRef, DisplayListCommand, DrawCanvas,
-        DrawCompositedContext, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
+        CanvasId, ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
-    use crate::display_list::tiles::TileCoord;
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
-        BackdropFilterData, ClipNodeData, CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData,
-        StickyData, TransformData, TransformDataRole,
+        BackdropFilterData, CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, TransformData,
+        TransformDataRole,
     };
     use libgfx_rust::filter::Filter;
     use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatRect, ScalingMode};
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
-    const CANVAS: LiveContent = LiveContent::Canvas(CanvasId(1));
 
     fn identity_tree() -> VisualContextTree {
         VisualContextTree::create(TransformData {
@@ -2246,32 +2243,18 @@ mod tests {
         }
     }
 
-    fn nested_context_with_id(rect: IntRect, child_context_id: CompositorContextId) -> DrawCompositedContext {
-        DrawCompositedContext {
-            dst_rect: rect.to_float(),
-            child_context_id,
-            scaling_mode: ScalingMode::NearestNeighbor,
-            spatial_node_index: VISUAL_VIEWPORT_NODE_INDEX,
-            snap_origin_if_untransformed: true,
-        }
-    }
-
     struct TestList {
         builder: DisplayListBuilder,
-        positions: Vec<ListPosition>,
     }
 
     impl TestList {
         fn new() -> Self {
             Self {
                 builder: DisplayListBuilder::new(),
-                positions: Vec::new(),
             }
         }
 
         fn with<C: DisplayListCommand>(mut self, command: C, context: ContextRef) -> Self {
-            self.positions
-                .push(ListPosition::new(0, self.builder.byte_size() as u32));
             self.builder.append(&command, &[], context);
             self
         }
@@ -2284,10 +2267,6 @@ mod tests {
                 viewport_rect: VIEWPORT,
                 raster_transform: FloatMatrix4x4::identity(),
             })
-        }
-
-        fn layers_of(&self, stack: &LayerStack, record: usize) -> Vec<usize> {
-            stack.layers_of_record(self.positions[record])
         }
     }
 
@@ -2315,172 +2294,6 @@ mod tests {
                 }
             })
             .collect()
-    }
-
-    #[test]
-    fn content_over_a_canvas_goes_above_it_only_in_the_tiles_the_canvas_can_show_in() {
-        let tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let list = TestList::new()
-            .with(fill(VIEWPORT), root)
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(fill(IntRect::new(150, 150, 20, 20)), root)
-            .with(fill(IntRect::new(500, 400, 20, 20)), root)
-            .with(fill(IntRect::new(250, 150, 20, 200)), root);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base viewport band 0",
-                "canvas #0 viewport",
-                "painted viewport band 0 above L1"
-            ]
-        );
-        let (base, canvas_layer, above_canvas) = (0, 1, 2);
-        assert_eq!(list.layers_of(&stack, 0), [base]);
-        assert_eq!(list.layers_of(&stack, 1), [canvas_layer]);
-        assert_eq!(list.layers_of(&stack, 2), [above_canvas]);
-        assert_eq!(list.layers_of(&stack, 3), [base]);
-        // A box that reaches tiles the canvas can show in and tiles it cannot is in both layers.
-        assert_eq!(list.layers_of(&stack, 4), [base, above_canvas]);
-        let group = &stack.groups[0];
-        let box_position = list.positions[4];
-        assert_eq!(
-            group.layer_at(box_position, TileCoord::new(1, 0).cell_rect()),
-            above_canvas
-        );
-        assert_eq!(group.layer_at(box_position, TileCoord::new(1, 1).cell_rect()), base);
-    }
-
-    #[test]
-    fn a_canvas_under_a_group_effect_is_not_a_layer() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let group = tree.append_effect_node_under(root, effects(0.5, CompositingAndBlendingOperator::Normal));
-        let list = TestList::new().with(canvas(IntRect::new(100, 100, 200, 100)), group);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(shape(&stack), ["base viewport band 0"]);
-        assert_eq!(stack.rejected_media, [(CANVAS, MediaLayerRejection::InsideGroupEffect)]);
-    }
-
-    #[test]
-    fn a_blend_mode_reading_the_root_group_refuses_only_the_media_it_would_read_through() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let multiply = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Multiply));
-        let list_with_blend_at = |rect| {
-            TestList::new()
-                .with(fill(VIEWPORT), root)
-                .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-                .with(fill(rect), multiply)
-        };
-        let beside = list_with_blend_at(IntRect::new(500, 400, 20, 20)).stack(&tree, &[]);
-        assert_eq!(beside.unlayered_reason, None);
-        assert_eq!(shape(&beside), ["base viewport band 0", "canvas #0 viewport"]);
-        let over = list_with_blend_at(IntRect::new(150, 150, 20, 20)).stack(&tree, &[]);
-        assert_eq!(shape(&over), ["base viewport band 0"]);
-        assert_eq!(
-            over.rejected_media,
-            [(CANVAS, MediaLayerRejection::UnderContentReadingTheRootGroup)]
-        );
-    }
-
-    #[test]
-    fn a_translucent_backdrop_filter_reading_through_a_nested_scroller_folds_only_that_scroller() {
-        let (mut tree, _, document) = tree_with_document_scroll();
-        let scrolled = add_nested_scroller(&mut tree, document);
-        let frosted = tree.append_effect_node_under(document, translucent_backdrop_filter_effect());
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
-            .with(backdrop_marker(IntRect::new(120, 400, 60, 40)), frosted)
-            .with(fill(IntRect::new(120, 400, 60, 40)), frosted);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(stack.spaces.len(), 2);
-        assert_eq!(shape(&stack), ["base document band 0"]);
-    }
-
-    #[test]
-    fn a_blend_mode_keeps_its_space_over_the_canvas_background_painted_below_the_root_group() {
-        let (mut tree, viewport, document) = tree_with_document_scroll();
-        let multiply = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Multiply));
-        let canvas_background = ContextRef {
-            effect: EffectNodeIndex::NONE,
-            ..viewport
-        };
-        let list_over = |background| {
-            TestList::new()
-                .with(fill(VIEWPORT), background)
-                .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-                .with(fill(IntRect::new(40, 120, 120, 60)), multiply)
-        };
-        let stack = list_over(canvas_background).stack(&tree, &[]);
-        assert_eq!(stack.spaces.len(), 2);
-        assert_eq!(shape(&stack), ["base viewport band 0", "painted document band 0"]);
-
-        let stack = list_over(viewport).stack(&tree, &[]);
-        assert_eq!(stack.spaces.len(), 1);
-        assert_eq!(shape(&stack), ["base viewport band 0"]);
-    }
-
-    #[test]
-    fn nested_contexts_give_way_to_canvases_past_the_most_media_that_get_layers() {
-        let tree = identity_tree();
-        let mut list = TestList::new();
-        for index in 0..=MAXIMUM_MEDIA_LAYER_COUNT {
-            let child_context_id = CompositorContextId(10 + index as u64);
-            let rect = IntRect::new(index as i32 * 60, 0, 50, 50);
-            list = list.with(nested_context_with_id(rect, child_context_id), ContextRef::default());
-        }
-        list = list.with(canvas(IntRect::new(0, 300, 200, 100)), ContextRef::default());
-        let stack = list.stack(&tree, &[]);
-        let media: Vec<LiveContent> = stack
-            .layers
-            .iter()
-            .filter_map(|layer| match layer.key {
-                LayerKey::Media { content, .. } => Some(content),
-                LayerKey::Painted { .. } | LayerKey::Backdrop { .. } => None,
-            })
-            .collect();
-        assert_eq!(media.len(), MAXIMUM_MEDIA_LAYER_COUNT);
-        assert_eq!(media.last(), Some(&CANVAS));
-        assert_eq!(
-            stack.rejected_media,
-            [
-                (
-                    LiveContent::CompositedContext(CompositorContextId(10 + MAXIMUM_MEDIA_LAYER_COUNT as u64 - 1)),
-                    MediaLayerRejection::MoreMediaThanLayersFor
-                ),
-                (
-                    LiveContent::CompositedContext(CompositorContextId(10 + MAXIMUM_MEDIA_LAYER_COUNT as u64)),
-                    MediaLayerRejection::MoreMediaThanLayersFor
-                )
-            ]
-        );
-    }
-
-    #[test]
-    fn the_window_server_is_asked_about_canvases_and_videos_only() {
-        let tree = identity_tree();
-        let list = TestList::new()
-            .with(
-                nested_context_with_id(IntRect::new(100, 100, 200, 100), CompositorContextId(7)),
-                ContextRef::default(),
-            )
-            .with(canvas(IntRect::new(400, 100, 200, 100)), ContextRef::default());
-        let stack = list.stack(&tree, &[]);
-        let placements: Vec<bool> = stack
-            .layers
-            .iter()
-            .filter_map(|layer| match &layer.content {
-                LayerContent::Media {
-                    window_server_placement,
-                    ..
-                } => Some(window_server_placement.is_some()),
-                LayerContent::Painted { .. } | LayerContent::Backdrop { .. } => None,
-            })
-            .collect();
-        assert_eq!(placements, [false, true]);
     }
 
     fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
@@ -2512,182 +2325,6 @@ mod tests {
             ..viewport
         };
         (tree, viewport, document)
-    }
-
-    fn add_nested_scroller(tree: &mut VisualContextTree, document: ContextRef) -> ContextRef {
-        let scrollport = tree.append_clip(
-            ClipNodeData::rect_clip(FloatRect::new(20.0, 300.0, 200.0, 200.0)),
-            document.clip,
-            document.spatial,
-        );
-        let scroll_node = tree.append_spatial(
-            SpatialData::Scroll(ScrollData {
-                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
-                owner_paintable: NodeSlotId::INVALID,
-            }),
-            document.spatial,
-        );
-        let mut table = tree.compositor_scroll_table().clone();
-        let mut nodes = table.nodes.to_vec();
-        nodes.push(CompositorScrollNodeRecord {
-            scroll_node_index: scroll_node,
-            parent_scroll_node_index: document.spatial,
-            scrollport_rect: IntRect::new(20, 300, 200, 200),
-            max_scroll_offset: FloatPoint { x: 0.0, y: 1800.0 },
-            ..CompositorScrollNodeRecord::default()
-        });
-        nodes.sort_by_key(|node| node.scroll_node_index);
-        table.nodes = nodes.into();
-        assert!(tree.set_compositor_scroll_table(table));
-        ContextRef {
-            spatial: scroll_node,
-            clip: scrollport,
-            ..document
-        }
-    }
-
-    fn document_offsets(tree: &VisualContextTree, document: ContextRef, y: f32) -> Vec<FloatPoint> {
-        let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
-        offsets[document.spatial.0 as usize] = FloatPoint { x: 0.0, y };
-        offsets
-    }
-
-    #[test]
-    fn content_that_scrolls_with_the_document_is_rastered_in_its_space_as_the_base_layer() {
-        let (tree, viewport, document) = tree_with_document_scroll();
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(100, 1500, 20, 20)), document)
-            .with(fill(IntRect::new(10, 10, 100, 30)), viewport);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base document band 0",
-                "painted viewport band 0 above band 0 of document"
-            ]
-        );
-        assert_eq!(
-            stack.spaces[stack.space_of_layer(stack.base_layer)].anchor,
-            document.spatial
-        );
-    }
-
-    #[test]
-    fn document_content_painted_after_a_fixed_box_starts_a_band_above_the_box() {
-        let (tree, viewport, document) = tree_with_document_scroll();
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(10, 10, 100, 30)), viewport)
-            .with(fill(IntRect::new(50, 1500, 20, 20)), document);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base document band 0",
-                "painted viewport band 0 above band 0 of document",
-                "painted document band 1",
-            ]
-        );
-    }
-
-    #[test]
-    fn layers_keep_their_keys_and_the_stack_its_placement_as_the_document_scrolls() {
-        let (tree, viewport, document) = tree_with_document_scroll();
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(canvas(IntRect::new(100, 900, 200, 100)), document)
-            .with(fill(IntRect::new(10, 10, 100, 30)), viewport);
-        let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
-        let scrolled = list.stack(&tree, &document_offsets(&tree, document, -700.0));
-        assert_eq!(
-            unscrolled.keys().collect::<Vec<_>>(),
-            scrolled.keys().collect::<Vec<_>>()
-        );
-        assert_eq!(unscrolled.placement_at_every_anchor, scrolled.placement_at_every_anchor);
-    }
-
-    #[test]
-    fn a_sticky_box_leaves_the_placement_alike_as_it_sticks() {
-        let (mut tree, _, document) = tree_with_document_scroll();
-        let sticky_node = tree.append_spatial(
-            SpatialData::Sticky(StickyData::unconstrained(
-                document.spatial,
-                None,
-                1,
-                NodeSlotId::INVALID,
-            )),
-            document.spatial,
-        );
-        let sticky = ContextRef {
-            spatial: sticky_node,
-            ..document
-        };
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(canvas(IntRect::new(100, 900, 200, 100)), document)
-            .with(fill(IntRect::new(0, 0, 800, 50)), sticky);
-        let mut offsets = document_offsets(&tree, document, -700.0);
-        let unstuck = list.stack(&tree, &offsets);
-        offsets[sticky_node.0 as usize] = FloatPoint { x: 0.0, y: 700.0 };
-        let stuck = list.stack(&tree, &offsets);
-        assert_eq!(unstuck.placement_at_every_anchor, stuck.placement_at_every_anchor);
-        assert_eq!(
-            shape(&stuck),
-            [
-                "base document band 0",
-                "canvas #0 document",
-                "painted document band 0 above L2"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_nested_scroller_is_one_band_while_document_content_painted_after_it_misses_its_scrollport() {
-        let (mut tree, _, document) = tree_with_document_scroll();
-        let scrolled = add_nested_scroller(&mut tree, document);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
-            .with(fill(IntRect::new(400, 300, 100, 100)), document)
-            .with(fill(IntRect::new(30, 400, 50, 50)), scrolled);
-        let stack = list.stack(&tree, &[]);
-        // The box painted after the scroller's content misses the tiles of its scrollport, so the layer above the
-        // band holds nothing.
-        assert_eq!(
-            shape(&stack),
-            ["base document band 0", "painted scroller@2 in document band 0"]
-        );
-        let scroller_layer = 2;
-        assert_eq!(
-            stack.nodes[stack.layers[scroller_layer].node].composite_clips,
-            [CompositeClip {
-                space: stack.space_of_layer(stack.base_layer),
-                rect: IntRect::new(20, 300, 200, 200),
-            }]
-        );
-        assert_eq!(list.layers_of(&stack, 3), [scroller_layer]);
-    }
-
-    #[test]
-    fn a_band_ends_where_document_content_painted_after_it_reaches_its_scrollport() {
-        let (mut tree, _, document) = tree_with_document_scroll();
-        let scrolled = add_nested_scroller(&mut tree, document);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(20, 300, 200, 2000)), scrolled)
-            .with(fill(IntRect::new(100, 350, 300, 50)), document)
-            .with(fill(IntRect::new(30, 400, 50, 50)), scrolled);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base document band 0",
-                "painted scroller@2 in document band 0",
-                "painted document band 0 above band 0 of scroller@2 in document",
-                "painted scroller@2 in document band 1",
-            ]
-        );
     }
 
     #[test]
@@ -2751,10 +2388,10 @@ mod tests {
         );
     }
 
-    fn backdrop_filter_effect_with(opacity: f32, region: IntRect) -> EffectNodeData {
+    fn frosted_effect(region: IntRect) -> EffectNodeData {
         EffectNodeData::Effects(EffectsData {
             isolation: false,
-            opacity,
+            opacity: 1.0,
             blend_mode: CompositingAndBlendingOperator::Normal,
             filter: None,
             backdrop_filter: Some(BackdropFilterData {
@@ -2765,412 +2402,23 @@ mod tests {
         })
     }
 
-    // Its opacity composites the filtered backdrop and its content as one, so it reads in the layer of what it reads.
-    fn translucent_backdrop_filter_effect() -> EffectNodeData {
-        backdrop_filter_effect_with(0.5, IntRect::new(120, 120, 60, 40))
-    }
-
-    fn frosted_effect(region: IntRect) -> EffectNodeData {
-        backdrop_filter_effect_with(1.0, region)
-    }
-
-    fn backdrop_marker(region: IntRect) -> BackdropFilterRegion {
-        BackdropFilterRegion { rect: region }
-    }
-
-    fn backdrop_effects_of(stack: &LayerStack) -> Vec<EffectNodeIndex> {
-        stack.backdrop_filters_applied_by_layers()
-    }
-
+    // The recorder starts what a box with a backdrop filter paints with the record that marks where it reads its
+    // backdrop, so no page has records that do not.
     #[test]
-    fn a_canvas_under_a_translucent_backdrop_filter_gets_no_layer() {
+    fn a_backdrop_filter_whose_records_do_not_start_with_its_marker_reads_in_the_layer_of_what_it_reads() {
+        let region = IntRect::new(120, 120, 60, 40);
         let mut tree = tree_with_root_isolation_effect();
         let root = root_context(&tree);
-        let frosted = tree.append_effect_node_under(root, translucent_backdrop_filter_effect());
-        let list = TestList::new()
-            .with(fill(VIEWPORT), root)
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(canvas(IntRect::new(500, 400, 200, 100)), root)
-            .with(backdrop_marker(IntRect::new(120, 120, 60, 40)), frosted)
-            .with(fill(IntRect::new(120, 120, 60, 40)), frosted);
+        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
+        let list = TestList::new().with(fill(VIEWPORT), root).with(fill(region), frosted);
         let stack = list.stack(&tree, &[]);
-        assert_eq!(shape(&stack), ["base viewport band 0", "canvas #0 viewport"]);
-        assert_eq!(
-            stack.rejected_media,
-            [(CANVAS, MediaLayerRejection::UnderContentReadingTheRootGroup)]
-        );
+        assert!(stack.backdrop_filters_applied_by_layers().is_empty());
         assert_eq!(
             stack.rejected_backdrop_filters,
             [(
                 frosted.effect,
-                BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent
+                BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop
             )]
         );
-        let LayerContent::Media { record_span, .. } = &stack.layers[1].content else {
-            panic!("the second layer is the canvas");
-        };
-        assert_eq!(record_span.begin, list.positions[2]);
-    }
-
-    #[test]
-    fn content_of_a_scroller_that_is_not_a_raster_space_is_placed_wherever_it_can_scroll_to() {
-        let (mut tree, viewport, document) = tree_with_document_scroll();
-        let frosted = tree.append_effect_node_under(viewport, translucent_backdrop_filter_effect());
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(canvas(IntRect::new(100, 300, 200, 100)), document)
-            .with(fill(IntRect::new(120, 320, 20, 20)), document)
-            .with(backdrop_marker(IntRect::new(600, 10, 60, 40)), frosted)
-            .with(fill(IntRect::new(600, 10, 60, 40)), frosted);
-        let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
-        let scrolled = list.stack(&tree, &document_offsets(&tree, document, -250.0));
-        // The backdrop filter keeps the document in the viewport's space, where it scrolls without a new stack, so
-        // nothing of the stack may hold only at one scroll offset.
-        assert_eq!(unscrolled.spaces.len(), 1);
-        assert_eq!(unscrolled.placement_at_every_anchor, scrolled.placement_at_every_anchor);
-        assert_eq!(unscrolled.groups, scrolled.groups);
-        assert_eq!(unscrolled.layers, scrolled.layers);
-    }
-
-    #[test]
-    fn a_translucent_fixed_backdrop_filter_over_the_document_rasters_everything_in_the_viewport() {
-        let (mut tree, viewport, document) = tree_with_document_scroll();
-        let frosted = tree.append_effect_node_under(viewport, translucent_backdrop_filter_effect());
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(backdrop_marker(IntRect::new(120, 120, 60, 40)), frosted)
-            .with(fill(IntRect::new(120, 120, 60, 40)), frosted);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(shape(&stack), ["base viewport band 0"]);
-        assert_eq!(stack.spaces.len(), 1);
-    }
-
-    #[test]
-    fn a_fixed_frosted_header_is_a_backdrop_layer_between_the_document_and_its_content() {
-        let (mut tree, viewport, document) = tree_with_document_scroll();
-        let header_region = IntRect::new(0, 0, 800, 40);
-        let header = tree.append_effect_node_under(viewport, frosted_effect(header_region));
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(backdrop_marker(header_region), header)
-            .with(fill(IntRect::new(10, 10, 100, 20)), header);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(stack.spaces.len(), 2);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base document band 0",
-                "backdrop #0 viewport",
-                "painted viewport band 0 above L3"
-            ]
-        );
-        assert_eq!(list.layers_of(&stack, 1), [3]);
-        assert_eq!(list.layers_of(&stack, 2), [4]);
-        assert_eq!(backdrop_effects_of(&stack), [header.effect]);
-        let LayerContent::Backdrop { read_area, .. } = stack.layers[3].content else {
-            panic!("the fourth layer is the backdrop layer");
-        };
-        assert!(read_area.contains_rect(header_region));
-        assert!(stack.rejected_backdrop_filters.is_empty());
-    }
-
-    #[test]
-    fn a_backdrop_layer_cuts_only_the_tiles_its_filter_reads() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let region = IntRect::new(40, 40, 100, 60);
-        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
-        let list = TestList::new()
-            .with(fill(VIEWPORT), root)
-            .with(fill(IntRect::new(60, 60, 20, 20)), root)
-            .with(backdrop_marker(region), frosted)
-            .with(fill(region), frosted)
-            .with(fill(IntRect::new(100, 80, 20, 20)), root)
-            .with(fill(IntRect::new(600, 400, 20, 20)), root);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base viewport band 0",
-                "backdrop #0 viewport",
-                "painted viewport band 0 above L1"
-            ]
-        );
-        let (base, backdrop, above_backdrop) = (0, 1, 2);
-        // What is painted before the box is what its filter reads, and what is painted after it goes above it, but only
-        // in the tiles that the filter reads.
-        assert_eq!(list.layers_of(&stack, 1), [base]);
-        assert_eq!(list.layers_of(&stack, 2), [backdrop]);
-        assert_eq!(list.layers_of(&stack, 3), [above_backdrop]);
-        assert_eq!(list.layers_of(&stack, 4), [base, above_backdrop]);
-        assert_eq!(
-            stack.groups[0].layer_at(list.positions[4], TileCoord::new(0, 0).cell_rect()),
-            above_backdrop
-        );
-        assert_eq!(
-            stack.groups[0].layer_at(list.positions[4], TileCoord::new(2, 1).cell_rect()),
-            base
-        );
-    }
-
-    #[test]
-    fn which_backdrop_filters_get_layers_of_their_own() {
-        let region = IntRect::new(120, 120, 60, 40);
-        let rejection_of = |reader: EffectNodeData, inner: Option<EffectNodeData>, marker_first: bool| {
-            let mut tree = tree_with_root_isolation_effect();
-            let root = root_context(&tree);
-            let reader = tree.append_effect_node_under(root, reader);
-            let content = match inner {
-                Some(inner) => tree.append_effect_node_under(reader, inner),
-                None => reader,
-            };
-            let mut list = TestList::new().with(fill(VIEWPORT), root);
-            if marker_first {
-                list = list.with(backdrop_marker(region), reader);
-            }
-            list = list.with(fill(region), content);
-            let stack = list.stack(&tree, &[]);
-            assert_eq!(
-                backdrop_effects_of(&stack).len() + stack.rejected_backdrop_filters.len(),
-                1
-            );
-            stack.rejected_backdrop_filters.first().map(|(_, rejection)| *rejection)
-        };
-        let with = |change: &dyn Fn(&mut EffectsData)| {
-            let EffectNodeData::Effects(mut effects) = frosted_effect(region) else {
-                unreachable!();
-            };
-            change(&mut effects);
-            EffectNodeData::Effects(effects)
-        };
-        assert_eq!(rejection_of(frosted_effect(region), None, true), None);
-        assert_eq!(
-            rejection_of(translucent_backdrop_filter_effect(), None, true),
-            Some(BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent)
-        );
-        assert_eq!(
-            rejection_of(
-                with(&|effects| effects.blend_mode = CompositingAndBlendingOperator::Multiply),
-                None,
-                true
-            ),
-            Some(BackdropLayerRejection::BlendModeGroupsTheBackdropWithTheContent)
-        );
-        assert_eq!(
-            rejection_of(
-                with(&|effects| effects.filter = Some(std::sync::Arc::new(Filter::blur(2.0, 2.0, None).serialize()))),
-                None,
-                true
-            ),
-            Some(BackdropLayerRejection::FilterGroupsTheBackdropWithTheContent)
-        );
-        assert_eq!(
-            rejection_of(
-                frosted_effect(region),
-                Some(effects(1.0, CompositingAndBlendingOperator::Multiply)),
-                true
-            ),
-            Some(BackdropLayerRejection::ContentReadsTheFilteredBackdrop)
-        );
-        assert_eq!(
-            rejection_of(frosted_effect(region), None, false),
-            Some(BackdropLayerRejection::ContentIsNotOneStretchStartingWithTheBackdrop)
-        );
-    }
-
-    #[test]
-    fn a_backdrop_filter_inside_a_group_effect_or_under_a_rotation_reads_in_the_layer_of_what_it_reads() {
-        let region = IntRect::new(120, 120, 60, 40);
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        // An effects node that pushes no layer, as will-change makes, groups its content all the same.
-        let will_change = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal));
-        let grouped = tree.append_effect_node_under(will_change, frosted_effect(region));
-        let (cos, sin) = (0.5f32.cos(), 0.5f32.sin());
-        let rotation = tree.append_spatial(
-            SpatialData::Transform(TransformData {
-                matrix: FloatMatrix4x4 {
-                    elements: [
-                        [cos, -sin, 0.0, 0.0],
-                        [sin, cos, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0],
-                        [0.0, 0.0, 0.0, 1.0],
-                    ],
-                },
-                origin: FloatPoint::default(),
-                sorting_context_root_index: None,
-                flattens_inherited_transform: false,
-                role: TransformDataRole::CssTransform,
-                synthetic_plane: false,
-                establishes_sorting_context: false,
-                bounds: FloatRect::new(0.0, 0.0, 800.0, 600.0),
-            }),
-            VISUAL_VIEWPORT_NODE_INDEX,
-        );
-        let rotated = tree.append_effect_node_under(
-            ContextRef {
-                spatial: rotation,
-                ..root
-            },
-            frosted_effect(region),
-        );
-        let list = TestList::new()
-            .with(fill(VIEWPORT), root)
-            .with(backdrop_marker(region), grouped)
-            .with(fill(region), grouped)
-            .with(backdrop_marker(region), rotated)
-            .with(fill(region), rotated);
-        let stack = list.stack(&tree, &[]);
-        assert!(backdrop_effects_of(&stack).is_empty());
-        assert_eq!(
-            stack.rejected_backdrop_filters,
-            [
-                (grouped.effect, BackdropLayerRejection::InsideGroupEffect),
-                (rotated.effect, BackdropLayerRejection::RegionIsNotAnAxisAlignedRect)
-            ]
-        );
-    }
-
-    #[test]
-    fn a_canvas_under_a_frosted_box_keeps_its_layer() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let region = IntRect::new(120, 120, 60, 40);
-        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
-        let list = TestList::new()
-            .with(fill(VIEWPORT), root)
-            .with(canvas(IntRect::new(100, 100, 200, 100)), root)
-            .with(backdrop_marker(region), frosted)
-            .with(fill(region), frosted);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(
-            shape(&stack),
-            [
-                "base viewport band 0",
-                "canvas #0 viewport",
-                "backdrop #0 viewport",
-                "painted viewport band 0 above L3"
-            ]
-        );
-        assert!(stack.rejected_media.is_empty());
-    }
-
-    #[test]
-    fn a_translucent_backdrop_filter_over_a_backdrop_layer_takes_it_back_into_the_layer_of_what_it_reads() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let region = IntRect::new(120, 120, 60, 40);
-        let frosted = tree.append_effect_node_under(root, frosted_effect(region));
-        let translucent = tree.append_effect_node_under(root, translucent_backdrop_filter_effect());
-        let list = TestList::new()
-            .with(fill(VIEWPORT), root)
-            .with(backdrop_marker(region), frosted)
-            .with(fill(region), frosted)
-            .with(backdrop_marker(region), translucent)
-            .with(fill(region), translucent);
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(shape(&stack), ["base viewport band 0"]);
-        assert_eq!(
-            stack.rejected_backdrop_filters,
-            [
-                (frosted.effect, BackdropLayerRejection::UnderContentReadingTheRootGroup),
-                (
-                    translucent.effect,
-                    BackdropLayerRejection::OpacityGroupsTheBackdropWithTheContent
-                )
-            ]
-        );
-    }
-
-    #[test]
-    fn backdrop_filters_past_the_most_that_get_layers_read_in_the_layer_of_what_they_read() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
-        let mut list = TestList::new().with(fill(VIEWPORT), root);
-        let mut readers = Vec::new();
-        for index in 0..=MAXIMUM_BACKDROP_LAYER_COUNT {
-            let region = IntRect::new(10 + index as i32 * 150, 10, 100, 40);
-            let reader = tree.append_effect_node_under(root, frosted_effect(region));
-            list = list.with(backdrop_marker(region), reader).with(fill(region), reader);
-            readers.push(reader.effect);
-        }
-        let stack = list.stack(&tree, &[]);
-        assert_eq!(backdrop_effects_of(&stack), readers[1..]);
-        assert_eq!(
-            stack.rejected_backdrop_filters,
-            [(readers[0], BackdropLayerRejection::MoreBackdropFiltersThanLayersFor)]
-        );
-    }
-
-    #[test]
-    fn backdrop_layers_keep_their_keys_as_the_document_scrolls_and_the_list_changes() {
-        let (mut tree, viewport, document) = tree_with_document_scroll();
-        let header_region = IntRect::new(0, 0, 800, 40);
-        let header = tree.append_effect_node_under(viewport, frosted_effect(header_region));
-        let card_region = IntRect::new(100, 900, 200, 100);
-        let card = tree.append_effect_node_under(document, frosted_effect(card_region));
-        let list_with_box_at = |box_rect: IntRect| {
-            TestList::new()
-                .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-                .with(fill(box_rect), document)
-                .with(backdrop_marker(card_region), card)
-                .with(fill(card_region), card)
-                .with(backdrop_marker(header_region), header)
-                .with(fill(IntRect::new(10, 10, 100, 20)), header)
-        };
-        let list = list_with_box_at(IntRect::new(400, 300, 20, 20));
-        let unscrolled = list.stack(&tree, &document_offsets(&tree, document, 0.0));
-        let scrolled = list.stack(&tree, &document_offsets(&tree, document, -700.0));
-        let changed =
-            list_with_box_at(IntRect::new(500, 1700, 40, 40)).stack(&tree, &document_offsets(&tree, document, -700.0));
-        let keys = |stack: &LayerStack| stack.keys().collect::<Vec<_>>();
-        assert_eq!(backdrop_effects_of(&unscrolled), [card.effect, header.effect]);
-        assert_eq!(keys(&unscrolled), keys(&scrolled));
-        assert_eq!(keys(&unscrolled), keys(&changed));
-        assert_eq!(unscrolled.placement_at_every_anchor, scrolled.placement_at_every_anchor);
-        assert!(unscrolled.has_the_shape_of(&changed));
-    }
-
-    #[test]
-    fn a_sticky_frosted_box_cuts_wherever_it_can_stick() {
-        let (mut tree, _, document) = tree_with_document_scroll();
-        let sticky_node = tree.append_spatial(
-            SpatialData::Sticky(StickyData::unconstrained(
-                document.spatial,
-                None,
-                1,
-                NodeSlotId::INVALID,
-            )),
-            document.spatial,
-        );
-        let region = IntRect::new(0, 0, 800, 50);
-        let sticky = tree.append_effect_node_under(
-            ContextRef {
-                spatial: sticky_node,
-                ..document
-            },
-            frosted_effect(region),
-        );
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(backdrop_marker(region), sticky)
-            .with(fill(region), sticky);
-        let mut offsets = document_offsets(&tree, document, -700.0);
-        let unstuck = list.stack(&tree, &offsets);
-        offsets[sticky_node.0 as usize] = FloatPoint { x: 0.0, y: 700.0 };
-        let stuck = list.stack(&tree, &offsets);
-        assert_eq!(unstuck.placement_at_every_anchor, stuck.placement_at_every_anchor);
-        assert_eq!(
-            shape(&stuck),
-            [
-                "base document band 0",
-                "backdrop #0 document",
-                "painted document band 0 above L2"
-            ]
-        );
-        let LayerContent::Backdrop { read_area, .. } = stuck.layers[2].content else {
-            panic!("the third layer is the backdrop layer");
-        };
-        assert!(read_area.contains_rect(IntRect::new(0, 700, 800, 50)));
     }
 }

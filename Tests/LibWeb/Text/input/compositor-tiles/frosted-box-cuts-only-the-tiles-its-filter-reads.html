@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; background: lightyellow; }
+    div { position: absolute; width: 20px; height: 20px; }
+    #below { left: 60px; top: 60px; background: rgb(1, 0, 0); }
+    #frosted { left: 40px; top: 40px; width: 100px; height: 60px; background: rgba(0, 0, 2, 0.3); backdrop-filter: blur(4px); }
+    /* A transform of their own keeps each box painted after the frosted one apart in the dump. */
+    #over-what-the-filter-reads { left: 100px; top: 80px; background: rgb(3, 0, 0); transform: translateX(0px); }
+    #far-from-what-the-filter-reads { left: 600px; top: 400px; background: rgb(4, 0, 0); transform: translateX(0px); }
+</style>
+<div id="below"></div>
+<div id="frosted"></div>
+<div id="over-what-the-filter-reads"></div>
+<div id="far-from-what-the-filter-reads"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const layersAndCommands = layersAndCommandsOfTheDisplayList();
+        below.style.background = "rgb(5, 0, 0)";
+        const state = await presentedFrameState();
+        println(layersAndCommands);
+        printPresentedFrameState(state);
+        println(`changed the box below the frosted one, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

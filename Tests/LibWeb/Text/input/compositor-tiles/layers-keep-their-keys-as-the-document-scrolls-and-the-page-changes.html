@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; height: 3000px; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    #box { position: absolute; left: 400px; top: 300px; width: 20px; height: 20px; background: green; }
+    canvas { position: absolute; left: 500px; top: 900px; }
+    #over-the-canvas { position: absolute; left: 520px; top: 920px; width: 20px; height: 20px; background: rgba(255, 255, 255, 0.5); }
+    #frosted-card { position: absolute; left: 100px; top: 900px; width: 200px; height: 100px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px); }
+    #fixed-frosted-header { position: fixed; left: 0; top: 0; width: 800px; height: 40px; background: rgba(255, 255, 254, 0.4); backdrop-filter: blur(4px); }
+</style>
+<div id="stripes"></div>
+<div id="box"></div>
+<canvas id="canvas" width="200" height="100"></canvas>
+<div id="over-the-canvas"></div>
+<div id="frosted-card"></div>
+<div id="fixed-frosted-header"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const context = canvas.getContext("2d");
+        context.fillStyle = "blue";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const unscrolled = layersAndCommandsOfTheDisplayList();
+        const header = layersOfTheFillOfColor("rgba(255, 255, 254, 0.4)");
+
+        window.scrollTo(0, 400);
+        const scrolledState = await presentedFrameState();
+        const scrolled = layersAndCommandsOfTheDisplayList();
+        const layersBeforeTheBoxMoved = layersOfTheDisplayList();
+
+        box.style.left = "500px";
+        box.style.top = "1700px";
+        const changedState = await presentedFrameState();
+        const layersOnceTheBoxMoved = layersOfTheDisplayList();
+        const namedLayers = layersOfTheDisplayListWithEffectsNamedByTheirBoxes();
+
+        println(namedLayers);
+        println(`fixed frosted header: ${header}`);
+        println(`the layers and the commands drawn into them are the same once scrolled: ${scrolled === unscrolled}`);
+        printPresentedFrameState(scrolledState, ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER);
+        println(`scrolled, layer stacks computed: ${scrolledState.layerStacksComputedSinceLastCheck}, layers created: ${scrolledState.layersCreatedSinceLastCheck}`);
+        println(`the layers are the same once the box moved: ${layersOnceTheBoxMoved === layersBeforeTheBoxMoved}`);
+        printPresentedFrameState(changedState, ROUNDING_OF_TEXT_OVER_A_TRANSLUCENT_BACKGROUND_IN_A_LAYER);
+        println(`moved the box, layer stacks computed: ${changedState.layerStacksComputedSinceLastCheck}, layers created: ${changedState.layersCreatedSinceLastCheck}`);
+        done();
+    });
+</script>

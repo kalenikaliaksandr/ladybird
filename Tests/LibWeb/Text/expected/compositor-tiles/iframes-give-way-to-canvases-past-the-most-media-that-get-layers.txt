@@ -1,0 +1,25 @@
+Layers:
+  [L0] base space=viewport
+  [L1] composited context #0 space=viewport region=[17,17 46x46]
+  [L3] composited context #0 space=viewport region=[77,17 46x46]
+  [L5] composited context #0 space=viewport region=[137,17 46x46]
+  [L7] composited context #0 space=viewport region=[197,17 46x46]
+  [L9] composited context #0 space=viewport region=[257,17 46x46]
+  [L11] composited context #0 space=viewport region=[317,17 46x46]
+  [L13] composited context #0 space=viewport region=[377,17 46x46]
+  [L14] painted space=viewport above L13
+  [L15] canvas #0 space=viewport region=[17,297 206x106] shown by the window server: clip=[0,0 800x600]
+  no layer for composited context: past the most media that get layers
+  no layer for composited context: past the most media that get layers
+
+DisplayList:
+L1 DrawCompositedContext@s1/e0 dst_rect=[20,20 40x40] inline_clips=[clip=[20,20 40x40]]
+L3 DrawCompositedContext@s1/e0 dst_rect=[80,20 40x40] inline_clips=[clip=[80,20 40x40]]
+L5 DrawCompositedContext@s1/e0 dst_rect=[140,20 40x40] inline_clips=[clip=[140,20 40x40]]
+L7 DrawCompositedContext@s1/e0 dst_rect=[200,20 40x40] inline_clips=[clip=[200,20 40x40]]
+L9 DrawCompositedContext@s1/e0 dst_rect=[260,20 40x40] inline_clips=[clip=[260,20 40x40]]
+L11 DrawCompositedContext@s1/e0 dst_rect=[320,20 40x40] inline_clips=[clip=[320,20 40x40]]
+L13 DrawCompositedContext@s1/e0 dst_rect=[380,20 40x40] inline_clips=[clip=[380,20 40x40]]
+L14 DrawCompositedContext@s1/e0 dst_rect=[440,20 40x40] inline_clips=[clip=[440,20 40x40]]
+L0,L14 DrawCompositedContext@s1/e0 dst_rect=[500,20 40x40] inline_clips=[clip=[500,20 40x40]]
+L15 DrawCanvas@s1/e0 dst_rect=[20,300 200x100]

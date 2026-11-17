@@ -1,0 +1,15 @@
+Layers:
+  [L0] base space=viewport
+  [L1] backdrop #0 of e1 space=viewport reads=[13,13 154x114]
+  [L2] painted space=viewport above L1
+
+DisplayList:
+L0 FillRect@s0 rect=[0,0 800x600] color=rgb(255, 255, 224)
+L0 FillRect@s1/e0 rect=[0,0 800x600] color=rgb(255, 255, 224)
+L0 FillRect@s1/e0 rect=[60,60 20x20] color=rgb(1, 0, 0)
+L1 BackdropFilterRegion@s1/e1 rect=[40,40 100x60]
+L2 FillRect@s1/e1 rect=[40,40 100x60] color=rgba(0, 0, 2, 0.3)
+L2 FillRect@s2/e0 rect=[100,80 20x20] color=rgb(3, 0, 0)
+L0 FillRect@s3/e0 rect=[600,400 20x20] color=rgb(4, 0, 0)
+compared: true, matches a direct raster: true
+changed the box below the frosted one, tiles rasterized: 1

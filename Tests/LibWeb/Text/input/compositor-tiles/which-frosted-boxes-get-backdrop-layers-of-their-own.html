@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    .stripe { height: 30px; }
+    .stripe:nth-child(odd) { background: teal; }
+    .stripe:nth-child(even) { background: salmon; }
+    /* Each box reads the tiles of its own, so that none reads another's backdrop layer unless it is meant to. */
+    .frosted { position: absolute; width: 80px; height: 60px; background: rgba(255, 255, 255, 0.25); backdrop-filter: blur(4px); }
+    #plain { left: 88px; top: 98px; }
+    #translucent { left: 344px; top: 98px; opacity: 0.5; }
+    #blended { left: 600px; top: 98px; mix-blend-mode: multiply; }
+    #filtered { left: 88px; top: 354px; filter: blur(2px); }
+    #reading-what-it-filters { left: 344px; top: 354px; }
+    #reading-what-it-filters > div { width: 20px; height: 20px; background: orange; mix-blend-mode: multiply; }
+    /* An element that only promises to change its opacity groups its content all the same. */
+    #group { position: absolute; left: 600px; top: 354px; will-change: opacity; }
+    #in-a-group { position: static; }
+    #rotated { left: 100px; top: 520px; transform: rotate(10deg); }
+    #below-a-translucent-one { left: 344px; top: 520px; }
+    #translucent-over-a-frosted-one { left: 380px; top: 530px; opacity: 0.5; }
+</style>
+<div id="stripes"></div>
+<div class="frosted" id="plain"></div>
+<div class="frosted" id="translucent"></div>
+<div class="frosted" id="blended"></div>
+<div class="frosted" id="filtered"></div>
+<div class="frosted" id="reading-what-it-filters"><div></div></div>
+<div id="group"><div class="frosted" id="in-a-group"></div></div>
+<div class="frosted" id="rotated"></div>
+<div class="frosted" id="below-a-translucent-one"></div>
+<div class="frosted" id="translucent-over-a-frosted-one"></div>
+<script>
+    asyncTest(async done => {
+        for (let index = 0; index < 20; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripes.appendChild(stripe);
+        }
+        const state = await presentedFrameStateOnceNothingIsLeftToRasterize();
+        println(layersOfTheDisplayListWithEffectsNamedByTheirBoxes());
+        printPresentedFrameState(state);
+        done();
+    });
+</script>

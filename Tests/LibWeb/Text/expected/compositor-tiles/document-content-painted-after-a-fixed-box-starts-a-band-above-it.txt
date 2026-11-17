@@ -1,0 +1,6 @@
+[L1] base space=document
+[L2] painted space=viewport above band 0 of document
+[L3] painted space=document band=1
+fixed header: [L2] painted space=viewport above band 0 of document
+box painted after the header: [L3] painted space=document band=1
+compared: true, matches a direct raster: true
