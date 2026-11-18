@@ -6,7 +6,7 @@
 
 //! What a frame repaints of the frame painted before it, and of what each backing store holds.
 
-use super::layers::{LayerUpdate, TileInvalidation};
+use super::layers::LayerUpdate;
 use super::{ContextPresenting, FrameToPaint, PresentingEnvironment, rect_of_size};
 use crate::frame_inputs::FrameInputs;
 use crate::host::PendingFrame;
@@ -272,13 +272,7 @@ impl ContextPresenting {
         let forced_damage_rect =
             self.raster_rect_of(forced_damage_rect.united(scrolled_compositor_scrollbars.intersected(viewport_rect)));
         let invalidates_every_tile = changes.repaints_everything || forced_damage_rect.contains_rect(raster_rect);
-        layer_update.tile_invalidation = if invalidates_every_tile {
-            TileInvalidation::Everywhere
-        } else if !forced_damage_rect.is_empty() {
-            TileInvalidation::WithinViewportRect(forced_damage_rect)
-        } else {
-            TileInvalidation::Nothing
-        };
+        layer_update.invalidates_every_tile = invalidates_every_tile;
         // Layers that come or go, or move as their spaces scroll, repaint all of the frame. So does a switch of who
         // shows a layer, as the frame holds it only while the window server does not.
         let composites_like_last_frame = self.painted_frame.is_some()

@@ -98,29 +98,6 @@ struct LayerState {
 }
 
 impl LayerState {
-    fn invalidate_tiles_shown_within(
-        &mut self,
-        tile_pool: &mut TilePool,
-        invalidation: TileInvalidation,
-        composite_offset: IntPoint,
-    ) {
-        let rect_in_raster_space = match invalidation {
-            TileInvalidation::Nothing => return,
-            TileInvalidation::WithinViewportRect(rect) => {
-                Some(translated(rect, -composite_offset.x, -composite_offset.y))
-            }
-            TileInvalidation::Everywhere => None,
-        };
-        for key in self.tiles.values() {
-            if let Some(tile) = tile_pool.get_mut(key)
-                && rect_in_raster_space.is_none_or(|rect| !rect.intersected(tile.rect).is_empty())
-            {
-                tile.holds_current_pixels = false;
-            }
-        }
-        self.digest_of_replayed_records = None;
-    }
-
     fn rect_held(&self, tile_pool: &TilePool) -> IntRect {
         self.tiles
             .values()
@@ -171,14 +148,6 @@ impl std::fmt::Display for WhyMediaIsReplayed {
             WhyMediaIsReplayed::UnderALayerTheFrameHolds => "it is under a layer the frame holds",
         })
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum TileInvalidation {
-    #[default]
-    Nothing,
-    Everywhere,
-    WithinViewportRect(IntRect),
 }
 
 struct LiveContentVersionsOfFrame<'a> {
@@ -296,7 +265,10 @@ pub struct TilePass {
 
 /// What a frame paints of its layers.
 pub struct LayerUpdate {
-    pub tile_invalidation: TileInvalidation,
+    /// Whether every tile is stale whatever its key, as when the frame draws content that the list does not name.
+    /// What a frame is made to repaint otherwise leaves the tiles as they are: it is either drawn over the layers by
+    /// the compositor, as its scroll bars are, or told by the keys of the tiles that hold it, as a caret's blink is.
+    pub invalidates_every_tile: bool,
     pub tile_pass: Option<TilePass>,
     pub composite_offsets: Vec<IntPoint>,
     /// From the base layer up, the layers that can hold something, and where the frame composites each.
@@ -890,7 +862,7 @@ impl ContextPresenting {
             .collect();
         let shown_by_window_server = compositing.iter().any(|compositing| compositing.shown_by_window_server);
         LayerUpdate {
-            tile_invalidation: TileInvalidation::Nothing,
+            invalidates_every_tile: false,
             tile_pass: None,
             composite_offsets,
             compositing,
@@ -928,17 +900,13 @@ impl ContextPresenting {
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         let composite_offsets = &layer_update.composite_offsets;
-        for compositing in &layer_update.compositing {
-            if let Some(state) = self.layers.states.get_mut(&compositing.key) {
-                state.invalidate_tiles_shown_within(
-                    &mut self.layers.tile_pool,
-                    layer_update.tile_invalidation,
-                    compositing.offset,
-                );
+        if layer_update.invalidates_every_tile {
+            for compositing in &layer_update.compositing {
+                if let Some(state) = self.layers.states.get_mut(&compositing.key) {
+                    state.digest_of_replayed_records = None;
+                }
             }
-        }
-        // Whatever made every tile stale holds for the tiles that no layer holds as much.
-        if layer_update.tile_invalidation == TileInvalidation::Everywhere {
+            // The pool holds the tiles of the layers and the spare ones, which are as stale.
             for tile in self.layers.tile_pool.values_mut() {
                 tile.holds_current_pixels = false;
             }

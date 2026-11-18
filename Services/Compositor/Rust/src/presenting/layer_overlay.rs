@@ -34,7 +34,7 @@ pub enum RasterCause {
     NewlyShown,
     /// The tile held the pixels of another key.
     KeyChanged,
-    /// Damage that a frame was made to repaint reached the tile, or rastering the tile failed before.
+    /// The frame made every tile stale, or rastering the tile failed before.
     HeldPixelsInvalidated,
     /// The tile held less of its cell than the frame shows.
     HeldLessThanNeeded,
