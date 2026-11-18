@@ -31,6 +31,8 @@ pub enum ContextTimer {
     CaretBlink,
     BackingStoreShrink,
     SurplusStoreRetirement,
+    SpareTileEviction,
+    TileRasterScratchSurfaceRelease,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

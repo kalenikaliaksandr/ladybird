@@ -824,7 +824,7 @@ pub fn validate_canvas_2d_tape(tape: &[u8]) -> Result<(), ValidationError> {
 mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
-    use crate::display_list::storage::write_run;
+    use crate::display_list::storage::write_run_with_zeroed_padding;
 
     fn fill_rect() -> FillRect {
         FillRect {
@@ -838,7 +838,7 @@ mod tests {
     fn run_table_bytes(runs: &[DisplayListCommandRun]) -> Vec<u8> {
         let mut bytes = vec![0; runs.len() * RUN_SIZE];
         for (run, out) in runs.iter().zip(bytes.chunks_exact_mut(RUN_SIZE)) {
-            write_run(run, out);
+            write_run_with_zeroed_padding(run, out);
         }
         bytes
     }

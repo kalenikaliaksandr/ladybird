@@ -5,7 +5,7 @@
  */
 
 use super::commands::{ClipNodeIndex, ContextRef, DisplayListCommandRun, EffectNodeIndex};
-use crate::visual_context::{VisualContextTree, clip_lowest_common_ancestor_with_depths};
+use crate::visual_context::{EffectNodeData, VisualContextTree, clip_lowest_common_ancestor_with_depths};
 
 /// Layer placement belongs to a complete display list, before replay culls any runs.
 /// The tree supplies the clip where each effect begins; recorded contexts can widen
@@ -17,14 +17,17 @@ pub struct EffectClipPlan {
 }
 
 impl EffectClipPlan {
-    pub fn new(tree: &VisualContextTree, runs: &[DisplayListCommandRun]) -> Option<Self> {
-        Self::from_contexts(tree, runs.iter().map(|run| run.context))
+    pub fn new<'a>(
+        tree: &VisualContextTree,
+        runs: impl IntoIterator<Item = &'a DisplayListCommandRun>,
+    ) -> Option<Self> {
+        Self::from_contexts(tree, runs.into_iter().map(|run| run.context))
     }
 
     pub fn from_contexts(tree: &VisualContextTree, contexts: impl IntoIterator<Item = ContextRef>) -> Option<Self> {
         let mut output_clips = vec![None; tree.effect_nodes.len()];
         let clip_depths = std::cell::OnceCell::new();
-        let common_clip = |a: ClipNodeIndex, b: ClipNodeIndex| {
+        let lowest_common_clip = |a: ClipNodeIndex, b: ClipNodeIndex| {
             if a == b {
                 return a;
             }
@@ -45,15 +48,16 @@ impl EffectClipPlan {
                 b,
             )
         };
-        let activate = |mut effect: EffectNodeIndex, clips: &mut [Option<ClipNodeIndex>]| {
-            while !effect.is_none() && clips[effect.0 as usize].is_none() {
-                let node = &tree.effect_nodes[effect.0 as usize];
-                clips[effect.0 as usize] = Some(node.local_clip);
-                effect = node.parent;
-            }
-        };
+        let mark_effect_and_ancestors_participating =
+            |mut effect: EffectNodeIndex, clips: &mut [Option<ClipNodeIndex>]| {
+                while !effect.is_none() && clips[effect.0 as usize].is_none() {
+                    let node = &tree.effect_nodes[effect.0 as usize];
+                    clips[effect.0 as usize] = Some(node.local_clip);
+                    effect = node.parent;
+                }
+            };
         if let Some(effect) = tree.root_isolation_effect {
-            activate(effect, &mut output_clips);
+            mark_effect_and_ancestors_participating(effect, &mut output_clips);
         }
         for context in contexts {
             if !tree.context_is_valid(context) {
@@ -62,18 +66,18 @@ impl EffectClipPlan {
             if context.effect.is_none() {
                 continue;
             }
-            activate(context.effect, &mut output_clips);
-            let output = &mut output_clips[context.effect.0 as usize];
-            *output = Some(common_clip(output.unwrap(), context.clip));
+            mark_effect_and_ancestors_participating(context.effect, &mut output_clips);
+            let output_clip = &mut output_clips[context.effect.0 as usize];
+            *output_clip = Some(lowest_common_clip(output_clip.unwrap(), context.clip));
         }
         // A parent's layer must be outside every participating child's output clip.
         for &index in tree.effect_dependency_order().iter().rev() {
             let parent = tree.effect_nodes[index as usize].parent;
             if !parent.is_none()
-                && let Some(clip) = output_clips[index as usize]
+                && let Some(child_output_clip) = output_clips[index as usize]
             {
-                let parent_output = &mut output_clips[parent.0 as usize];
-                *parent_output = Some(common_clip(parent_output.unwrap(), clip));
+                let parent_output_clip = &mut output_clips[parent.0 as usize];
+                *parent_output_clip = Some(lowest_common_clip(parent_output_clip.unwrap(), child_output_clip));
             }
         }
         Some(Self { output_clips })
@@ -85,6 +89,21 @@ impl EffectClipPlan {
 
     pub fn output_clip_if_participating(&self, effect: EffectNodeIndex) -> Option<ClipNodeIndex> {
         self.output_clips.get(effect.0 as usize).copied().flatten()
+    }
+
+    pub fn clip_outside_every_filter(&self, tree: &VisualContextTree, context: ContextRef) -> ClipNodeIndex {
+        let mut clip = context.clip;
+        let mut effect = context.effect;
+        while !effect.is_none() {
+            let node = &tree.effect_nodes[effect.0 as usize];
+            if let EffectNodeData::Effects(effects) = &node.data
+                && (effects.filter.is_some() || effects.backdrop_filter.is_some())
+            {
+                clip = self.output_clip(effect);
+            }
+            effect = node.parent;
+        }
+        clip
     }
 }
 

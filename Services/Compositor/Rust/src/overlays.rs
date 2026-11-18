@@ -49,14 +49,14 @@ pub struct PausedDebuggerOverlayState {
     pub hovered_action: Option<PausedDebuggerOverlayAction>,
 }
 
-// The controls stay present while they are hidden, so that they fade out.
+/// The controls stay present while they are hidden, so that they fade out.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PictureInPictureControlsState {
     pub shown: bool,
     pub hovered_control: Option<PictureInPictureControl>,
 }
 
-// What the browser draws over a context's page, with each overlay the view has present.
+/// What the browser draws over a context's page, with each overlay the view has present.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UIOverlays {
     pub paused_debugger: Option<PausedDebuggerOverlayState>,
@@ -71,10 +71,11 @@ pub struct OverlayLabel {
     pub glyph_ids: Vec<u32>,
     pub glyph_x_positions: Vec<f32>,
     pub width: f32,
-    // Of the font at the size the label is shaped at: the ascent above the baseline, which is negative, and the descent.
+    /// Of the font at the size the label is shaped at: the ascent above the baseline, which is negative, and the
+    /// descent.
     pub ascent: f32,
     pub descent: f32,
-    // The ascent the painter places glyphs below, at the font's own size.
+    /// The ascent the painter places glyphs below, at the font's own size.
     pub font_ascent: f32,
 }
 
@@ -292,9 +293,9 @@ impl OverlayPicture {
             let list = ListReplay::new(tree);
             let frame = ReplayFrame::unscrolled(0);
             let context = RecordsContext {
-                list: &list,
+                list_replay: &list,
                 frame: &frame,
-                clip_space_matrix: &|_| None,
+                to_root_matrix_of_inline_clip_space: &|_| None,
             };
             replay_records(self.ui_overlay_records.as_bytes(), &context, painter);
             if let Some(controls) = &self.picture_in_picture_controls {
@@ -332,7 +333,7 @@ fn presented_compositor_scrollbar(scrollbar: &ScrollbarOfFrame) -> PresentedScro
     )
 }
 
-// The records of one overlay, with the payload of each command laid out after the command as the painter reads it.
+/// The records of one overlay, with the payload of each command laid out after the command as the painter reads it.
 struct OverlayRecorder<'a> {
     builder: &'a mut DisplayListBuilder,
 }
