@@ -128,10 +128,9 @@ impl CompositorCore {
         &self,
         client: WebContentClientId,
         context_id: CompositorContextId,
-        sent: Vec<libcompositing_rust::display_list::storage::ReceivedChunk>,
+        sent: Vec<libcompositing_rust::display_list::storage::ListChunk>,
         chunks_in_paint_order: &[libcompositing_rust::display_list::chunks::ChunkId],
-    ) -> Result<Option<Vec<std::sync::Arc<libcompositing_rust::display_list::storage::ReceivedChunk>>>, &'static str>
-    {
+    ) -> Result<Option<Vec<std::sync::Arc<libcompositing_rust::display_list::storage::ListChunk>>>, &'static str> {
         self.display_list_chunk_stores
             .borrow_mut()
             .take_in(client, context_id, sent, chunks_in_paint_order)
@@ -806,6 +805,23 @@ impl CompositorCore {
                 self.resize_backing_stores_if_needed(context_id, now);
             }
             ContextTimer::SurplusStoreRetirement => self.retire_idle_surplus_backing_stores(context_id),
+            ContextTimer::SpareTileEviction => {
+                if let Some(presenting) = self.presenting_of(context_id) {
+                    let environment = self.environment(
+                        context_id,
+                        now,
+                        &libcompositing_rust::display_list::replay::NoCompositedContexts,
+                    );
+                    presenting.borrow_mut().spare_tile_eviction_timer_fired(&environment);
+                }
+            }
+            ContextTimer::TileRasterScratchSurfaceRelease => {
+                if let Some(presenting) = self.presenting_of(context_id) {
+                    presenting
+                        .borrow_mut()
+                        .tile_raster_scratch_surface_release_timer_fired();
+                }
+            }
             _ => {
                 let caret_damage_rect = context.borrow_mut().timer_fired(timer, now);
                 if let Some(caret_damage_rect) = caret_damage_rect {

@@ -12,35 +12,26 @@
 //! spreads it, and an effect's output becomes part of its parent's content.
 
 use crate::display_list::commands::{DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::reach::Reach;
 use crate::filter_bytes;
 use crate::visual_context::{EffectNode, EffectNodeData, VisualContextTree, WorldTransforms};
 use libgfx_rust::FloatRect;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Extent {
-    Nothing,
-    Within(FloatRect),
-    /// Reaches anywhere, through a filter that paints everywhere or through a space that does not
-    /// map onto the effect's as a two-dimensional transform.
-    Anywhere,
-}
+/// Where content lies in an effect's space. It reaches anywhere through a filter that paints everywhere or through a
+/// space that does not map onto the effect's as a two-dimensional transform.
+pub type Extent = Reach<FloatRect>;
 
-impl Extent {
-    pub fn united(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Nothing, extent) | (extent, Self::Nothing) => extent,
-            (Self::Within(rect), Self::Within(other)) => Self::Within(rect.united(other)),
-            _ => Self::Anywhere,
-        }
-    }
-
-    fn mapped_between_spaces(self, world: &WorldTransforms, from: SpatialNodeIndex, to: SpatialNodeIndex) -> Self {
-        match self {
-            Self::Within(rect) => world
-                .map_rect_between_spaces(rect, from, to)
-                .map_or(Self::Anywhere, Self::Within),
-            extent => extent,
-        }
+fn extent_mapped_between_spaces(
+    extent: Extent,
+    world: &WorldTransforms,
+    from: SpatialNodeIndex,
+    to: SpatialNodeIndex,
+) -> Extent {
+    match extent {
+        Extent::Within(rect) => world
+            .map_rect_between_spaces(rect, from, to)
+            .map_or(Extent::Anywhere, Extent::Within),
+        extent => extent,
     }
 }
 
@@ -61,18 +52,35 @@ pub fn effect_output_extent(node: &EffectNode, content: Extent) -> Extent {
     filter_bytes::output_bounds(filter, rect).map_or(Extent::Anywhere, Extent::Within)
 }
 
-// Where an effect's filter can show a change to its content, given that change in the effect's space.
-fn changed_output_extent(node: &EffectNode, change: Extent) -> Extent {
-    let Extent::Within(rect) = change else {
-        return change;
+fn output_extent_of_content_change(node: &EffectNode, content_change_in_effect_space: Extent) -> Extent {
+    let Extent::Within(rect) = content_change_in_effect_space else {
+        return content_change_in_effect_space;
     };
     let EffectNodeData::Effects(effects) = &node.data else {
-        return change;
+        return content_change_in_effect_space;
     };
     let Some(filter) = effects.filter.as_deref() else {
-        return change;
+        return content_change_in_effect_space;
     };
     filter_bytes::changed_output_bounds(filter, rect).map_or(Extent::Anywhere, Extent::Within)
+}
+
+/// The effect's filter, where it can spread its content outside its bounds.
+pub fn spreading_filter_of(node: &EffectNode) -> Option<&[u8]> {
+    let EffectNodeData::Effects(effects) = &node.data else {
+        return None;
+    };
+    effects
+        .filter
+        .as_deref()
+        .map(|filter| &filter[..])
+        .filter(|filter| filter_bytes::may_affect_output_bounds(filter))
+}
+
+/// Whether the filter can show its content away from where the content is drawn, as an offset does.
+pub fn filter_moves_what_it_filters(node: &EffectNode) -> bool {
+    matches!(&node.data, EffectNodeData::Effects(effects)
+        if effects.filter.as_deref().is_some_and(|filter| filter_bytes::may_move_what_it_filters(filter)))
 }
 
 /// Per effect, the nearest effect at or above it whose filter can spread content outside its
@@ -81,9 +89,7 @@ pub fn nearest_spreading_effects(tree: &VisualContextTree) -> Vec<EffectNodeInde
     let mut nearest = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
     tree.visit_effect_nodes_parents_first(|index| {
         let node = &tree.effect_nodes[index];
-        let spreads = matches!(&node.data, EffectNodeData::Effects(effects)
-            if effects.filter.as_deref().is_some_and(|filter| filter_bytes::may_affect_output_bounds(filter)));
-        nearest[index] = if spreads {
+        nearest[index] = if spreading_filter_of(node).is_some() {
             EffectNodeIndex(index as u32)
         } else if node.parent.is_none() {
             EffectNodeIndex::NONE
@@ -105,7 +111,7 @@ pub fn changed_extent_through_filters(
     effect: EffectNodeIndex,
     world: &WorldTransforms,
 ) -> (SpatialNodeIndex, Extent) {
-    let nearest_at_or_above = |effect: EffectNodeIndex| {
+    let nearest_spreading_effect_at_or_above = |effect: EffectNodeIndex| {
         if effect.is_none() {
             EffectNodeIndex::NONE
         } else {
@@ -114,12 +120,38 @@ pub fn changed_extent_through_filters(
     };
     let mut space = space;
     let mut extent = Extent::Within(rect);
-    let mut effect = nearest_at_or_above(effect);
+    let mut effect = nearest_spreading_effect_at_or_above(effect);
     while !effect.is_none() && extent != Extent::Anywhere {
         let node = &tree.effect_nodes[effect.0 as usize];
-        extent = changed_output_extent(node, extent.mapped_between_spaces(world, space, node.spatial));
+        extent =
+            output_extent_of_content_change(node, extent_mapped_between_spaces(extent, world, space, node.spatial));
         space = node.spatial;
-        effect = nearest_at_or_above(node.parent);
+        effect = nearest_spreading_effect_at_or_above(node.parent);
+    }
+    (space, extent)
+}
+
+/// As `changed_extent_through_filters`, following only the filters inside `composited_effect`, which a raster leaves
+/// out with the effects around it.
+pub fn changed_extent_through_filters_inside(
+    tree: &VisualContextTree,
+    space: SpatialNodeIndex,
+    rect: FloatRect,
+    effect: EffectNodeIndex,
+    composited_effect: EffectNodeIndex,
+    world: &WorldTransforms,
+) -> (SpatialNodeIndex, Extent) {
+    let mut space = space;
+    let mut extent = Extent::Within(rect);
+    let mut effect = effect;
+    while !effect.is_none() && effect != composited_effect && extent != Extent::Anywhere {
+        let node = &tree.effect_nodes[effect.0 as usize];
+        if spreading_filter_of(node).is_some() {
+            extent =
+                output_extent_of_content_change(node, extent_mapped_between_spaces(extent, world, space, node.spatial));
+            space = node.spatial;
+        }
+        effect = node.parent;
     }
     (space, extent)
 }
@@ -132,10 +164,9 @@ pub struct EffectGeometry {
     pub output: Extent,
 }
 
-/// Fills `geometry` with every effect's geometry, indexed by effect.
-pub fn compute_effect_geometry(
+pub fn compute_effect_geometry<'a>(
     tree: &VisualContextTree,
-    command_runs: &[DisplayListCommandRun],
+    command_runs: impl IntoIterator<Item = &'a DisplayListCommandRun>,
     world: &WorldTransforms,
     geometry: &mut Vec<EffectGeometry>,
 ) {
@@ -148,36 +179,38 @@ pub fn compute_effect_geometry(
         },
     );
 
-    // Neighboring runs mostly differ only in their clip, so their ink is united before it is
-    // mapped into the effect's space.
-    let mut pending: Option<(DisplayListCommandRun, FloatRect)> = None;
-    let add_ink = |geometry: &mut Vec<EffectGeometry>, run: &DisplayListCommandRun, ink: FloatRect| {
-        let node = &tree.effect_nodes[run.context.effect.0 as usize];
-        let landed = Extent::Within(ink).mapped_between_spaces(world, run.context.spatial, node.spatial);
-        let content = &mut geometry[run.context.effect.0 as usize].content;
-        *content = content.united(landed);
-    };
+    let mut ink_of_consecutive_runs_in_one_effect_and_space: Option<(DisplayListCommandRun, FloatRect)> = None;
+    let add_ink_to_effect_content =
+        |geometry: &mut Vec<EffectGeometry>, run: &DisplayListCommandRun, ink: FloatRect| {
+            let node = &tree.effect_nodes[run.context.effect.0 as usize];
+            let ink_in_effect_space =
+                extent_mapped_between_spaces(Extent::Within(ink), world, run.context.spatial, node.spatial);
+            let content = &mut geometry[run.context.effect.0 as usize].content;
+            *content = content.united(ink_in_effect_space);
+        };
     for run in command_runs {
         if run.ink_bounds.is_empty() || run.context.effect.is_none() {
             continue;
         }
         let ink = run.ink_bounds.to_float();
-        match &mut pending {
-            Some((pending_run, pending_ink))
-                if pending_run.context.effect == run.context.effect
-                    && pending_run.context.spatial == run.context.spatial =>
+        match &mut ink_of_consecutive_runs_in_one_effect_and_space {
+            Some((first_run, united_ink))
+                if first_run.context.effect == run.context.effect
+                    && first_run.context.spatial == run.context.spatial =>
             {
-                *pending_ink = pending_ink.united(ink);
+                *united_ink = united_ink.united(ink);
             }
             _ => {
-                if let Some((pending_run, pending_ink)) = pending.replace((*run, ink)) {
-                    add_ink(geometry, &pending_run, pending_ink);
+                if let Some((first_run, united_ink)) =
+                    ink_of_consecutive_runs_in_one_effect_and_space.replace((*run, ink))
+                {
+                    add_ink_to_effect_content(geometry, &first_run, united_ink);
                 }
             }
         }
     }
-    if let Some((pending_run, pending_ink)) = pending {
-        add_ink(geometry, &pending_run, pending_ink);
+    if let Some((first_run, united_ink)) = ink_of_consecutive_runs_in_one_effect_and_space {
+        add_ink_to_effect_content(geometry, &first_run, united_ink);
     }
 
     let mut effects_parents_first = Vec::with_capacity(tree.effect_nodes.len());
@@ -190,9 +223,9 @@ pub fn compute_effect_geometry(
             continue;
         }
         let parent_spatial = tree.effect_nodes[node.parent.0 as usize].spatial;
-        let landed = output.mapped_between_spaces(world, node.spatial, parent_spatial);
+        let output_in_parent_space = extent_mapped_between_spaces(output, world, node.spatial, parent_spatial);
         let parent_content = &mut geometry[node.parent.0 as usize].content;
-        *parent_content = parent_content.united(landed);
+        *parent_content = parent_content.united(output_in_parent_space);
     }
 }
 

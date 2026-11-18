@@ -66,7 +66,9 @@ impl VisualContextTree {
     /// resolved, leaves its nodes as the main thread published them.
     pub fn with_visual_animation_samples(&self, sample_time_ns: i64) -> Self {
         let mut sampled = self.clone();
-        sampled.sampled_background_colors.clear();
+        sampled.animation_samples_taken_from_copy =
+            super::AnimationSamplesTakenFromCopy(Some(self.copy_without_animation_samples()));
+        sampled.sampled_background_color_by_effect_index.clear();
         for animation in self.visual_animations.iter() {
             let Some(sample) = animation.sample(animation.elapsed_since_anchor_ns(sample_time_ns)) else {
                 continue;
@@ -79,7 +81,9 @@ impl VisualContextTree {
                         }
                     }
                     VisualAnimationSample::BackgroundColor(color) => {
-                        sampled.sampled_background_colors.insert(node_index, *color);
+                        sampled
+                            .sampled_background_color_by_effect_index
+                            .insert(node_index, *color);
                     }
                     VisualAnimationSample::Filter(filter) => {
                         if let Some(effects) = sampled.effects_mut(node_index) {

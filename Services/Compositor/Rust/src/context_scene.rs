@@ -50,9 +50,9 @@ impl ContextScene {
         visual_context_tree: AccumulatedVisualContextTree,
         now: MonotonicTime,
     ) {
-        self.invalidate_visual_context_tree_for_compositing();
         self.display_list = Some(display_list);
-        self.visual_context_tree = Some(visual_context_tree);
+        self.animated_content_may_affect_viewport = None;
+        self.take_visual_context_tree_unless_content_is_unchanged(visual_context_tree);
         update_visual_animation_sampling_state(
             self.visual_context_tree.as_ref().unwrap(),
             &mut self.visual_animation_sample_time_ns,
@@ -61,7 +61,24 @@ impl ContextScene {
         );
     }
 
-    // Returns false, leaving everything as it was, for a tree that does not fit the installed display list.
+    // Keeping the held tree keeps what frames cached under the number of its copy, and the main thread publishes most
+    // lists with the content of the tree before.
+    fn take_visual_context_tree_unless_content_is_unchanged(
+        &mut self,
+        visual_context_tree: AccumulatedVisualContextTree,
+    ) {
+        if self
+            .visual_context_tree
+            .as_ref()
+            .is_some_and(|held| held.as_arc().has_same_content_as(visual_context_tree.as_arc()))
+        {
+            return;
+        }
+        self.invalidate_visual_context_tree_for_compositing();
+        self.visual_context_tree = Some(visual_context_tree);
+    }
+
+    /// Returns false, leaving everything as it was, for a tree that does not fit the installed display list.
     pub fn replace_visual_context_tree(
         &mut self,
         visual_context_tree: AccumulatedVisualContextTree,
@@ -91,8 +108,7 @@ impl ContextScene {
             );
             return false;
         }
-        self.invalidate_visual_context_tree_for_compositing();
-        self.visual_context_tree = Some(visual_context_tree);
+        self.take_visual_context_tree_unless_content_is_unchanged(visual_context_tree);
         update_visual_animation_sampling_state(
             self.visual_context_tree.as_ref().unwrap(),
             &mut self.visual_animation_sample_time_ns,
@@ -159,8 +175,8 @@ impl ContextScene {
         Some(tree.visual_viewport_transform().matrix.elements[0][0])
     }
 
-    // How many screen pixels a zoomed visual viewport shows one pixel of the layout viewport with. Scrollers scroll and
-    // stretch in the pixels of the layout viewport.
+    /// How many screen pixels a zoomed visual viewport shows one pixel of the layout viewport with. Scrollers scroll
+    /// and stretch in the pixels of the layout viewport.
     pub fn visual_viewport_magnification(&self) -> f32 {
         let scale = self.visual_viewport_scale().unwrap_or(1.0);
         if scale < 1.0 { 1.0 } else { scale }

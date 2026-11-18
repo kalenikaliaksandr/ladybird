@@ -153,7 +153,9 @@ impl Encode for StickyData {
         encoder.encode(&self.inset_top)?;
         encoder.encode(&self.inset_right)?;
         encoder.encode(&self.inset_bottom)?;
-        encoder.encode(&self.inset_left)
+        encoder.encode(&self.inset_left)?;
+        encoder.encode(&self.box_node_id)?;
+        encoder.encode(&self.box_pseudo_element_type)
     }
 }
 
@@ -175,6 +177,8 @@ impl Decode for StickyData {
             inset_right: decoder.decode()?,
             inset_bottom: decoder.decode()?,
             inset_left: decoder.decode()?,
+            box_node_id: decoder.decode()?,
+            box_pseudo_element_type: decoder.decode()?,
             state_slot: NO_SCROLL_STATE_SLOT,
             owner_paintable: NodeSlotId::INVALID,
         })
@@ -1180,6 +1184,8 @@ mod tests {
                 inset_right: None,
                 inset_bottom: Some(2.5),
                 inset_left: None,
+                box_node_id: UniqueNodeId(41),
+                box_pseudo_element_type: 2,
                 state_slot: NO_SCROLL_STATE_SLOT,
                 owner_paintable: NodeSlotId::INVALID,
             }),
@@ -1206,6 +1212,8 @@ mod tests {
                 inset_right: Some(1.0),
                 inset_bottom: None,
                 inset_left: Some(3.0),
+                box_node_id: UniqueNodeId(0),
+                box_pseudo_element_type: 0,
                 state_slot: NO_SCROLL_STATE_SLOT,
                 owner_paintable: NodeSlotId::INVALID,
             }),
