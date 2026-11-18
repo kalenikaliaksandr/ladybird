@@ -685,6 +685,7 @@ private:
     u64 m_committed_generation { 0 };
     OwnPtr<Compositor::CompositorContextHandle> m_compositor_context;
     RefPtr<Core::Timer> m_async_scroll_hover_update_timer;
+    bool m_hover_update_waits_for_compositor_user_scroll_to_stop { false };
     Vector<ScrollSequence> m_scroll_sequences;
     u64 m_last_scroll_move_ordinal { 0 };
     RefPtr<Core::Timer> m_user_scroll_gesture_input_timer;

@@ -6093,8 +6093,10 @@ void LocalNavigable::adopt_pending_async_scroll_offsets(Compositing::AsyncScroll
         auto& user_input_scroll_count = m_compositor_user_input_scroll_counts.ensure(async_scroll_offset.stable_node_id);
         bool user_input_scrolled_the_box = async_scroll_offset.user_input_scroll_count > user_input_scroll_count;
         // User input the compositor scrolled the box for keeps the box's gesture going, even where the box stayed put.
-        if (user_input_scrolled_the_box)
+        if (user_input_scrolled_the_box) {
             extend_user_scroll_gesture_of(async_scroll_offset.stable_node_id);
+            m_hover_update_waits_for_compositor_user_scroll_to_stop = true;
+        }
         user_input_scroll_count = max(user_input_scroll_count, async_scroll_offset.user_input_scroll_count);
         m_compositor_context_user_input_scroll_count = max(m_compositor_context_user_input_scroll_count, async_scroll_offset.context_user_input_scroll_count);
 
@@ -6241,6 +6243,10 @@ void LocalNavigable::schedule_hover_update_after_async_scroll()
 
 bool LocalNavigable::leave_hover_update_to_end_of_user_scroll()
 {
+    // NB: The compositor scrolls for the user's input by itself, momentum included. Each offset adopted from it puts
+    //     the hover update off again, so the hover waits for as long as they keep coming.
+    if (m_hover_update_waits_for_compositor_user_scroll_to_stop && m_async_scroll_hover_update_timer && m_async_scroll_hover_update_timer->is_active())
+        return true;
     if (!any_of(m_pending_async_scroll_operations, [](auto const& pending) { return pending.trigger == ScrollTrigger::UserInput; }))
         return false;
     schedule_hover_update_after_async_scroll();
@@ -6249,6 +6255,7 @@ bool LocalNavigable::leave_hover_update_to_end_of_user_scroll()
 
 void LocalNavigable::update_hover_after_async_scroll_stops()
 {
+    m_hover_update_waits_for_compositor_user_scroll_to_stop = false;
     if (has_been_destroyed())
         return;
     event_handler().update_hover_at_last_known_mouse_position();
@@ -6256,6 +6263,7 @@ void LocalNavigable::update_hover_after_async_scroll_stops()
 
 void LocalNavigable::cancel_hover_update_after_async_scroll()
 {
+    m_hover_update_waits_for_compositor_user_scroll_to_stop = false;
     if (m_async_scroll_hover_update_timer)
         m_async_scroll_hover_update_timer->stop();
 }
