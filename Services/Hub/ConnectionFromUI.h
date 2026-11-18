@@ -78,6 +78,7 @@ private:
     virtual void set_blocks_pop_ups(bool blocks) override;
     virtual void set_shows_line_box_borders(bool shows) override;
     virtual void set_shows_caret_hit_test_debug_overlay(bool shows) override;
+    virtual void set_shows_compositor_layers(bool shows) override;
     virtual void dump_cookies() override;
     virtual void crash_compositor_process() override;
     virtual void launch_devtools_client() override;
@@ -100,6 +101,7 @@ private:
     virtual void view_open_navigation_in_new_window(u64 view_id, Web::HTML::PreparedNavigationDescriptor navigation, WebView::IsPrivate is_private) override;
     virtual void view_traverse_the_history_to_step(u64 view_id, i32 step) override;
     virtual void view_set_reports_session_history(u64 view_id, bool reports_session_history) override;
+    virtual void view_set_compositor_layer_hidden(u64 view_id, u64 layer_id, bool hidden) override;
     virtual void view_file_picker_closed(u64 view_id, Vector<Web::HTML::SelectedFile> selected_files) override;
     virtual void view_save_screenshot(u64 view_id, Gfx::ShareableBitmap bitmap) override;
     virtual void view_request_selected_text(u64 view_id, u64 request_id) override;

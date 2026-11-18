@@ -133,6 +133,11 @@ void RemoteView::set_device_pixel_ratio_and_viewport(double device_pixel_ratio, 
     HubConnection::the().async_view_set_viewport(view_id(), size, device_pixel_ratio);
 }
 
+void RemoteView::set_compositor_layer_hidden(u64 layer_id, bool hidden)
+{
+    HubConnection::the().async_view_set_compositor_layer_hidden(view_id(), layer_id, hidden);
+}
+
 u64 RemoteView::add_navigation_listener(NavigationListener listener)
 {
     auto id = m_next_navigation_listener_id++;

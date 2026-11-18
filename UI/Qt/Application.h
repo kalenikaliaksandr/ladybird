@@ -39,6 +39,7 @@ namespace Ladybird {
 class WebUIPages;
 
 class Bookmarks;
+class CompositorLayersWindow;
 class ProcessManagerWindow;
 class SoftwareUpdater;
 
@@ -143,6 +144,7 @@ public:
     void restart_private_browsing_session();
     void focus_location_editor();
     void show_process_manager();
+    void set_shows_compositor_layers(bool);
     // Asks every window's pages if they may unload, one window at a time. Once all of them agree, it confirms stopping
     // the downloads and quits; if a page refuses or the downloads are kept, the quit is canceled and no window closes.
     void quit();
@@ -375,6 +377,7 @@ private:
     u64 m_next_external_url_handler_id { 1 };
     BrowserWindow* m_active_window { nullptr };
     OwnPtr<ProcessManagerWindow> m_process_manager_window;
+    OwnPtr<CompositorLayersWindow> m_compositor_layers_window;
     RefPtr<Action> m_open_task_manager_action;
 
     bool m_private_session_restart_in_progress { false };
