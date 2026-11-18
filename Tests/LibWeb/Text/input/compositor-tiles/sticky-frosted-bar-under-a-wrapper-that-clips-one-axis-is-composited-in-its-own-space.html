@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    /* The wrapper clips well clear of what the bar's blur reads. */
+    #wrapper { width: 360px; margin-left: 20px; overflow-x: clip; }
+    #column { width: 200px; margin-left: 80px; }
+    #bar { position: sticky; top: 0; height: 40px; background: rgba(255, 255, 255, 0.3); backdrop-filter: blur(4px); }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div id="wrapper"><div id="column"><div class="stripe">first stripe</div><div id="bar">sticky bar</div></div></div>
+<script>
+    asyncTest(async done => {
+        internals.setDevicePixelRatio(2);
+        for (let index = 0; index < 30; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            column.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 300);
+        await presentedFrameState();
+        const layers = layersOfTheDisplayListWithEffectsNamedByTheirBoxes();
+        window.scrollTo(0, 340);
+        const state = await presentedFrameState();
+        println(layers);
+        printPresentedFrameState(state, ROUNDING_OF_A_GROUP_COMPOSITED_FROM_ITS_TILES);
+        println(`scrolled on while the bar is held, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        internals.setDevicePixelRatio(1);
+        done();
+    });
+</script>

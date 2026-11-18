@@ -1,0 +1,5 @@
+[L1] base space=document
+[L3] painted space=sticky@2 in document inside BlockContainer<DIV>#bar composited within [40,-16777216 720x33554432] of document
+composited BlockContainer<DIV>#bar space=sticky@2 in document reads=[149,149 502x182]: it reads what its own layer does not hold
+compared: true, matches a direct raster: true
+scrolled on while the bar is held, tiles rasterized: 0

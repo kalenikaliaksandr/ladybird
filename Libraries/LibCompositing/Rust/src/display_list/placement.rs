@@ -15,6 +15,7 @@ use crate::display_list::commands::{
 };
 use crate::display_list::effect_clip_plan::EffectClipPlan;
 use crate::display_list::effect_geometry::Extent;
+use crate::display_list::reach::Reach;
 use crate::display_list::storage::DisplayListStorage;
 use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::queries::TreeCullingScratch;
@@ -839,6 +840,9 @@ pub struct PlacementTables {
     // Per effect node: whether rasters of content under it in another space than its own cannot leave clips to
     // composite, as its content reads the backdrop, or whether it does not keep content out of other spaces at all.
     kind_of_effects: Vec<EffectKindForPlacement>,
+    // Per effect node with a backdrop filter whose reach is known, the deepest space its node moves with and what the
+    // filter reads in the raster coordinates of that space.
+    what_backdrop_filters_read: Vec<Option<(usize, IntRect)>>,
     composite_clips_of_contexts: RefCell<HashMap<(ContextRef, usize), CompositeClipsInSpace>>,
 }
 
@@ -854,6 +858,7 @@ impl PartialEq for PlacementTables {
         self.spaces == other.spaces
             && self.composite_form_of_clips == other.composite_form_of_clips
             && self.kind_of_effects == other.kind_of_effects
+            && self.what_backdrop_filters_read == other.what_backdrop_filters_read
     }
 }
 
@@ -956,10 +961,24 @@ impl PlacementTables {
                 }
             })
             .collect();
+        let what_backdrop_filters_read = tree
+            .effect_nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let space = spaces.deepest_space_of(node.spatial);
+                match super::layers::backdrop_filter_read_area(tree, &geometries[space], EffectNodeIndex(index as u32))
+                {
+                    Reach::Within(read_area) => Some((space, read_area)),
+                    _ => None,
+                }
+            })
+            .collect();
         Self {
             spaces,
             composite_form_of_clips,
             kind_of_effects,
+            what_backdrop_filters_read,
             composite_clips_of_contexts: RefCell::new(HashMap::new()),
         }
     }
@@ -1022,7 +1041,6 @@ impl PlacementTables {
                 composite_clips.push(composite_clip);
             }
         }
-        let mut reads_backdrop = false;
         let mut effect = context.effect;
         while !effect.is_none() {
             let node = &tree.effect_nodes[effect.0 as usize];
@@ -1032,15 +1050,53 @@ impl PlacementTables {
                     if !self.moves_with(node.spatial, space) {
                         return None;
                     }
-                    reads_backdrop |= kind == EffectKindForPlacement::ReadsBackdrop;
+                    if kind == EffectKindForPlacement::ReadsBackdrop
+                        && !self.composite_clips_cut_nothing_the_effect_reads(effect, space, &composite_clips)
+                    {
+                        return None;
+                    }
                 }
             }
             effect = node.parent;
         }
-        if reads_backdrop && !composite_clips.is_empty() {
-            return None;
-        }
         Some(composite_clips)
+    }
+
+    // Whether a raster of `space` that leaves `composite_clips` to be applied later reads the backdrop of `effect` as
+    // one that applied them would: none of them can cut what the effect's backdrop filter reads, wherever the anchors
+    // between `space` and the clip's space take it.
+    fn composite_clips_cut_nothing_the_effect_reads(
+        &self,
+        effect: EffectNodeIndex,
+        space: usize,
+        composite_clips: &[CompositeClip],
+    ) -> bool {
+        if composite_clips.is_empty() {
+            return true;
+        }
+        let Some((space_of_what_it_reads, what_it_reads)) = self.what_backdrop_filters_read[effect.0 as usize] else {
+            return false;
+        };
+        if space_of_what_it_reads != space {
+            return false;
+        }
+        let spaces = self.spaces.spaces();
+        composite_clips.iter().all(|clip| {
+            let mut read_in_space_of_clip = what_it_reads;
+            let mut space_of_read = space;
+            while space_of_read != clip.space {
+                if space_of_read == VIEWPORT_RASTER_SPACE {
+                    return false;
+                }
+                read_in_space_of_clip = rect_swept_over_translations(
+                    read_in_space_of_clip,
+                    spaces[space_of_read].lowest_anchor_translation,
+                    spaces[space_of_read].highest_anchor_translation,
+                );
+                space_of_read = spaces[space_of_read].parent;
+            }
+            clip.rect.contains_rect(read_in_space_of_clip)
+        })
     }
 
     /// Whether content of `context` rastered in `space` moves within it as an anchor of a space inside it scrolls, a
