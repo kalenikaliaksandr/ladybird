@@ -45,7 +45,7 @@ use std::rc::Rc;
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
 // Beyond this, the list is placed again with the spaces of nested scrollers and held sticky boxes rastered in the spaces
 // around them, once.
-const MAXIMUM_LAYER_COUNT: usize = 24;
+const MAXIMUM_LAYER_COUNT: usize = 64;
 
 pub(crate) fn media_name(content: LiveContent) -> &'static str {
     match content {

@@ -1,7 +1,7 @@
 base: [L1] base space=document
-composited effects: 28
+composited effects: 70
 layers of the nested scroller's own space: 0
-nested scrollers and held sticky boxes have no spaces: past 24 layers
-29 layers past the most a stack holds, 24: composited effects keep theirs
+nested scrollers and held sticky boxes have no spaces: past 64 layers
+71 layers past the most a stack holds, 64: composited effects keep theirs
 compared: true, matches a direct raster: true
 scrolled the document, tiles rasterized: 0
