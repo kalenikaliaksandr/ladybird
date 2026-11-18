@@ -913,22 +913,23 @@ impl PlacementTables {
                 let world = &geometries[clip_space].world;
                 translation_of(&world.draw_matrix(node.spatial))?;
                 let rect = world.map_rect_to_root(node.spatial, data.rect);
-                let edges = [rect.x, rect.y, rect.right(), rect.bottom()];
-                if !edges.iter().all(|edge| {
-                    edge.is_finite()
-                        && edge.abs() < EXTENT_LIMIT
-                        && (edge - edge.round()).abs()
-                            <= LARGEST_FRACTION_OF_A_DEVICE_PIXEL_A_COMPOSITE_CLIP_EDGE_MAY_BE_OFF_BY
+                // A clip of one axis alone has edges far past any content on the other, which clip as much at the
+                // limit of extents as where they are.
+                let [left, top, right, bottom] =
+                    [rect.x, rect.y, rect.right(), rect.bottom()].map(|edge| edge.clamp(-EXTENT_LIMIT, EXTENT_LIMIT));
+                if ![left, top, right, bottom].iter().all(|edge| {
+                    (edge - edge.round()).abs()
+                        <= LARGEST_FRACTION_OF_A_DEVICE_PIXEL_A_COMPOSITE_CLIP_EDGE_MAY_BE_OFF_BY
                 }) {
                     return None;
                 }
                 Some(CompositeClip {
                     space: clip_space,
                     rect: IntRect::new(
-                        rect.x.round() as i32,
-                        rect.y.round() as i32,
-                        rect.right().round() as i32 - rect.x.round() as i32,
-                        rect.bottom().round() as i32 - rect.y.round() as i32,
+                        left.round() as i32,
+                        top.round() as i32,
+                        right.round() as i32 - left.round() as i32,
+                        bottom.round() as i32 - top.round() as i32,
                     ),
                 })
             })

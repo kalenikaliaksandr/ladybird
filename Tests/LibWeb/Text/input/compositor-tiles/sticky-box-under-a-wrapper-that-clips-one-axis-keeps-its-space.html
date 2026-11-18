@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #wrapper { display: flex; align-items: flex-start; overflow-x: clip; }
+    #column { position: sticky; top: 0; width: 150px; height: 100vh; background: lavender; }
+    #main { width: 400px; }
+    .stripe { height: 100px; }
+    .stripe:nth-child(odd) { background: lightblue; }
+    .stripe:nth-child(even) { background: lightyellow; }
+</style>
+<div id="wrapper"><div id="column">sticky column</div><div id="main"></div></div>
+<script>
+    asyncTest(async done => {
+        // A clip of one axis is told by a rect far taller than any content, which is twice as tall again in device
+        // pixels here.
+        internals.setDevicePixelRatio(2);
+        for (let index = 0; index < 40; ++index) {
+            const stripe = document.createElement("div");
+            stripe.className = "stripe";
+            stripe.textContent = `stripe ${index}`;
+            main.appendChild(stripe);
+        }
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        window.scrollTo(0, 300);
+        await presentedFrameState();
+        const layers = layersOfTheDisplayList();
+        window.scrollTo(0, 340);
+        const state = await presentedFrameState();
+        println(layers);
+        printPresentedFrameState(state);
+        println(`scrolled on while the column is held, tiles rasterized: ${state.tilesRasterizedSinceLastCheck}`);
+        internals.setDevicePixelRatio(1);
+        done();
+    });
+</script>

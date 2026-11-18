@@ -1,0 +1,4 @@
+[L1] base space=document
+[L2] painted space=sticky@2 in document composited within [0,-16777216 800x33554432] of document
+compared: true, matches a direct raster: true
+scrolled on while the column is held, tiles rasterized: 0
