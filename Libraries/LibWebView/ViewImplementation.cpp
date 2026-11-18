@@ -2473,11 +2473,37 @@ void ViewImplementation::update_ui_overlays()
             .hovered_control = m_picture_in_picture_controls_pointer_state.hovered_action(),
         };
     }
+    if (Application::the().shows_compositor_layers()) {
+        overlays.compositor_layers = Compositing::CompositorLayersOverlayState {
+            .font_family = Application::the().ui_font_family(),
+            .hidden_layer_ids = m_ids_of_hidden_compositor_layers,
+        };
+    } else {
+        m_ids_of_hidden_compositor_layers.clear();
+    }
     Application::the().update_compositor_ui_overlays(page().compositor_context_id(), overlays);
+}
+
+void ViewImplementation::set_compositor_layer_hidden(u64 layer_id, bool hidden)
+{
+    if (hidden == m_ids_of_hidden_compositor_layers.contains_slow(layer_id))
+        return;
+    if (hidden)
+        m_ids_of_hidden_compositor_layers.append(layer_id);
+    else
+        m_ids_of_hidden_compositor_layers.remove_first_matching([&](auto id) { return id == layer_id; });
+    update_ui_overlays();
 }
 
 void ViewImplementation::did_update_compositor_layers(Badge<WebContentPage>, Compositing::CompositorLayersDescription const& layers)
 {
+    // A layer the compositor no longer keeps would stay hidden unseen if it ever came back under the same id, so the
+    // compositor forgets it too.
+    auto removed_hidden_layers = m_ids_of_hidden_compositor_layers.remove_all_matching([&](auto id) {
+        return !layers.layers.contains([&](auto const& layer) { return layer.id == id; });
+    });
+    if (removed_hidden_layers)
+        update_ui_overlays();
     if (on_compositor_layers_change)
         on_compositor_layers_change(layers);
 }

@@ -57,6 +57,7 @@
 #include <UI/Qt/BookmarkDialog.h>
 #include <UI/Qt/Bookmarks.h>
 #include <UI/Qt/ChromeLayout.h>
+#include <UI/Qt/CompositorLayersWindow.h>
 #include <UI/Qt/DownloadsPage.h>
 #include <UI/Qt/EventLoopImplementationQt.h>
 #include <UI/Qt/ExternalURLHandler.h>
@@ -1117,6 +1118,48 @@ Application::~Application()
 
     // A Picture-in-Picture window is a widget too, so it must also go before the QApplication does.
     m_picture_in_picture_windows.clear();
+}
+
+static void place_beside_browser_window_or_over_its_top_right_corner(QWidget& window, QWidget const& browser_window)
+{
+    constexpr int GAP = 12;
+    auto browser_frame = browser_window.frameGeometry();
+    auto window_size = window.size();
+    auto screen = browser_window.screen()->availableGeometry();
+    auto x = browser_frame.right() + GAP;
+    if (x + window_size.width() > screen.right())
+        x = browser_frame.right() - window_size.width() - GAP;
+    window.move(x, browser_frame.top() + GAP);
+}
+
+void Application::set_shows_compositor_layers(bool shows)
+{
+    HubConnection::the().async_set_shows_compositor_layers(shows);
+    if (!shows) {
+        if (m_compositor_layers_window)
+            m_compositor_layers_window->hide();
+        return;
+    }
+    if (!m_compositor_layers_window) {
+        m_compositor_layers_window = make<CompositorLayersWindow>(CompositorLayersWindow::Source {
+            .layers_of_active_tab = [this]() -> Optional<Compositing::CompositorLayersDescription> {
+                if (auto* tab = active_tab())
+                    return tab->compositor_layers();
+                return {};
+            },
+            .set_layer_hidden_in_active_tab = [this](u64 layer_id, bool hidden) {
+                if (auto* tab = active_tab(); tab && tab->is_loaded())
+                    tab->view().set_compositor_layer_hidden(layer_id, hidden); },
+        });
+        m_compositor_layers_window->on_close = [] {
+            ApplicationActions::the().show_compositor_layers_action().set_checked(false);
+            HubConnection::the().async_set_shows_compositor_layers(false);
+        };
+        if (auto* browser_window = active_window_if_any())
+            place_beside_browser_window_or_over_its_top_right_corner(*m_compositor_layers_window, *browser_window);
+    }
+    m_compositor_layers_window->show();
+    m_compositor_layers_window->raise();
 }
 
 void Application::show_process_manager()
