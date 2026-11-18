@@ -540,7 +540,9 @@ impl LayerStack {
     /// layer up that can hold content. The frame holds every layer up to the topmost one it has to hold: one inside an
     /// effect the compositor composites, or a canvas, video or nested context the window server cannot show by itself,
     /// as `window_server_can_show` says. Below that, the window server still shows a canvas or video it can show where
-    /// no layer above it that the frame holds can show over it.
+    /// no layer above it that the frame holds can show over it. A painted layer is the window server's to show only to
+    /// stay above a canvas or video that it shows, so the frame also holds the painted layers below the lowest of
+    /// those, and every layer where the window server shows no canvas or video.
     pub fn layers_the_window_server_shows(
         &self,
         composite_offsets: &[IntPoint],
@@ -572,6 +574,15 @@ impl LayerStack {
                 continue;
             }
             reach_of_held_layers_above = reach_of_held_layers_above.united(reach);
+        }
+        let lowest_media_the_window_server_shows = candidates
+            .iter()
+            .copied()
+            .find(|&layer| is_media(layer) && shown[layer]);
+        for &layer in &candidates {
+            if lowest_media_the_window_server_shows.is_none_or(|lowest_media| layer < lowest_media) {
+                shown[layer] = false;
+            }
         }
         shown
     }
