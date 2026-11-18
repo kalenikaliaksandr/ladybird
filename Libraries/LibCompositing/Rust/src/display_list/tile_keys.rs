@@ -15,8 +15,8 @@
 use super::builder::{HEADER_SIZE, for_each_command, has_inline_clip_in_its_own_space, inline_clips_of, read_command};
 use super::commands::{
     ClipNodeIndex, ContextRef, DeclareMaskContent, DisplayListCommandRun, DisplayListCommandType,
-    DrawCompositedContext, EffectNodeIndex, FillRect, FillRectWithRoundedCorners, PaintCaret, PaintScrollBar,
-    SpatialNodeIndex,
+    DrawCompositedContext, EffectNodeIndex, FillRect, FillRectWithRoundedCorners, FillRoundedRectRing, PaintCaret,
+    PaintScrollBar, SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{Extent, changed_extent_through_filters, nearest_spreading_effects};
@@ -589,9 +589,11 @@ impl RectInDevicePixels {
 }
 
 /// A fill of one color over a rect in device pixels, which shows in a tile only as far as the part of the rect near it.
+/// A ring fills its rect but for the rect inside its bands, and shows in a tile as far as the parts of both near it.
 #[derive(Clone, Copy, Debug)]
 struct FillOfARectInDevicePixels {
     rect: RectInDevicePixels,
+    rect_inside_the_bands_of_a_ring: Option<RectInDevicePixels>,
     digest_of_the_fill_without_its_rect: TileKey,
 }
 
@@ -1319,6 +1321,11 @@ impl<'a> RasterSpaceOfFrame<'a> {
             Some(fill) => {
                 hasher.write_key(fill.digest_of_the_fill_without_its_rect);
                 fill.rect.write_part_within(&mut hasher, within.area);
+                // The corners of the rect inside a ring's bands curve only within those of the ring's own rect, which
+                // the part of that rect tells of.
+                if let Some(rect_inside_the_bands) = &fill.rect_inside_the_bands_of_a_ring {
+                    rect_inside_the_bands.write_part_within(&mut hasher, within.area);
+                }
             }
             None => {
                 for record in &chunk.record_table().records[entry.first_record as usize..entry.end_record as usize] {
@@ -1531,24 +1538,52 @@ impl<'a> RasterSpaceOfFrame<'a> {
         }
         let mut hasher = KeyHasher::new();
         hasher.write_u32(header.command_type as u32);
-        let (rect, corner_radii) = match header.command_type {
+        let (rect, corner_radii, rect_inside_the_bands_of_a_ring) = match header.command_type {
             DisplayListCommandType::FillRect => {
                 let fill = read_command::<FillRect>(payload);
                 hasher.write_u32(fill.color.0);
                 hasher.write_u32(fill.compositing_and_blending_operator as u32);
                 hasher.write_u32(fill.background_color_animation_effect.0);
-                (fill.rect, CornerRadii::default())
+                (fill.rect, CornerRadii::default(), None)
             }
             DisplayListCommandType::FillRectWithRoundedCorners => {
                 let fill = read_command::<FillRectWithRoundedCorners>(payload);
                 hasher.write_u32(fill.color.0);
                 hasher.write_u32(fill.background_color_animation_effect.0);
-                (fill.rect, fill.corner_radii)
+                (fill.rect, fill.corner_radii, None)
+            }
+            DisplayListCommandType::FillRoundedRectRing => {
+                let ring = read_command::<FillRoundedRectRing>(payload);
+                hasher.write_u32(ring.color.0);
+                let top_width = ring.top_width.clamp(0, ring.rect.height.max(0));
+                let bottom_width = ring.bottom_width.clamp(0, (ring.rect.height - top_width).max(0));
+                let left_width = ring.left_width.clamp(0, ring.rect.width.max(0));
+                let right_width = ring.right_width.clamp(0, (ring.rect.width - left_width).max(0));
+                for width in [top_width, right_width, bottom_width, left_width] {
+                    hasher.write_i32(width);
+                }
+                let rect_inside_the_bands = IntRect::new(
+                    ring.rect.x + left_width,
+                    ring.rect.y + top_width,
+                    ring.rect.width - left_width - right_width,
+                    ring.rect.height - top_width - bottom_width,
+                );
+                (ring.rect, ring.corner_radii, Some(rect_inside_the_bands))
             }
             _ => return None,
         };
+        let rect_inside_the_bands_of_a_ring = match rect_inside_the_bands_of_a_ring {
+            Some(rect_inside_the_bands) => Some(RectInDevicePixels::of(
+                &self.geometry.world,
+                context.spatial,
+                rect_inside_the_bands.to_float(),
+                &CornerRadii::default(),
+            )?),
+            None => None,
+        };
         Some(FillOfARectInDevicePixels {
             rect: RectInDevicePixels::of(&self.geometry.world, context.spatial, rect.to_float(), &corner_radii)?,
+            rect_inside_the_bands_of_a_ring,
             digest_of_the_fill_without_its_rect: hasher.finish(),
         })
     }

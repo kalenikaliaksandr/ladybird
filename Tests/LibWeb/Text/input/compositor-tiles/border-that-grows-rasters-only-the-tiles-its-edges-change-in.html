@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<script src="../include.js"></script>
+<script src="presented-frame.js"></script>
+<style>
+    body { margin: 0; }
+    #bordered { box-sizing: border-box; width: 600px; height: 2000px; margin-left: 50px; border: 2px solid rgb(200, 30, 30); }
+</style>
+<div id="bordered"></div>
+<script>
+    asyncTest(async done => {
+        await presentedFrameStateOnceNothingIsLeftToRasterize();
+        const ringsDrawn = internals.dumpDisplayList().split("\n").filter(line => line.includes("FillRoundedRectRing")).length;
+        bordered.style.height = "2600px";
+        const grown = await presentedFrameState();
+        bordered.style.height = "400px";
+        const shrunk = await presentedFrameState();
+        println(`rings drawn: ${ringsDrawn}`);
+        printPresentedFrameState(grown);
+        println(`border grew below the view, tiles rasterized: ${grown.tilesRasterizedSinceLastCheck}`);
+        printPresentedFrameState(shrunk);
+        println(`border shrank to end within the view, tiles rasterized: ${shrunk.tilesRasterizedSinceLastCheck}`);
+        done();
+    });
+</script>

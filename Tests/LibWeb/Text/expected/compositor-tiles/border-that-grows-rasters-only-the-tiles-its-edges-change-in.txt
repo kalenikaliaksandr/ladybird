@@ -1,0 +1,5 @@
+rings drawn: 1
+compared: true, matches a direct raster: true
+border grew below the view, tiles rasterized: 0
+compared: true, matches a direct raster: true
+border shrank to end within the view, tiles rasterized: 6
