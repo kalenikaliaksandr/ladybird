@@ -1393,14 +1393,13 @@ fn spaces_to_frame_of(
     tree: &VisualContextTree,
     scroll_offsets: &[FloatPoint],
     composite_offsets: &[IntPoint],
-    viewport_to_raster_transform: FloatMatrix4x4,
 ) -> Vec<SpaceToFrame> {
     let has_space_composited_through_transform = stack
         .spaces
         .iter()
         .any(|space| matches!(space.anchor_kind, RasterSpaceAnchorKind::AnimatedTransform { .. }));
     let world_of_frame = has_space_composited_through_transform
-        .then(|| WorldTransforms::new(tree, scroll_offsets, Some(viewport_to_raster_transform)));
+        .then(|| WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity())));
     stack.spaces_to_frame(composite_offsets, |anchor| {
         world_of_frame
             .as_ref()
@@ -1445,7 +1444,9 @@ impl ContextPresenting {
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         self.layers.work_counts_of_this_frame = FrameWorkCounts::default();
         // A plan places spaces that scroll at whole device pixels of the viewport it was made within, which a raster
-        // that scales them or shifts them by a fraction lacks, as does a viewport of another size.
+        // that scales them or shifts them by a fraction lacks, as does a viewport of another size. So only a stack of
+        // one layer, in the viewport's space, is drawn under a raster transform other than identity, and what
+        // composites the spaces and effects of a plan does not apply the raster transform.
         let layer_plan = frame.frame_inputs.layer_plan.as_ref().filter(|layer_plan| {
             raster_transform == FloatMatrix4x4::identity() && layer_plan.viewport_rect == viewport_rect
         });
@@ -1457,7 +1458,7 @@ impl ContextPresenting {
         self.layers.window_server_placements_of_media =
             stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
         let composite_offsets = stack.composite_offsets(scroll_offsets);
-        let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets, raster_transform);
+        let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets);
         let shown_by_window_server_by_layer = if self.why_window_server_shows_no_media_of_this_context(env).is_none() {
             stack.layers_the_window_server_shows(&composite_offsets, |layer_index| {
                 self.why_window_server_does_not_show_media_layer(
@@ -2565,8 +2566,9 @@ impl ContextPresenting {
         {
             return;
         }
+        debug_assert!(self.raster_transform() == FloatMatrix4x4::identity());
         let tile_pool = &self.layers.tile_pool;
-        composite_inside_effects_of_frame(env, surface, frame, self.raster_transform(), |compositing_session| {
+        composite_inside_effects_of_frame(env, surface, frame, |compositing_session| {
             let mut entered_composited_bands: Vec<BandIndex> = Vec::new();
             for compositing in compositing_of_layers
                 .iter()

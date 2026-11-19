@@ -1030,12 +1030,11 @@ pub(crate) fn replay_with_scroll_offsets(
 }
 
 /// Composites rasters of the frame into the target through `composite`, which enters the effects the compositor applies
-/// to them as a replay of the frame's list under `raster_transform` enters them.
+/// to them as a replay of the frame's list enters them.
 pub(crate) fn composite_inside_effects_of_frame(
     env: &PresentingEnvironment<'_>,
     target: &SurfaceHandle,
     frame: &FrameToPaint<'_>,
-    raster_transform: FloatMatrix4x4,
     composite: impl FnOnce(&mut CompositingInsideEffects<'_, '_, FfiRasterPainter>),
 ) {
     let frame_inputs = frame.frame_inputs;
@@ -1057,7 +1056,6 @@ pub(crate) fn composite_inside_effects_of_frame(
                 storage.effect_clip_plan(tree),
                 display_list.root_group_color(),
                 &replay_frame,
-                raster_transform,
                 painter,
                 composite,
             );

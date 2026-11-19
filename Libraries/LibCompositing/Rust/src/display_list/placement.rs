@@ -774,7 +774,8 @@ pub struct RasterSpaceGeometry {
 }
 
 impl RasterSpaceGeometry {
-    /// `viewport_to_raster_transform` maps the device pixels of the viewport into those of the raster.
+    /// `viewport_to_raster_transform` maps the device pixels of the viewport into those of the raster. It is the
+    /// identity wherever there is more than one space.
     pub fn new(
         tree: &VisualContextTree,
         spaces: &RasterSpaces,
@@ -782,6 +783,7 @@ impl RasterSpaceGeometry {
         scroll_offsets: &[FloatPoint],
         viewport_to_raster_transform: FloatMatrix4x4,
     ) -> Self {
+        debug_assert!(viewport_to_raster_transform == FloatMatrix4x4::identity() || spaces.len() == 1);
         let raster_scroll_offsets = raster_scroll_offsets(spaces.spaces(), space, scroll_offsets);
         let world = WorldTransforms::with_raster_root(
             tree,

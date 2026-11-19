@@ -1753,21 +1753,18 @@ pub struct CompositeClipsOfRaster<'a> {
 }
 
 /// Composites rasters of the frame into the painter's surface through `composite`, which draws them at the painter's
-/// matrix and enters effects as a replay of the list under that matrix and `viewport_to_raster_transform` would,
-/// outside the root isolation layer, which the surface stands for.
-#[allow(clippy::too_many_arguments)]
+/// matrix and enters effects as a replay of the list under that matrix would, outside the root isolation layer, which
+/// the surface stands for.
 pub fn composite_inside_effects<Painter: ReplayPainter + ?Sized>(
     tree: &VisualContextTree,
     display_list: &DisplayListStorage,
     effect_clips: &EffectClipPlan,
     root_group_color: Color,
     frame: &ReplayFrame<'_>,
-    viewport_to_raster_transform: FloatMatrix4x4,
     painter: &mut Painter,
     composite: impl FnOnce(&mut CompositingInsideEffects<'_, '_, Painter>),
 ) {
     let canvas_matrix_of_raster_pixels = painter.canvas_matrix();
-    painter.set_matrix(&canvas_matrix_of_raster_pixels.multiplied(viewport_to_raster_transform));
     let mut driver = ReplayDriver::new(
         tree,
         display_list,
