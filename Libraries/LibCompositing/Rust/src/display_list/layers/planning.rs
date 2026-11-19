@@ -17,20 +17,20 @@
 
 use super::{
     BandIndex, BarrierCut, BarrierIdentity, CompositedEffect, LayerContent, LayerIdentity, LayerIndex, LayerStack,
-    LayeringObstacles, NodeNamesFromIndices, PlacementNode, PlacementNodeBand, PlacementNodeIdentity,
-    PlacementNodeIndex, StackLayer, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited,
-    WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, anchors_of_layer_plans,
-    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, effect_is_or_is_inside, identity_of_node,
-    media_name, spatial_nodes_whose_scroll_offset_layer_plans_leave_out, wire,
+    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeNamesFromIndices, PlacementNode, PlacementNodeBand,
+    PlacementNodeIdentity, PlacementNodeIndex, StackLayer, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect,
+    WhyEffectIsComposited, WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia,
+    anchors_of_layer_plans, backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index,
+    effect_is_or_is_inside, identity_of_node, media_name, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
+    wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
     KeyframeFiltersOfEffects, filter_may_spread_at_some_sample, nearest_effects_spreading_at_some_sample,
 };
 use crate::display_list::placement::{
-    CompositeClip, FiltersAndClipsOfList, PlacementTables, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry,
-    RasterSpaceIndex, RasterSpaces, RunGroupIndex, RunsReachingOutsideTheirContext, is_finite_rect,
-    lowest_common_ancestor_space, rect_swept_over_translations, spaces_with_geometries,
+    CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
+    RasterSpaces, RunGroupIndex, is_finite_rect, rect_swept_over_translations,
     spatial_nodes_whose_scroll_offset_placement_leaves_out,
 };
 use crate::display_list::reach::Reach;
@@ -46,7 +46,12 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
+mod placement_tables;
+
+use placement_tables::{
+    PlacementTables, RunsReachingOutsideTheirContext, lowest_common_ancestor_space, spaces_with_geometries,
+};
+
 /// How many effects and subtrees the compositor animates get layers of their own, first in paint order.
 pub const MAXIMUM_ANIMATED_NODES_WITH_LAYERS: usize = 32;
 

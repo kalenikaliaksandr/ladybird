@@ -47,6 +47,8 @@ pub use wire::{LayerPlan, UnvalidatedLayerPlan, UnvalidatedLayerStack};
 // a rect offset by such an offset still fits in an `IntRect`.
 const COORDINATE_LIMIT_IN_DEVICE_PIXELS: i32 = 2 * EXTENT_LIMIT_IN_DEVICE_PIXELS as i32;
 
+pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
+
 pub(crate) fn media_name(content: LiveContent) -> &'static str {
     match content {
         LiveContent::Canvas(_) => "canvas",

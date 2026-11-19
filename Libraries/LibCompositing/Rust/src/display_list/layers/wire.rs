@@ -8,11 +8,11 @@
 //! work out of the list and the tree, the notes the overlay of layers shows, and the checks that a plan from another
 //! process passes before anything reads it.
 
-use super::planning::MAXIMUM_MEDIA_LAYER_COUNT;
 use super::{
     BandIndex, BarrierCut, BarrierIdentity, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CompositedEffect, LayerContent,
-    LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, PlacementNode, PlacementNodeBand, PlacementNodeIdentity,
-    PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
+    LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, PlacementNode,
+    PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect,
+    WhyListIsOneLayer, anchors_of_layer_plans,
 };
 use crate::display_list::commands::{
     CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VideoSinkHandle,
