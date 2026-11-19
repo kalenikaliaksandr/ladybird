@@ -7,6 +7,7 @@
 //! A plan of the layers of a list as it goes from WebContent to the compositor: the wire form of a stack, and the checks
 //! that a stack from another process passes before anything reads it.
 
+use super::planning::MAXIMUM_MEDIA_LAYER_COUNT;
 use super::{
     BandIndex, BarrierCut, BarrierIdentity, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CompositedEffect, LayerContent,
     LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, PlacementNode, PlacementNodeBand, PlacementNodeIdentity,
@@ -17,7 +18,9 @@ use crate::display_list::animated_transform_spaces::SMALLEST_RASTER_SCALE;
 use crate::display_list::commands::{
     CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VISUAL_VIEWPORT_NODE_INDEX, VideoSinkHandle,
 };
-use crate::display_list::placement::{CompositeClip, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex};
+use crate::display_list::placement::{
+    CompositeClip, MAXIMUM_RASTER_SPACE_COUNT, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex,
+};
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
 use crate::display_list::summary::{LiveContent, live_content_of};
@@ -26,9 +29,9 @@ use libgfx_rust::{FloatPoint, IntRect};
 use libipc_rust::wire::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 use std::collections::{HashMap, HashSet};
 
-// Far more than a plan holds. A plan holds at most 72 spaces, and nodes, bands, layers and spans as many as the runs of a
-// list ask for.
-const MAXIMUM_SPACE_COUNT_OF_RECEIVED_STACK: usize = 256;
+// Caps on a received stack, which bound what decoding allocates. Spaces, and the composite clips of a node, which are one
+// per space, are capped at the most a plan makes. The other caps are far more than a plan holds: it holds nodes, bands,
+// layers and spans as many as the runs of a list ask for.
 const MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
 const MAXIMUM_NODE_DEPTH_OF_RECEIVED_STACK: usize = 1024;
 const MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
@@ -328,7 +331,7 @@ impl Decode for PlacementNode {
         Ok(Self {
             identity: decoder.decode()?,
             raster_space_index: decoder.decode()?,
-            composite_clips: decoder.decode_with_max_size(MAXIMUM_SPACE_COUNT_OF_RECEIVED_STACK)?,
+            composite_clips: decoder.decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
             composited_effect: decoder.decode()?,
             parent_index: decoder.decode()?,
             reach_in_parent_node: decoder.decode()?,
@@ -762,7 +765,7 @@ impl Decode for UnvalidatedLayerStack {
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             stack: LayerStack {
-                spaces: decoder.decode_with_max_size(MAXIMUM_SPACE_COUNT_OF_RECEIVED_STACK)?,
+                spaces: decoder.decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
                 nodes: decoder.decode_with_max_size(MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK)?,
                 bands: decoder.decode_with_max_size(MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK)?,
                 layers: decoder.decode_with_max_size(MAXIMUM_LAYER_COUNT_OF_RECEIVED_STACK)?,
@@ -773,9 +776,8 @@ impl Decode for UnvalidatedLayerStack {
                 media_without_layers: decode_media_without_layers(decoder)?,
                 effects_reading_only_own_layer: decoder.decode_with_max_size(MAXIMUM_NOTE_COUNT_OF_RECEIVED_STACK)?,
                 tiles_hold_content_moving_within_space_by_space_index: decoder
-                    .decode_with_max_size(MAXIMUM_SPACE_COUNT_OF_RECEIVED_STACK)?,
-                swept_reach_in_parent_space_by_space_index: decoder
-                    .decode_with_max_size(MAXIMUM_SPACE_COUNT_OF_RECEIVED_STACK)?,
+                    .decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
+                swept_reach_in_parent_space_by_space_index: decoder.decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
                 index_of_layer_with_identity: HashMap::new(),
                 has_layer_at_or_above_base_by_band_index: Vec::new(),
             },
@@ -986,6 +988,9 @@ fn check_rects_and_coordinates(stack: &LayerStack, viewport_rect: IntRect) -> Re
 }
 
 fn check_spaces(stack: &LayerStack, tree: &VisualContextTree, viewport_rect: IntRect) -> Result<(), &'static str> {
+    if stack.spaces.len() > MAXIMUM_RASTER_SPACE_COUNT {
+        return Err("the stack holds more spaces than a plan makes");
+    }
     let Some(viewport_space) = stack.spaces.first() else {
         return Err("the stack holds no space");
     };
@@ -1070,6 +1075,7 @@ fn check_one_layer_shape(
 fn check_nodes(stack: &LayerStack, list: &DisplayListStorage, tree: &VisualContextTree) -> Result<(), &'static str> {
     let mut depth_by_node_index: Vec<usize> = Vec::with_capacity(stack.nodes.len());
     let mut identities_of_composited_nodes = HashSet::new();
+    let mut effects_of_composited_nodes = HashSet::new();
     for (index, node) in stack.nodes.iter().enumerate() {
         if node.raster_space_index.0 >= stack.spaces.len() {
             return Err("a node is in a space the stack does not hold");
@@ -1083,6 +1089,23 @@ fn check_nodes(stack: &LayerStack, list: &DisplayListStorage, tree: &VisualConte
             return Err("nodes are nested deeper than a plan nests them");
         }
         depth_by_node_index.push(depth);
+        // A node that is not composited is in the node of the space its space is in, and a composited node is in a node
+        // of its own space. So nodes nest no deeper than spaces, plus composited effects, which nest as the tree nests
+        // them.
+        let parent = node.parent_index.map(|parent_index| &stack.nodes[parent_index.0]);
+        let is_in_node_a_plan_puts_it_in = match (node.composited_effect, parent) {
+            (None, None) => node.raster_space_index == RasterSpaceIndex::VIEWPORT,
+            (None, Some(parent)) => {
+                node.raster_space_index != RasterSpaceIndex::VIEWPORT
+                    && parent.composited_effect.is_none()
+                    && parent.raster_space_index == stack.spaces[node.raster_space_index.0].parent_index
+            }
+            (Some(_), Some(parent)) => parent.raster_space_index == node.raster_space_index,
+            (Some(_), None) => return Err("a composited node is in no other node"),
+        };
+        if !is_in_node_a_plan_puts_it_in {
+            return Err("a node is not in the node of its space or of the space its space is in");
+        }
         let clips_are_one_per_space_in_order = node
             .composite_clips
             .iter()
@@ -1097,9 +1120,6 @@ fn check_nodes(stack: &LayerStack, list: &DisplayListStorage, tree: &VisualConte
         let Some(effect) = node.composited_effect else {
             continue;
         };
-        if node.parent_index.is_none() {
-            return Err("a composited node is in no other node");
-        }
         let effect_takes_part_in_replay = tree.effect_is_live(effect)
             && list
                 .effect_clip_plan(tree)
@@ -1110,6 +1130,9 @@ fn check_nodes(stack: &LayerStack, list: &DisplayListStorage, tree: &VisualConte
         }
         if !identities_of_composited_nodes.insert(node.identity) {
             return Err("two composited nodes share an identity");
+        }
+        if !effects_of_composited_nodes.insert(effect) {
+            return Err("two nodes are composited inside one effect");
         }
     }
     Ok(())
@@ -1134,6 +1157,11 @@ fn check_bands(stack: &LayerStack, list: &DisplayListStorage) -> Result<(), &'st
             };
         if !band_is_inside_band_of_parent_node {
             return Err("a band is not after a band of the node its node is in, which holds it as a barrier");
+        }
+        // A plan opens each band but the first for a stretch of records that goes into that band or into a band inside
+        // it. The first band holds nothing where no record can show.
+        if index != 0 && band.record_spans.is_empty() && band.cuts.is_empty() {
+            return Err("a band other than the first holds no span and no cut");
         }
         let layers_are_in_range = band.layer_below_all_cuts.0 < stack.layers.len()
             && band.cuts.iter().all(|cut| cut.layer_above_cut.0 < stack.layers.len());
@@ -1233,7 +1261,10 @@ fn check_layers(stack: &LayerStack, list: &DisplayListStorage) -> Result<(), &'s
             _ => return Err("the identity and the content of a layer are of different kinds"),
         }
     }
-    let node_identities: HashSet<PlacementNodeIdentity> = stack.nodes.iter().map(|node| node.identity).collect();
+    if media_layer_index_by_identity.len() > MAXIMUM_MEDIA_LAYER_COUNT {
+        return Err("the stack holds more canvas, video and nested context layers than a plan makes");
+    }
+    // The walk of the bands checks the barriers that are bands.
     let mut media_layer_is_barrier_by_layer_index = vec![false; stack.layers.len()];
     for (index, band) in stack.bands.iter().enumerate() {
         for cut in &band.cuts {
@@ -1244,21 +1275,14 @@ fn check_layers(stack: &LayerStack, list: &DisplayListStorage) -> Result<(), &'s
             else {
                 return Err("a layer above a cut sits above no barrier");
             };
-            match barrier {
-                BarrierIdentity::Media { content, ordinal } => {
-                    let Some(&media_layer_index) = media_layer_index_by_identity.get(&(content, ordinal)) else {
-                        return Err("a barrier names a canvas, video or nested context the stack has no layer for");
-                    };
-                    if stack.layers[media_layer_index.0].band_index != BandIndex(index)
-                        || std::mem::replace(&mut media_layer_is_barrier_by_layer_index[media_layer_index.0], true)
-                    {
-                        return Err("a media layer is not a barrier once in its band");
-                    }
-                }
-                BarrierIdentity::NestedNodeBand { node, .. } => {
-                    if !node_identities.contains(&node) {
-                        return Err("a barrier names a node the stack does not hold");
-                    }
+            if let BarrierIdentity::Media { content, ordinal } = barrier {
+                let Some(&media_layer_index) = media_layer_index_by_identity.get(&(content, ordinal)) else {
+                    return Err("a barrier names a canvas, video or nested context the stack has no layer for");
+                };
+                if stack.layers[media_layer_index.0].band_index != BandIndex(index)
+                    || std::mem::replace(&mut media_layer_is_barrier_by_layer_index[media_layer_index.0], true)
+                {
+                    return Err("a media layer is not a barrier once in its band");
                 }
             }
         }
@@ -1268,6 +1292,119 @@ fn check_layers(stack: &LayerStack, list: &DisplayListStorage) -> Result<(), &'s
         .all(|media_layer_index| media_layer_is_barrier_by_layer_index[media_layer_index.0]);
     if !every_media_layer_is_a_barrier {
         return Err("a media layer is not a barrier in its band");
+    }
+    Ok(())
+}
+
+// A plan puts each stretch of records into one band, or for a canvas, video or nested context with a layer, into that
+// layer, and a stretch holds at least one run. So no record is in two spans, and a stack holds no more spans than the
+// list holds runs.
+fn check_no_record_is_held_twice(stack: &LayerStack) -> Result<(), &'static str> {
+    let spans_of_media_layers = stack.layers.iter().filter_map(|layer| match layer.content {
+        LayerContent::Media { record_span, .. } => Some(record_span),
+        LayerContent::Painted { .. } => None,
+    });
+    let mut spans: Vec<ListSpan> = stack
+        .bands
+        .iter()
+        .flat_map(|band| band.record_spans.iter().copied())
+        .chain(spans_of_media_layers)
+        .collect();
+    if spans.iter().any(|span| span.begin >= span.end) {
+        return Err("a span of the stack holds no record");
+    }
+    spans.sort_unstable_by_key(|span| span.begin);
+    if spans.windows(2).any(|pair| pair[1].begin < pair[0].end) {
+        return Err("two spans of the stack hold the same record");
+    }
+    Ok(())
+}
+
+// Bands and layers come in the order a plan makes them: the order of a walk from the first band that enters each other
+// band from the one cut of the band it is in whose barrier names it. A band comes right before the bands it holds. Its
+// layer below all cuts comes first, then for each cut the layers of the barrier and the layer above the cut. So the walk
+// enters each band once, and the layers inside a band are next to each other.
+fn check_bands_and_layers_are_in_walk_order(stack: &LayerStack) -> Result<(), &'static str> {
+    const NOT_IN_WALK_ORDER: &str = "the bands and layers of the stack are not in the order of a walk of the bands";
+    // Each band has a name of its own, as the identity of its layer below all cuts is unique.
+    let band_index_by_name: HashMap<(PlacementNodeIdentity, u32), usize> = stack
+        .bands
+        .iter()
+        .enumerate()
+        .map(|(index, band)| {
+            let node_identity = stack.nodes[band.placement_node_index.0].identity;
+            ((node_identity, band.band_ordinal_in_node), index)
+        })
+        .collect();
+    let mut next_band_index = 0;
+    let mut next_layer_index = 0;
+    // The bands the walk is in, outermost first, each with how many of its cuts the walk has passed.
+    let mut bands_entered: Vec<(usize, usize)> = Vec::new();
+    let mut band_to_enter = Some(0);
+    loop {
+        if let Some(band_index) = band_to_enter.take() {
+            if band_index != next_band_index || stack.bands[band_index].layer_below_all_cuts.0 != next_layer_index {
+                return Err(NOT_IN_WALK_ORDER);
+            }
+            next_band_index += 1;
+            next_layer_index += 1;
+            bands_entered.push((band_index, 0));
+        }
+        let Some(&(band_index, cuts_passed)) = bands_entered.last() else {
+            break;
+        };
+        let Some(cut) = stack.bands[band_index].cuts.get(cuts_passed) else {
+            bands_entered.pop();
+            // The walk leaves the barrier of a cut of the band it is in, so the layer above that cut comes next.
+            if let Some((parent_band_index, parent_cuts_passed)) = bands_entered.last_mut() {
+                let parent_cut = &stack.bands[*parent_band_index].cuts[*parent_cuts_passed];
+                if parent_cut.layer_above_cut.0 != next_layer_index {
+                    return Err(NOT_IN_WALK_ORDER);
+                }
+                next_layer_index += 1;
+                *parent_cuts_passed += 1;
+            }
+            continue;
+        };
+        let LayerIdentity::Painted {
+            above_barrier: Some(barrier),
+            ..
+        } = stack.layers[cut.layer_above_cut.0].identity
+        else {
+            return Err("a layer above a cut sits above no barrier");
+        };
+        match barrier {
+            BarrierIdentity::Media { content, ordinal } => {
+                let media_layer_is_next = stack
+                    .layers
+                    .get(next_layer_index)
+                    .is_some_and(|layer| layer.identity == LayerIdentity::Media { content, ordinal });
+                if !media_layer_is_next || cut.layer_above_cut.0 != next_layer_index + 1 {
+                    return Err(NOT_IN_WALK_ORDER);
+                }
+                next_layer_index += 2;
+                if let Some((_, cuts_passed)) = bands_entered.last_mut() {
+                    *cuts_passed += 1;
+                }
+            }
+            BarrierIdentity::NestedNodeBand {
+                node,
+                band_ordinal_in_node,
+            } => {
+                let Some(&nested_band_index) = band_index_by_name.get(&(node, band_ordinal_in_node)) else {
+                    return Err("a barrier names a band the stack does not hold");
+                };
+                if stack.bands[nested_band_index].parent_band_holding_this_band_as_barrier
+                    != Some(BandIndex(band_index))
+                {
+                    return Err("a barrier names a band that is not in the band of the barrier");
+                }
+                band_to_enter = Some(nested_band_index);
+            }
+        }
+    }
+    if next_band_index != stack.bands.len() || next_layer_index != stack.layers.len() {
+        return Err("the walk of the bands does not reach every band and layer of the stack");
     }
     Ok(())
 }
@@ -1334,21 +1471,32 @@ impl LayerStack {
     /// checks that let every consumer read it without a panic, an index out of range, an overflow, or work without a
     /// bound. The checks also build the lookups of the stack.
     ///
-    /// A stack passes where every rect and coordinate lies within twice the extent limit of a plan; the first space is
-    /// the viewport's, and every other space is after the space it is in, anchored at a node of its kind, at a raster
-    /// scale within the range a plan uses; nodes are
-    /// after the nodes they are in, not deeper than a plan nests them, with composite clips one per space; bands are of
-    /// nodes of the stack, after the bands that hold them, and their spans and cuts are at runs of the list in paint
-    /// order; each layer is named once, by its band, as a painted layer or as a canvas, video or nested context that is
-    /// a run of the list drawing it and a barrier once in its band; barriers name layers and nodes of the stack;
-    /// identities of layers and of composited nodes are unique; composited effects are effects a replay of the list
-    /// enters, nested as the tree nests them; and the base layer is the layer below the cuts of a band, outside the
-    /// spaces the compositor animates. A stack of one layer is the one `single_layer` makes for the list.
+    /// A stack passes where every rect and coordinate lies within twice the extent limit of a plan; the stack holds no
+    /// more spaces than a plan makes, the first space is the viewport's, and every other space is after the space it is
+    /// in, anchored at a node of its kind, at a raster scale within the range a plan uses; nodes are after the nodes
+    /// they are in, not deeper than a plan nests them, with composite clips one per space; a node that is not composited
+    /// is in the node of the space its space is in, or in no node if it is in the viewport's space, and a composited
+    /// node is in a node of its own space; bands are of nodes of the stack, after the bands that hold them, each band
+    /// but the first holds a span or a cut, and spans and cuts are at runs of the list in paint order; no span is empty
+    /// and no record is in two spans; each layer is named once, by its band, as a painted layer or as a canvas, video
+    /// or nested context that is a run of the list drawing it and a barrier once in its band, and the stack holds no
+    /// more of those than a plan makes; bands and layers come in the order of a walk of the bands that enters each band
+    /// from the one cut of the band it is in whose barrier names it; identities of layers and of composited nodes are
+    /// unique; composited effects are different effects a replay of the list enters, nested as the tree nests them;
+    /// and the base layer is the layer below the cuts of a band, outside the spaces the compositor animates. A stack of
+    /// one layer is the one `single_layer` makes for the list.
+    ///
+    /// So a stack holds no more spans than the list holds runs, no more cuts than bands and media layers, and no more
+    /// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus the effects of
+    /// the tree nest, and the layers inside a band are next to each other, so a frame that composites the layers in
+    /// order enters each composited band once.
     ///
     /// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
-    /// which layers can hold content, whether the bands hold every record once, whether composite clips are the clips
-    /// content needs, which effects must be composited and why, where the window server could show media, and the notes
-    /// that only the dump and the overlay of layers show. The list and the tree pass their own checks first.
+    /// which layers can hold content, whether every record is in a span, whether composite clips are the clips content
+    /// needs, which effects must be composited and why, and where the window server could show media. They do not check
+    /// `layering_obstacles`, which tile keying reads, `CompositedEffect::filter_spreads_what_it_composites`, which a
+    /// frame reads, or the notes that only the dump and the overlay of layers show. The list and the tree pass their own
+    /// checks first.
     pub fn validated(
         unvalidated: UnvalidatedLayerStack,
         list: &DisplayListStorage,
@@ -1365,6 +1513,8 @@ impl LayerStack {
         check_nodes(&stack, list, tree)?;
         check_bands(&stack, list)?;
         check_layers(&stack, list)?;
+        check_no_record_is_held_twice(&stack)?;
+        check_bands_and_layers_are_in_walk_order(&stack)?;
         check_composited_effects(&stack, tree)?;
         check_base_layer(&stack)?;
         Ok(stack.with_lookups())
@@ -1760,6 +1910,70 @@ mod tests {
         }
     }
 
+    // A record that draws nothing, which no band holds, so that the only band of the stack holds nothing.
+    fn page_whose_records_draw_nothing() -> Page {
+        let (tree, viewport) = tree_with_root_isolation_effect(1.0);
+        let list = ListOfOneChunk::default().with(fill(IntRect::new(10, 10, 0, 0)), viewport);
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
+    // More scrollers in the document than get spaces.
+    const NESTED_SCROLLER_COUNT_OF_CROWDED_PAGE: i32 = 80;
+
+    fn page_with_many_nested_scrollers() -> Page {
+        let scrollport_rects: Vec<IntRect> = (0..NESTED_SCROLLER_COUNT_OF_CROWDED_PAGE)
+            .map(|index| IntRect::new(10, 100 + index * 220, 300, 200))
+            .collect();
+        let (tree, _, contexts) = tree_with_document_scroller(&scrollport_rects);
+        let mut list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 800, 20000)), contexts[0]);
+        for (scrollport_rect, context) in scrollport_rects.iter().zip(&contexts[1..]) {
+            list = list.with(fill(*scrollport_rect), *context);
+        }
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
+    // One canvas more than get layers, the last after a fill.
+    fn page_with_nine_canvases() -> Page {
+        let (tree, viewport) = tree_with_root_isolation_effect(1.0);
+        let mut list = ListOfOneChunk::default().with(fill(VIEWPORT), viewport);
+        for index in 0..9 {
+            list = list
+                .with(fill(IntRect::new(10 + index * 80, 10, 60, 60)), viewport)
+                .with(
+                    canvas(IntRect::new(10 + index * 80, 100, 60, 60), index as u64 + 1),
+                    viewport,
+                );
+        }
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
+    // Two elements side by side whose opacity the compositor animates.
+    fn page_with_two_fading_siblings() -> Page {
+        let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
+        let document = contexts[0];
+        let left = tree.append_effect_node_under(document, effects(1.0));
+        let right = tree.append_effect_node_under(document, effects(1.0));
+        tree.set_visual_animations(vec![opacity_animation(left.effect), opacity_animation(right.effect)]);
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(100, 100, 200, 200)), left)
+            .with(fill(IntRect::new(400, 100, 200, 200)), right)
+            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
     fn every_page() -> Vec<(&'static str, Page)> {
         vec![
             ("plain page", plain_page()),
@@ -1774,6 +1988,7 @@ mod tests {
             ),
             ("translucent root", page_under_translucent_root()),
             ("no records", page_without_records()),
+            ("records that draw nothing", page_whose_records_draw_nothing()),
         ]
     }
 
@@ -1857,6 +2072,25 @@ mod tests {
             stack_of(page_without_records()).why_list_is_one_layer,
             Some(WhyListIsOneLayer::EmptyDisplayList)
         );
+        let nothing_drawn = stack_of(page_whose_records_draw_nothing());
+        assert!(nothing_drawn.why_list_is_one_layer.is_none());
+        assert_eq!(nothing_drawn.bands.len(), 1);
+        assert!(nothing_drawn.bands[0].record_spans.is_empty() && nothing_drawn.bands[0].cuts.is_empty());
+        let crowded = stack_of(page_with_many_nested_scrollers());
+        assert_eq!(kinds_of_anchors(&crowded)[2..], ["scroller"; 6]);
+        let nested_scrollers_without_spaces = NESTED_SCROLLER_COUNT_OF_CROWDED_PAGE as usize - 6;
+        assert!(crowded.spaces.len() + nested_scrollers_without_spaces > MAXIMUM_RASTER_SPACE_COUNT);
+        let nine_canvases = stack_of(page_with_nine_canvases());
+        assert_eq!(nine_canvases.bands.len(), 1);
+        assert_eq!(media_layer_count(&nine_canvases), MAXIMUM_MEDIA_LAYER_COUNT);
+        let siblings = stack_of(page_with_two_fading_siblings());
+        let parents_of_composited_nodes: Vec<Option<PlacementNodeIndex>> = siblings
+            .composited_effects
+            .iter()
+            .map(|composited| siblings.nodes[composited.placement_node_index.0].parent_index)
+            .collect();
+        assert_eq!(parents_of_composited_nodes.len(), 2);
+        assert_eq!(parents_of_composited_nodes[0], parents_of_composited_nodes[1]);
     }
 
     #[test]
@@ -1959,7 +2193,7 @@ mod tests {
     #[test]
     fn a_count_past_its_maximum_is_refused_before_anything_is_allocated() {
         let mut encoder = Encoder::new();
-        encoder.encode_size(MAXIMUM_SPACE_COUNT_OF_RECEIVED_STACK + 1).unwrap();
+        encoder.encode_size(MAXIMUM_RASTER_SPACE_COUNT + 1).unwrap();
         let bytes = encoder.finish().0;
         assert!(matches!(
             Decoder::new(&bytes, []).decode::<UnvalidatedLayerStack>(),
@@ -2020,6 +2254,156 @@ mod tests {
             .expect("the stack has a cut")
             .layer_above_cut
             .0
+    }
+
+    fn band_of_node(stack: &LayerStack, node: PlacementNodeIndex) -> usize {
+        stack
+            .bands
+            .iter()
+            .position(|band| band.placement_node_index == node)
+            .expect("the node has a band")
+    }
+
+    fn layer_above_nested_band(stack: &LayerStack) -> usize {
+        stack
+            .layers
+            .iter()
+            .position(|layer| {
+                matches!(
+                    layer.identity,
+                    LayerIdentity::Painted {
+                        above_barrier: Some(BarrierIdentity::NestedNodeBand { .. }),
+                        ..
+                    }
+                )
+            })
+            .expect("a layer sits above a nested band")
+    }
+
+    // Gives the last canvas of the page with nine canvases a layer as a plan gives a canvas one, past the most a plan
+    // gives.
+    fn give_last_of_nine_canvases_a_layer(stack: &mut LayerStack) {
+        let first_media = media_layer_index(stack);
+        let LayerContent::Media {
+            record_span: span_of_first_canvas,
+            reach,
+            ..
+        } = stack.layers[first_media].content
+        else {
+            unreachable!()
+        };
+        let band_index = stack.layers[first_media].band_index;
+        let band = &mut stack.bands[band_index.0];
+        let span_holding_last_canvas = band.record_spans.last_mut().expect("the band holds the last canvas");
+        let canvas_size = span_of_first_canvas.end.offset - span_of_first_canvas.begin.offset;
+        let span_of_last_canvas = ListSpan {
+            begin: ListPosition::new(
+                span_holding_last_canvas.end.chunk_index,
+                span_holding_last_canvas.end.offset - canvas_size,
+            ),
+            end: span_holding_last_canvas.end,
+        };
+        span_holding_last_canvas.end = span_of_last_canvas.begin;
+        let (node_index, band_ordinal_in_node) = (band.placement_node_index, band.band_ordinal_in_node);
+        let content = LiveContent::Canvas(CanvasId(9));
+        stack.layers.push(StackLayer {
+            identity: LayerIdentity::Media { content, ordinal: 0 },
+            placement_node_index: node_index,
+            band_index,
+            content: LayerContent::Media {
+                content,
+                record_span: span_of_last_canvas,
+                reach,
+            },
+            may_hold_content: true,
+            reach,
+        });
+        stack.layers.push(StackLayer {
+            identity: LayerIdentity::Painted {
+                node: stack.nodes[node_index.0].identity,
+                band_ordinal_in_node,
+                above_barrier: Some(BarrierIdentity::Media { content, ordinal: 0 }),
+            },
+            placement_node_index: node_index,
+            band_index,
+            content: LayerContent::Painted { band_index },
+            may_hold_content: false,
+            reach: IntRect::default(),
+        });
+        let layer_above_cut = LayerIndex(stack.layers.len() - 1);
+        stack.bands[band_index.0].cuts.push(BarrierCut {
+            barrier_first_record_position: span_of_last_canvas.begin,
+            cut_reach: Reach::Within(reach),
+            layer_above_cut,
+        });
+    }
+
+    // Anchors spaces at the nested scrollers of the crowded page that have none, past the most a plan makes.
+    fn anchor_spaces_at_nested_scrollers_without_spaces(stack: &mut LayerStack) {
+        let document_space = RasterSpaceIndex(1);
+        let mut candidate_anchor = SpatialNodeIndex(document_space.0 as u32);
+        while stack.spaces.len() <= MAXIMUM_RASTER_SPACE_COUNT {
+            candidate_anchor.0 += 1;
+            if stack.spaces.iter().any(|space| space.anchor == candidate_anchor) {
+                continue;
+            }
+            stack.spaces.push(RasterSpace {
+                anchor: candidate_anchor,
+                identity: u64::from(candidate_anchor.0),
+                parent_index: document_space,
+                anchor_kind: RasterSpaceAnchorKind::Scroller,
+                lowest_anchor_translation: FloatPoint::default(),
+                highest_anchor_translation: FloatPoint::default(),
+                extent: IntRect::new(0, 0, 300, 700),
+            });
+            stack.tiles_hold_content_moving_within_space_by_space_index.push(false);
+            stack.swept_reach_in_parent_space_by_space_index.push(None);
+        }
+    }
+
+    // Moves the records of the band of the fixed header of the plain page into a band of a node of the viewport's space
+    // that no barrier names.
+    fn move_header_into_band_no_barrier_names(stack: &mut LayerStack) {
+        let header_span = stack.bands[0]
+            .record_spans
+            .pop()
+            .expect("the first band holds the header");
+        let node_identity = PlacementNodeIdentity(77);
+        stack.nodes.push(PlacementNode {
+            identity: node_identity,
+            raster_space_index: RasterSpaceIndex::VIEWPORT,
+            composite_clips: vec![CompositeClip {
+                raster_space_index: RasterSpaceIndex::VIEWPORT,
+                rect: IntRect::new(0, 0, 800, 50),
+                corner_radii: libgfx_rust::CornerRadii::default(),
+            }],
+            composited_effect: None,
+            parent_index: None,
+            reach_in_parent_node: Reach::Anywhere,
+        });
+        let node_index = PlacementNodeIndex(stack.nodes.len() - 1);
+        let band_index = BandIndex(stack.bands.len());
+        stack.bands.push(PlacementNodeBand {
+            placement_node_index: node_index,
+            band_ordinal_in_node: 0,
+            first_record_position: header_span.begin,
+            parent_band_holding_this_band_as_barrier: None,
+            record_spans: vec![header_span],
+            cuts: Vec::new(),
+            layer_below_all_cuts: LayerIndex(stack.layers.len()),
+        });
+        stack.layers.push(StackLayer {
+            identity: LayerIdentity::Painted {
+                node: node_identity,
+                band_ordinal_in_node: 0,
+                above_barrier: None,
+            },
+            placement_node_index: node_index,
+            band_index,
+            content: LayerContent::Painted { band_index },
+            may_hold_content: true,
+            reach: IntRect::new(0, 0, 800, 50),
+        });
     }
 
     type Mutation = fn(&mut LayerStack);
@@ -2450,6 +2834,130 @@ mod tests {
                     stack.layers.push(layer);
                 },
             ),
+            ("22: record held by two bands", plain_page, |stack| {
+                let span_of_document = stack.bands[1].record_spans[0];
+                stack.bands[0].record_spans.insert(0, span_of_document);
+            }),
+            (
+                "22: record held by a band and by a media layer",
+                page_with_two_canvases,
+                |stack| {
+                    let media = media_layer_index(stack);
+                    let LayerContent::Media { record_span, .. } = stack.layers[media].content else {
+                        unreachable!()
+                    };
+                    let band = &mut stack.bands[stack.layers[media].band_index.0];
+                    let position = band.record_spans.partition_point(|span| span.end <= record_span.begin);
+                    band.record_spans.insert(position, record_span);
+                },
+            ),
+            ("22: span that holds no record", page_with_two_canvases, |stack| {
+                let band = band_with_spans(stack);
+                let end_of_first_span = stack.bands[band].record_spans[0].end;
+                stack.bands[band].record_spans.insert(
+                    1,
+                    ListSpan {
+                        begin: end_of_first_span,
+                        end: end_of_first_span,
+                    },
+                );
+            }),
+            (
+                "23: band other than the first that holds nothing",
+                plain_page,
+                |stack| {
+                    stack.bands[1].record_spans.clear();
+                },
+            ),
+            (
+                "24: more media layers than a plan makes",
+                page_with_nine_canvases,
+                give_last_of_nine_canvases_a_layer,
+            ),
+            (
+                "25: more spaces than a plan makes",
+                page_with_many_nested_scrollers,
+                anchor_spaces_at_nested_scrollers_without_spaces,
+            ),
+            (
+                "26: two nodes composited inside one effect",
+                page_with_two_fading_siblings,
+                |stack| {
+                    let first_effect = stack.composited_effects[0].effect;
+                    let second_node = stack.composited_effects[1].placement_node_index;
+                    stack.nodes[second_node.0].composited_effect = Some(first_effect);
+                    stack.composited_effects[1].effect = first_effect;
+                },
+            ),
+            ("27: node in a node of its own space", plain_page, |stack| {
+                stack.nodes[1].raster_space_index = RasterSpaceIndex::VIEWPORT;
+            }),
+            (
+                "27: composited node in a node of another space",
+                page_with_nested_composited_effects,
+                |stack| {
+                    let node = composited_node_index(stack);
+                    stack.nodes[node].raster_space_index = RasterSpaceIndex::VIEWPORT;
+                },
+            ),
+            (
+                "28: media layer after the layer above its cut",
+                page_with_two_canvases,
+                |stack| {
+                    let media = media_layer_index(stack);
+                    let band = stack.layers[media].band_index.0;
+                    let cut = stack.bands[band]
+                        .cuts
+                        .iter()
+                        .position(|cut| cut.layer_above_cut == LayerIndex(media + 1))
+                        .expect("the layer above the cut of a media layer is next to it");
+                    stack.layers.swap(media, media + 1);
+                    stack.bands[band].cuts[cut].layer_above_cut = LayerIndex(media);
+                },
+            ),
+            (
+                "28: bands in a band out of the order of their cuts",
+                page_with_two_fading_siblings,
+                |stack| {
+                    let first = band_of_node(stack, stack.composited_effects[0].placement_node_index);
+                    let second = band_of_node(stack, stack.composited_effects[1].placement_node_index);
+                    let swapped = |band: BandIndex| match band.0 {
+                        band_index if band_index == first => BandIndex(second),
+                        band_index if band_index == second => BandIndex(first),
+                        _ => band,
+                    };
+                    stack.bands.swap(first, second);
+                    for layer in &mut stack.layers {
+                        layer.band_index = swapped(layer.band_index);
+                        if let LayerContent::Painted { band_index } = &mut layer.content {
+                            *band_index = swapped(*band_index);
+                        }
+                    }
+                },
+            ),
+            (
+                "28: barrier that names no band",
+                page_with_two_fading_siblings,
+                |stack| {
+                    let above = layer_above_nested_band(stack);
+                    let LayerIdentity::Painted {
+                        above_barrier:
+                            Some(BarrierIdentity::NestedNodeBand {
+                                band_ordinal_in_node, ..
+                            }),
+                        ..
+                    } = &mut stack.layers[above].identity
+                    else {
+                        unreachable!()
+                    };
+                    *band_ordinal_in_node = 99;
+                },
+            ),
+            (
+                "28: band that no barrier names",
+                plain_page,
+                move_header_into_band_no_barrier_names,
+            ),
         ]
     }
 
@@ -2464,6 +2972,22 @@ mod tests {
             );
             mutate(&mut stack);
             assert!(page.validated(stack).is_err(), "{need}: the mutated stack is rejected");
+        }
+    }
+
+    #[test]
+    fn a_plan_whose_bands_each_repeat_the_whole_list_is_refused() {
+        for page in [plain_page(), page_with_canvas_in_nested_scroller()] {
+            let mut stack = page.planned().stack;
+            assert!(stack.bands.len() >= 2);
+            for band in &mut stack.bands {
+                band.record_spans = vec![page.list.whole_span()];
+            }
+            assert_eq!(
+                page.validated(stack.clone()),
+                Err("two spans of the stack hold the same record")
+            );
+            assert!(decoded_and_validated_plan(&page, &encoded_plan(&page, &stack)).is_err());
         }
     }
 

@@ -9,7 +9,9 @@
 //! context is placed in and the clips left to apply when its rasters are composited, and the runs that are placed
 //! together because they hold whole group effects.
 
-use crate::display_list::animated_transform_spaces::{animated_transform_anchors, raster_scale_of};
+use crate::display_list::animated_transform_spaces::{
+    MAXIMUM_ANIMATED_TRANSFORM_SPACE_COUNT, animated_transform_anchors, raster_scale_of,
+};
 use crate::display_list::chunks::ReachOutsideRunContext;
 use crate::display_list::commands::{
     ClipMode, ClipNodeIndex, ContextRef, DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex,
@@ -46,6 +48,9 @@ impl RasterSpaceIndex {
 const MAXIMUM_SCROLLER_SPACE_COUNT: usize = 7;
 // Enough for twenty section headers and a row of sticky table headers.
 const MAXIMUM_STICKY_BOX_SPACE_COUNT: usize = 32;
+/// The most spaces a placement makes: the viewport's, and one at each anchor.
+pub(super) const MAXIMUM_RASTER_SPACE_COUNT: usize =
+    1 + MAXIMUM_SCROLLER_SPACE_COUNT + MAXIMUM_STICKY_BOX_SPACE_COUNT + MAXIMUM_ANIMATED_TRANSFORM_SPACE_COUNT;
 /// How far past its bounds antialiasing can show content.
 pub(crate) const ANTIALIASING_MARGIN_IN_DEVICE_PIXELS: i32 = 3;
 const LARGEST_DEVICE_PIXEL_RATIO_EXTENTS_COVER_PAGES_AT: f32 = 8.0;
