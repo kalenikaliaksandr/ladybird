@@ -29,8 +29,7 @@ use crate::display_list::effect_geometry::{
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
-    RasterSpaces, RunGroupIndex, is_finite_rect, rect_swept_over_translations,
-    spatial_nodes_whose_scroll_offset_placement_leaves_out,
+    RunGroupIndex, is_finite_rect, spatial_nodes_whose_scroll_offset_placement_leaves_out,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
@@ -42,13 +41,14 @@ use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{CornerRadii, FloatPoint, IntRect, enclosing_int_rect};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::rc::Rc;
 use std::sync::Arc;
 
 mod placement_tables;
+mod raster_spaces_for_placing;
 
-use placement_tables::{
-    PlacementTables, RunsReachingOutsideTheirContext, lowest_common_ancestor_space, spaces_with_geometries,
+use placement_tables::{PlacementTables, RunsReachingOutsideTheirContext, lowest_common_ancestor_space};
+use raster_spaces_for_placing::{
+    RasterSpaceGeometryForPlacing, RasterSpacesForPlacing, rect_swept_over_translations, spaces_with_geometries,
 };
 
 /// How many effects and subtrees the compositor animates get layers of their own, first in paint order.
@@ -610,8 +610,8 @@ fn effect_is_inside(tree: &VisualContextTree, effect: EffectNodeIndex, around: E
 /// Where each part of the list is placed among `spaces`, given the geometry of each of them.
 fn place_list(
     inputs: &LayerStackInputs<'_>,
-    spaces: RasterSpaces,
-    geometries: &[Rc<RasterSpaceGeometry>],
+    spaces: RasterSpacesForPlacing,
+    geometries: &[RasterSpaceGeometryForPlacing],
 ) -> ListPlacement {
     let tree = inputs.tree;
     let list = inputs.list;
@@ -654,7 +654,10 @@ fn place_list(
                 keyframe_filters.filter_read_reach_in_device_pixels(
                     tree,
                     effect,
-                    &geometries[deepest_space.0].world.draw_matrix(effect_node.spatial),
+                    &geometries[deepest_space.0]
+                        .raster
+                        .world
+                        .draw_matrix(effect_node.spatial),
                 )
             })
             .flatten();
@@ -869,7 +872,7 @@ fn place_list(
         } else {
             why_media_has_no_layer(
                 inputs,
-                &geometries[space_of_run(run_index as usize).0],
+                &geometries[space_of_run(run_index as usize).0].raster,
                 why_compositor_cannot_composite_effect_or_effects_around,
                 run_index,
                 record_position,
@@ -1088,7 +1091,7 @@ fn place_list(
                 } else if run_group.moves_within_space {
                     crate::display_list::tile_keys::filter_read_reach_in_device_pixels(
                         &backdrop_filter.filter,
-                        &geometry.world.draw_matrix(effect_node.spatial),
+                        &geometry.raster.world.draw_matrix(effect_node.spatial),
                     )
                     .map_or(Reach::Anywhere, |read_reach_in_device_pixels| {
                         Reach::Within(run_group.reach.inflated_edges(
@@ -1099,7 +1102,7 @@ fn place_list(
                         ))
                     })
                 } else {
-                    backdrop_filter_read_reach(tree, geometry, effect_with_backdrop_filter)
+                    backdrop_filter_read_reach(tree, &geometry.raster, effect_with_backdrop_filter)
                 };
                 (
                     backdrop_read_reach,
@@ -1285,7 +1288,7 @@ fn place_list(
 fn swept_reach_of_animated_space_in_parent_space(
     inputs: &LayerStackInputs<'_>,
     tables: &PlacementTables,
-    geometries: &[Rc<RasterSpaceGeometry>],
+    geometries: &[RasterSpaceGeometryForPlacing],
     filters_and_clips: &FiltersAndClipsOfList<'_>,
     why_compositor_cannot_composite_by_effect_index: &[Option<WhyCompositorCannotCompositeEffect>],
     space: RasterSpaceIndex,
@@ -1362,7 +1365,7 @@ fn swept_reach_of_animated_space_in_parent_space(
             )
         })
         .flatten()
-        .map(|bounds| parent_geometry.world.map_rect_to_root(parent_of_anchor, bounds))
+        .map(|bounds| parent_geometry.raster.world.map_rect_to_root(parent_of_anchor, bounds))
         .filter(|bounds| is_finite_rect(*bounds));
     let swept_reach = match swept_bounds_in_parent_space {
         Some(bounds) => {
@@ -2856,7 +2859,7 @@ mod tests {
             let sample = tree.with_visual_animation_samples(time_ns);
             let anchors = raster_space_anchors(&sample, &spatial_nodes_that_move_on_their_own(&sample));
             let (_, geometries) = spaces_with_geometries(&sample, &anchors, &[], VIEWPORT);
-            geometries[1].world.draw_matrix(spinner.spatial)
+            geometries[1].raster.world.draw_matrix(spinner.spatial)
         };
         assert_eq!(
             geometry_of_spinner_space_at(0),

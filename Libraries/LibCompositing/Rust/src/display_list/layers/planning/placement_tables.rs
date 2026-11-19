@@ -8,19 +8,21 @@
 //! leave to apply when they are composited, the effects that keep content out of a space, and the runs whose records
 //! reach outside their visual context.
 
+use super::raster_spaces_for_placing::{
+    RasterSpaceGeometryForPlacing, RasterSpacesForPlacing, rect_swept_over_translations,
+};
 use crate::display_list::chunks::ReachOutsideRunContext;
 use crate::display_list::commands::{ClipMode, ContextRef, DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::layers::backdrop_filter_read_reach;
 use crate::display_list::placement::{
-    CompositeClip, EXTENT_LIMIT_IN_DEVICE_PIXELS, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry,
-    RasterSpaceIndex, RasterSpaces, rect_swept_over_translations, space_and_ancestors_below_viewport,
-    space_is_ancestor_or_self, translation_if_only_translates,
+    CompositeClip, EXTENT_LIMIT_IN_DEVICE_PIXELS, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex,
+    space_and_ancestors_below_viewport, space_is_ancestor_or_self, translation_if_only_translates,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage};
 use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::{ClipNodeData, EffectNodeData, VisualContextTree};
-use libgfx_rust::{FloatMatrix4x4, FloatPoint, IntRect};
+use libgfx_rust::IntRect;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -96,24 +98,6 @@ fn spatial_nodes_that_animation_samples_move_within_their_space(
     tree.spatial_nodes_in_subtrees_of(&roots)
 }
 
-impl RasterSpaces {
-    /// The spaces at `anchors`, which `raster_space_anchors` gave or a prefix of them, with the extent of each but the
-    /// viewport's left to be filled in from its geometry.
-    fn at_anchors(tree: &VisualContextTree, anchors: &[SpatialNodeIndex], viewport_rect: IntRect) -> Self {
-        Self::of_spaces(tree, Self::spaces_at_anchors(tree, anchors, viewport_rect))
-    }
-
-    fn moves_with(&self, spatial: SpatialNodeIndex, space: RasterSpaceIndex) -> bool {
-        space_is_ancestor_or_self(self.spaces(), space, self.deepest_space_of(spatial))
-    }
-}
-
-impl RasterSpaceGeometry {
-    pub(super) fn part_of_extent_reached_by(&self, reach: Reach<IntRect>) -> IntRect {
-        reach.part_of(self.extent)
-    }
-}
-
 type CompositeClipsOfContextInSpace = Option<Rc<[CompositeClip]>>;
 
 /// Where content is placed among the spaces at a set of anchors: the spaces, the clips that can be left to apply when
@@ -121,7 +105,7 @@ type CompositeClipsOfContextInSpace = Option<Rc<[CompositeClip]>>;
 /// visual context alike, whatever tree copies they were worked out from. Where each context is placed is worked out as
 /// it is first asked for.
 pub(super) struct PlacementTables {
-    spaces: RasterSpaces,
+    spaces: RasterSpacesForPlacing,
     /// Per spatial node, whether a sample of the compositor's animations can move it within the deepest space it is
     /// in, as it is under a node whose transform the compositor animates that anchors no space. Empty where the tree
     /// has no transform animations.
@@ -152,33 +136,14 @@ impl PartialEq for PlacementTables {
     }
 }
 
-/// The spaces at `anchors` and the geometry of each, in the device pixels of the viewport.
-pub(super) fn spaces_with_geometries(
-    tree: &VisualContextTree,
-    anchors: &[SpatialNodeIndex],
-    scroll_offsets: &[FloatPoint],
-    viewport_rect: IntRect,
-) -> (RasterSpaces, Vec<Rc<RasterSpaceGeometry>>) {
-    let spaces = RasterSpaces::at_anchors(tree, anchors, viewport_rect);
-    let geometries: Vec<Rc<RasterSpaceGeometry>> = (0..spaces.len())
-        .map(|space| {
-            Rc::new(RasterSpaceGeometry::new(
-                tree,
-                &spaces,
-                RasterSpaceIndex(space),
-                scroll_offsets,
-                viewport_rect,
-                FloatMatrix4x4::identity(),
-            ))
-        })
-        .collect();
-    (spaces, geometries)
-}
-
 impl PlacementTables {
     /// Also fills in the extent of each of `spaces` from its geometry in `geometries`.
-    pub fn new(tree: &VisualContextTree, spaces: RasterSpaces, geometries: &[Rc<RasterSpaceGeometry>]) -> Self {
-        let spaces_len = spaces.len();
+    pub fn new(
+        tree: &VisualContextTree,
+        spaces: RasterSpacesForPlacing,
+        geometries: &[RasterSpaceGeometryForPlacing],
+    ) -> Self {
+        let spaces_len = spaces.spaces().len();
         let mut spaces_with_extents = spaces.spaces().to_vec();
         for (space, geometry) in spaces_with_extents.iter_mut().zip(geometries) {
             space.extent = geometry.extent;
@@ -203,7 +168,7 @@ impl PlacementTables {
                     return None;
                 }
                 let clip_space = spaces.deepest_space_of(node.spatial);
-                let world = &geometries[clip_space.0].world;
+                let world = &geometries[clip_space.0].raster.world;
                 translation_if_only_translates(&world.draw_matrix(node.spatial))?;
                 let rect = world.map_rect_to_root(node.spatial, data.rect);
                 // A clip of one axis alone clips as much at the extent limit as at its far edges on the other axis.
@@ -258,7 +223,7 @@ impl PlacementTables {
                     return None;
                 }
                 let space = spaces.deepest_space_of(node.spatial);
-                match backdrop_filter_read_reach(tree, &geometries[space.0], EffectNodeIndex(index as u32)) {
+                match backdrop_filter_read_reach(tree, &geometries[space.0].raster, EffectNodeIndex(index as u32)) {
                     Reach::Within(read_rect) => Some((space, read_rect)),
                     _ => None,
                 }

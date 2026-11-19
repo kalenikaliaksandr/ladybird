@@ -752,7 +752,6 @@ impl ContextLayers {
             raster_spaces,
             raster_space_index,
             scroll_offsets,
-            viewport_in_raster.viewport_rect,
             viewport_in_raster.viewport_to_raster_transform,
         ));
         self.cached_raster_space_geometries.retain(|cached| {

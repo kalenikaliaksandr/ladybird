@@ -1168,7 +1168,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             list.innermost_composited_effect_by_effect_index[context.effect.0 as usize]
         };
         if composited_effect.is_none() || list.nearest_spreading_effects[composited_effect.0 as usize].is_none() {
-            return self.geometry.reach_of_content(&filters_and_clips, Some(rect), context);
+            return self.geometry.reach_of_content(&filters_and_clips, rect, context);
         }
         self.geometry.reach_of_content_inside_composited_effect(
             &filters_and_clips,
@@ -3001,7 +3001,6 @@ mod tests {
             &spaces,
             RasterSpaceIndex::VIEWPORT,
             &[],
-            VIEWPORT,
             FloatMatrix4x4::identity(),
         );
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
@@ -3084,7 +3083,6 @@ mod tests {
             &spaces,
             RasterSpaceIndex::VIEWPORT,
             &[],
-            VIEWPORT,
             FloatMatrix4x4::identity(),
         );
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
@@ -3135,14 +3133,8 @@ mod tests {
                     },
                 );
                 let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
-                let geometry = RasterSpaceGeometry::new(
-                    tree,
-                    &spaces,
-                    raster_space_index,
-                    &[],
-                    VIEWPORT,
-                    FloatMatrix4x4::identity(),
-                );
+                let geometry =
+                    RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
                 let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
                 raster_space.bind_band(&mut band_tile_keys, stack, band_index);
                 let counts = raster_space.key_shown_tiles(

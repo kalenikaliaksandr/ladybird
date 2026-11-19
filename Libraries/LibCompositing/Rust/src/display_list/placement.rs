@@ -18,8 +18,7 @@ use crate::display_list::commands::{
 };
 use crate::display_list::effect_clip_plan::EffectClipPlan;
 use crate::display_list::effect_geometry::{
-    Extent, changed_extent_through_filters, changed_extent_through_filters_inside, filter_may_spread_at_some_sample,
-    spreading_filter_of,
+    Extent, changed_extent_through_filters, changed_extent_through_filters_inside, spreading_filter_of,
 };
 use crate::display_list::reach::Reach;
 use crate::host::FfiVisualAnimationTargetKind;
@@ -53,9 +52,8 @@ const LARGEST_DEVICE_PIXEL_RATIO_EXTENTS_COVER_PAGES_AT: f32 = 8.0;
 // Small enough that a rect twice as wide still fits in an `IntRect`.
 pub(crate) const EXTENT_LIMIT_IN_DEVICE_PIXELS: f32 =
     (crate::css_pixels::MAX_INTEGER_VALUE as f32 + 1.0) * LARGEST_DEVICE_PIXEL_RATIO_EXTENTS_COVER_PAGES_AT;
-const ANCHOR_TRANSLATION_ROUNDING_OVERSHOOT_IN_DEVICE_PIXELS: i32 = 1;
 
-fn extent_limit_rect() -> FloatRect {
+pub(crate) fn extent_limit_rect() -> FloatRect {
     FloatRect::new(
         -EXTENT_LIMIT_IN_DEVICE_PIXELS,
         -EXTENT_LIMIT_IN_DEVICE_PIXELS,
@@ -136,25 +134,6 @@ impl RasterSpace {
             y: translation.y as i32,
         }
     }
-}
-
-/// The rect that content within `rect` covers wherever a translation between `lowest` and `highest` takes it, with the
-/// rounding of that translation to whole device pixels.
-pub(crate) fn rect_swept_over_translations(rect: IntRect, lowest: FloatPoint, highest: FloatPoint) -> IntRect {
-    if rect.is_empty() {
-        return rect;
-    }
-    let swept = FloatRect::new(
-        rect.x as f32 + lowest.x,
-        rect.y as f32 + lowest.y,
-        rect.width as f32 + highest.x - lowest.x,
-        rect.height as f32 + highest.y - lowest.y,
-    );
-    if !is_finite_rect(swept) {
-        return enclosing_int_rect_within_extent_limit(extent_limit_rect());
-    }
-    let margin = ANCHOR_TRANSLATION_ROUNDING_OVERSHOOT_IN_DEVICE_PIXELS;
-    enclosing_int_rect_within_extent_limit(swept).inflated_edges(margin, margin, margin, margin)
 }
 
 /// A rect, with rounded corners or not, that rasters of content are clipped to as they are composited, in the raster
@@ -243,7 +222,7 @@ pub fn spatial_nodes_that_move_on_their_own(tree: &VisualContextTree) -> Vec<boo
     spatial_nodes_that_move_on_their_own_relative_to_spaces_at(tree, None)
 }
 
-fn spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
+pub(crate) fn spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
     tree: &VisualContextTree,
     anchors: Option<&[SpatialNodeIndex]>,
 ) -> Vec<bool> {
@@ -301,27 +280,6 @@ fn compositor_scrolled_nodes_without_own_space<'a>(
         .iter()
         .map(|record| record.scroll_node_index)
         .filter(move |node| *node != VISUAL_VIEWPORT_NODE_INDEX && !scrollers_with_spaces.contains(node))
-}
-
-/// Per effect node, whether how far its filters spread its content can change while the list and the tree's structure
-/// stay, as the compositor animates the filter of it or of an effect above it, and the filter spreads at some sample.
-pub fn effects_whose_spread_moves_on_its_own(tree: &VisualContextTree) -> Vec<bool> {
-    let mut spread_moves = vec![false; tree.effect_nodes.len()];
-    if !tree
-        .visual_animations()
-        .iter()
-        .any(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Filter)
-    {
-        return spread_moves;
-    }
-    tree.visit_effect_nodes_parents_first(|index| {
-        let node = &tree.effect_nodes[index];
-        let effect = EffectNodeIndex(index as u32);
-        let spread_of_parent_moves = !node.parent.is_none() && spread_moves[node.parent.0 as usize];
-        spread_moves[index] = spread_of_parent_moves
-            || (tree.effect_filter_is_animated(effect) && filter_may_spread_at_some_sample(tree, effect));
-    });
-    spread_moves
 }
 
 fn visual_viewport_only_translates(tree: &VisualContextTree) -> bool {
@@ -517,7 +475,7 @@ pub fn raster_space_anchors(
     anchors
 }
 
-fn compositor_scroll_record_of(
+pub(crate) fn compositor_scroll_record_of(
     tree: &VisualContextTree,
     node: SpatialNodeIndex,
 ) -> Option<&CompositorScrollNodeRecord> {
@@ -566,68 +524,11 @@ pub(crate) fn enclosing_int_rect_within_extent_limit(rect: FloatRect) -> IntRect
     enclosing_int_rect(rect.intersected(extent_limit_rect()))
 }
 
-fn extent_of_space(
-    tree: &VisualContextTree,
-    spaces: &[RasterSpace],
-    space: RasterSpaceIndex,
-    world_with_anchors_of_space_at_origin: &WorldTransforms,
-    viewport_rect: IntRect,
-) -> IntRect {
-    let world = world_with_anchors_of_space_at_origin;
-    let unbounded = enclosing_int_rect_within_extent_limit(extent_limit_rect());
-    let space = &spaces[space.0];
-    if let RasterSpaceAnchorKind::AnimatedTransform { .. } = space.anchor_kind {
-        return unbounded;
-    }
-    if let RasterSpaceAnchorKind::StickyBox { .. } = space.anchor_kind {
-        let extent_of_parent = if space.parent_index == RasterSpaceIndex::VIEWPORT {
-            viewport_rect
-        } else {
-            extent_of_space(tree, spaces, space.parent_index, world, viewport_rect)
-        };
-        let negated = |point: FloatPoint| FloatPoint {
-            x: -point.x,
-            y: -point.y,
-        };
-        let extent_of_parent_translated_back_by_every_box_offset = rect_swept_over_translations(
-            extent_of_parent,
-            negated(space.highest_anchor_translation),
-            negated(space.lowest_anchor_translation),
-        );
-        return extent_of_parent_translated_back_by_every_box_offset;
-    }
-    let Some(record) = compositor_scroll_record_of(tree, space.anchor) else {
-        return unbounded;
-    };
-    let Some(scrollport_offset) =
-        translation_if_only_translates(&world.draw_matrix(tree.spatial_nodes[space.anchor.0 as usize].parent))
-    else {
-        return unbounded;
-    };
-    let scrollport = record
-        .scrollport_rect
-        .to_float()
-        .translated(scrollport_offset.x, scrollport_offset.y);
-    let (minimum, maximum) = (record.min_scroll_offset, record.max_scroll_offset);
-    let extent = FloatRect::new(
-        scrollport.x + minimum.x.min(0.0),
-        scrollport.y + minimum.y.min(0.0),
-        scrollport.width + (maximum.x.max(0.0) - minimum.x.min(0.0)),
-        scrollport.height + (maximum.y.max(0.0) - minimum.y.min(0.0)),
-    );
-    if !is_finite_rect(extent) {
-        return unbounded;
-    }
-    enclosing_int_rect_within_extent_limit(extent)
-}
-
 /// The raster spaces of a tree at a set of anchors, and the deepest of them that each spatial node moves with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterSpaces {
     spaces: Vec<RasterSpace>,
     deepest_space_of_spatial_node: Vec<RasterSpaceIndex>,
-    spatial_node_moves_on_its_own: Vec<bool>,
-    effect_node_spread_moves_on_its_own: Vec<bool>,
 }
 
 impl RasterSpaces {
@@ -742,32 +643,10 @@ impl RasterSpaces {
                 deepest_space_of_spatial_node[node.parent.0 as usize]
             };
         });
-        let anchors: Vec<SpatialNodeIndex> = spaces.iter().skip(1).map(|space| space.anchor).collect();
         Self {
             spaces,
             deepest_space_of_spatial_node,
-            spatial_node_moves_on_its_own: spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
-                tree,
-                Some(&anchors),
-            ),
-            effect_node_spread_moves_on_its_own: effects_whose_spread_moves_on_its_own(tree),
         }
-    }
-
-    pub fn spatial_moves_on_its_own(&self, spatial: SpatialNodeIndex) -> bool {
-        self.spatial_node_moves_on_its_own
-            .get(spatial.0 as usize)
-            .copied()
-            .unwrap_or(false)
-    }
-
-    pub fn effect_spread_moves_on_its_own(&self, effect: EffectNodeIndex) -> bool {
-        !effect.is_none()
-            && self
-                .effect_node_spread_moves_on_its_own
-                .get(effect.0 as usize)
-                .copied()
-                .unwrap_or(false)
     }
 
     pub fn spaces(&self) -> &[RasterSpace] {
@@ -845,7 +724,31 @@ pub struct FiltersAndClipsOfList<'a> {
     pub follows_filters_of_every_sample: bool,
 }
 
-fn antialiased_reach_in_device_pixels(bounds: Option<FloatRect>) -> Reach<IntRect> {
+impl FiltersAndClipsOfList<'_> {
+    /// The clip that bounds how far the filters that content of `context` is drawn through spread it: the clip outside
+    /// every such filter, or the clip of the context where no filter spreads it.
+    pub(crate) fn clip_bounding_filter_spread(&self, context: ContextRef) -> ClipNodeIndex {
+        let is_spread_by_filters =
+            !context.effect.is_none() && !self.nearest_spreading_effects[context.effect.0 as usize].is_none();
+        if is_spread_by_filters {
+            self.effect_clips
+                .clip_outside_every_filter(self.tree, context, self.follows_filters_of_every_sample)
+        } else {
+            context.clip
+        }
+    }
+}
+
+/// What `bounds_by_clip` holds for `clip`, or none for no clip.
+pub(crate) fn chain_bounds_of_clip(clip: ClipNodeIndex, bounds_by_clip: &[Option<FloatRect>]) -> Option<FloatRect> {
+    if clip.is_none() {
+        None
+    } else {
+        bounds_by_clip[clip.0 as usize]
+    }
+}
+
+pub(crate) fn antialiased_reach_in_device_pixels(bounds: Option<FloatRect>) -> Reach<IntRect> {
     let Some(bounds) = bounds.filter(|bounds| is_finite_rect(*bounds)) else {
         return Reach::Anywhere;
     };
@@ -867,19 +770,16 @@ pub struct RasterSpaceGeometry {
     /// Empty for the viewport's space, which applies every clip.
     pub clips_left_to_composite: Vec<bool>,
     rastered_affine_clip_chain_bounds_by_clip: Vec<Option<FloatRect>>,
-    rastered_affine_own_clip_bounds_by_clip: Vec<Option<FloatRect>>,
-    clip_chain_bounds_fixed_in_space_by_clip: Vec<Option<FloatRect>>,
-    pub extent: IntRect,
+    pub(crate) rastered_affine_own_clip_bounds_by_clip: Vec<Option<FloatRect>>,
 }
 
 impl RasterSpaceGeometry {
-    /// `viewport_rect` is in the raster's device pixels, which `viewport_to_raster_transform` maps the viewport's into.
+    /// `viewport_to_raster_transform` maps the device pixels of the viewport into those of the raster.
     pub fn new(
         tree: &VisualContextTree,
         spaces: &RasterSpaces,
         space: RasterSpaceIndex,
         scroll_offsets: &[FloatPoint],
-        viewport_rect: IntRect,
         viewport_to_raster_transform: FloatMatrix4x4,
     ) -> Self {
         let raster_scroll_offsets = raster_scroll_offsets(spaces.spaces(), space, scroll_offsets);
@@ -898,20 +798,12 @@ impl RasterSpaceGeometry {
         };
         let mut rastered_affine_clip_chain_bounds_by_clip: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
         let mut rastered_affine_own_clip_bounds_by_clip: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
-        let mut clip_chain_bounds_fixed_in_space_by_clip: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
         tree.visit_clip_nodes_parents_first(|index| {
             let node = &tree.clip_nodes[index];
             let own_clip_rect = match &node.data {
                 ClipNodeData::Rect(data) if data.mode == ClipMode::Intersect => Some(data.rect),
                 ClipNodeData::Path(path) => Some(path.bounding_rect.to_float()),
                 _ => None,
-            };
-            let bounds_of_parent = |bounds_by_clip: &[Option<FloatRect>]| {
-                if node.parent.is_none() {
-                    None
-                } else {
-                    bounds_by_clip[node.parent.0 as usize]
-                }
             };
             let left_to_composite = clips_left_to_composite.get(index).copied().unwrap_or(false);
             let own_bounds_if_rastered_affinely = own_clip_rect
@@ -921,21 +813,9 @@ impl RasterSpaceGeometry {
             rastered_affine_own_clip_bounds_by_clip[index] = own_bounds_if_rastered_affinely;
             rastered_affine_clip_chain_bounds_by_clip[index] = intersect_bounds(
                 own_bounds_if_rastered_affinely,
-                bounds_of_parent(&rastered_affine_clip_chain_bounds_by_clip),
-            );
-            let own_bounds_if_fixed_in_space = own_bounds_if_rastered_affinely.filter(|_| {
-                spaces.deepest_space_of(node.spatial) == space && !spaces.spatial_moves_on_its_own(node.spatial)
-            });
-            clip_chain_bounds_fixed_in_space_by_clip[index] = intersect_bounds(
-                own_bounds_if_fixed_in_space,
-                bounds_of_parent(&clip_chain_bounds_fixed_in_space_by_clip),
+                chain_bounds_of_clip(node.parent, &rastered_affine_clip_chain_bounds_by_clip),
             );
         });
-        let extent = if space == RasterSpaceIndex::VIEWPORT {
-            viewport_rect
-        } else {
-            extent_of_space(tree, spaces.spaces(), space, &world, viewport_rect)
-        };
         Self {
             raster_scroll_offsets,
             world,
@@ -943,8 +823,6 @@ impl RasterSpaceGeometry {
             clips_left_to_composite,
             rastered_affine_clip_chain_bounds_by_clip,
             rastered_affine_own_clip_bounds_by_clip,
-            clip_chain_bounds_fixed_in_space_by_clip,
-            extent,
         }
     }
 
@@ -957,35 +835,15 @@ impl RasterSpaceGeometry {
 
     /// Where content of `context` can show in the space's raster coordinates, antialiased: drawn within `drawn_within`
     /// as the frame places it, spread by the filters it is drawn through, within the clips that rasters of the space
-    /// apply; or, without `drawn_within`, anywhere it can move, within the clips fixed in the space, which are some of
-    /// those. Placing a list asks this of the ink of its runs, and keying tiles of the records in them, so what a
+    /// apply. Placing a list asks this of the ink of its runs, and keying tiles of the records in them, so what a
     /// record reaches in a frame is within what its run reaches, as far as the space's extent shows either.
     pub fn reach_of_content(
         &self,
         list: &FiltersAndClipsOfList<'_>,
-        drawn_within: Option<FloatRect>,
+        drawn_within: FloatRect,
         context: ContextRef,
     ) -> Reach<IntRect> {
-        let is_spread_by_filters =
-            !context.effect.is_none() && !list.nearest_spreading_effects[context.effect.0 as usize].is_none();
-        let clip_bounding_filter_spread = if is_spread_by_filters {
-            list.effect_clips
-                .clip_outside_every_filter(list.tree, context, list.follows_filters_of_every_sample)
-        } else {
-            context.clip
-        };
-        let chain_bounds_of_clip_bounding_filter_spread = |bounds_by_clip: &[Option<FloatRect>]| {
-            if clip_bounding_filter_spread.is_none() {
-                None
-            } else {
-                bounds_by_clip[clip_bounding_filter_spread.0 as usize]
-            }
-        };
-        let Some(drawn_within) = drawn_within else {
-            return antialiased_reach_in_device_pixels(chain_bounds_of_clip_bounding_filter_spread(
-                &self.clip_chain_bounds_fixed_in_space_by_clip,
-            ));
-        };
+        let clip_bounding_filter_spread = list.clip_bounding_filter_spread(context);
         if drawn_within.is_empty()
             || self.culling.context_culls_everything(context)
             || self.world.backface_culled[context.spatial.0 as usize]
@@ -1005,14 +863,17 @@ impl RasterSpaceGeometry {
         };
         antialiased_reach_in_device_pixels(intersect_bounds(
             bounds,
-            chain_bounds_of_clip_bounding_filter_spread(&self.rastered_affine_clip_chain_bounds_by_clip),
+            chain_bounds_of_clip(
+                clip_bounding_filter_spread,
+                &self.rastered_affine_clip_chain_bounds_by_clip,
+            ),
         ))
     }
 
-    /// As `reach_of_content` with `drawn_within`, for content a raster draws inside `composited_effect`, which it
-    /// leaves out with the effects around it and the clips the effect is entered within: through the filters inside the
-    /// effect, within the clips inside it, and within as far past the clips it is entered within as the filters left
-    /// out read, by `read_reach_of_filters_left_out` where that is known.
+    /// As `reach_of_content`, for content a raster draws inside `composited_effect`, which it leaves out with the
+    /// effects around it and the clips the effect is entered within: through the filters inside the effect, within the
+    /// clips inside it, and within as far past the clips it is entered within as the filters left out read, by
+    /// `read_reach_of_filters_left_out` where that is known.
     pub fn reach_of_content_inside_composited_effect(
         &self,
         list: &FiltersAndClipsOfList<'_>,

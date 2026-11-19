@@ -2912,7 +2912,6 @@ mod tests {
                     &raster_spaces,
                     RasterSpaceIndex(space_index),
                     &scroll_offsets,
-                    VIEWPORT,
                     FloatMatrix4x4::identity(),
                 )
             })
