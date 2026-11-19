@@ -8,6 +8,7 @@
 
 #include <AK/Optional.h>
 #include <AK/String.h>
+#include <AK/Vector.h>
 #include <LibCompositing/Export.h>
 #include <LibCompositing/PausedDebuggerOverlay.h>
 #include <LibCompositing/PictureInPictureControls.h>
@@ -31,11 +32,19 @@ struct PictureInPictureControlsState {
     bool operator==(PictureInPictureControlsState const&) const = default;
 };
 
+struct CompositorLayersOverlayState {
+    Optional<String> font_family;
+    Vector<u64> hidden_layer_ids;
+
+    bool operator==(CompositorLayersOverlayState const&) const = default;
+};
+
 // What the browser draws over a context's page, on top of anything the page draws, with each overlay the view has
 // present. The browser handles their input before the page sees any of it.
 struct UIOverlays {
     Optional<PausedDebuggerOverlayState> paused_debugger;
     Optional<PictureInPictureControlsState> picture_in_picture_controls;
+    Optional<CompositorLayersOverlayState> compositor_layers;
 
     bool operator==(UIOverlays const&) const = default;
 };
@@ -112,6 +121,11 @@ template<>
 COMPOSITING_API ErrorOr<void> encode(Encoder&, Compositing::PictureInPictureControlsState const&);
 template<>
 COMPOSITING_API ErrorOr<Compositing::PictureInPictureControlsState> decode(Decoder&);
+
+template<>
+COMPOSITING_API ErrorOr<void> encode(Encoder&, Compositing::CompositorLayersOverlayState const&);
+template<>
+COMPOSITING_API ErrorOr<Compositing::CompositorLayersOverlayState> decode(Decoder&);
 
 template<>
 COMPOSITING_API ErrorOr<void> encode(Encoder&, Compositing::UIOverlays const&);

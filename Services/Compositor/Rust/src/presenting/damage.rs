@@ -299,7 +299,9 @@ impl ContextPresenting {
             .flatten();
         let composites_layers_like_last_frame_but_animated_transforms =
             composites_layers_like_last_frame || damage_of_layers_moved_by_animated_transforms.is_some();
-        let repaints_everything = invalidates_every_tile || !composites_layers_like_last_frame_but_animated_transforms;
+        let repaints_everything = invalidates_every_tile
+            || !composites_layers_like_last_frame_but_animated_transforms
+            || self.layer_overlay.repaints_everything();
         let stale_rect = stale_rect.united(damage_of_layers_moved_by_animated_transforms.unwrap_or_default());
         FrameDamage {
             rect_in_raster_device_pixels: if repaints_everything {

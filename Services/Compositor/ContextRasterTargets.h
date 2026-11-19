@@ -53,7 +53,7 @@ public:
     DrawnFonts const& overlay_fonts() const { return m_overlay_fonts; }
     DisplayListRasterCache& overlay_raster_cache() { return m_overlay_raster_cache; }
     // Shapes a label of the overlays, in a font that the overlays' fonts then hold.
-    Optional<OverlayLabel> shape_overlay_label(Optional<StringView> font_family, double device_pixel_ratio, StringView text);
+    Optional<OverlayLabel> shape_overlay_label(Optional<StringView> font_family, float font_size_in_points, double device_pixel_ratio, StringView text);
 
     BackingStoreManager& backing_stores() { return m_backing_stores; }
     BackingStoreManager const& backing_stores() const { return m_backing_stores; }

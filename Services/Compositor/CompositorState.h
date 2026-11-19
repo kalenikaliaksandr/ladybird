@@ -199,7 +199,7 @@ private:
     virtual void post_message_to_presentation(PresentationId, IPC::MessageBuffer&) override;
     virtual void set_timer(Web::CompositorContextId, ContextTimer, AK::Duration delay) override;
     virtual void cancel_timer(Web::CompositorContextId, ContextTimer) override;
-    virtual Optional<OverlayLabel> shape_overlay_label(Web::CompositorContextId, Optional<StringView> font_family, double device_pixel_ratio, StringView text) override;
+    virtual Optional<OverlayLabel> shape_overlay_label(Web::CompositorContextId, Optional<StringView> font_family, float font_size_in_points, double device_pixel_ratio, StringView text) override;
     void context_timer_fired(Web::CompositorContextId, ContextTimer);
 
     // What the compositor keeps of a context to paint and present its frames.

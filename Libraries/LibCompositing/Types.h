@@ -11,6 +11,7 @@
 #include <AK/EnumBits.h>
 #include <AK/Math.h>
 #include <AK/Optional.h>
+#include <AK/String.h>
 #include <AK/Time.h>
 #include <AK/Types.h>
 #include <AK/Vector.h>
@@ -309,6 +310,33 @@ struct ScrollRequest {
         else
             smooth_scroll = later.smooth_scroll;
     }
+};
+
+struct CompositorLayerDescription {
+    u64 id { 0 };
+    String name;
+    String details;
+    u32 rgb_of_outline { 0 };
+    bool hidden { false };
+
+    bool operator==(CompositorLayerDescription const&) const = default;
+};
+
+struct CompositorTileHighlightDescription {
+    String raster_cause;
+    u32 rgb { 0 };
+
+    bool operator==(CompositorTileHighlightDescription const&) const = default;
+};
+
+struct CompositorLayersDescription {
+    // From the base layer up.
+    Vector<CompositorLayerDescription> layers;
+    Vector<String> notes;
+    String summary_of_last_frame;
+    Vector<CompositorTileHighlightDescription> tile_highlights;
+
+    bool operator==(CompositorLayersDescription const&) const = default;
 };
 
 // AD-HOC: Wheel events carry no gesture phase information, so a wheel gesture is considered finished once no input of

@@ -41,6 +41,10 @@ TEST_CASE(overlays_survive_ipc)
         .shown = true,
         .hovered_control = PictureInPictureControl::BackToTab,
     };
+    overlays.compositor_layers = CompositorLayersOverlayState {
+        .font_family = "Example Sans"_string,
+        .hidden_layer_ids = { 7, NumericLimits<u64>::max() },
+    };
 
     auto decoded = MUST(decode_overlays([&](IPC::Encoder& encoder) { return encoder.encode(overlays); }));
     EXPECT(decoded == overlays);
