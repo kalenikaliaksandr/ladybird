@@ -1378,9 +1378,8 @@ mod tests {
     use crate::display_list::commands::{
         ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, SpatialNodeIndex,
     };
-    use crate::display_list::layers::{
-        LayerStackInputs, NodeNamesFromIndices, PlannedLayers, WindowServerPresentationOfMedia, plan_layer_stack,
-    };
+    use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
+    use crate::display_list::layers::{NodeNamesFromIndices, WindowServerPresentationOfMedia};
     use crate::display_list::placement::{RasterSpaceGeometry, RasterSpaces};
     use crate::display_list::storage::ListChunk;
     use crate::display_list::tile_keys::{

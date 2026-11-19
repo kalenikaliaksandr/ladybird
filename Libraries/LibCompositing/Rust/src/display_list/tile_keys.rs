@@ -2860,7 +2860,8 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{CanvasId, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
-    use crate::display_list::layers::{LayerStack, LayerStackInputs, plan_layer_stack};
+    use crate::display_list::layers::LayerStack;
+    use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::CompositingAndBlendingOperator;

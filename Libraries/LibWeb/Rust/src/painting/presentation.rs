@@ -14,7 +14,8 @@
 use crate::paint_stage::Presenting;
 use crate::painting::display_list::chunks::{Chunk, ChunkId, KeptChunks};
 use crate::painting::display_list::commands::CompositorContextId;
-use crate::painting::display_list::layers::{InputsOfLayerPlan, LayerPlan};
+use crate::painting::display_list::layers::LayerPlan;
+use crate::painting::display_list::layers::planning::InputsOfLayerPlan;
 use crate::painting::display_list::storage::{DisplayListStorage, ListChunk};
 use crate::painting::display_list_resources::DisplayListResources;
 use crate::painting::paint_passes::ClockTickVisualContexts;

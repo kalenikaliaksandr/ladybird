@@ -13,10 +13,8 @@ use super::dump_format::{
     DumpNames, DumpValue, dumped_record_field, json_corner_radii, json_fields, json_float, json_float_point,
     json_float_rect, json_int_rect, json_name, path_description, push_clip_radii, push_fields, push_value,
 };
-use super::layers::{
-    LayerIndex, LayerStackInputs, PlannedLayers, VisualContextNodeNamer, WindowServerPresentationOfMedia,
-    plan_layer_stack,
-};
+use super::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
+use super::layers::{LayerIndex, VisualContextNodeNamer, WindowServerPresentationOfMedia};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
 };

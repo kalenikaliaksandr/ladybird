@@ -354,7 +354,8 @@ mod tests {
     use super::*;
     use libcompositing_rust::display_list::builder::DisplayListBuilder;
     use libcompositing_rust::display_list::commands::{ContextRef, EffectNodeIndex, FillRect};
-    use libcompositing_rust::display_list::layers::{InputsOfLayerPlan, LayerPlan, WhyListIsOneLayer};
+    use libcompositing_rust::display_list::layers::planning::InputsOfLayerPlan;
+    use libcompositing_rust::display_list::layers::{LayerPlan, WhyListIsOneLayer};
     use libcompositing_rust::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
     use libcompositing_rust::ipc_types::LayerPlanOnWire;
     use libcompositing_rust::visual_context::{TransformData, TransformDataRole, VisualContextTree};
