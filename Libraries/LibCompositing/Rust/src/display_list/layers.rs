@@ -3710,6 +3710,32 @@ mod tests {
     }
 
     #[test]
+    fn a_spinner_under_a_scale_far_below_the_smallest_raster_scale_is_rastered_at_the_smallest() {
+        let mut tree = tree_with_root_isolation_effect();
+        let viewport = root_context(&tree);
+        let shrunk = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 0.0, 100.0, 100.0));
+        let SpatialData::Transform(shrinking) = &mut tree.spatial_nodes[shrunk.spatial.0 as usize].data else {
+            unreachable!()
+        };
+        shrinking.matrix = libgfx_rust::scale_matrix(0.001, 0.001, 1.0);
+        let spinner = transformed_context(&mut tree, shrunk, FloatRect::new(50.0, 50.0, 40.0, 40.0));
+        tree.set_visual_animations(vec![spinning(spinner.spatial)]);
+        let stack = TestList::new()
+            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
+            .stack(&tree, &[]);
+        let raster_scales: Vec<f32> = stack
+            .spaces
+            .iter()
+            .filter_map(|space| match space.anchor_kind {
+                RasterSpaceAnchorKind::AnimatedTransform { raster_scale } => Some(raster_scale),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(raster_scales, [1.0 / 64.0]);
+    }
+
+    #[test]
     fn samples_of_a_spinner_leave_its_space_and_raster_geometry_alike() {
         let mut tree = tree_with_root_isolation_effect();
         let viewport = root_context(&tree);

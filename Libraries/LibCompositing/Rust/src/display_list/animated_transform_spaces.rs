@@ -104,10 +104,15 @@ pub(crate) fn raster_scale_of(tree: &VisualContextTree, anchor: SpatialNodeIndex
         .flat_map(transform_keyframe_matrices)
         .map(largest_axis_scale)
         .fold(0.0f32, f32::max);
-    let raster_scale = (parent_scale * largest_keyframe_scale).clamp(
-        SMALLEST_RASTER_SCALE,
-        parent_scale * LARGEST_RASTER_SCALE_PAST_PARENT_SCALE,
-    );
+    let scale_at_largest_keyframe = parent_scale * largest_keyframe_scale;
+    if !parent_scale.is_finite() || scale_at_largest_keyframe.is_nan() {
+        return 1.0;
+    }
+    // A parent that scales content down far enough puts the largest scale below the smallest one, which then wins.
+    let largest_raster_scale = (parent_scale * LARGEST_RASTER_SCALE_PAST_PARENT_SCALE).max(SMALLEST_RASTER_SCALE);
+    let raster_scale = scale_at_largest_keyframe
+        .max(SMALLEST_RASTER_SCALE)
+        .min(largest_raster_scale);
     if !raster_scale.is_finite() {
         return 1.0;
     }
