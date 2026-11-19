@@ -49,6 +49,7 @@ use libgfx_rust::{AffineTransform, CornerRadii, FloatMatrix4x4, FloatPoint, IntP
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
 
 mod wire;
 
@@ -3310,15 +3311,12 @@ pub fn spatial_nodes_whose_scroll_offset_layer_plans_leave_out(tree: &VisualCont
     spatial_nodes_whose_scroll_offset_placement_leaves_out(tree, &anchors_of_layer_plans(tree))
 }
 
-/// Plans the layers of a list, and gives the stack with where it placed the parts of the list. The plan holds for every
-/// sample of the compositor's animations and wherever the compositor scrolls the nodes it scrolls. Where the window
-/// server can show the media of the stack is left to be worked out for each frame.
-pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
-    let anchors = anchors_of_layer_plans(inputs.tree);
-    let leaves_out_scroll_offset_of_node =
-        spatial_nodes_whose_scroll_offset_placement_leaves_out(inputs.tree, &anchors);
-    let scroll_offsets_read: Vec<FloatPoint> = inputs
-        .scroll_offsets
+// The scroll offsets a plan reads of `scroll_offsets`: zero for each node that `leaves_out_scroll_offset_of_node` names.
+fn scroll_offsets_layer_plans_read(
+    scroll_offsets: &[FloatPoint],
+    leaves_out_scroll_offset_of_node: &[bool],
+) -> Vec<FloatPoint> {
+    scroll_offsets
         .iter()
         .enumerate()
         .map(|(node_index, &scroll_offset)| {
@@ -3332,7 +3330,17 @@ pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
                 scroll_offset
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Plans the layers of a list, and gives the stack with where it placed the parts of the list. The plan holds for every
+/// sample of the compositor's animations and wherever the compositor scrolls the nodes it scrolls. Where the window
+/// server can show the media of the stack is left to be worked out for each frame.
+pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
+    let anchors = anchors_of_layer_plans(inputs.tree);
+    let leaves_out_scroll_offset_of_node =
+        spatial_nodes_whose_scroll_offset_placement_leaves_out(inputs.tree, &anchors);
+    let scroll_offsets_read = scroll_offsets_layer_plans_read(inputs.scroll_offsets, &leaves_out_scroll_offset_of_node);
     let inputs = LayerStackInputs {
         scroll_offsets: &scroll_offsets_read,
         ..*inputs
@@ -3341,6 +3349,85 @@ pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
         spaces_with_geometries(inputs.tree, &anchors, inputs.scroll_offsets, inputs.viewport_rect);
     let placement = place_list(&inputs, spaces, &geometries);
     build_layer_stack(&inputs, placement)
+}
+
+/// What a plan of the layers of a list is made from, all of which WebContent publishes: the list, the tree, the viewport
+/// rect, and of the scroll offsets, those the plan reads. A plan made from inputs holds for others that plan alike.
+pub struct InputsOfLayerPlan {
+    list: Arc<DisplayListStorage>,
+    tree: Arc<VisualContextTree>,
+    viewport_rect: IntRect,
+    leaves_out_scroll_offset_of_node: Arc<[bool]>,
+    scroll_offsets_plan_reads: Vec<FloatPoint>,
+}
+
+impl InputsOfLayerPlan {
+    pub fn new(
+        list: Arc<DisplayListStorage>,
+        tree: Arc<VisualContextTree>,
+        scroll_offsets: &[FloatPoint],
+        viewport_rect: IntRect,
+    ) -> Self {
+        let leaves_out_scroll_offset_of_node: Arc<[bool]> =
+            spatial_nodes_whose_scroll_offset_layer_plans_leave_out(&tree).into();
+        Self {
+            scroll_offsets_plan_reads: scroll_offsets_layer_plans_read(
+                scroll_offsets,
+                &leaves_out_scroll_offset_of_node,
+            ),
+            list,
+            tree,
+            viewport_rect,
+            leaves_out_scroll_offset_of_node,
+        }
+    }
+
+    /// The inputs of the same list and tree under other scroll offsets and another viewport rect.
+    pub fn with_scroll_offsets_and_viewport_rect(&self, scroll_offsets: &[FloatPoint], viewport_rect: IntRect) -> Self {
+        Self {
+            list: self.list.clone(),
+            tree: self.tree.clone(),
+            viewport_rect,
+            leaves_out_scroll_offset_of_node: self.leaves_out_scroll_offset_of_node.clone(),
+            scroll_offsets_plan_reads: scroll_offsets_layer_plans_read(
+                scroll_offsets,
+                &self.leaves_out_scroll_offset_of_node,
+            ),
+        }
+    }
+
+    pub fn viewport_rect(&self) -> IntRect {
+        self.viewport_rect
+    }
+
+    /// Whether a plan made from these inputs is the plan of `other`: the lists hold the same chunks in the same order,
+    /// the trees have the same content, the viewport rects are the same, and the plan reads the same scroll offsets.
+    pub fn plan_alike_as(&self, other: &Self) -> bool {
+        // A list of scroll offsets leaves out the zero offsets of the nodes past its end.
+        let offset_at =
+            |offsets: &[FloatPoint], node_index: usize| offsets.get(node_index).copied().unwrap_or_default();
+        let node_count = self
+            .scroll_offsets_plan_reads
+            .len()
+            .max(other.scroll_offsets_plan_reads.len());
+        self.viewport_rect == other.viewport_rect
+            && (0..node_count).all(|node_index| {
+                offset_at(&self.scroll_offsets_plan_reads, node_index)
+                    == offset_at(&other.scroll_offsets_plan_reads, node_index)
+            })
+            && (Arc::ptr_eq(&self.list, &other.list) || self.list.chunk_names() == other.list.chunk_names())
+            && (Arc::ptr_eq(&self.tree, &other.tree) || self.tree.has_same_content_as(&other.tree))
+    }
+
+    /// Plans the layers of the list under these inputs.
+    pub fn plan(&self) -> PlannedLayers {
+        plan_layer_stack(&LayerStackInputs {
+            list: &self.list,
+            tree: &self.tree,
+            scroll_offsets: &self.scroll_offsets_plan_reads,
+            viewport_rect: self.viewport_rect,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -4540,5 +4627,127 @@ mod tests {
             0.0,
             180.0
         )));
+    }
+
+    #[test]
+    fn a_plan_holds_wherever_a_sticky_box_that_anchors_a_space_is_held() {
+        use crate::visual_context::StickyData;
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let mut sticky_data = StickyData::unconstrained(
+            document.spatial,
+            None,
+            crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
+            NodeSlotId::INVALID,
+        );
+        sticky_data.position_relative_to_scroller = FloatPoint { x: 0.0, y: 100.0 };
+        sticky_data.border_box_size = libgfx_rust::FloatSize {
+            width: 800.0,
+            height: 50.0,
+        };
+        sticky_data.scrollport_size = libgfx_rust::FloatSize {
+            width: 800.0,
+            height: 600.0,
+        };
+        sticky_data.containing_block_region = FloatRect::new(0.0, 0.0, 800.0, 2000.0);
+        sticky_data.needs_parent_offset_adjustment = true;
+        sticky_data.inset_top = Some(0.0);
+        let (_, highest_offset) = sticky_data.offset_range_without_sticky_ancestors();
+        let sticky_node = tree.append_spatial(SpatialData::Sticky(sticky_data), document.spatial);
+        let sticky = ContextRef {
+            spatial: sticky_node,
+            ..document
+        };
+        // The box comes over what the document paints after it only once the document is scrolled.
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(0, 100, 800, 50)), sticky)
+            .with(canvas(IntRect::new(10, 110, 30, 30)), sticky)
+            .with(fill(IntRect::new(0, 900, 800, 100)), document);
+        let stack_with_box_held_at = |offset: FloatPoint| {
+            let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
+            offsets[sticky_node.0 as usize] = offset;
+            list.stack(&tree, &offsets)
+        };
+
+        let stack = stack_with_box_held_at(FloatPoint::default());
+        assert!(
+            stack
+                .spaces
+                .iter()
+                .any(|space| matches!(space.anchor_kind, RasterSpaceAnchorKind::StickyBox { .. }))
+        );
+        assert!(highest_offset.y > 800.0);
+        // The compositor holds the box at offsets of its own as it scrolls the document.
+        for y in [800.0, highest_offset.y] {
+            assert_eq!(stack_with_box_held_at(FloatPoint { x: 0.0, y }), stack);
+        }
+    }
+
+    #[test]
+    fn a_plan_holds_for_inputs_that_differ_only_in_what_it_does_not_read() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let scroller = tree.append_spatial(
+            SpatialData::Scroll(ScrollData {
+                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
+                owner_paintable: NodeSlotId::INVALID,
+            }),
+            document.spatial,
+        );
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(
+                fill(IntRect::new(0, 0, 100, 100)),
+                ContextRef {
+                    spatial: scroller,
+                    ..document
+                },
+            );
+        let storage = DisplayListStorage::of_builder(&list.builder);
+        let tree = Arc::new(tree);
+        let offsets = |document_y: f32, scroller_y: f32| {
+            let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
+            offsets[document.spatial.0 as usize].y = document_y;
+            offsets[scroller.0 as usize].y = scroller_y;
+            offsets
+        };
+        let inputs = InputsOfLayerPlan::new(storage.clone(), tree.clone(), &offsets(0.0, 0.0), VIEWPORT);
+
+        // The compositor scrolls the document, which has a row in its scroll table, and not the scroller.
+        assert!(inputs.plan_alike_as(&inputs.with_scroll_offsets_and_viewport_rect(&offsets(700.0, 0.0), VIEWPORT)));
+        assert!(!inputs.plan_alike_as(&inputs.with_scroll_offsets_and_viewport_rect(&offsets(0.0, 30.0), VIEWPORT)));
+        assert!(!inputs.plan_alike_as(
+            &inputs.with_scroll_offsets_and_viewport_rect(&offsets(0.0, 0.0), IntRect::new(0, 0, 800, 500))
+        ));
+        // A list is told apart by its chunks, and a tree by its content.
+        let list_of_same_chunks = DisplayListStorage::of_builder(&list.builder);
+        let tree_of_same_content = Arc::new((*tree).clone());
+        assert!(inputs.plan_alike_as(&InputsOfLayerPlan::new(
+            list_of_same_chunks,
+            tree_of_same_content,
+            &[],
+            VIEWPORT
+        )));
+        let mut tree_of_other_content = (*tree).clone();
+        tree_of_other_content.append_spatial(
+            SpatialData::Scroll(ScrollData {
+                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
+                owner_paintable: NodeSlotId::INVALID,
+            }),
+            document.spatial,
+        );
+        assert!(!inputs.plan_alike_as(&InputsOfLayerPlan::new(
+            storage,
+            Arc::new(tree_of_other_content),
+            &[],
+            VIEWPORT
+        )));
+        let other_list = TestList::new().with(fill(IntRect::new(0, 0, 800, 2600)), document);
+        assert!(!inputs.plan_alike_as(&InputsOfLayerPlan::new(
+            DisplayListStorage::of_builder(&other_list.builder),
+            tree.clone(),
+            &[],
+            VIEWPORT
+        )));
+        assert_eq!(inputs.plan().stack, list.stack(&tree, &offsets(700.0, 0.0)));
     }
 }

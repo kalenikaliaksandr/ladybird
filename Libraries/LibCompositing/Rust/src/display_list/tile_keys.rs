@@ -2678,17 +2678,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     ) -> TileKeyingCounts {
         let list = self.list;
         let band = &stack.bands[band_index.0];
-        let mut raster_settings_hash_by_layer: Vec<(LayerIndex, ContentHash)> = Vec::new();
-        let mut raster_settings_hash_of = |layer_index: LayerIndex| match raster_settings_hash_by_layer
-            .iter()
-            .find(|(cached, _)| *cached == layer_index)
-        {
-            Some((_, raster_settings_hash)) => *raster_settings_hash,
-            None => {
-                let raster_settings_hash = raster_settings_of_layer(layer_index).content_hash();
-                raster_settings_hash_by_layer.push((layer_index, raster_settings_hash));
-                raster_settings_hash
-            }
+        // A band of a received stack can have too many layers to look through one by one for each tile.
+        let mut raster_settings_hash_by_layer: HashMap<LayerIndex, ContentHash> = HashMap::new();
+        let mut raster_settings_hash_of = |layer_index: LayerIndex| {
+            *raster_settings_hash_by_layer
+                .entry(layer_index)
+                .or_insert_with(|| raster_settings_of_layer(layer_index).content_hash())
         };
         band_tile_keys
             .cells

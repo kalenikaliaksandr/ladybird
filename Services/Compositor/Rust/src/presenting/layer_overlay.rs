@@ -109,7 +109,8 @@ pub struct FrameWorkCounts {
     pub tiles_covered_by_opaque_tiles_above: u64,
     pub cells_binned: u64,
     pub chunks_placed: u64,
-    pub list_was_placed: bool,
+    /// Whether the frame took a plan of layers into use that the frame before was not drawn with.
+    pub took_plan_into_use: bool,
 }
 
 /// A layer as a frame composites it, which the overlay is worked out from.
@@ -287,8 +288,8 @@ impl LayerOverlayModel {
             counts.tiles_covered_by_opaque_tiles_above,
             count_with_noun(counts.cells_binned, "tile", "tiles"),
             count_with_noun(counts.chunks_placed, "chunk", "chunks"),
-            if counts.list_was_placed {
-                "the list was placed again"
+            if counts.took_plan_into_use {
+                "a new plan was taken into use"
             } else {
                 "the stack was kept"
             }

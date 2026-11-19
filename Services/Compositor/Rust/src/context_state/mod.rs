@@ -25,6 +25,7 @@ use crate::scroll_fling_controller::ScrollFlingController;
 use crate::scroll_snap_controller::{ScrollSnapController, SnapScrollStart, StepDecision};
 use crate::scrollbar_controller::{Drag, ScrollbarController};
 use crate::wheel_gesture_routing::{ResolvedLatch, WheelGestureIdAllocator, WheelGestureRouting};
+use libcompositing_rust::display_list::layers::UnvalidatedLayerPlan;
 use libcompositing_rust::ipc_types::{
     Compositing_AsyncScrollOperationTracking as AsyncScrollOperationTracking,
     Compositing_ContextVisibility as ContextVisibility, Compositing_RequestedRelativeScroll as RequestedRelativeScroll,
@@ -898,6 +899,24 @@ impl ContextState {
         });
         damage_rect = damage_rect.intersected(viewport_rect);
         damage_rect
+    }
+
+    pub fn forget_layer_plan(&mut self) {
+        self.scene.forget_layer_plan();
+    }
+
+    pub fn take_layer_plan_of_installed_update(
+        &mut self,
+        layer_plan: Option<UnvalidatedLayerPlan>,
+    ) -> Result<(), &'static str> {
+        self.scene.take_layer_plan_of_installed_update(layer_plan)
+    }
+
+    pub fn take_layer_plan_of_scroll_state(
+        &mut self,
+        layer_plan: Option<UnvalidatedLayerPlan>,
+    ) -> Result<(), &'static str> {
+        self.scene.take_layer_plan_of_scroll_state(layer_plan)
     }
 
     /// Returns false for a tree that does not fit the installed display list, which keeps the tree it has and takes

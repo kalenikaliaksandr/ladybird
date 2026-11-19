@@ -6,6 +6,9 @@
 
 //! What WebContent last sent a context to draw, and the visual context tree it is drawn with: the one WebContent sent, with the visual viewport this context has pinch-zoomed or panned since, and with its visual animations sampled.
 
+use libcompositing_rust::display_list::layers::{
+    LayerStack, UnvalidatedLayerPlan, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
+};
 use libcompositing_rust::scrolling::{
     AccumulatedVisualContextTree, DisplayList, ScrollStateSnapshot, TransformWithOrigin,
     animated_content_may_affect_viewport,
@@ -15,10 +18,26 @@ use libgfx_rust::{FloatMatrix4x4, IntRect, IntSize};
 use std::io::Write;
 use std::rc::Rc;
 
+/// A plan of the layers of the display list a scene holds under the tree WebContent published, as WebContent sent it,
+/// once it passed the checks against the two.
+#[derive(Clone)]
+pub struct ReceivedLayerPlan {
+    /// The viewport, in device pixels, the plan was made within.
+    pub viewport_rect: IntRect,
+    pub stack: Rc<LayerStack>,
+    /// Per spatial node, whether the plan leaves out its scroll offset, as the plan holds wherever the node is scrolled
+    /// to.
+    pub leaves_out_scroll_offset_of_node: Rc<Vec<bool>>,
+}
+
 #[derive(Default)]
 pub struct ContextScene {
     display_list: Option<Rc<DisplayList>>,
     visual_context_tree: Option<AccumulatedVisualContextTree>,
+    layer_plan: Option<ReceivedLayerPlan>,
+    /// Whether the scene holds the display list and the tree of the update WebContent sent last, which the plans it
+    /// sends with scroll states are of.
+    holds_list_and_tree_sent_last: bool,
     async_visual_viewport_transform: Option<TransformWithOrigin>,
     visual_context_tree_for_compositing: Option<AccumulatedVisualContextTree>,
     sampled_visual_context_tree: Option<AccumulatedVisualContextTree>,
@@ -51,6 +70,7 @@ impl ContextScene {
         now: MonotonicTime,
     ) {
         self.display_list = Some(display_list);
+        self.layer_plan = None;
         self.animated_content_may_affect_viewport = None;
         self.take_visual_context_tree_unless_content_is_unchanged(visual_context_tree);
         update_visual_animation_sampling_state(
@@ -108,6 +128,7 @@ impl ContextScene {
             );
             return false;
         }
+        self.layer_plan = None;
         self.take_visual_context_tree_unless_content_is_unchanged(visual_context_tree);
         update_visual_animation_sampling_state(
             self.visual_context_tree.as_ref().unwrap(),
@@ -116,6 +137,63 @@ impl ContextScene {
             now,
         );
         true
+    }
+
+    // NB: WebContent sends a plan with each display list and tree it can plan for, and with a scroll state only where
+    //     the viewport rect or a scroll offset that the plan it sent last reads changed. So a list or a tree that comes
+    //     without a plan leaves the scene without one, and a scroll state that comes without one keeps the plan the
+    //     scene holds. After a list or a tree that the compositor refuses, WebContent plans for what the scene does not
+    //     hold: a plan that comes with a scroll state is then dropped, until a list or a tree is installed.
+
+    /// Forgets the plan of layers, ahead of a display list or a tree that WebContent sent, which the compositor may
+    /// refuse.
+    pub fn forget_layer_plan(&mut self) {
+        self.layer_plan = None;
+        self.holds_list_and_tree_sent_last = false;
+    }
+
+    /// Takes the plan of layers that came with the display list or the tree the scene just installed. Fails for a plan
+    /// that does not pass the checks against them.
+    pub fn take_layer_plan_of_installed_update(
+        &mut self,
+        layer_plan: Option<UnvalidatedLayerPlan>,
+    ) -> Result<(), &'static str> {
+        self.holds_list_and_tree_sent_last = true;
+        self.take_layer_plan(layer_plan)
+    }
+
+    /// Takes the plan of layers that came with a scroll state, if any. Fails for a plan that does not pass the checks
+    /// against the display list and the tree it is of.
+    pub fn take_layer_plan_of_scroll_state(
+        &mut self,
+        layer_plan: Option<UnvalidatedLayerPlan>,
+    ) -> Result<(), &'static str> {
+        match layer_plan {
+            Some(layer_plan) if self.holds_list_and_tree_sent_last => self.take_layer_plan(Some(layer_plan)),
+            _ => Ok(()),
+        }
+    }
+
+    fn take_layer_plan(&mut self, layer_plan: Option<UnvalidatedLayerPlan>) -> Result<(), &'static str> {
+        self.layer_plan = None;
+        let (Some(layer_plan), Some(display_list), Some(tree)) =
+            (layer_plan, &self.display_list, &self.visual_context_tree)
+        else {
+            return Ok(());
+        };
+        // A plan of another list is of one the compositor refused for a reason WebContent does not learn.
+        if layer_plan.display_list_id != display_list.id() {
+            return Ok(());
+        }
+        let layer_plan = layer_plan.validated(display_list.storage(), tree.as_arc())?;
+        self.layer_plan = Some(ReceivedLayerPlan {
+            viewport_rect: layer_plan.viewport_rect,
+            stack: Rc::new(layer_plan.stack),
+            leaves_out_scroll_offset_of_node: Rc::new(spatial_nodes_whose_scroll_offset_layer_plans_leave_out(
+                tree.as_arc(),
+            )),
+        });
+        Ok(())
     }
 
     pub fn display_list(&self) -> &Option<Rc<DisplayList>> {
@@ -154,11 +232,10 @@ impl ContextScene {
         self.sampled_visual_context_tree.as_ref().unwrap()
     }
 
-    /// The tree as WebContent published it, unless frames draw it through a visual viewport transform other than its
-    /// own.
-    pub fn published_visual_context_tree_unless_visual_viewport_differs(
-        &self,
-    ) -> Option<&AccumulatedVisualContextTree> {
+    /// The plan of layers of the display list and the tree as WebContent published it, unless frames draw the tree
+    /// through a visual viewport transform other than its own.
+    pub fn layer_plan_unless_visual_viewport_differs(&self) -> Option<&ReceivedLayerPlan> {
+        let layer_plan = self.layer_plan.as_ref()?;
         let tree = self.visual_context_tree.as_ref()?;
         if let Some(transform) = self.async_visual_viewport_transform {
             let published_transform = tree.visual_viewport_transform();
@@ -166,7 +243,7 @@ impl ContextScene {
                 return None;
             }
         }
-        Some(tree)
+        Some(layer_plan)
     }
 
     pub fn visual_viewport_transform(&self) -> TransformWithOrigin {
@@ -269,5 +346,147 @@ impl ContextScene {
         self.animated_content_may_affect_viewport = None;
         self.sampled_visual_context_tree = None;
         self.visual_context_tree_for_compositing = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libcompositing_rust::display_list::builder::DisplayListBuilder;
+    use libcompositing_rust::display_list::commands::{ContextRef, EffectNodeIndex, FillRect};
+    use libcompositing_rust::display_list::layers::{InputsOfLayerPlan, LayerPlan, WhyListIsOneLayer};
+    use libcompositing_rust::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
+    use libcompositing_rust::ipc_types::LayerPlanOnWire;
+    use libcompositing_rust::visual_context::{TransformData, TransformDataRole, VisualContextTree};
+    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatPoint, FloatRect};
+    use libipc_rust::wire::{Decoder, Encoder};
+    use std::sync::Arc;
+
+    const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
+    const DISPLAY_LIST_ID: u64 = 7;
+
+    fn scene_with_one_rect() -> (ContextScene, Arc<DisplayListStorage>, Arc<VisualContextTree>) {
+        let tree = Arc::new(VisualContextTree::create(TransformData {
+            matrix: FloatMatrix4x4::identity(),
+            origin: FloatPoint::default(),
+            sorting_context_root_index: None,
+            flattens_inherited_transform: false,
+            role: TransformDataRole::CssTransform,
+            synthetic_plane: false,
+            establishes_sorting_context: false,
+            bounds: FloatRect::default(),
+        }));
+        let mut builder = DisplayListBuilder::new();
+        builder.append(
+            &FillRect {
+                rect: IntRect::new(10, 10, 100, 100),
+                color: Color::from_rgb(0, 128, 0),
+                compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
+                background_color_animation_effect: EffectNodeIndex::NONE,
+            },
+            &[],
+            ContextRef::default(),
+        );
+        let list = DisplayListStorage::recorded(&builder.finish(), tree.clone());
+        let display_list = DisplayList::new(
+            list.clone(),
+            DISPLAY_LIST_ID,
+            tree.structural_epoch,
+            None,
+            None,
+            Default::default(),
+        );
+        let mut scene = ContextScene::default();
+        scene.install(
+            Rc::new(display_list),
+            AccumulatedVisualContextTree::from_arc(tree.clone()),
+            MonotonicTime::default(),
+        );
+        (scene, list, tree)
+    }
+
+    // A plan as the compositor receives it from WebContent.
+    fn received(display_list_id: u64, stack: LayerStack) -> UnvalidatedLayerPlan {
+        let mut encoder = Encoder::new();
+        encoder
+            .encode(&LayerPlanOnWire::Planned(Arc::new(LayerPlan {
+                display_list_id,
+                viewport_rect: VIEWPORT,
+                stack,
+            })))
+            .unwrap();
+        let (bytes, _) = encoder.finish();
+        Decoder::new(&bytes, [])
+            .decode::<LayerPlanOnWire>()
+            .unwrap()
+            .into_received()
+    }
+
+    fn stack_of_plan(scene: &ContextScene) -> Option<LayerStack> {
+        scene
+            .layer_plan_unless_visual_viewport_differs()
+            .map(|layer_plan| (*layer_plan.stack).clone())
+    }
+
+    #[test]
+    fn a_plan_is_taken_with_the_list_it_is_of_and_one_that_does_not_fit_it_is_refused() {
+        let (mut scene, list, tree) = scene_with_one_rect();
+        let planned = InputsOfLayerPlan::new(list.clone(), tree, &[], VIEWPORT).plan().stack;
+        let span_past_end_of_list = ListSpan {
+            begin: ListPosition::default(),
+            end: ListPosition::new(ChunkIndexInList(0), list.whole_span().end.offset + 8),
+        };
+        let stack_not_fitting_list = || {
+            LayerStack::single_layer(
+                VIEWPORT,
+                span_past_end_of_list,
+                Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            )
+        };
+
+        scene.forget_layer_plan();
+        assert_eq!(
+            scene.take_layer_plan_of_installed_update(Some(received(DISPLAY_LIST_ID, planned.clone()))),
+            Ok(())
+        );
+        assert_eq!(stack_of_plan(&scene), Some(planned.clone()));
+        // A scroll state without a plan keeps the plan.
+        assert_eq!(scene.take_layer_plan_of_scroll_state(None), Ok(()));
+        assert_eq!(stack_of_plan(&scene), Some(planned.clone()));
+
+        // The stub of the message answers WebContent with misbehavior for a plan that does not pass the checks.
+        assert!(
+            scene
+                .take_layer_plan_of_scroll_state(Some(received(DISPLAY_LIST_ID, stack_not_fitting_list())))
+                .is_err()
+        );
+        assert_eq!(stack_of_plan(&scene), None);
+        assert!(
+            scene
+                .take_layer_plan_of_installed_update(Some(received(DISPLAY_LIST_ID, stack_not_fitting_list())))
+                .is_err()
+        );
+
+        // A plan of another list is of one the compositor refused, and goes unchecked.
+        assert_eq!(
+            scene.take_layer_plan_of_installed_update(Some(received(DISPLAY_LIST_ID + 1, stack_not_fitting_list()))),
+            Ok(())
+        );
+        assert_eq!(stack_of_plan(&scene), None);
+
+        // After a list or a tree the compositor may refuse, a plan with a scroll state is not of what the scene holds
+        // until a plan comes with a list or a tree the scene installs.
+        scene.forget_layer_plan();
+        assert_eq!(
+            scene.take_layer_plan_of_scroll_state(Some(received(DISPLAY_LIST_ID, stack_not_fitting_list()))),
+            Ok(())
+        );
+        assert_eq!(stack_of_plan(&scene), None);
+        assert_eq!(scene.take_layer_plan_of_installed_update(None), Ok(()));
+        assert_eq!(
+            scene.take_layer_plan_of_scroll_state(Some(received(DISPLAY_LIST_ID, planned.clone()))),
+            Ok(())
+        );
+        assert_eq!(stack_of_plan(&scene), Some(planned));
     }
 }

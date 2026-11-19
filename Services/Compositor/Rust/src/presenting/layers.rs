@@ -16,6 +16,7 @@ use super::{
     composite_inside_effects_of_frame, paint_overlays, rect_of_size, replay_into, replay_with_scroll_offsets,
     replaying_only,
 };
+use crate::context_scene::ReceivedLayerPlan;
 use crate::host::ContextTimer;
 use crate::raster_host::{
     FfiSublayer, FfiSublayerPlacement, LiveContent, MediaKind, PresentableSurfaceHandle, RasterHost,
@@ -26,17 +27,16 @@ use libcompositing_rust::display_list::commands::{
 };
 use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
-    BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayerStackInputs,
-    NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind,
-    RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia,
-    backdrop_filter_read_reach, plan_layer_stack, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
+    BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, NodeNamesFromIndices,
+    PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind, RasterSpaceIndex,
+    SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets,
 };
 use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::{CompositeClipsOfRaster, ReplaySelection};
-use libcompositing_rust::display_list::storage::ChunkName;
+use libcompositing_rust::display_list::storage::{ChunkName, ListSpan};
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
 use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
@@ -51,7 +51,7 @@ use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libcompositing_rust::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, IntSize, ScalingMode};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hasher;
 use std::rc::Rc;
 
@@ -317,26 +317,70 @@ impl BandIdentities {
     }
 }
 
+const BAND_IDENTITY_KINDS_IN_MATCHING_ORDER: [fn(&BandIdentities) -> u64; 2] = [
+    |identities| identities.identity_by_first_record_position,
+    |identities| identities.identity_by_band_ordinal,
+];
+
+// Per identity kind, where the tile keys of the latest frame are that have each identity.
+struct PositionsOfBandTileKeysByIdentity([HashMap<u64, BTreeSet<usize>>; 2]);
+
+impl PositionsOfBandTileKeysByIdentity {
+    fn of(band_tile_keys: &[BandTileKeysOfFrame]) -> Self {
+        let mut positions = Self([HashMap::new(), HashMap::new()]);
+        for (position, band_tile_keys) in band_tile_keys.iter().enumerate() {
+            positions.insert(&band_tile_keys.identities, position);
+        }
+        positions
+    }
+
+    fn insert(&mut self, identities: &BandIdentities, position: usize) {
+        for (positions_by_identity, identity_of) in self.0.iter_mut().zip(BAND_IDENTITY_KINDS_IN_MATCHING_ORDER) {
+            positions_by_identity
+                .entry(identity_of(identities))
+                .or_default()
+                .insert(position);
+        }
+    }
+
+    fn remove(&mut self, identities: &BandIdentities, position: usize) {
+        for (positions_by_identity, identity_of) in self.0.iter_mut().zip(BAND_IDENTITY_KINDS_IN_MATCHING_ORDER) {
+            if let Some(positions) = positions_by_identity.get_mut(&identity_of(identities)) {
+                positions.remove(&position);
+            }
+        }
+    }
+
+    fn first_position(&self, identity_kind: usize, identity: u64) -> Option<usize> {
+        self.0[identity_kind].get(&identity)?.first().copied()
+    }
+}
+
+// Per identity kind in order, each band not matched yet takes the first of the latest frame's tile keys that has its
+// identity, which leaves the last of them in its place. A band's tile keys are found by their identity, as the bands of
+// a received stack are too many to compare each with each.
 fn reuse_tile_keys_of_matching_bands(
     band_tile_keys_of_latest_frame: &mut Vec<BandTileKeysOfFrame>,
     identities_of_bands: &[BandIdentities],
 ) -> Vec<Option<BandTileKeysOfFrame>> {
     let mut reused_by_band: Vec<Option<BandTileKeysOfFrame>> = identities_of_bands.iter().map(|_| None).collect();
-    let identity_kinds_in_matching_order: [fn(&BandIdentities) -> u64; 2] = [
-        |identities| identities.identity_by_first_record_position,
-        |identities| identities.identity_by_band_ordinal,
-    ];
-    for identity_of in identity_kinds_in_matching_order {
+    let mut positions = PositionsOfBandTileKeysByIdentity::of(band_tile_keys_of_latest_frame);
+    for (identity_kind, identity_of) in BAND_IDENTITY_KINDS_IN_MATCHING_ORDER.into_iter().enumerate() {
         for (reused, identities) in reused_by_band.iter_mut().zip(identities_of_bands) {
             if reused.is_some() {
                 continue;
             }
-            if let Some(index) = band_tile_keys_of_latest_frame
-                .iter()
-                .position(|band_tile_keys| identity_of(&band_tile_keys.identities) == identity_of(identities))
-            {
-                *reused = Some(band_tile_keys_of_latest_frame.swap_remove(index));
+            let Some(position) = positions.first_position(identity_kind, identity_of(identities)) else {
+                continue;
+            };
+            let last_position = band_tile_keys_of_latest_frame.len() - 1;
+            positions.remove(&band_tile_keys_of_latest_frame[position].identities, position);
+            if position != last_position {
+                let last_identities = band_tile_keys_of_latest_frame[last_position].identities;
+                positions.remove(&last_identities, last_position);
+                positions.insert(&last_identities, position);
             }
+            *reused = Some(band_tile_keys_of_latest_frame.swap_remove(position));
         }
     }
     reused_by_band
@@ -435,27 +479,15 @@ struct ViewportInRaster {
     viewport_to_raster_transform: FloatMatrix4x4,
 }
 
-/// What WebContent published that a plan of layers read.
-struct PublishedInputsOfPlan {
-    tree_copy_number: u64,
-    leaves_out_scroll_offset_of_node: Rc<Vec<bool>>,
-    scroll_offsets_plan_reads: Vec<FloatPoint>,
-}
-
-/// What the stack of the frames was made for: a plan of the list, or for frames that are not drawn as a plan is made
-/// for, one layer that replays the whole list.
-struct InputsOfStack {
-    display_list: Rc<DisplayList>,
-    viewport_rect: IntRect,
-    plan: Option<PublishedInputsOfPlan>,
-}
-
 /// The layers of the frames of a context under their identities, the pool of their tiles, and what of them the window
 /// server shows.
 #[derive(Default)]
 pub struct ContextLayers {
-    stack: Option<LayerStack>,
-    inputs_of_stack: Option<InputsOfStack>,
+    /// The stack the latest frame was drawn with: the plan WebContent sent, or one layer that replays the whole list.
+    stack: Option<Rc<LayerStack>>,
+    /// Per spatial node, whether the plan the latest frame was drawn with leaves out its scroll offset, as the plan
+    /// holds wherever the node is scrolled to. None for a frame drawn with one layer that replays the whole list.
+    scroll_offsets_plan_leaves_out: Option<Rc<Vec<bool>>>,
     /// Where the window server can show the media of the stack, as the latest frame worked it out.
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
@@ -501,91 +533,34 @@ impl ContextLayers {
         }
     }
 
-    /// Keeps the stack while what it was made for stays. Otherwise plans the list again with what WebContent published,
-    /// or where frames are not drawn as a plan of the published tree is made for, makes one layer that replays the
-    /// whole list. Answers whether it made a new stack.
-    fn make_stack_unless_kept(
+    /// Takes the stack a frame is drawn with: the plan WebContent sent, or for a frame that is not drawn as a plan was
+    /// made for, one layer that replays the whole list. Answers whether the frame takes a plan into use that the frame
+    /// before did not draw with.
+    fn take_stack_of_frame(
         &mut self,
-        display_list: &Rc<DisplayList>,
-        published_tree: Option<&VisualContextTree>,
-        scroll_offsets: &[FloatPoint],
+        layer_plan: Option<&ReceivedLayerPlan>,
+        whole_list_span: ListSpan,
         viewport_rect: IntRect,
     ) -> bool {
-        let stack_still_holds = self.inputs_of_stack.as_ref().is_some_and(|cached| {
-            lists_hold_same_chunks(&cached.display_list, display_list)
-                && cached.viewport_rect == viewport_rect
-                && match (&cached.plan, published_tree) {
-                    (Some(plan), Some(published_tree)) => {
-                        plan.tree_copy_number == published_tree.copy.number()
-                            && scroll_offsets_plan_reads_are_unchanged(
-                                &plan.scroll_offsets_plan_reads,
-                                scroll_offsets,
-                                &plan.leaves_out_scroll_offset_of_node,
-                            )
-                    }
-                    (None, None) => true,
-                    _ => false,
-                }
-        });
-        if stack_still_holds {
-            if let Some(cached) = self.inputs_of_stack.as_mut()
-                && !Rc::ptr_eq(&cached.display_list, display_list)
-            {
-                cached.display_list = display_list.clone();
-            }
-            return false;
-        }
-        let storage = display_list.storage();
-        let Some(published_tree) = published_tree else {
-            self.stack = Some(LayerStack::single_layer(
+        let Some(layer_plan) = layer_plan else {
+            let one_layer = LayerStack::single_layer(
                 viewport_rect,
-                storage.whole_span(),
+                whole_list_span,
                 Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
-            ));
-            self.inputs_of_stack = Some(InputsOfStack {
-                display_list: display_list.clone(),
-                viewport_rect,
-                plan: None,
-            });
-            return true;
+            );
+            if self.stack.as_deref() != Some(&one_layer) {
+                self.stack = Some(Rc::new(one_layer));
+            }
+            self.scroll_offsets_plan_leaves_out = None;
+            return false;
         };
-        let leaves_out_scroll_offset_of_node =
-            match self.inputs_of_stack.as_ref().and_then(|cached| cached.plan.as_ref()) {
-                Some(plan) if plan.tree_copy_number == published_tree.copy.number() => {
-                    plan.leaves_out_scroll_offset_of_node.clone()
-                }
-                _ => Rc::new(spatial_nodes_whose_scroll_offset_layer_plans_leave_out(published_tree)),
-            };
-        // The compositor scrolls only nodes a plan leaves out, so the frame shows the others at the offsets WebContent
-        // published.
-        self.stack = Some(
-            plan_layer_stack(&LayerStackInputs {
-                list: storage,
-                tree: published_tree,
-                scroll_offsets,
-                viewport_rect,
-            })
-            .stack,
-        );
-        self.inputs_of_stack = Some(InputsOfStack {
-            display_list: display_list.clone(),
-            viewport_rect,
-            plan: Some(PublishedInputsOfPlan {
-                tree_copy_number: published_tree.copy.number(),
-                scroll_offsets_plan_reads: scroll_offsets_plan_reads(scroll_offsets, &leaves_out_scroll_offset_of_node),
-                leaves_out_scroll_offset_of_node,
-            }),
-        });
-        true
-    }
-
-    /// Per spatial node, whether the plan the frames are drawn with leaves out its scroll offset, as the plan holds
-    /// wherever the node is scrolled to. None for frames drawn with one layer that replays the whole list.
-    fn scroll_offsets_plan_leaves_out(&self) -> Option<Rc<Vec<bool>>> {
-        self.inputs_of_stack
+        let takes_plan_into_use = !self
+            .stack
             .as_ref()
-            .and_then(|inputs| inputs.plan.as_ref())
-            .map(|plan| plan.leaves_out_scroll_offset_of_node.clone())
+            .is_some_and(|stack| Rc::ptr_eq(stack, &layer_plan.stack));
+        self.stack = Some(layer_plan.stack.clone());
+        self.scroll_offsets_plan_leaves_out = Some(layer_plan.leaves_out_scroll_offset_of_node.clone());
+        takes_plan_into_use
     }
 
     fn raster_spaces_of(&mut self, tree: &VisualContextTree, spaces: &[RasterSpace]) -> RasterSpaces {
@@ -1407,52 +1382,6 @@ fn lists_hold_same_chunks(cached_list: &Rc<DisplayList>, list: &Rc<DisplayList>)
     Rc::ptr_eq(cached_list, list) || cached_list.storage().chunk_names() == list.storage().chunk_names()
 }
 
-fn scroll_offset_plan_reads(
-    node_index: usize,
-    scroll_offset: FloatPoint,
-    plan_leaves_out_scroll_offset_of_node: &[bool],
-) -> FloatPoint {
-    if plan_leaves_out_scroll_offset_of_node
-        .get(node_index)
-        .copied()
-        .unwrap_or(false)
-    {
-        FloatPoint::default()
-    } else {
-        scroll_offset
-    }
-}
-
-fn scroll_offsets_plan_reads(
-    scroll_offsets: &[FloatPoint],
-    plan_leaves_out_scroll_offset_of_node: &[bool],
-) -> Vec<FloatPoint> {
-    scroll_offsets
-        .iter()
-        .enumerate()
-        .map(|(node_index, scroll_offset)| {
-            scroll_offset_plan_reads(node_index, *scroll_offset, plan_leaves_out_scroll_offset_of_node)
-        })
-        .collect()
-}
-
-fn scroll_offsets_plan_reads_are_unchanged(
-    cached_scroll_offsets_plan_reads: &[FloatPoint],
-    scroll_offsets: &[FloatPoint],
-    plan_leaves_out_scroll_offset_of_node: &[bool],
-) -> bool {
-    // A list of scroll offsets leaves out the zero offsets of the nodes past its end.
-    let offset_at = |offsets: &[FloatPoint], node_index: usize| offsets.get(node_index).copied().unwrap_or_default();
-    (0..cached_scroll_offsets_plan_reads.len().max(scroll_offsets.len())).all(|node_index| {
-        offset_at(cached_scroll_offsets_plan_reads, node_index)
-            == scroll_offset_plan_reads(
-                node_index,
-                offset_at(scroll_offsets, node_index),
-                plan_leaves_out_scroll_offset_of_node,
-            )
-    })
-}
-
 /// Per raster space, how the frame composites its rasters, from the anchors' draw matrices in the frame where the stack
 /// has spaces whose anchors the compositor animates.
 fn spaces_to_frame_of(
@@ -1496,8 +1425,9 @@ fn compositing_of_layer(
 }
 
 impl ContextPresenting {
-    /// Works out the layers of the frame within `viewport_rect`, in the device pixels of the raster: keeps the stack
-    /// while what it was made for stays, and plans the list with what WebContent published again otherwise.
+    /// Works out the layers of the frame within `viewport_rect`, in the device pixels of the raster: those of the plan
+    /// WebContent sent where the frame is drawn as the plan was made for, and one layer that replays the whole list
+    /// otherwise.
     pub(super) fn layer_update_for(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -1510,21 +1440,16 @@ impl ContextPresenting {
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         self.layers.work_counts_of_this_frame = FrameWorkCounts::default();
-        // A plan places spaces that scroll at whole device pixels of the viewport, which a raster that scales them or
-        // shifts them by a fraction lacks.
-        let published_tree_to_plan_with = frame
-            .frame_inputs
-            .published_visual_context_tree
-            .as_ref()
-            .map(|published_tree| published_tree.as_arc().as_ref())
-            .filter(|_| raster_transform == FloatMatrix4x4::identity());
-        self.layers.work_counts_of_this_frame.list_was_placed = self.layers.make_stack_unless_kept(
-            frame.display_list,
-            published_tree_to_plan_with,
-            scroll_offsets,
-            viewport_rect,
-        );
-        let stack = self.layers.stack.as_ref().expect("a frame with layers has a stack");
+        // A plan places spaces that scroll at whole device pixels of the viewport it was made within, which a raster
+        // that scales them or shifts them by a fraction lacks, as does a viewport of another size.
+        let layer_plan = frame.frame_inputs.layer_plan.as_ref().filter(|layer_plan| {
+            raster_transform == FloatMatrix4x4::identity() && layer_plan.viewport_rect == viewport_rect
+        });
+        self.layers.work_counts_of_this_frame.took_plan_into_use =
+            self.layers
+                .take_stack_of_frame(layer_plan, storage.whole_span(), viewport_rect);
+        let stack = self.layers.stack.clone().expect("a frame with layers has a stack");
+        let stack = stack.as_ref();
         self.layers.window_server_placements_of_media =
             stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
         let composite_offsets = stack.composite_offsets(scroll_offsets);
@@ -1630,10 +1555,8 @@ impl ContextPresenting {
     }
 
     fn with_stack<R>(&mut self, work: impl FnOnce(&mut Self, &LayerStack) -> R) -> R {
-        let stack = self.layers.stack.take().expect("a frame with layers has a stack");
-        let result = work(self, &stack);
-        self.layers.stack = Some(stack);
-        result
+        let stack = self.layers.stack.clone().expect("a frame with layers has a stack");
+        work(self, &stack)
     }
 
     fn prepare_frame_tile_state_of_stack(
@@ -1650,7 +1573,7 @@ impl ContextPresenting {
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         let composite_offsets = &layer_update.composite_offsets;
         let raster_transform = self.raster_transform();
-        let scroll_offsets_plan_leaves_out = self.layers.scroll_offsets_plan_leaves_out();
+        let scroll_offsets_plan_leaves_out = self.layers.scroll_offsets_plan_leaves_out.clone();
         let geometry_readers_leave_out_offset_of_node_in_space = |raster_space_index| {
             scroll_offsets_plan_leaves_out
                 .as_deref()
@@ -2055,11 +1978,13 @@ impl ContextPresenting {
                 }
             }
         }
+        let identities_in_stack: HashSet<LayerIdentity> = layer_update
+            .compositing_of_layers
+            .iter()
+            .map(|compositing| compositing.identity)
+            .collect();
         layers.cached_layer_by_identity.retain(|identity, cached_layer| {
-            let is_in_stack = layer_update
-                .compositing_of_layers
-                .iter()
-                .any(|compositing| compositing.identity == *identity);
+            let is_in_stack = identities_in_stack.contains(identity);
             if !is_in_stack && let Some(presentation) = &cached_layer.window_server_presentation {
                 env.raster
                     .drop_presentable_surface_pool(env.context_id, presentation.presentable_surface_pool);
@@ -2935,5 +2860,97 @@ impl ContextPresenting {
             ));
         }
         sublayers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // How bands matched the tile keys of the latest frame when each was compared with each.
+    fn tile_keys_reused_by_comparing_every_band_with_every_band(
+        band_tile_keys_of_latest_frame: &mut Vec<BandTileKeysOfFrame>,
+        identities_of_bands: &[BandIdentities],
+    ) -> Vec<Option<BandTileKeysOfFrame>> {
+        let mut reused_by_band: Vec<Option<BandTileKeysOfFrame>> = identities_of_bands.iter().map(|_| None).collect();
+        for identity_of in BAND_IDENTITY_KINDS_IN_MATCHING_ORDER {
+            for (reused, identities) in reused_by_band.iter_mut().zip(identities_of_bands) {
+                if reused.is_some() {
+                    continue;
+                }
+                if let Some(index) = band_tile_keys_of_latest_frame
+                    .iter()
+                    .position(|band_tile_keys| identity_of(&band_tile_keys.identities) == identity_of(identities))
+                {
+                    *reused = Some(band_tile_keys_of_latest_frame.swap_remove(index));
+                }
+            }
+        }
+        reused_by_band
+    }
+
+    fn band_tile_keys_of(identities: BandIdentities) -> BandTileKeysOfFrame {
+        BandTileKeysOfFrame {
+            identities,
+            bound_to_list_and_geometry: None,
+            tile_keys: BandTileKeys::default(),
+        }
+    }
+
+    fn identities_of(band_tile_keys: &[Option<BandTileKeysOfFrame>]) -> Vec<Option<(u64, u64)>> {
+        band_tile_keys
+            .iter()
+            .map(|band_tile_keys| {
+                band_tile_keys.as_ref().map(|band_tile_keys| {
+                    (
+                        band_tile_keys.identities.identity_by_first_record_position,
+                        band_tile_keys.identities.identity_by_band_ordinal,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bands_found_by_identity_match_as_bands_compared_each_with_each() {
+        // Few distinct identities of each kind, so that many bands share one.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |range: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % range
+        };
+        for _ in 0..500 {
+            let latest_count = next(24) as usize;
+            let band_count = next(24) as usize;
+            let mut identities = |count: usize| -> Vec<BandIdentities> {
+                (0..count)
+                    .map(|_| BandIdentities {
+                        identity_by_first_record_position: next(6),
+                        identity_by_band_ordinal: next(4),
+                    })
+                    .collect()
+            };
+            let latest = identities(latest_count);
+            let bands = identities(band_count);
+            let mut latest_found_by_identity: Vec<BandTileKeysOfFrame> =
+                latest.iter().copied().map(band_tile_keys_of).collect();
+            let mut latest_compared_each_with_each: Vec<BandTileKeysOfFrame> =
+                latest.iter().copied().map(band_tile_keys_of).collect();
+            let found_by_identity = reuse_tile_keys_of_matching_bands(&mut latest_found_by_identity, &bands);
+            let compared_each_with_each =
+                tile_keys_reused_by_comparing_every_band_with_every_band(&mut latest_compared_each_with_each, &bands);
+            assert_eq!(
+                identities_of(&found_by_identity),
+                identities_of(&compared_each_with_each)
+            );
+            let left_over =
+                |left: Vec<BandTileKeysOfFrame>| identities_of(&left.into_iter().map(Some).collect::<Vec<_>>());
+            assert_eq!(
+                left_over(latest_found_by_identity),
+                left_over(latest_compared_each_with_each)
+            );
+        }
     }
 }

@@ -21,6 +21,7 @@ use crate::overlays::{UIOverlays, UIOverlaysChange};
 use crate::presenting::ContextPresenting;
 use crate::raster_host::{RasterHost, SurfaceHandle};
 use crate::wheel_gesture_routing::WheelGestureIdAllocator;
+use libcompositing_rust::display_list::layers::UnvalidatedLayerPlan;
 use libcompositing_rust::ipc_types::Compositing_ContextVisibility as ContextVisibility;
 use libcompositing_rust::scrolling::{
     AccumulatedVisualContextTree, CompositorContextId, DisplayList, KeyboardScrollState, ScrollStateSnapshot,
@@ -735,6 +736,41 @@ impl CompositorCore {
         );
         self.finish_entry(now);
         installed
+    }
+
+    /// Forgets the plan of layers of the context, ahead of a display list or a visual context tree from WebContent that
+    /// the context may not install.
+    pub fn forget_layer_plan(&self, context_id: CompositorContextId) {
+        let _entered = self.enter();
+
+        let context = self.context_if_present(context_id).expect("context exists");
+        context.borrow_mut().forget_layer_plan();
+    }
+
+    /// Takes the plan of layers that came with the display list or the visual context tree the context just installed.
+    /// Fails for a plan that does not pass the checks against them.
+    pub fn take_layer_plan_of_installed_update(
+        &self,
+        context_id: CompositorContextId,
+        layer_plan: Option<UnvalidatedLayerPlan>,
+    ) -> Result<(), &'static str> {
+        let _entered = self.enter();
+
+        let context = self.context_if_present(context_id).expect("context exists");
+        context.borrow_mut().take_layer_plan_of_installed_update(layer_plan)
+    }
+
+    /// Takes the plan of layers that came with a scroll state, if any. Fails for a plan that does not pass the checks
+    /// against the display list and the visual context tree it is of.
+    pub fn take_layer_plan_of_scroll_state(
+        &self,
+        context_id: CompositorContextId,
+        layer_plan: Option<UnvalidatedLayerPlan>,
+    ) -> Result<(), &'static str> {
+        let _entered = self.enter();
+
+        let context = self.context_if_present(context_id).expect("context exists");
+        context.borrow_mut().take_layer_plan_of_scroll_state(layer_plan)
     }
 
     /// Tells the host which fonts, image frames, video sinks and SVG images the context draws, now that it took a

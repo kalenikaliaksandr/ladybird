@@ -14,6 +14,8 @@
 use crate::paint_stage::Presenting;
 use crate::painting::display_list::chunks::{Chunk, ChunkId, KeptChunks};
 use crate::painting::display_list::commands::CompositorContextId;
+use crate::painting::display_list::layers::{InputsOfLayerPlan, LayerPlan};
+use crate::painting::display_list::storage::{DisplayListStorage, ListChunk};
 use crate::painting::display_list_resources::DisplayListResources;
 use crate::painting::paint_passes::ClockTickVisualContexts;
 use crate::painting::record::RecordingOutput;
@@ -26,7 +28,7 @@ use libcompositing_rust::ipc_types::compositor_web_content_server::messages::{
 };
 use libcompositing_rust::ipc_types::{
     Compositing_AsyncScrollingMetadata, Compositing_DisplayListProperties, Compositing_KeyboardScrollState,
-    Compositing_ScrollRequest,
+    Compositing_ScrollRequest, LayerPlanOnWire,
 };
 use libcompositing_rust::scrolling::ScrollStateSnapshot;
 use libgfx_rust::IntRect;
@@ -618,11 +620,38 @@ impl Presenting<'_> {
 }
 
 /// What the compositor keeps of the display lists sent for one context, which a display list sends the chunks it lacks
-/// of, and the chunks that draw SVG images as they were sent, with the records of the images in them.
+/// of, and the chunks that draw SVG images as they were sent, with the records of the images in them. Beside those, the
+/// list the compositor holds and the plan of its layers, which the Paint thread plans as it sends what the plan reads.
 #[derive(Default)]
 pub(crate) struct SentDisplayListChunks {
     kept: KeptChunks,
     holding_vector_image_records: HashMap<ChunkId, Arc<Chunk>>,
+    /// The chunks the compositor keeps as it replays them, with what plans of layers work out of each chunk alone,
+    /// which the lists of those chunks share.
+    list_chunks: HashMap<ChunkId, Arc<ListChunk>>,
+    /// The display list sent last, as the compositor replays it.
+    held_list: Option<DisplayListSent>,
+    /// The plan of layers sent last with a display list, a visual context tree or a scroll state, or none where the
+    /// display list or the tree sent last went without one.
+    held_layer_plan: Option<LayerPlanSent>,
+}
+
+struct DisplayListSent {
+    display_list_id: u64,
+    recorded_structural_epoch: u64,
+    list: Arc<DisplayListStorage>,
+}
+
+/// A plan of layers sent to the compositor, and what it was made from.
+struct LayerPlanSent {
+    inputs: InputsOfLayerPlan,
+    plan: Arc<LayerPlan>,
+}
+
+impl LayerPlanSent {
+    fn on_wire(&self) -> LayerPlanOnWire {
+        LayerPlanOnWire::Planned(self.plan.clone())
+    }
 }
 
 impl SentDisplayListChunks {
@@ -655,6 +684,94 @@ impl SentDisplayListChunks {
         self.kept.take_in(chunks_in_paint_order);
         let kept = &self.kept;
         self.holding_vector_image_records.retain(|_, sent| kept.keeps(sent.id));
+        self.list_chunks.retain(|id, _| kept.keeps(*id));
+    }
+
+    /// The display list of `chunks_as_sent` as the compositor replays it: the same chunks in the same order, so that a
+    /// position in it names the same record in both processes.
+    fn list_as_sent(&mut self, chunks_as_sent: &[Arc<Chunk>]) -> Option<Arc<DisplayListStorage>> {
+        let chunks = chunks_as_sent
+            .iter()
+            .map(|chunk| {
+                self.list_chunks
+                    .entry(chunk.id)
+                    .or_insert_with(|| Arc::new(ListChunk::copied(&chunk.records, &chunk.runs, 0)))
+                    .clone()
+            })
+            .collect();
+        DisplayListStorage::of_chunks(chunks).ok()
+    }
+
+    /// The plan of the layers of the display list `display_list_id` names under `inputs`: the plan sent last, where it
+    /// was made from inputs that plan alike, and a new one otherwise.
+    fn layer_plan_of(&self, display_list_id: u64, inputs: InputsOfLayerPlan) -> LayerPlanSent {
+        match &self.held_layer_plan {
+            Some(held) if held.inputs.plan_alike_as(&inputs) => LayerPlanSent {
+                plan: if held.plan.display_list_id == display_list_id {
+                    held.plan.clone()
+                } else {
+                    Arc::new(LayerPlan {
+                        display_list_id,
+                        ..(*held.plan).clone()
+                    })
+                },
+                inputs,
+            },
+            _ => layer_plan_made_from(display_list_id, inputs),
+        }
+    }
+
+    /// The plan of the layers of the display list the compositor holds under `visual_context_tree`, or none where the
+    /// tree does not fit that list, which the compositor then drops.
+    fn layer_plan_of_held_list_under(
+        &self,
+        visual_context_tree: &Arc<VisualContextTree>,
+        scroll_state: &ScrollStateSnapshot,
+        viewport_rect: IntRect,
+    ) -> Option<LayerPlanSent> {
+        let held = self.held_list.as_ref()?;
+        if visual_context_tree.structural_epoch != held.recorded_structural_epoch
+            || !visual_context_tree.display_list_references_only_live_nodes(held.list.runs())
+        {
+            return None;
+        }
+        Some(self.layer_plan_of(
+            held.display_list_id,
+            InputsOfLayerPlan::new(
+                held.list.clone(),
+                visual_context_tree.clone(),
+                scroll_state.device_offsets(),
+                viewport_rect,
+            ),
+        ))
+    }
+
+    /// A new plan of the layers the compositor holds a plan of, where `scroll_state` or `viewport_rect` changed what
+    /// that plan reads. A scroll state without a plan keeps the plan the compositor holds, and a display list or a tree
+    /// without one leaves it with none.
+    fn layer_plan_for_scroll_state(
+        &self,
+        scroll_state: &ScrollStateSnapshot,
+        viewport_rect: Option<IntRect>,
+    ) -> Option<LayerPlanSent> {
+        let held = self.held_layer_plan.as_ref()?;
+        let inputs = held.inputs.with_scroll_offsets_and_viewport_rect(
+            scroll_state.device_offsets(),
+            viewport_rect.unwrap_or(held.inputs.viewport_rect()),
+        );
+        (!held.inputs.plan_alike_as(&inputs)).then(|| layer_plan_made_from(held.plan.display_list_id, inputs))
+    }
+}
+
+fn layer_plan_made_from(display_list_id: u64, inputs: InputsOfLayerPlan) -> LayerPlanSent {
+    let stack = inputs.plan().stack;
+    LayerPlanSent {
+        plan: Arc::new(LayerPlan {
+            display_list_id,
+            viewport_rect: inputs.viewport_rect(),
+            stack,
+        }),
+        inputs,
     }
 }
 
@@ -674,12 +791,16 @@ fn post_frame_through(
         scroll_requests,
         present_viewport_rect,
     } = frame;
+    // A plan is made for the rect the compositor rasters the frame within: at the origin, at the size of the viewport the
+    // frame is presented in.
+    let viewport_rect_of_layer_plans =
+        present_viewport_rect.map(|viewport_rect| IntRect::new(0, 0, viewport_rect.width, viewport_rect.height));
+    let sent = sent_display_list_chunks.entry(context_id).or_default();
     if let Some(update) = display_list_update {
         if !post_resources_ahead(poster, context_id, &update.resources) {
             return false;
         }
         // The compositor replays chunks with the records of the SVG images they draw in them.
-        let sent = sent_display_list_chunks.entry(context_id).or_default();
         let vector_images = &update.output.resources.vector_images;
         let chunks_as_sent: Vec<Arc<Chunk>> = update
             .output
@@ -689,6 +810,8 @@ fn post_frame_through(
             .collect();
         let chunks_in_paint_order: Vec<ChunkId> = chunks_as_sent.iter().map(|chunk| chunk.id).collect();
         let new_chunks = sent.new_chunks(&chunks_as_sent);
+        let display_list_id = update.properties.id;
+        let recorded_structural_epoch = update.properties.compatible_visual_context_tree_structural_epoch;
         match poster.share_display_list(
             chunks_in_paint_order.clone(),
             &new_chunks,
@@ -696,16 +819,38 @@ fn post_frame_through(
             Some(update.async_scrolling_metadata),
         ) {
             Some(display_list) => {
+                let list = sent.list_as_sent(&chunks_as_sent);
+                let layer_plan = list
+                    .clone()
+                    .zip(viewport_rect_of_layer_plans)
+                    .map(|(list, viewport_rect)| {
+                        sent.layer_plan_of(
+                            display_list_id,
+                            InputsOfLayerPlan::new(
+                                list,
+                                update.visual_context_tree.clone(),
+                                update.scroll_state.device_offsets(),
+                                viewport_rect,
+                            ),
+                        )
+                    });
                 let message = UpdateDisplayList {
                     context_id,
                     display_list,
                     visual_context_tree: update.visual_context_tree,
                     scroll_state: update.scroll_state,
+                    layer_plan: layer_plan.as_ref().map(LayerPlanSent::on_wire),
                 };
                 if !poster.post(message) {
                     return false;
                 }
                 sent.take_in(&chunks_in_paint_order);
+                sent.held_list = list.map(|list| DisplayListSent {
+                    display_list_id,
+                    recorded_structural_epoch,
+                    list,
+                });
+                sent.held_layer_plan = layer_plan;
             }
             None => {
                 eprintln!(
@@ -719,24 +864,34 @@ fn post_frame_through(
         if !post_resources_ahead(poster, context_id, &update.resources) {
             return false;
         }
+        let layer_plan = viewport_rect_of_layer_plans.and_then(|viewport_rect| {
+            sent.layer_plan_of_held_list_under(&update.visual_context_tree, &update.scroll_state, viewport_rect)
+        });
         let message = UpdateVisualContextTree {
             context_id,
             visual_context_tree: update.visual_context_tree,
             scroll_state: update.scroll_state,
             keyboard_scroll_state: update.keyboard_scroll_state,
+            layer_plan: layer_plan.as_ref().map(LayerPlanSent::on_wire),
         };
         if !poster.post(message) {
             return false;
         }
+        sent.held_layer_plan = layer_plan;
     }
     if let Some(update) = scroll_state_update {
+        let layer_plan = sent.layer_plan_for_scroll_state(&update.scroll_state, viewport_rect_of_layer_plans);
         let message = UpdateScrollState {
             context_id,
             scroll_state: update.scroll_state,
             keyboard_scroll_state: update.keyboard_scroll_state,
+            layer_plan: layer_plan.as_ref().map(LayerPlanSent::on_wire),
         };
         if !poster.post(message) {
             return false;
+        }
+        if layer_plan.is_some() {
+            sent.held_layer_plan = layer_plan;
         }
     }
     if !scroll_requests.is_empty()

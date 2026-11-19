@@ -30,7 +30,7 @@ use libcompositing_rust::ipc_types::compositor_web_content_server::messages::{
 };
 use libcompositing_rust::ipc_types::{
     Compositing_WheelEventAnswer as WheelEventAnswer, Compositing_WheelStepLetThrough as WheelStepLetThrough,
-    SharedDisplayList, compositor_presentation_server, compositor_web_content_server,
+    LayerPlanOnWire, SharedDisplayList, compositor_presentation_server, compositor_web_content_server,
 };
 use libcompositing_rust::scrolling::async_scrolling_state::AsyncScrollOperationID;
 use libcompositing_rust::scrolling::{AccumulatedVisualContextTree, DisplayList};
@@ -54,6 +54,14 @@ fn display_list_timing_enabled() -> bool {
 
 const DISPLAY_LIST_WITH_UNUSABLE_SCROLLING_STATE: &str =
     "WebContent published a display list with scrolling state the compositor cannot use";
+
+fn misbehavior_of_layer_plan(why_plan_fails_checks: &'static str) -> Misbehavior {
+    let _ = writeln!(
+        std::io::stderr(),
+        "Compositor: Rejecting plan of layers from WebContent: {why_plan_fails_checks}"
+    );
+    Misbehavior("WebContent sent a plan of layers that does not fit its display list and visual context tree")
+}
 
 // The main thread allocates the ids of the scrolls it requests from here up, so that they never meet the ids the
 // compositor allocates for scrolls of its own.
@@ -324,6 +332,7 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
         if !self.context_is_owned_by_sender(message.context_id)? {
             return Ok(());
         }
+        self.core.forget_layer_plan(message.context_id);
         if properties.compatible_visual_context_tree_structural_epoch != tree.structural_epoch {
             let _ = writeln!(
                 std::io::stderr(),
@@ -394,6 +403,12 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
         ) {
             return Err(Misbehavior(DISPLAY_LIST_WITH_UNUSABLE_SCROLLING_STATE));
         }
+        self.core
+            .take_layer_plan_of_installed_update(
+                message.context_id,
+                message.layer_plan.map(LayerPlanOnWire::into_received),
+            )
+            .map_err(misbehavior_of_layer_plan)?;
         self.core.keep_only_drawn_resources(message.context_id);
         if display_list_timing_enabled() {
             let _ = writeln!(
@@ -419,6 +434,7 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
         if !self.context_is_owned_by_sender(message.context_id)? {
             return Ok(());
         }
+        self.core.forget_layer_plan(message.context_id);
         let mut image_frame_ids = Vec::new();
         tree.for_each_effects_filter_image_frame_id(&mut |id| image_frame_ids.push(id));
         if !self
@@ -440,6 +456,12 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
             self.now,
         );
         if tree_was_replaced {
+            self.core
+                .take_layer_plan_of_installed_update(
+                    message.context_id,
+                    message.layer_plan.map(LayerPlanOnWire::into_received),
+                )
+                .map_err(misbehavior_of_layer_plan)?;
             self.core.keep_only_drawn_resources(message.context_id);
         }
         Ok(())
@@ -462,6 +484,12 @@ impl compositor_web_content_server::Stub for MessagesFromWebContent<'_> {
         if self.context_is_owned_by_sender(message.context_id)? {
             self.core
                 .update_scroll_state(message.context_id, scroll_state_snapshot, message.keyboard_scroll_state);
+            self.core
+                .take_layer_plan_of_scroll_state(
+                    message.context_id,
+                    message.layer_plan.map(LayerPlanOnWire::into_received),
+                )
+                .map_err(misbehavior_of_layer_plan)?;
         }
         Ok(())
     }
