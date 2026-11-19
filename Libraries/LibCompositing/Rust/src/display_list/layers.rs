@@ -16,7 +16,9 @@
 //! below it, that it reads, at its paint position: there, the band's records painted before the barrier go into the
 //! layer below the cut and those painted after it into the layer above the cut. Elsewhere it cuts nothing.
 
-use crate::display_list::commands::{EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::builder::read_command;
+use crate::display_list::commands::{DeclareMaskContent, EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::effect_geometry::filter_may_spread_at_some_sample;
 pub use crate::display_list::placement::{
     CompositeClip, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex, RunGroupIndex, raster_space_anchors,
 };
@@ -399,17 +401,67 @@ pub struct StackLayer {
     pub reach: IntRect,
 }
 
-/// An effect that the compositor composites the layers of its content inside, and why.
+/// An effect that the compositor composites the layers of its content inside.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompositedEffect {
     pub effect: EffectNodeIndex,
     pub placement_node_index: PlacementNodeIndex,
-    pub why: WhyEffectIsComposited,
-    /// What the effect reads of what is composited below it, in the raster coordinates of its node's space.
-    pub backdrop_read_reach: Reach<IntRect>,
+    /// Whether the effect reads what is composited below it: it reads the backdrop of a backdrop filter, or it blends.
+    pub reads_what_is_composited_below_it: bool,
     /// Whether its filter moves what it composites past where it is drawn, so that it reads what is drawn inside it
     /// past each of its pixels.
     pub filter_spreads_what_it_composites: bool,
+}
+
+impl CompositedEffect {
+    /// The effects the compositor composites the nodes of a stack inside, one per composited node in the order of the
+    /// nodes, with what the tree tells of how each reads. Each of those effects is a node of `tree`.
+    fn of_nodes(nodes: &[PlacementNode], tree: &VisualContextTree) -> Vec<CompositedEffect> {
+        if nodes.iter().all(|node| node.composited_effect.is_none()) {
+            return Vec::new();
+        }
+        let backdrop_reader_by_effect_index = backdrop_reader_by_reading_effect_index(tree);
+        nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| {
+                let effect = node.composited_effect?;
+                Some(CompositedEffect {
+                    effect,
+                    placement_node_index: PlacementNodeIndex(index),
+                    reads_what_is_composited_below_it: backdrop_reader_by_effect_index[effect.0 as usize].is_some(),
+                    filter_spreads_what_it_composites: filter_may_spread_at_some_sample(tree, effect),
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BackdropReader {
+    effect_with_backdrop_filter: Option<EffectNodeIndex>,
+}
+
+// Per effect node, whether it reads what is below it, and if it reads for a backdrop filter, the effect of the filter.
+fn backdrop_reader_by_reading_effect_index(tree: &VisualContextTree) -> Vec<Option<BackdropReader>> {
+    let mut backdrop_reader_by_reading_effect_index = vec![None; tree.effect_nodes.len()];
+    for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
+        let EffectNodeData::Effects(effects) = &effect_node.data else {
+            continue;
+        };
+        let effect = EffectNodeIndex(index as u32);
+        if effects.backdrop_filter.is_some() {
+            let reading_effect = tree.node_reading_the_backdrop_of(effect);
+            backdrop_reader_by_reading_effect_index[reading_effect.0 as usize] = Some(BackdropReader {
+                effect_with_backdrop_filter: Some(effect),
+            });
+        } else if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
+            backdrop_reader_by_reading_effect_index[index] = Some(BackdropReader {
+                effect_with_backdrop_filter: None,
+            });
+        }
+    }
+    backdrop_reader_by_reading_effect_index
 }
 
 /// The layers of a list bottom to top, with the base layer, which is rastered over the surface's clear color and
@@ -417,20 +469,18 @@ pub struct CompositedEffect {
 /// what a frame works out of it is kept apart from it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerStack {
+    /// The viewport's space, and for a stack of more than one layer, the spaces `RasterSpaces::spaces_at_anchors` makes
+    /// at the anchors `raster_space_anchors` gives for the tree, without the extent of each space but the viewport's.
     pub spaces: Vec<RasterSpace>,
     pub nodes: Vec<PlacementNode>,
     pub bands: Vec<PlacementNodeBand>,
     pub layers: Vec<StackLayer>,
-    /// In paint order.
+    /// In the order of their nodes, which is paint order.
     pub composited_effects: Vec<CompositedEffect>,
     pub base_layer: LayerIndex,
     /// Why the stack is one layer that replays the whole list, if it is.
     pub why_list_is_one_layer: Option<WhyListIsOneLayer>,
     pub layering_obstacles: LayeringObstacles,
-    pub media_without_layers: Vec<(LiveContent, WhyMediaHasNoLayer)>,
-    /// The backdrop filters and blend modes that find all they read in the layer they go into, and read it there
-    /// rather than the compositor compositing them, in paint order.
-    pub effects_reading_only_own_layer: Vec<EffectNodeIndex>,
     /// Per raster space, whether records its tiles hold move within it as nodes that move on their own, or that the
     /// compositor scrolls without the space following them, do. Canvases, videos and nested contexts with layers of
     /// their own hold none of those records.
@@ -567,8 +617,6 @@ impl LayerStack {
             base_layer: LayerIndex(0),
             why_list_is_one_layer,
             layering_obstacles: LayeringObstacles::default(),
-            media_without_layers: Vec::new(),
-            effects_reading_only_own_layer: Vec::new(),
             tiles_hold_content_moving_within_space_by_space_index: vec![true],
             swept_reach_in_parent_space_by_space_index: vec![None],
             index_of_layer_with_identity: HashMap::new(),
@@ -1033,50 +1081,6 @@ impl LayerStack {
             }
         }
     }
-
-    /// What the dump says of each effect the compositor composites: the space of its node, what it reads of what is
-    /// composited below it, and why it is composited.
-    pub fn lines_of_composited_effects<'a>(
-        &'a self,
-        node_namer: &'a dyn VisualContextNodeNamer,
-    ) -> impl Iterator<Item = String> + 'a {
-        self.composited_effects.iter().map(|composited| {
-            let parent_node_index = self.nodes[composited.placement_node_index.0]
-                .parent_index
-                .expect("a composited node is inside another");
-            let backdrop_read_text = match composited.backdrop_read_reach {
-                Reach::Nothing => String::new(),
-                Reach::Within(rect) => format!(" reads=[{},{} {}x{}]", rect.x, rect.y, rect.width, rect.height),
-                Reach::Anywhere => " reads=anywhere".into(),
-            };
-            format!(
-                "composited {} space={}{backdrop_read_text}: {}",
-                node_namer.name_of_effect_node(composited.effect),
-                self.name_of_node(parent_node_index, node_namer),
-                composited.why
-            )
-        })
-    }
-
-    /// What the dump says of each backdrop filter or blend mode that reads only the layer it goes into.
-    pub fn lines_of_effects_reading_only_own_layer<'a>(
-        &'a self,
-        node_namer: &'a dyn VisualContextNodeNamer,
-    ) -> impl Iterator<Item = String> + 'a {
-        self.effects_reading_only_own_layer.iter().map(|effect| {
-            format!(
-                "{} is not composited: it reads only its own layer",
-                node_namer.name_of_effect_node(*effect)
-            )
-        })
-    }
-
-    /// What the dump says of each canvas, video or nested context that was not given a layer, and why.
-    pub fn lines_of_media_without_layers(&self) -> impl Iterator<Item = String> + '_ {
-        self.media_without_layers
-            .iter()
-            .map(|(content, why_no_layer)| format!("no layer for {}: {why_no_layer}", media_name(*content)))
-    }
 }
 
 /// What of a tree and its list keeps the tiles of its layers from replaying only the records that reach them, or keeps
@@ -1088,10 +1092,44 @@ pub struct LayeringObstacles {
 }
 
 impl LayeringObstacles {
+    pub fn of(list: &DisplayListStorage, tree: &VisualContextTree) -> Self {
+        Self {
+            sorts_planes_by_depth: tree.may_sort_planes_by_depth(),
+            mask_declared_under_effects_its_mask_is_not_under: !mask_declarations_are_on_effect_chains_of_their_masks(
+                list, tree,
+            ),
+        }
+    }
+
     /// Whether every tile replays every record of its band, as which records can show in a tile cannot be told.
     pub fn every_tile_replays_every_record(&self) -> bool {
         self.mask_declared_under_effects_its_mask_is_not_under
     }
+}
+
+fn effect_is_or_is_inside(tree: &VisualContextTree, mut effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
+    while !effect.is_none() {
+        if effect == ancestor {
+            return true;
+        }
+        effect = tree.effect_nodes[effect.0 as usize].parent;
+    }
+    false
+}
+
+// A tile replays the declaration of a mask's content along with what the mask holds, and so opens the effects the
+// declaration is under there, which draw nothing only when they are the mask's own or those around it. A list from
+// another process can name a mask that the tree does not hold. No effect is inside such a mask.
+fn mask_declarations_are_on_effect_chains_of_their_masks(list: &DisplayListStorage, tree: &VisualContextTree) -> bool {
+    list.summary().mask_declarations.iter().all(|record| {
+        let (_, payload) = list.record_at(record.position());
+        let mask_effect = read_command::<DeclareMaskContent>(payload).effect;
+        let declaration_effect = list.run(record.run_index as usize).context.effect;
+        let tree_holds_mask_effect = (mask_effect.0 as usize) < tree.effect_nodes.len();
+        declaration_effect.is_none()
+            || effect_is_or_is_inside(tree, declaration_effect, mask_effect)
+            || (tree_holds_mask_effect && effect_is_or_is_inside(tree, mask_effect, declaration_effect))
+    })
 }
 
 /// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches

@@ -17,13 +17,13 @@
 
 use super::{
     BandIndex, BarrierCut, BarrierIdentity, CompositedEffect, LayerContent, LayerIdentity, LayerIndex, LayerStack,
-    LayeringObstacles, PlacementNode, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, StackLayer,
-    VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited, WhyListIsOneLayer,
-    WhyMediaHasNoLayer, WindowServerPresentationOfMedia, anchors_of_layer_plans, backdrop_filter_read_reach,
-    identity_of_node, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
+    LayeringObstacles, NodeNamesFromIndices, PlacementNode, PlacementNodeBand, PlacementNodeIdentity,
+    PlacementNodeIndex, StackLayer, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited,
+    WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, anchors_of_layer_plans,
+    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, effect_is_or_is_inside, identity_of_node,
+    media_name, spatial_nodes_whose_scroll_offset_layer_plans_leave_out, wire,
 };
-use crate::display_list::builder::read_command;
-use crate::display_list::commands::{DeclareMaskContent, DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
     KeyframeFiltersOfEffects, filter_may_spread_at_some_sample, nearest_effects_spreading_at_some_sample,
 };
@@ -106,15 +106,98 @@ fn identity_of_composited_node(
     PlacementNodeIdentity(hasher.finish())
 }
 
-/// A plan of the layers of a list: the stack the compositor composites frames from, and where the parts of the list
-/// are placed among the spaces of the stack, which only the dump and the tests read.
+/// Why the compositor composites an effect, and what the effect reads of what is composited below it, in the raster
+/// coordinates of its node's space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoteOfCompositedEffect {
+    pub why: WhyEffectIsComposited,
+    pub backdrop_read_reach: Reach<IntRect>,
+}
+
+/// What the dump and the overlay of layers tell of a stack past what a frame reads of it. A stack of one layer that
+/// replays the whole list has no notes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NotesOfStack {
+    /// One per effect of `LayerStack::composited_effects`, in that order.
+    pub composited_effects: Vec<NoteOfCompositedEffect>,
+    pub media_without_layers: Vec<(LiveContent, WhyMediaHasNoLayer)>,
+    /// The backdrop filters and blend modes that find all they read in the layer they go into, and read it there
+    /// rather than the compositor compositing them, in paint order.
+    pub effects_reading_only_own_layer: Vec<EffectNodeIndex>,
+}
+
+/// A plan of the layers of a list: the stack the compositor composites frames from, the notes the dump and the overlay
+/// of layers tell of it, and where the parts of the list are placed among the spaces of the stack, which only the dump
+/// and the tests read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlannedLayers {
     pub stack: LayerStack,
+    pub notes: NotesOfStack,
     pub placement: ListPlacement,
 }
 
 impl PlannedLayers {
+    /// What the dump says of each effect the compositor composites: the space of its node, what it reads of what is
+    /// composited below it, and why it is composited.
+    pub fn lines_of_composited_effects<'a>(
+        &'a self,
+        node_namer: &'a dyn VisualContextNodeNamer,
+    ) -> impl Iterator<Item = String> + 'a {
+        let stack = &self.stack;
+        stack
+            .composited_effects
+            .iter()
+            .zip(&self.notes.composited_effects)
+            .map(move |(composited, note)| {
+                let parent_node_index = stack.nodes[composited.placement_node_index.0]
+                    .parent_index
+                    .expect("a composited node is inside another");
+                let backdrop_read_text = match note.backdrop_read_reach {
+                    Reach::Nothing => String::new(),
+                    Reach::Within(rect) => format!(" reads=[{},{} {}x{}]", rect.x, rect.y, rect.width, rect.height),
+                    Reach::Anywhere => " reads=anywhere".into(),
+                };
+                format!(
+                    "composited {} space={}{backdrop_read_text}: {}",
+                    node_namer.name_of_effect_node(composited.effect),
+                    stack.name_of_node(parent_node_index, node_namer),
+                    note.why
+                )
+            })
+    }
+
+    /// What the dump says of each backdrop filter or blend mode that reads only the layer it goes into.
+    pub fn lines_of_effects_reading_only_own_layer<'a>(
+        &'a self,
+        node_namer: &'a dyn VisualContextNodeNamer,
+    ) -> impl Iterator<Item = String> + 'a {
+        self.notes.effects_reading_only_own_layer.iter().map(|effect| {
+            format!(
+                "{} is not composited: it reads only its own layer",
+                node_namer.name_of_effect_node(*effect)
+            )
+        })
+    }
+
+    /// What the dump says of each canvas, video or nested context that was not given a layer, and why.
+    pub fn lines_of_media_without_layers(&self) -> impl Iterator<Item = String> + '_ {
+        self.notes
+            .media_without_layers
+            .iter()
+            .map(|(content, why_no_layer)| format!("no layer for {}: {why_no_layer}", media_name(*content)))
+    }
+
+    /// The lines the overlay of layers shows of the stack past its layers, which WebContent sends with the plan: those
+    /// of the effects the compositor composites, of the canvases, videos and nested contexts without layers, and of the
+    /// effects that read only their own layer, with nodes named by their indices, as many and as long as a plan holds.
+    pub fn note_lines_for_layers_overlay(&self) -> Vec<String> {
+        wire::note_lines_a_plan_holds(
+            self.lines_of_composited_effects(&NodeNamesFromIndices)
+                .chain(self.lines_of_media_without_layers())
+                .chain(self.lines_of_effects_reading_only_own_layer(&NodeNamesFromIndices)),
+        )
+    }
+
     /// What the dump says of each node the compositor animates whose content was not given layers of its own, and why.
     pub fn lines_of_animations_without_layers<'a>(
         &'a self,
@@ -201,11 +284,10 @@ impl PlannedLayers {
             lines.push((Some(layer_index), line));
         }
         lines.extend(
-            stack
-                .lines_of_composited_effects(node_namer)
-                .chain(stack.lines_of_media_without_layers())
+            self.lines_of_composited_effects(node_namer)
+                .chain(self.lines_of_media_without_layers())
                 .chain(self.lines_of_animations_without_layers(node_namer))
-                .chain(stack.lines_of_effects_reading_only_own_layer(node_namer))
+                .chain(self.lines_of_effects_reading_only_own_layer(node_namer))
                 .map(|line| (None, line)),
         );
         lines
@@ -321,40 +403,6 @@ fn spatial_nodes_under_transform_animations_leaving_plane(tree: &VisualContextTr
     tree.spatial_nodes_in_subtrees_of(&roots)
 }
 
-fn effect_is_or_is_inside(tree: &VisualContextTree, mut effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
-    while !effect.is_none() {
-        if effect == ancestor {
-            return true;
-        }
-        effect = tree.effect_nodes[effect.0 as usize].parent;
-    }
-    false
-}
-
-// A tile replays the declaration of a mask's content along with what the mask holds, and so opens the effects the
-// declaration is under there, which draw nothing only when they are the mask's own or those around it.
-fn mask_declarations_are_on_effect_chains_of_their_masks(list: &DisplayListStorage, tree: &VisualContextTree) -> bool {
-    list.summary().mask_declarations.iter().all(|record| {
-        let (_, payload) = list.record_at(record.position());
-        let mask_effect = read_command::<DeclareMaskContent>(payload).effect;
-        let declaration_effect = list.run(record.run_index as usize).context.effect;
-        declaration_effect.is_none()
-            || effect_is_or_is_inside(tree, declaration_effect, mask_effect)
-            || effect_is_or_is_inside(tree, mask_effect, declaration_effect)
-    })
-}
-
-impl LayeringObstacles {
-    pub fn of(list: &DisplayListStorage, tree: &VisualContextTree) -> Self {
-        Self {
-            sorts_planes_by_depth: tree.may_sort_planes_by_depth(),
-            mask_declared_under_effects_its_mask_is_not_under: !mask_declarations_are_on_effect_chains_of_their_masks(
-                list, tree,
-            ),
-        }
-    }
-}
-
 /// Why a list cannot be layered at all.
 pub fn why_list_cannot_be_layered(
     inputs: &LayerStackInputs<'_>,
@@ -437,7 +485,6 @@ pub struct PlacedEffect {
     /// as the stack is cut into them.
     pub reads_root_group: bool,
     pub why_composited_regardless_of_layer_content: Option<WhyEffectIsComposited>,
-    pub filter_spreads_what_it_composites: bool,
 }
 
 /// A canvas, video or nested context that is a layer of its own, alone in its run.
@@ -550,32 +597,6 @@ fn why_media_has_no_layer(
         return Some(WhyMediaHasNoLayer::DrawsNothingVisible);
     }
     None
-}
-
-#[derive(Clone, Copy)]
-struct BackdropReader {
-    effect_with_backdrop_filter: Option<EffectNodeIndex>,
-}
-
-fn backdrop_reader_by_reading_effect_index(tree: &VisualContextTree) -> Vec<Option<BackdropReader>> {
-    let mut backdrop_reader_by_reading_effect_index = vec![None; tree.effect_nodes.len()];
-    for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
-        let EffectNodeData::Effects(effects) = &effect_node.data else {
-            continue;
-        };
-        let effect = EffectNodeIndex(index as u32);
-        if effects.backdrop_filter.is_some() {
-            let reading_effect = tree.node_reading_the_backdrop_of(effect);
-            backdrop_reader_by_reading_effect_index[reading_effect.0 as usize] = Some(BackdropReader {
-                effect_with_backdrop_filter: Some(effect),
-            });
-        } else if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
-            backdrop_reader_by_reading_effect_index[index] = Some(BackdropReader {
-                effect_with_backdrop_filter: None,
-            });
-        }
-    }
-    backdrop_reader_by_reading_effect_index
 }
 
 fn effect_is_inside(tree: &VisualContextTree, effect: EffectNodeIndex, around: EffectNodeIndex) -> bool {
@@ -1172,7 +1193,6 @@ fn place_list(
             backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
             reads_root_group,
             why_composited_regardless_of_layer_content,
-            filter_spreads_what_it_composites: filter_may_spread_at_some_sample(tree, effect),
         });
     }
     let innermost_placed_effect_of_run = |run_index: usize| {
@@ -1428,7 +1448,8 @@ struct StackBeingBuilt<'a> {
     root_group_reach_so_far_by_band_being_built: Vec<Reach<IntRect>>,
     why_composited_once_decided_by_placed_effect: Vec<Option<Option<WhyEffectIsComposited>>>,
     composited_node_by_placed_effect: Vec<Option<PlacementNodeIndex>>,
-    composited_effects: Vec<CompositedEffect>,
+    /// One per composited node, in the order of the nodes.
+    notes_of_composited_effects: Vec<NoteOfCompositedEffect>,
     records_blend_with_what_other_layers_hold_below_them: bool,
 }
 
@@ -1730,12 +1751,9 @@ impl StackBeingBuilt<'_> {
                     open_band_by_node_index.push(None);
                     next_band_ordinal_by_node_index.push(0);
                     self.composited_node_by_placed_effect[placed_effect_index.0] = Some(composited_node_index);
-                    self.composited_effects.push(CompositedEffect {
-                        effect: placed_effect.effect,
-                        placement_node_index: composited_node_index,
+                    self.notes_of_composited_effects.push(NoteOfCompositedEffect {
                         why,
                         backdrop_read_reach: placed_effect.backdrop_read_reach,
-                        filter_spreads_what_it_composites: placed_effect.filter_spreads_what_it_composites,
                     });
                     composited_node_index
                 }
@@ -2027,7 +2045,11 @@ fn node_covers_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node_in
     }
 }
 
-fn assemble_stack_unless_records_blend_with_other_layers(placement: &ListPlacement) -> Option<LayerStack> {
+fn assemble_stack_unless_records_blend_with_other_layers(
+    tree: &VisualContextTree,
+    placement: &ListPlacement,
+    spaces: Vec<RasterSpace>,
+) -> Option<(LayerStack, NotesOfStack)> {
     let mut stack_being_built = StackBeingBuilt {
         placement,
         nodes: Vec::new(),
@@ -2039,7 +2061,7 @@ fn assemble_stack_unless_records_blend_with_other_layers(placement: &ListPlaceme
         root_group_reach_so_far_by_band_being_built: Vec::new(),
         why_composited_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
         composited_node_by_placed_effect: vec![None; placement.placed_effects.len()],
-        composited_effects: Vec::new(),
+        notes_of_composited_effects: Vec::new(),
         records_blend_with_what_other_layers_hold_below_them: false,
     };
     stack_being_built.find_or_add_node(RasterSpaceIndex::VIEWPORT, Vec::new());
@@ -2072,9 +2094,11 @@ fn assemble_stack_unless_records_blend_with_other_layers(placement: &ListPlaceme
         nodes,
         layers,
         bands,
-        composited_effects,
+        notes_of_composited_effects,
         ..
     } = stack_being_built;
+    let composited_effects = CompositedEffect::of_nodes(&nodes, tree);
+    debug_assert_eq!(composited_effects.len(), notes_of_composited_effects.len());
     let effects_reading_only_own_layer = placement
         .backdrop_readers_in_paint_order
         .iter()
@@ -2102,27 +2126,29 @@ fn assemble_stack_unless_records_blend_with_other_layers(placement: &ListPlaceme
         _ => LayerIndex(0),
     };
 
-    Some(
-        LayerStack {
-            spaces: placement.spaces.clone(),
-            nodes,
-            bands,
-            layers,
-            composited_effects,
-            base_layer,
-            why_list_is_one_layer: None,
-            layering_obstacles: placement.layering_obstacles,
-            media_without_layers: placement.media_without_layers.clone(),
-            effects_reading_only_own_layer,
-            tiles_hold_content_moving_within_space_by_space_index: placement
-                .tiles_hold_content_moving_within_space_by_space_index
-                .clone(),
-            swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
-            index_of_layer_with_identity: HashMap::new(),
-            has_layer_at_or_above_base_by_band_index: Vec::new(),
-        }
-        .with_lookups(),
-    )
+    let stack = LayerStack {
+        spaces,
+        nodes,
+        bands,
+        layers,
+        composited_effects,
+        base_layer,
+        why_list_is_one_layer: None,
+        layering_obstacles: placement.layering_obstacles,
+        tiles_hold_content_moving_within_space_by_space_index: placement
+            .tiles_hold_content_moving_within_space_by_space_index
+            .clone(),
+        swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
+        index_of_layer_with_identity: HashMap::new(),
+        has_layer_at_or_above_base_by_band_index: Vec::new(),
+    }
+    .with_lookups();
+    let notes = NotesOfStack {
+        composited_effects: notes_of_composited_effects,
+        media_without_layers: placement.media_without_layers.clone(),
+        effects_reading_only_own_layer,
+    };
+    Some((stack, notes))
 }
 
 // A 3D sorting context that sorts its planes by depth is placed whole into the tiles of one band, which replay it
@@ -2173,27 +2199,38 @@ fn why_compositor_cannot_composite_effect_of_stack(
     })
 }
 
-/// Works out the layers of a list from where `place_list` placed its parts.
+/// Works out the layers of a list from where `place_list` placed its parts among `spaces`, whose extents are not filled
+/// in.
 ///
 /// Nothing limits how many layers a stack holds past the spaces a tree offers, which are limited before the list is
 /// placed: the layers an effect the compositor composites or a canvas, video or nested context needs cannot be given
 /// up without drawing the list wrong, and a layer holds tiles only where its content reaches, which the pool of tiles
 /// gives back.
-fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) -> PlannedLayers {
+fn build_layer_stack(
+    inputs: &LayerStackInputs<'_>,
+    placement: ListPlacement,
+    spaces: Vec<RasterSpace>,
+) -> PlannedLayers {
     let layering_obstacles = placement.layering_obstacles;
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
         Some(why) => why,
-        None => match assemble_stack_unless_records_blend_with_other_layers(&placement) {
-            Some(stack)
+        None => match assemble_stack_unless_records_blend_with_other_layers(inputs.tree, &placement, spaces) {
+            Some((stack, _))
                 if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
                     inputs, &placement, &stack,
                 ) =>
             {
                 WhyListIsOneLayer::SortingContext3D
             }
-            Some(stack) => match why_compositor_cannot_composite_effect_of_stack(&placement, &stack) {
+            Some((stack, notes)) => match why_compositor_cannot_composite_effect_of_stack(&placement, &stack) {
                 Some(why) => why,
-                None => return PlannedLayers { stack, placement },
+                None => {
+                    return PlannedLayers {
+                        stack,
+                        notes,
+                        placement,
+                    };
+                }
             },
             None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
         },
@@ -2204,7 +2241,11 @@ fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) ->
         Some(why_list_is_one_layer),
     );
     stack.layering_obstacles = layering_obstacles;
-    PlannedLayers { stack, placement }
+    PlannedLayers {
+        stack,
+        notes: NotesOfStack::default(),
+        placement,
+    }
 }
 
 // The scroll offsets a plan reads of `scroll_offsets`: zero for each node that `leaves_out_scroll_offset_of_node` names.
@@ -2243,8 +2284,9 @@ pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
     };
     let (spaces, geometries) =
         spaces_with_geometries(inputs.tree, &anchors, inputs.scroll_offsets, inputs.viewport_rect);
+    let spaces_of_stack = spaces.spaces().to_vec();
     let placement = place_list(&inputs, spaces, &geometries);
-    build_layer_stack(&inputs, placement)
+    build_layer_stack(&inputs, placement, spaces_of_stack)
 }
 
 /// What a plan of the layers of a list is made from, all of which WebContent publishes: the list, the tree, the viewport
@@ -2583,12 +2625,7 @@ mod tests {
         assert_eq!(at_start.placement, halfway.placement);
         assert_eq!(at_start.stack.layers, halfway.stack.layers);
         assert_eq!(
-            halfway
-                .stack
-                .composited_effects
-                .iter()
-                .map(|composited| (composited.effect, composited.why))
-                .collect::<Vec<_>>(),
+            whys_of_composited_effects(&halfway),
             [(fading_box.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
         );
     }
@@ -2919,20 +2956,16 @@ mod tests {
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         let translucent_spinner = element_with_own_effect(&mut tree, spinner, viewport, 0.5);
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let stack = TestList::new()
+        let planned = TestList::new()
             .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
             .with(fill(IntRect::new(50, 50, 40, 40)), translucent_spinner)
-            .stack(&tree, &[]);
+            .planned(&tree, &[]);
         assert_eq!(
-            kinds_of_layers_from_base_up_that_may_hold_content(&stack),
+            kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
             ["base viewport band 0", "painted animated@s1 in viewport band 0"]
         );
         assert_eq!(
-            stack
-                .composited_effects
-                .iter()
-                .map(|composited| (composited.effect, composited.why))
-                .collect::<Vec<_>>(),
+            whys_of_composited_effects(&planned),
             [(
                 translucent_spinner.effect,
                 WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates
@@ -2947,20 +2980,16 @@ mod tests {
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         let fading_spinner = element_with_own_effect(&mut tree, spinner, viewport, 1.0);
         tree.set_visual_animations(vec![spinning(spinner.spatial), fading(fading_spinner.effect)]);
-        let stack = TestList::new()
+        let planned = TestList::new()
             .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
             .with(fill(IntRect::new(50, 50, 40, 40)), fading_spinner)
-            .stack(&tree, &[]);
+            .planned(&tree, &[]);
         assert_eq!(
-            kinds_of_layers_from_base_up_that_may_hold_content(&stack),
+            kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
             ["base viewport band 0", "painted animated@s1 in viewport band 0"]
         );
         assert_eq!(
-            stack
-                .composited_effects
-                .iter()
-                .map(|composited| (composited.effect, composited.why))
-                .collect::<Vec<_>>(),
+            whys_of_composited_effects(&planned),
             // The fading effect pushes a layer at every sample, so it applies over the spinner at every sample.
             [(
                 fading_spinner.effect,
@@ -3268,11 +3297,13 @@ mod tests {
         }
     }
 
-    fn whys_of_composited_effects(stack: &LayerStack) -> Vec<(EffectNodeIndex, WhyEffectIsComposited)> {
-        stack
+    fn whys_of_composited_effects(planned: &PlannedLayers) -> Vec<(EffectNodeIndex, WhyEffectIsComposited)> {
+        planned
+            .stack
             .composited_effects
             .iter()
-            .map(|composited| (composited.effect, composited.why))
+            .zip(&planned.notes.composited_effects)
+            .map(|(composited, note)| (composited.effect, note.why))
             .collect()
     }
 
@@ -3283,9 +3314,9 @@ mod tests {
             tree.with_visual_animation_samples(0)
                 .effect_pushes_layer_at_replay(element.effect)
         );
-        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
         assert_eq!(
-            whys_of_composited_effects(&stack),
+            whys_of_composited_effects(&planned),
             [(element.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
         );
     }
@@ -3306,9 +3337,9 @@ mod tests {
     #[test]
     fn a_color_filter_animation_is_composited_and_a_blur_animation_is_not() {
         let (tree, list, element) = page_with_animated_element(Animated::ColorFilter, UnderAnimatedNode::Fill);
-        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
         assert_eq!(
-            whys_of_composited_effects(&stack),
+            whys_of_composited_effects(&planned),
             [(element.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
         );
 
@@ -3397,18 +3428,18 @@ mod tests {
     fn transforms_that_stay_in_the_plane_get_spaces_and_one_that_leaves_it_keeps_its_canvas_from_a_layer() {
         for animated in [Animated::Translation, Animated::Rotation, Animated::Scale] {
             let (tree, list, element) = page_with_animated_element(animated, UnderAnimatedNode::Canvas);
-            let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
+            let planned = layers_planned_alike_for_every_sample(&list, &tree);
             assert_eq!(
-                space_names(&stack),
+                space_names(&planned.stack),
                 ["viewport", &format!("animated@s{} in viewport", element.spatial.0)]
             );
-            assert!(stack.media_without_layers.is_empty());
+            assert!(planned.notes.media_without_layers.is_empty());
         }
         let (tree, list, _) = page_with_animated_element(Animated::RotationOutOfPlane, UnderAnimatedNode::Canvas);
-        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
-        assert_eq!(space_names(&stack), ["viewport"]);
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(space_names(&planned.stack), ["viewport"]);
         assert_eq!(
-            stack.media_without_layers,
+            planned.notes.media_without_layers,
             [(
                 LiveContent::Canvas(CanvasId(1)),
                 WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine

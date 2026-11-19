@@ -765,12 +765,13 @@ impl SentDisplayListChunks {
 }
 
 fn layer_plan_made_from(display_list_id: u64, inputs: InputsOfLayerPlan) -> LayerPlanSent {
-    let stack = inputs.plan().stack;
+    let planned = inputs.plan();
     LayerPlanSent {
         plan: Arc::new(LayerPlan {
             display_list_id,
             viewport_rect: inputs.viewport_rect(),
-            stack,
+            note_lines: planned.note_lines_for_layers_overlay(),
+            stack: planned.stack,
         }),
         inputs,
     }

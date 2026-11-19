@@ -488,6 +488,9 @@ pub struct ContextLayers {
     /// Per spatial node, whether the plan the latest frame was drawn with leaves out its scroll offset, as the plan
     /// holds wherever the node is scrolled to. None for a frame drawn with one layer that replays the whole list.
     scroll_offsets_plan_leaves_out: Option<Rc<Vec<bool>>>,
+    /// What the overlay of layers tells of the stack the latest frame was drawn with past its layers: the note lines of
+    /// the plan, and no lines for a frame drawn with one layer that replays the whole list.
+    note_lines_of_stack: Rc<[String]>,
     /// Where the window server can show the media of the stack, as the latest frame worked it out.
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
@@ -552,6 +555,7 @@ impl ContextLayers {
                 self.stack = Some(Rc::new(one_layer));
             }
             self.scroll_offsets_plan_leaves_out = None;
+            self.note_lines_of_stack = Rc::default();
             return false;
         };
         let takes_plan_into_use = !self
@@ -560,6 +564,7 @@ impl ContextLayers {
             .is_some_and(|stack| Rc::ptr_eq(stack, &layer_plan.stack));
         self.stack = Some(layer_plan.stack.clone());
         self.scroll_offsets_plan_leaves_out = Some(layer_plan.leaves_out_scroll_offset_of_node.clone());
+        self.note_lines_of_stack = layer_plan.note_lines.clone();
         takes_plan_into_use
     }
 
@@ -1312,7 +1317,7 @@ fn composited_effects_of_frame(
             .insert(node.identity, content_hash);
         if composited.filter_spreads_what_it_composites {
             effects.read_reaches_in_frame.push(node_reach_in_frame);
-        } else if composited.backdrop_read_reach != Reach::Nothing {
+        } else if composited.reads_what_is_composited_below_it {
             let backdrop_read_reach =
                 backdrop_filter_read_reach(tree, &geometries[node.raster_space_index.0], composited.effect);
             effects
@@ -1949,11 +1954,7 @@ impl ContextPresenting {
             painted_at: frame.frame_inputs.painted_at,
             layers,
             why_list_is_one_layer: stack.why_list_is_one_layer.map(|why| why.to_string()),
-            notes_of_layer_stack: stack
-                .lines_of_composited_effects(&NodeNamesFromIndices)
-                .chain(stack.lines_of_media_without_layers())
-                .chain(stack.lines_of_effects_reading_only_own_layer(&NodeNamesFromIndices))
-                .collect(),
+            notes_of_layer_stack: self.layers.note_lines_of_stack.to_vec(),
             work_counts: self.layers.work_counts_of_this_frame,
         };
         let device_pixel_ratio = self.device_pixel_ratio;

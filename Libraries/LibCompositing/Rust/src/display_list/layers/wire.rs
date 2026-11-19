@@ -4,58 +4,83 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! A plan of the layers of a list as it goes from WebContent to the compositor: the wire form of a stack, and the checks
-//! that a stack from another process passes before anything reads it.
+//! A plan of the layers of a list as it goes from WebContent to the compositor: what of its stack the compositor cannot
+//! work out of the list and the tree, the notes the overlay of layers shows, and the checks that a plan from another
+//! process passes before anything reads it.
 
 use super::planning::MAXIMUM_MEDIA_LAYER_COUNT;
 use super::{
     BandIndex, BarrierCut, BarrierIdentity, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CompositedEffect, LayerContent,
     LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, PlacementNode, PlacementNodeBand, PlacementNodeIdentity,
-    PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited, WhyListIsOneLayer,
-    WhyMediaHasNoLayer,
+    PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
 };
-use crate::display_list::animated_transform_spaces::SMALLEST_RASTER_SCALE;
 use crate::display_list::commands::{
-    CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VISUAL_VIEWPORT_NODE_INDEX, VideoSinkHandle,
+    CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VideoSinkHandle,
 };
 use crate::display_list::placement::{
-    CompositeClip, MAXIMUM_RASTER_SPACE_COUNT, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex,
+    CompositeClip, MAXIMUM_RASTER_SPACE_COUNT, RasterSpaceAnchorKind, RasterSpaceIndex, RasterSpaces,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
 use crate::display_list::summary::{LiveContent, live_content_of};
-use crate::visual_context::{SpatialData, VisualContextTree};
-use libgfx_rust::{FloatPoint, IntRect};
+use crate::visual_context::VisualContextTree;
+use libgfx_rust::IntRect;
 use libipc_rust::wire::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 use std::collections::{HashMap, HashSet};
 
-// Caps on a received stack, which bound what decoding allocates. Spaces, and the composite clips of a node, which are one
-// per space, are capped at the most a plan makes. The other caps are far more than a plan holds: it holds nodes, bands,
-// layers and spans as many as the runs of a list ask for.
+// Caps on a received stack, which bound what decoding allocates. The values per space, and the composite clips of a node,
+// which are one per space, are capped at the most spaces a plan makes. The other caps are far more than a plan holds: it
+// holds nodes, bands, layers and spans as many as the runs of a list ask for.
 const MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
-const MAXIMUM_NODE_DEPTH_OF_RECEIVED_STACK: usize = 1024;
 const MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
 const MAXIMUM_LAYER_COUNT_OF_RECEIVED_STACK: usize = 1 << 17;
 const MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND: usize = 1 << 16;
 const MAXIMUM_SPAN_COUNT_OF_RECEIVED_BAND: usize = 1 << 20;
-const MAXIMUM_NOTE_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
-// A plan rasters a space at most four times as large as the space it is in shows it. A larger raster scale makes a frame
-// key the tiles of more pixels than it shows, tile by tile.
-const LARGEST_RASTER_SCALE_OF_RECEIVED_STACK: f32 = 64.0;
+// The most note lines a plan holds, and the most bytes a line holds. A plan holds only the first lines, each cut to that
+// length, so that no plan exceeds the caps.
+const MAXIMUM_NOTE_LINE_COUNT_OF_PLAN: usize = 1 << 10;
+const MAXIMUM_NOTE_LINE_LENGTH_OF_PLAN: usize = 1 << 10;
 
-/// A stack decoded from another process, which nothing reads until `LayerStack::validated` checks it.
+/// The note lines a plan holds of `lines`: as many of the first lines as a plan holds, each cut at a character boundary
+/// to the length a plan holds.
+pub(super) fn note_lines_a_plan_holds(lines: impl Iterator<Item = String>) -> Vec<String> {
+    lines
+        .take(MAXIMUM_NOTE_LINE_COUNT_OF_PLAN)
+        .map(|mut line| {
+            line.truncate(line.floor_char_boundary(MAXIMUM_NOTE_LINE_LENGTH_OF_PLAN));
+            line
+        })
+        .collect()
+}
+
+/// A stack decoded from another process: why it is one layer that replays the whole list, or what of a stack of more
+/// layers the compositor cannot work out of the list and the tree. Nothing reads it until `LayerStack::validated`
+/// checks it and works out the rest.
 #[derive(Debug)]
-pub struct UnvalidatedLayerStack {
-    stack: LayerStack,
+pub struct UnvalidatedLayerStack(StackOnWire);
+
+#[derive(Debug)]
+enum StackOnWire {
+    OneLayer(WhyListIsOneLayer),
+    Layered {
+        nodes: Vec<PlacementNode>,
+        bands: Vec<PlacementNodeBand>,
+        layers: Vec<StackLayer>,
+        base_layer: LayerIndex,
+        tiles_hold_content_moving_within_space_by_space_index: Vec<bool>,
+        swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
+    },
 }
 
 /// A plan of the layers of a list as WebContent sends it to the compositor: the stack, the display list it was planned
-/// for, and the viewport, in device pixels, it was planned within.
+/// for, the viewport, in device pixels, it was planned within, and what the overlay of layers tells of the stack past
+/// its layers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerPlan {
     pub display_list_id: u64,
     pub viewport_rect: IntRect,
     pub stack: LayerStack,
+    pub note_lines: Vec<String>,
 }
 
 /// A plan of layers decoded from another process, whose stack nothing reads until it is checked.
@@ -64,16 +89,19 @@ pub struct UnvalidatedLayerPlan {
     pub display_list_id: u64,
     pub viewport_rect: IntRect,
     pub stack: UnvalidatedLayerStack,
+    note_lines: Vec<String>,
 }
 
 impl UnvalidatedLayerPlan {
     /// The plan, once its stack passes `LayerStack::validated` for `list` under `tree` within the viewport the plan
-    /// names. The receiver makes sure that `list` is the list that `display_list_id` names.
+    /// names. The receiver makes sure that `list` is the list that `display_list_id` names. The note lines go unchecked:
+    /// decoding bounds their count and length, and only the overlay of layers shows them.
     pub fn validated(self, list: &DisplayListStorage, tree: &VisualContextTree) -> Result<LayerPlan, &'static str> {
         Ok(LayerPlan {
             display_list_id: self.display_list_id,
             viewport_rect: self.viewport_rect,
             stack: LayerStack::validated(self.stack, list, tree, self.viewport_rect)?,
+            note_lines: self.note_lines,
         })
     }
 }
@@ -207,82 +235,6 @@ impl Decode for LiveContent {
             LIVE_CONTENT_KIND_IMAGE_FRAME => LiveContent::ImageFrame(ImageFrameResourceId(id)),
             LIVE_CONTENT_KIND_COMPOSITED_CONTEXT => LiveContent::CompositedContext(CompositorContextId(id)),
             _ => return Err(DecodeError::InvalidValue("LiveContent")),
-        })
-    }
-}
-
-const ANCHOR_KIND_VIEWPORT: u8 = 0;
-const ANCHOR_KIND_VIEWPORT_SCROLLER: u8 = 1;
-const ANCHOR_KIND_SCROLLER: u8 = 2;
-const ANCHOR_KIND_STICKY_BOX: u8 = 3;
-const ANCHOR_KIND_ANIMATED_TRANSFORM: u8 = 4;
-
-impl Encode for RasterSpaceAnchorKind {
-    fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        match self {
-            RasterSpaceAnchorKind::Viewport => encoder.encode(&ANCHOR_KIND_VIEWPORT),
-            RasterSpaceAnchorKind::ViewportScroller => encoder.encode(&ANCHOR_KIND_VIEWPORT_SCROLLER),
-            RasterSpaceAnchorKind::Scroller => encoder.encode(&ANCHOR_KIND_SCROLLER),
-            RasterSpaceAnchorKind::StickyBox { border_box_origin } => {
-                encoder.encode(&ANCHOR_KIND_STICKY_BOX)?;
-                encoder.encode(border_box_origin)
-            }
-            RasterSpaceAnchorKind::AnimatedTransform { raster_scale } => {
-                encoder.encode(&ANCHOR_KIND_ANIMATED_TRANSFORM)?;
-                encoder.encode(raster_scale)
-            }
-        }
-    }
-}
-
-impl Decode for RasterSpaceAnchorKind {
-    const MIN_ENCODED_SIZE: usize = size_of::<u8>();
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(match decoder.decode::<u8>()? {
-            ANCHOR_KIND_VIEWPORT => RasterSpaceAnchorKind::Viewport,
-            ANCHOR_KIND_VIEWPORT_SCROLLER => RasterSpaceAnchorKind::ViewportScroller,
-            ANCHOR_KIND_SCROLLER => RasterSpaceAnchorKind::Scroller,
-            ANCHOR_KIND_STICKY_BOX => RasterSpaceAnchorKind::StickyBox {
-                border_box_origin: decoder.decode()?,
-            },
-            ANCHOR_KIND_ANIMATED_TRANSFORM => RasterSpaceAnchorKind::AnimatedTransform {
-                raster_scale: decoder.decode()?,
-            },
-            _ => return Err(DecodeError::InvalidValue("RasterSpaceAnchorKind")),
-        })
-    }
-}
-
-impl Encode for RasterSpace {
-    fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        encoder.encode(&self.anchor)?;
-        encoder.encode(&self.identity)?;
-        encoder.encode(&self.parent_index)?;
-        encoder.encode(&self.anchor_kind)?;
-        encoder.encode(&self.lowest_anchor_translation)?;
-        encoder.encode(&self.highest_anchor_translation)?;
-        encoder.encode(&self.extent)
-    }
-}
-
-impl Decode for RasterSpace {
-    const MIN_ENCODED_SIZE: usize = size_of::<u32>()
-        + size_of::<u64>()
-        + RasterSpaceIndex::MIN_ENCODED_SIZE
-        + RasterSpaceAnchorKind::MIN_ENCODED_SIZE
-        + 2 * FloatPoint::MIN_ENCODED_SIZE
-        + IntRect::MIN_ENCODED_SIZE;
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(Self {
-            anchor: decoder.decode()?,
-            identity: decoder.decode()?,
-            parent_index: decoder.decode()?,
-            anchor_kind: decoder.decode()?,
-            lowest_anchor_translation: decoder.decode()?,
-            highest_anchor_translation: decoder.decode()?,
-            extent: decoder.decode()?,
         })
     }
 }
@@ -571,68 +523,6 @@ impl Decode for WhyCompositorCannotCompositeEffect {
     }
 }
 
-impl Encode for WhyEffectIsComposited {
-    fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        let kind: u8 = match self {
-            WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold => 0,
-            WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame => 1,
-            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites => 2,
-            WhyEffectIsComposited::ItHoldsMedia(_) => 3,
-            WhyEffectIsComposited::TheCompositorAnimatesIt => 4,
-            WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates => 5,
-        };
-        encoder.encode(&kind)?;
-        if let WhyEffectIsComposited::ItHoldsMedia(content) = self {
-            encoder.encode(content)?;
-        }
-        Ok(())
-    }
-}
-
-impl Decode for WhyEffectIsComposited {
-    const MIN_ENCODED_SIZE: usize = size_of::<u8>();
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(match decoder.decode::<u8>()? {
-            0 => WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold,
-            1 => WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame,
-            2 => WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
-            3 => WhyEffectIsComposited::ItHoldsMedia(decoder.decode()?),
-            4 => WhyEffectIsComposited::TheCompositorAnimatesIt,
-            5 => WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates,
-            _ => return Err(DecodeError::InvalidValue("WhyEffectIsComposited")),
-        })
-    }
-}
-
-impl Encode for CompositedEffect {
-    fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        encoder.encode(&self.effect)?;
-        encoder.encode(&self.placement_node_index)?;
-        encoder.encode(&self.why)?;
-        encoder.encode(&self.backdrop_read_reach)?;
-        encoder.encode(&self.filter_spreads_what_it_composites)
-    }
-}
-
-impl Decode for CompositedEffect {
-    const MIN_ENCODED_SIZE: usize = EffectNodeIndex::MIN_ENCODED_SIZE
-        + PlacementNodeIndex::MIN_ENCODED_SIZE
-        + WhyEffectIsComposited::MIN_ENCODED_SIZE
-        + Reach::<IntRect>::MIN_ENCODED_SIZE
-        + bool::MIN_ENCODED_SIZE;
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(Self {
-            effect: decoder.decode()?,
-            placement_node_index: decoder.decode()?,
-            why: decoder.decode()?,
-            backdrop_read_reach: decoder.decode()?,
-            filter_spreads_what_it_composites: decoder.decode()?,
-        })
-    }
-}
-
 impl Encode for WhyListIsOneLayer {
     fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
         let kind: u8 = match self {
@@ -671,137 +561,79 @@ impl Decode for WhyListIsOneLayer {
     }
 }
 
-impl Encode for WhyMediaHasNoLayer {
-    fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        let kind: u8 = match self {
-            WhyMediaHasNoLayer::DrawnInsideAnotherCommand => 0,
-            WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine => 1,
-            WhyMediaHasNoLayer::DrawsNothingVisible => 2,
-            WhyMediaHasNoLayer::MoreMediaThanLayersFor => 3,
-            WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext => 4,
-            WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(_) => 5,
-        };
-        encoder.encode(&kind)?;
-        if let WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why) = self {
-            encoder.encode(why)?;
-        }
-        Ok(())
-    }
-}
+const PLAN_KIND_ONE_LAYER: u8 = 0;
+const PLAN_KIND_LAYERED: u8 = 1;
 
-impl Decode for WhyMediaHasNoLayer {
-    const MIN_ENCODED_SIZE: usize = size_of::<u8>();
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(match decoder.decode::<u8>()? {
-            0 => WhyMediaHasNoLayer::DrawnInsideAnotherCommand,
-            1 => WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine,
-            2 => WhyMediaHasNoLayer::DrawsNothingVisible,
-            3 => WhyMediaHasNoLayer::MoreMediaThanLayersFor,
-            4 => WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext,
-            5 => WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(decoder.decode()?),
-            _ => return Err(DecodeError::InvalidValue("WhyMediaHasNoLayer")),
-        })
-    }
-}
-
-impl Encode for LayeringObstacles {
-    fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        encoder.encode(&self.sorts_planes_by_depth)?;
-        encoder.encode(&self.mask_declared_under_effects_its_mask_is_not_under)
-    }
-}
-
-impl Decode for LayeringObstacles {
-    const MIN_ENCODED_SIZE: usize = 2 * bool::MIN_ENCODED_SIZE;
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(Self {
-            sorts_planes_by_depth: decoder.decode()?,
-            mask_declared_under_effects_its_mask_is_not_under: decoder.decode()?,
-        })
-    }
-}
-
+// A stack of one layer that replays the whole list goes as why it is one layer. A stack of more layers goes without
+// what the compositor works out of the list and the tree: its spaces, its composited effects and its layering
+// obstacles.
 impl Encode for LayerStack {
     fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
-        encoder.encode(&self.spaces)?;
+        if let Some(why_list_is_one_layer) = self.why_list_is_one_layer {
+            encoder.encode(&PLAN_KIND_ONE_LAYER)?;
+            return encoder.encode(&why_list_is_one_layer);
+        }
+        encoder.encode(&PLAN_KIND_LAYERED)?;
         encoder.encode(&self.nodes)?;
         encoder.encode(&self.bands)?;
         encoder.encode(&self.layers)?;
-        encoder.encode(&self.composited_effects)?;
         encoder.encode(&self.base_layer)?;
-        encoder.encode(&self.why_list_is_one_layer)?;
-        encoder.encode(&self.layering_obstacles)?;
-        encoder.encode_size(self.media_without_layers.len())?;
-        for (content, why_no_layer) in &self.media_without_layers {
-            encoder.encode(content)?;
-            encoder.encode(why_no_layer)?;
-        }
-        encoder.encode(&self.effects_reading_only_own_layer)?;
         encoder.encode(&self.tiles_hold_content_moving_within_space_by_space_index)?;
         encoder.encode(&self.swept_reach_in_parent_space_by_space_index)
     }
 }
 
-fn decode_media_without_layers(
-    decoder: &mut Decoder<'_>,
-) -> Result<Vec<(LiveContent, WhyMediaHasNoLayer)>, DecodeError> {
-    let count = decoder.decode_size()?;
-    let smallest_size_of_one = LiveContent::MIN_ENCODED_SIZE + WhyMediaHasNoLayer::MIN_ENCODED_SIZE;
-    if count > MAXIMUM_NOTE_COUNT_OF_RECEIVED_STACK || count > decoder.remaining_bytes() / smallest_size_of_one {
-        return Err(DecodeError::SizeTooLarge(count));
-    }
-    (0..count).map(|_| Ok((decoder.decode()?, decoder.decode()?))).collect()
-}
-
 impl Decode for UnvalidatedLayerStack {
-    const MIN_ENCODED_SIZE: usize = 5 * Vec::<RasterSpace>::MIN_ENCODED_SIZE
-        + LayerIndex::MIN_ENCODED_SIZE
-        + Option::<WhyListIsOneLayer>::MIN_ENCODED_SIZE
-        + LayeringObstacles::MIN_ENCODED_SIZE
-        + 4 * Vec::<bool>::MIN_ENCODED_SIZE;
+    const MIN_ENCODED_SIZE: usize = size_of::<u8>() + WhyListIsOneLayer::MIN_ENCODED_SIZE;
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(Self {
-            stack: LayerStack {
-                spaces: decoder.decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
+        Ok(Self(match decoder.decode::<u8>()? {
+            PLAN_KIND_ONE_LAYER => StackOnWire::OneLayer(decoder.decode()?),
+            PLAN_KIND_LAYERED => StackOnWire::Layered {
                 nodes: decoder.decode_with_max_size(MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK)?,
                 bands: decoder.decode_with_max_size(MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK)?,
                 layers: decoder.decode_with_max_size(MAXIMUM_LAYER_COUNT_OF_RECEIVED_STACK)?,
-                composited_effects: decoder.decode_with_max_size(MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK)?,
                 base_layer: decoder.decode()?,
-                why_list_is_one_layer: decoder.decode()?,
-                layering_obstacles: decoder.decode()?,
-                media_without_layers: decode_media_without_layers(decoder)?,
-                effects_reading_only_own_layer: decoder.decode_with_max_size(MAXIMUM_NOTE_COUNT_OF_RECEIVED_STACK)?,
                 tiles_hold_content_moving_within_space_by_space_index: decoder
                     .decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
                 swept_reach_in_parent_space_by_space_index: decoder.decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
-                index_of_layer_with_identity: HashMap::new(),
-                has_layer_at_or_above_base_by_band_index: Vec::new(),
             },
-        })
+            _ => return Err(DecodeError::InvalidValue("UnvalidatedLayerStack")),
+        }))
     }
+}
+
+fn decode_note_lines(decoder: &mut Decoder<'_>) -> Result<Vec<String>, DecodeError> {
+    let count = decoder.decode_size()?;
+    if count > MAXIMUM_NOTE_LINE_COUNT_OF_PLAN || count > decoder.remaining_bytes() / String::MIN_ENCODED_SIZE {
+        return Err(DecodeError::SizeTooLarge(count));
+    }
+    (0..count)
+        .map(|_| decoder.decode_with_max_size(MAXIMUM_NOTE_LINE_LENGTH_OF_PLAN))
+        .collect()
 }
 
 impl Encode for LayerPlan {
     fn encode(&self, encoder: &mut Encoder) -> Result<(), EncodeError> {
         encoder.encode(&self.display_list_id)?;
         encoder.encode(&self.viewport_rect)?;
-        encoder.encode(&self.stack)
+        encoder.encode(&self.stack)?;
+        encoder.encode(&self.note_lines)
     }
 }
 
 impl Decode for UnvalidatedLayerPlan {
-    const MIN_ENCODED_SIZE: usize =
-        size_of::<u64>() + IntRect::MIN_ENCODED_SIZE + UnvalidatedLayerStack::MIN_ENCODED_SIZE;
+    const MIN_ENCODED_SIZE: usize = size_of::<u64>()
+        + IntRect::MIN_ENCODED_SIZE
+        + UnvalidatedLayerStack::MIN_ENCODED_SIZE
+        + Vec::<String>::MIN_ENCODED_SIZE;
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             display_list_id: decoder.decode()?,
             viewport_rect: decoder.decode()?,
             stack: decoder.decode()?,
+            note_lines: decode_note_lines(decoder)?,
         })
     }
 }
@@ -822,13 +654,6 @@ fn reach_is_within_coordinate_limit(reach: Reach<IntRect>) -> bool {
         Reach::Within(rect) => rect_is_within_coordinate_limit(rect),
         Reach::Nothing | Reach::Anywhere => true,
     }
-}
-
-fn point_is_within_coordinate_limit(point: FloatPoint) -> bool {
-    let limit = COORDINATE_LIMIT_IN_DEVICE_PIXELS as f32;
-    [point.x, point.y]
-        .iter()
-        .all(|coordinate| coordinate.is_finite() && coordinate.abs() <= limit)
 }
 
 fn position_starts_run(list: &DisplayListStorage, position: ListPosition) -> bool {
@@ -926,20 +751,9 @@ fn effect_is_strictly_inside(
     }
 }
 
-fn check_rects_and_coordinates(stack: &LayerStack, viewport_rect: IntRect) -> Result<(), &'static str> {
+fn check_rects_and_coordinates(stack: &LayerStack) -> Result<(), &'static str> {
     let within = rect_is_within_coordinate_limit;
     let reach_within = reach_is_within_coordinate_limit;
-    let spaces_are_within = stack.spaces.iter().all(|space| {
-        within(space.extent)
-            && point_is_within_coordinate_limit(space.lowest_anchor_translation)
-            && point_is_within_coordinate_limit(space.highest_anchor_translation)
-            && match space.anchor_kind {
-                RasterSpaceAnchorKind::StickyBox { border_box_origin } => {
-                    point_is_within_coordinate_limit(border_box_origin)
-                }
-                _ => true,
-            }
-    });
     let radius_limit = i64::from(COORDINATE_LIMIT_IN_DEVICE_PIXELS);
     let radius_is_within = |radius: i32| i64::from(radius) >= 0 && i64::from(radius) <= radius_limit;
     let nodes_are_within = stack.nodes.iter().all(|node| {
@@ -965,71 +779,18 @@ fn check_rects_and_coordinates(stack: &LayerStack, viewport_rect: IntRect) -> Re
                 LayerContent::Painted { .. } => true,
             }
     });
-    let composited_effects_are_within = stack
-        .composited_effects
-        .iter()
-        .all(|composited| reach_within(composited.backdrop_read_reach));
     let swept_reaches_are_within = stack
         .swept_reach_in_parent_space_by_space_index
         .iter()
         .flatten()
         .all(|swept_reach| within(*swept_reach));
-    if !within(viewport_rect)
-        || !spaces_are_within
-        || !nodes_are_within
-        || !bands_are_within
-        || !layers_are_within
-        || !composited_effects_are_within
-        || !swept_reaches_are_within
-    {
+    if !nodes_are_within || !bands_are_within || !layers_are_within || !swept_reaches_are_within {
         return Err("a rect or a coordinate of the stack lies past the limit a plan keeps to");
     }
     Ok(())
 }
 
-fn check_spaces(stack: &LayerStack, tree: &VisualContextTree, viewport_rect: IntRect) -> Result<(), &'static str> {
-    if stack.spaces.len() > MAXIMUM_RASTER_SPACE_COUNT {
-        return Err("the stack holds more spaces than a plan makes");
-    }
-    let Some(viewport_space) = stack.spaces.first() else {
-        return Err("the stack holds no space");
-    };
-    if viewport_space.anchor != VISUAL_VIEWPORT_NODE_INDEX
-        || viewport_space.anchor_kind != RasterSpaceAnchorKind::Viewport
-        || viewport_space.parent_index != RasterSpaceIndex::VIEWPORT
-        || viewport_space.extent != viewport_rect
-    {
-        return Err("the first space of the stack is not the viewport");
-    }
-    let mut anchors = HashSet::with_capacity(stack.spaces.len());
-    for (index, space) in stack.spaces.iter().enumerate() {
-        if !anchors.insert(space.anchor) {
-            return Err("two spaces share an anchor");
-        }
-        if index == 0 {
-            continue;
-        }
-        if space.parent_index.0 >= index {
-            return Err("a space is not after the space it is in");
-        }
-        let Some(anchor_node) = tree.spatial_nodes.get(space.anchor.0 as usize) else {
-            return Err("a space is anchored at a node the tree does not hold");
-        };
-        let anchor_is_of_kind = match space.anchor_kind {
-            RasterSpaceAnchorKind::Viewport => false,
-            RasterSpaceAnchorKind::ViewportScroller | RasterSpaceAnchorKind::Scroller => {
-                matches!(anchor_node.data, SpatialData::Scroll(_))
-            }
-            RasterSpaceAnchorKind::StickyBox { .. } => matches!(anchor_node.data, SpatialData::Sticky(_)),
-            RasterSpaceAnchorKind::AnimatedTransform { raster_scale } => {
-                matches!(anchor_node.data, SpatialData::Transform(_))
-                    && (SMALLEST_RASTER_SCALE..=LARGEST_RASTER_SCALE_OF_RECEIVED_STACK).contains(&raster_scale)
-            }
-        };
-        if !anchor_is_of_kind {
-            return Err("a space is anchored at a node of another kind than the space");
-        }
-    }
+fn check_values_per_space(stack: &LayerStack) -> Result<(), &'static str> {
     if stack.tiles_hold_content_moving_within_space_by_space_index.len() != stack.spaces.len()
         || stack.swept_reach_in_parent_space_by_space_index.len() != stack.spaces.len()
     {
@@ -1048,47 +809,16 @@ fn check_spaces(stack: &LayerStack, tree: &VisualContextTree, viewport_rect: Int
     Ok(())
 }
 
-fn check_one_layer_shape(
-    stack: &LayerStack,
-    list: &DisplayListStorage,
-    viewport_rect: IntRect,
-    why_list_is_one_layer: WhyListIsOneLayer,
-) -> Result<(), &'static str> {
-    let one_layer = LayerStack::single_layer(viewport_rect, list.whole_span(), Some(why_list_is_one_layer));
-    let is_one_layer_replaying_whole_list = stack.spaces == one_layer.spaces
-        && stack.nodes == one_layer.nodes
-        && stack.bands == one_layer.bands
-        && stack.layers == one_layer.layers
-        && stack.composited_effects == one_layer.composited_effects
-        && stack.base_layer == one_layer.base_layer
-        && stack.media_without_layers == one_layer.media_without_layers
-        && stack.effects_reading_only_own_layer == one_layer.effects_reading_only_own_layer
-        && stack.tiles_hold_content_moving_within_space_by_space_index
-            == one_layer.tiles_hold_content_moving_within_space_by_space_index
-        && stack.swept_reach_in_parent_space_by_space_index == one_layer.swept_reach_in_parent_space_by_space_index;
-    if !is_one_layer_replaying_whole_list {
-        return Err("a stack that replays the whole list is not one layer that replays it");
-    }
-    Ok(())
-}
-
 fn check_nodes(stack: &LayerStack, list: &DisplayListStorage, tree: &VisualContextTree) -> Result<(), &'static str> {
-    let mut depth_by_node_index: Vec<usize> = Vec::with_capacity(stack.nodes.len());
     let mut identities_of_composited_nodes = HashSet::new();
     let mut effects_of_composited_nodes = HashSet::new();
     for (index, node) in stack.nodes.iter().enumerate() {
         if node.raster_space_index.0 >= stack.spaces.len() {
             return Err("a node is in a space the stack does not hold");
         }
-        let depth = match node.parent_index {
-            Some(parent_index) if parent_index.0 >= index => return Err("a node is not after the node it is in"),
-            Some(parent_index) => depth_by_node_index[parent_index.0] + 1,
-            None => 0,
-        };
-        if depth > MAXIMUM_NODE_DEPTH_OF_RECEIVED_STACK {
-            return Err("nodes are nested deeper than a plan nests them");
+        if node.parent_index.is_some_and(|parent_index| parent_index.0 >= index) {
+            return Err("a node is not after the node it is in");
         }
-        depth_by_node_index.push(depth);
         // A node that is not composited is in the node of the space its space is in, and a composited node is in a node
         // of its own space. So nodes nest no deeper than spaces, plus composited effects, which nest as the tree nests
         // them.
@@ -1409,30 +1139,11 @@ fn check_bands_and_layers_are_in_walk_order(stack: &LayerStack) -> Result<(), &'
     Ok(())
 }
 
-fn check_composited_effects(stack: &LayerStack, tree: &VisualContextTree) -> Result<(), &'static str> {
-    let mut is_named_by_node_index = vec![false; stack.nodes.len()];
-    for composited in &stack.composited_effects {
-        let Some(node) = stack.nodes.get(composited.placement_node_index.0) else {
-            return Err("a composited effect is of a node the stack does not hold");
-        };
-        if node.composited_effect != Some(composited.effect)
-            || std::mem::replace(&mut is_named_by_node_index[composited.placement_node_index.0], true)
-        {
-            return Err("a composited effect is not the effect of its node, or not its only one");
-        }
-    }
-    let every_composited_node_is_named = stack
-        .nodes
-        .iter()
-        .zip(&is_named_by_node_index)
-        .all(|(node, is_named)| node.composited_effect.is_none() || *is_named);
-    if !every_composited_node_is_named {
-        return Err("a composited node has no composited effect");
-    }
-    if stack.composited_effects.is_empty() {
+// A frame enters the effects of the nodes around a layer outermost first, each from the one around it.
+fn check_composited_effects_nest_as_in_tree(stack: &LayerStack, tree: &VisualContextTree) -> Result<(), &'static str> {
+    if stack.nodes.iter().all(|node| node.composited_effect.is_none()) {
         return Ok(());
     }
-    // A frame enters the effects of the nodes around a layer outermost first, each from the one around it.
     let walk_steps_by_effect_index = walk_steps_of_effect_nodes(tree);
     let mut innermost_effect_around_by_node_index: Vec<Option<EffectNodeIndex>> = Vec::with_capacity(stack.nodes.len());
     for node in &stack.nodes {
@@ -1467,24 +1178,30 @@ fn check_base_layer(stack: &LayerStack) -> Result<(), &'static str> {
 }
 
 impl LayerStack {
-    /// The stack that another process planned for `list` under `tree` within `viewport_rect`, once it passes the
-    /// checks that let every consumer read it without a panic, an index out of range, an overflow, or work without a
-    /// bound. The checks also build the lookups of the stack.
+    /// The stack that another process planned for `list` under `tree` within `viewport_rect`, once what came on the
+    /// wire passes the checks that let every consumer read the stack without a panic, an index out of range, an
+    /// overflow, or work without a bound, and the rest of the stack is worked out as the planner works it out. The
+    /// checks also build the lookups of the stack.
     ///
-    /// A stack passes where every rect and coordinate lies within twice the extent limit of a plan; the stack holds no
-    /// more spaces than a plan makes, the first space is the viewport's, and every other space is after the space it is
-    /// in, anchored at a node of its kind, at a raster scale within the range a plan uses; nodes are after the nodes
-    /// they are in, not deeper than a plan nests them, with composite clips one per space; a node that is not composited
-    /// is in the node of the space its space is in, or in no node if it is in the viewport's space, and a composited
-    /// node is in a node of its own space; bands are of nodes of the stack, after the bands that hold them, each band
-    /// but the first holds a span or a cut, and spans and cuts are at runs of the list in paint order; no span is empty
-    /// and no record is in two spans; each layer is named once, by its band, as a painted layer or as a canvas, video
-    /// or nested context that is a run of the list drawing it and a barrier once in its band, and the stack holds no
-    /// more of those than a plan makes; bands and layers come in the order of a walk of the bands that enters each band
-    /// from the one cut of the band it is in whose barrier names it; identities of layers and of composited nodes are
-    /// unique; composited effects are different effects a replay of the list enters, nested as the tree nests them;
-    /// and the base layer is the layer below the cuts of a band, outside the spaces the compositor animates. A stack of
-    /// one layer is the one `single_layer` makes for the list.
+    /// What is worked out needs no check, as it comes from the functions the planner uses: a stack of one layer is the
+    /// one `single_layer` makes for the whole list; the spaces of a stack of more layers are those
+    /// `RasterSpaces::spaces_at_anchors` makes at the anchors `raster_space_anchors` gives for the tree, and its
+    /// composited effects are the effects of its composited nodes, with what the tree tells of how each reads; and the
+    /// layering obstacles of either are those of the list and the tree.
+    ///
+    /// A stack passes where the viewport lies within twice the extent limit of a plan. A stack of more layers also
+    /// passes only where every rect and coordinate it holds lies within that limit; it holds a value per space for each
+    /// space, and only spaces whose anchor the compositor animates have a swept reach; nodes are after the nodes they
+    /// are in, with composite clips one per space; a node that is not composited is in the node of the space its space
+    /// is in, or in no node if it is in the viewport's space, and a composited node is in a node of its own space;
+    /// bands are of nodes of the stack, after the bands that hold them, each band but the first holds a span or a cut,
+    /// and spans and cuts are at runs of the list in paint order; no span is empty and no record is in two spans; each
+    /// layer is named once, by its band, as a painted layer or as a canvas, video or nested context that is a run of
+    /// the list drawing it and a barrier once in its band, and the stack holds no more of those than a plan makes;
+    /// bands and layers come in the order of a walk of the bands that enters each band from the one cut of the band it
+    /// is in whose barrier names it; identities of layers and of composited nodes are unique; nodes are composited
+    /// inside different effects that a replay of the list enters, nested as the tree nests them; and the base layer is
+    /// the layer below the cuts of a band, outside the spaces the compositor animates.
     ///
     /// So a stack holds no more spans than the list holds runs, no more cuts than bands and media layers, and no more
     /// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus the effects of
@@ -1493,31 +1210,61 @@ impl LayerStack {
     ///
     /// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
     /// which layers can hold content, whether every record is in a span, whether composite clips are the clips content
-    /// needs, which effects must be composited and why, and where the window server could show media. They do not check
-    /// `layering_obstacles`, which tile keying reads, `CompositedEffect::filter_spreads_what_it_composites`, which a
-    /// frame reads, or the notes that only the dump and the overlay of layers show. The list and the tree pass their own
-    /// checks first.
+    /// needs, whether the identities of nodes and layers are those a plan gives them, which effects must be composited,
+    /// which spaces hold content that moves within them, and where the window server could show media. The list and
+    /// the tree pass their own checks first.
     pub fn validated(
         unvalidated: UnvalidatedLayerStack,
         list: &DisplayListStorage,
         tree: &VisualContextTree,
         viewport_rect: IntRect,
     ) -> Result<LayerStack, &'static str> {
-        let stack = unvalidated.stack;
-        check_rects_and_coordinates(&stack, viewport_rect)?;
-        check_spaces(&stack, tree, viewport_rect)?;
-        if let Some(why_list_is_one_layer) = stack.why_list_is_one_layer {
-            check_one_layer_shape(&stack, list, viewport_rect, why_list_is_one_layer)?;
-            return Ok(stack.with_lookups());
+        if !rect_is_within_coordinate_limit(viewport_rect) {
+            return Err("the viewport of the plan lies past the limit a plan keeps to");
         }
+        let stack = match unvalidated.0 {
+            StackOnWire::OneLayer(why_list_is_one_layer) => {
+                let mut stack = LayerStack::single_layer(viewport_rect, list.whole_span(), Some(why_list_is_one_layer));
+                stack.layering_obstacles = LayeringObstacles::of(list, tree);
+                return Ok(stack);
+            }
+            StackOnWire::Layered {
+                nodes,
+                bands,
+                layers,
+                base_layer,
+                tiles_hold_content_moving_within_space_by_space_index,
+                swept_reach_in_parent_space_by_space_index,
+            } => LayerStack {
+                spaces: RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
+                nodes,
+                bands,
+                layers,
+                composited_effects: Vec::new(),
+                base_layer,
+                why_list_is_one_layer: None,
+                layering_obstacles: LayeringObstacles::default(),
+                tiles_hold_content_moving_within_space_by_space_index,
+                swept_reach_in_parent_space_by_space_index,
+                index_of_layer_with_identity: HashMap::new(),
+                has_layer_at_or_above_base_by_band_index: Vec::new(),
+            },
+        };
+        check_rects_and_coordinates(&stack)?;
+        check_values_per_space(&stack)?;
         check_nodes(&stack, list, tree)?;
         check_bands(&stack, list)?;
         check_layers(&stack, list)?;
         check_no_record_is_held_twice(&stack)?;
         check_bands_and_layers_are_in_walk_order(&stack)?;
-        check_composited_effects(&stack, tree)?;
+        check_composited_effects_nest_as_in_tree(&stack, tree)?;
         check_base_layer(&stack)?;
-        Ok(stack.with_lookups())
+        Ok(LayerStack {
+            composited_effects: CompositedEffect::of_nodes(&stack.nodes, tree),
+            layering_obstacles: LayeringObstacles::of(list, tree),
+            ..stack
+        }
+        .with_lookups())
     }
 }
 
@@ -1527,10 +1274,11 @@ mod tests {
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
         ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, SpatialNodeIndex,
+        VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
     use crate::display_list::layers::{NodeNamesFromIndices, WindowServerPresentationOfMedia};
-    use crate::display_list::placement::{RasterSpaceGeometry, RasterSpaces};
+    use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry};
     use crate::display_list::storage::ListChunk;
     use crate::display_list::tile_keys::{
         BandTileKeys, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileKeyingOfList,
@@ -1539,10 +1287,12 @@ mod tests {
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
     use crate::visual_context::{
-        CompositorScrollNodeRecord, CompositorScrollTable, EffectNodeData, EffectsData, ScrollData, StickyData,
-        TransformData, TransformDataRole,
+        CompositorScrollNodeRecord, CompositorScrollTable, EffectNodeData, EffectsData, ScrollData, SpatialData,
+        StickyData, TransformData, TransformDataRole,
     };
-    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatRect, FloatSize, ScalingMode};
+    use libgfx_rust::{
+        Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, ScalingMode,
+    };
     use std::sync::Arc;
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
@@ -1563,8 +1313,25 @@ mod tests {
         }
 
         fn validated(&self, stack: LayerStack) -> Result<LayerStack, &'static str> {
-            LayerStack::validated(UnvalidatedLayerStack { stack }, &self.list, &self.tree, VIEWPORT)
+            LayerStack::validated(on_wire(&stack), &self.list, &self.tree, VIEWPORT)
         }
+    }
+
+    // The stack as decoding its wire form gives it.
+    fn on_wire(stack: &LayerStack) -> UnvalidatedLayerStack {
+        UnvalidatedLayerStack(match stack.why_list_is_one_layer {
+            Some(why_list_is_one_layer) => StackOnWire::OneLayer(why_list_is_one_layer),
+            None => StackOnWire::Layered {
+                nodes: stack.nodes.clone(),
+                bands: stack.bands.clone(),
+                layers: stack.layers.clone(),
+                base_layer: stack.base_layer,
+                tiles_hold_content_moving_within_space_by_space_index: stack
+                    .tiles_hold_content_moving_within_space_by_space_index
+                    .clone(),
+                swept_reach_in_parent_space_by_space_index: stack.swept_reach_in_parent_space_by_space_index.clone(),
+            },
+        })
     }
 
     fn effects(opacity: f32) -> EffectNodeData {
@@ -1974,6 +1741,87 @@ mod tests {
         }
     }
 
+    fn frosted_glass(tree: &mut VisualContextTree, parent: ContextRef, region: IntRect) -> ContextRef {
+        tree.append_effect_node_under(
+            parent,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
+                    filter: Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize()),
+                    region,
+                    corner_radii: libgfx_rust::CornerRadii::default(),
+                }),
+            }),
+        )
+    }
+
+    // A backdrop filter over the document alone, which reads only its own layer, and one over an earlier canvas, which
+    // the compositor composites.
+    fn page_with_frosted_glass() -> Page {
+        let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
+        let document = contexts[0];
+        let over_document = frosted_glass(&mut tree, document, IntRect::new(400, 100, 200, 100));
+        let over_canvas = frosted_glass(&mut tree, document, IntRect::new(100, 100, 200, 100));
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(400, 100, 200, 100)), over_document)
+            .with(canvas(IntRect::new(100, 100, 200, 100), 1), document)
+            .with(fill(IntRect::new(100, 100, 200, 100)), over_canvas)
+            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
+    // A spinner in a group scaled up eighty times, whose space a plan rasters at that scale.
+    fn page_with_spinner_in_large_scale() -> Page {
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
+        let mut scaling = transform(FloatRect::new(0.0, 0.0, 10.0, 10.0));
+        scaling.matrix = libgfx_rust::scale_matrix(80.0, 80.0, 1.0);
+        let scaled_node = tree.append_spatial(SpatialData::Transform(scaling), VISUAL_VIEWPORT_NODE_INDEX);
+        let spinner_node = tree.append_spatial(
+            SpatialData::Transform(transform(FloatRect::new(1.0, 1.0, 4.0, 4.0))),
+            scaled_node,
+        );
+        tree.set_visual_animations(vec![spinning_animation(spinner_node)]);
+        let spinner = ContextRef {
+            spatial: spinner_node,
+            ..viewport
+        };
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
+            .with(fill(IntRect::new(1, 1, 4, 4)), spinner)
+            .with(fill(IntRect::new(0, 100, 100, 100)), viewport);
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
+    // More translucent groups nested in each other than 1024, around a canvas, so that the compositor composites each.
+    const NESTED_GROUP_COUNT_OF_DEEP_PAGE: usize = 1100;
+
+    fn page_with_canvas_in_deeply_nested_groups() -> Page {
+        let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
+        let document = contexts[0];
+        let mut group = document;
+        for _ in 0..NESTED_GROUP_COUNT_OF_DEEP_PAGE {
+            group = tree.append_effect_node_under(group, effects(0.5));
+        }
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(canvas(IntRect::new(100, 100, 200, 100), 1), group)
+            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+        Page {
+            tree,
+            list: list.storage(),
+        }
+    }
+
     fn every_page() -> Vec<(&'static str, Page)> {
         vec![
             ("plain page", plain_page()),
@@ -1989,19 +1837,23 @@ mod tests {
             ("translucent root", page_under_translucent_root()),
             ("no records", page_without_records()),
             ("records that draw nothing", page_whose_records_draw_nothing()),
+            ("frosted glass", page_with_frosted_glass()),
         ]
     }
 
-    fn encoded_plan(page: &Page, stack: &LayerStack) -> Vec<u8> {
+    // The plan WebContent sends of what it planned.
+    fn plan_sent_of(planned: &PlannedLayers) -> LayerPlan {
+        LayerPlan {
+            display_list_id: 42,
+            viewport_rect: VIEWPORT,
+            stack: planned.stack.clone(),
+            note_lines: planned.note_lines_for_layers_overlay(),
+        }
+    }
+
+    fn encoded(plan: &LayerPlan) -> Vec<u8> {
         let mut encoder = Encoder::new();
-        encoder
-            .encode(&LayerPlan {
-                display_list_id: 42,
-                viewport_rect: VIEWPORT,
-                stack: stack.clone(),
-            })
-            .expect("a planned stack encodes");
-        let _ = page;
+        encoder.encode(plan).expect("a planned stack encodes");
         encoder.finish().0
     }
 
@@ -2091,17 +1943,56 @@ mod tests {
             .collect();
         assert_eq!(parents_of_composited_nodes.len(), 2);
         assert_eq!(parents_of_composited_nodes[0], parents_of_composited_nodes[1]);
+        let frosted = stack_of(page_with_frosted_glass());
+        let reads_of_composited_effects: Vec<bool> = frosted
+            .composited_effects
+            .iter()
+            .map(|composited| composited.reads_what_is_composited_below_it)
+            .collect();
+        assert_eq!(reads_of_composited_effects, [true]);
+        // The spinner is rastered at the scale of its group, far past four times the scale of the viewport.
+        let large_scale = stack_of(page_with_spinner_in_large_scale());
+        assert!(matches!(
+            large_scale.spaces[1..],
+            [RasterSpace {
+                anchor_kind: RasterSpaceAnchorKind::AnimatedTransform { raster_scale },
+                ..
+            }] if raster_scale > 64.0
+        ));
     }
 
     #[test]
     fn a_planned_stack_round_trips_through_its_wire_form_and_its_checks() {
-        for (name, page) in every_page() {
-            let planned = page.planned().stack;
-            let plan = decoded_and_validated_plan(&page, &encoded_plan(&page, &planned))
+        let pages = every_page()
+            .into_iter()
+            .chain([("spinner in large scale", page_with_spinner_in_large_scale())]);
+        for (name, page) in pages {
+            let sent = plan_sent_of(&page.planned());
+            let plan = decoded_and_validated_plan(&page, &encoded(&sent))
                 .unwrap_or_else(|why| panic!("the plan of the {name} is rejected: {why}"));
-            assert_eq!(plan.display_list_id, 42);
-            assert_eq!(plan.viewport_rect, VIEWPORT);
-            assert_eq!(plan.stack, planned, "the stack of the {name} comes back otherwise");
+            assert_eq!(plan, sent, "the plan of the {name} comes back otherwise");
+        }
+    }
+
+    #[test]
+    fn the_compositor_works_out_what_a_plan_on_the_wire_leaves_out() {
+        for page in [
+            page_with_sticky_header(),
+            page_with_frosted_glass(),
+            page_under_translucent_root(),
+        ] {
+            let planned = page.planned();
+            let mut stack = planned.stack.clone();
+            for space in &mut stack.spaces {
+                space.identity ^= 1;
+                space.extent = IntRect::new(1, 2, 3, 4);
+            }
+            for composited in &mut stack.composited_effects {
+                composited.reads_what_is_composited_below_it ^= true;
+                composited.filter_spreads_what_it_composites ^= true;
+            }
+            stack.layering_obstacles.sorts_planes_by_depth ^= true;
+            assert_eq!(page.validated(stack), Ok(planned.stack));
         }
     }
 
@@ -2117,6 +2008,91 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_with_nodes_nested_deeper_than_1024_round_trips() {
+        let page = page_with_canvas_in_deeply_nested_groups();
+        let planned = page.planned();
+        let stack = &planned.stack;
+        let depth_of_deepest_node = (0..stack.nodes.len())
+            .map(|node_index| {
+                std::iter::successors(Some(PlacementNodeIndex(node_index)), |&index| {
+                    stack.nodes[index.0].parent_index
+                })
+                .count()
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(depth_of_deepest_node > NESTED_GROUP_COUNT_OF_DEEP_PAGE);
+        let sent = plan_sent_of(&planned);
+        assert_eq!(decoded_and_validated_plan(&page, &encoded(&sent)), Ok(sent));
+    }
+
+    #[test]
+    fn a_plan_for_a_viewport_past_the_coordinate_limit_is_refused() {
+        let viewport_past_limit = IntRect::new(0, 0, COORDINATE_LIMIT_IN_DEVICE_PIXELS + 1, 600);
+        for page in [plain_page(), page_under_translucent_root()] {
+            let stack = page.planned().stack;
+            assert!(LayerStack::validated(on_wire(&stack), &page.list, &page.tree, VIEWPORT).is_ok());
+            assert!(LayerStack::validated(on_wire(&stack), &page.list, &page.tree, viewport_past_limit).is_err());
+        }
+    }
+
+    // The overlay of layers showed these lines of the plans of these pages before the plan carried them as text.
+    #[test]
+    fn the_note_lines_of_a_plan_are_the_lines_the_overlay_of_layers_showed() {
+        let lines_of = |page: Page| page.planned().note_lines_for_layers_overlay();
+        assert_eq!(
+            lines_of(page_with_nested_composited_effects()),
+            [
+                "composited e1 space=document: the compositor animates it",
+                "composited e2 space=document inside e1: the compositor animates it",
+            ]
+        );
+        assert_eq!(
+            lines_of(page_with_spinner_holding_the_root_group()),
+            ["composited e0 space=animated@s1 in viewport: it applies over a transform the compositor animates"]
+        );
+        assert_eq!(
+            lines_of(page_with_nine_canvases()),
+            ["no layer for canvas: past the most media that get layers"]
+        );
+        assert_eq!(
+            lines_of(page_with_two_fading_siblings()),
+            [
+                "composited e1 space=document: the compositor animates it",
+                "composited e2 space=document: the compositor animates it",
+            ]
+        );
+        assert_eq!(
+            lines_of(page_with_frosted_glass()),
+            [
+                "composited e2 space=document reads=[73,73 254x154]: it reads what its own layer does not hold",
+                "e1 is not composited: it reads only its own layer",
+            ]
+        );
+        assert!(lines_of(page_under_translucent_root()).is_empty());
+        assert!(lines_of(plain_page()).is_empty());
+    }
+
+    #[test]
+    fn note_lines_past_what_a_plan_holds_are_cut() {
+        // The last character that fits is cut in two at the length a line holds, so the line ends before it.
+        let long_line = format!("a{}", "é".repeat(MAXIMUM_NOTE_LINE_LENGTH_OF_PLAN));
+        let lines = note_lines_a_plan_holds(std::iter::repeat_n(long_line, MAXIMUM_NOTE_LINE_COUNT_OF_PLAN + 1));
+        assert_eq!(lines.len(), MAXIMUM_NOTE_LINE_COUNT_OF_PLAN);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.len() == MAXIMUM_NOTE_LINE_LENGTH_OF_PLAN - 1)
+        );
+        let page = plain_page();
+        let sent = LayerPlan {
+            note_lines: lines,
+            ..plan_sent_of(&page.planned())
+        };
+        assert_eq!(decoded_and_validated_plan(&page, &encoded(&sent)), Ok(sent));
+    }
+
+    #[test]
     fn every_reason_and_kind_round_trips() {
         fn round_trip<T: Encode + Decode + PartialEq + std::fmt::Debug>(value: T) {
             let mut encoder = Encoder::new();
@@ -2126,14 +2102,12 @@ mod tests {
             assert_eq!(decoder.decode::<T>().unwrap(), value);
             assert!(decoder.is_at_end());
         }
-        let cannot = [
+        for why in [
             WhyCompositorCannotCompositeEffect::FilterMovesWhatItFilters,
             WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed,
-        ];
-        for why in cannot {
+        ] {
             round_trip(why);
             round_trip(WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why));
-            round_trip(WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
         }
         for why in [
             WhyListIsOneLayer::EmptyViewport,
@@ -2146,62 +2120,49 @@ mod tests {
         ] {
             round_trip(why);
         }
-        for why in [
-            WhyMediaHasNoLayer::DrawnInsideAnotherCommand,
-            WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine,
-            WhyMediaHasNoLayer::DrawsNothingVisible,
-            WhyMediaHasNoLayer::MoreMediaThanLayersFor,
-            WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext,
-        ] {
-            round_trip(why);
-        }
-        let contents = [
+        for content in [
             LiveContent::Canvas(CanvasId(1)),
             LiveContent::VideoFrame(VideoSinkHandle(2)),
             LiveContent::ImageFrame(ImageFrameResourceId(3)),
             LiveContent::CompositedContext(CompositorContextId(4)),
-        ];
-        for content in contents {
-            round_trip(content);
-            round_trip(WhyEffectIsComposited::ItHoldsMedia(content));
-        }
-        for why in [
-            WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold,
-            WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame,
-            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
-            WhyEffectIsComposited::TheCompositorAnimatesIt,
-            WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates,
         ] {
-            round_trip(why);
+            round_trip(content);
         }
         for reach in [Reach::Nothing, Reach::Within(IntRect::new(1, 2, 3, 4)), Reach::Anywhere] {
             round_trip(reach);
         }
-        for kind in [
-            RasterSpaceAnchorKind::Viewport,
-            RasterSpaceAnchorKind::ViewportScroller,
-            RasterSpaceAnchorKind::Scroller,
-            RasterSpaceAnchorKind::StickyBox {
-                border_box_origin: FloatPoint { x: 1.0, y: 2.0 },
-            },
-            RasterSpaceAnchorKind::AnimatedTransform { raster_scale: 2.0 },
-        ] {
-            round_trip(kind);
-        }
     }
 
     #[test]
-    fn a_count_past_its_maximum_is_refused_before_anything_is_allocated() {
+    fn a_count_or_a_length_past_its_maximum_is_refused_before_anything_is_allocated() {
         let mut encoder = Encoder::new();
-        encoder.encode_size(MAXIMUM_RASTER_SPACE_COUNT + 1).unwrap();
+        encoder.encode(&PLAN_KIND_LAYERED).unwrap();
+        encoder.encode_size(MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK + 1).unwrap();
         let bytes = encoder.finish().0;
         assert!(matches!(
             Decoder::new(&bytes, []).decode::<UnvalidatedLayerStack>(),
             Err(DecodeError::SizeTooLarge(_))
         ));
-        // A count of many spans that the bytes cannot hold is refused too.
         let page = page_with_two_canvases();
-        let mut bytes = encoded_plan(&page, &page.planned().stack);
+        let plan_with_note_lines = |note_lines: Vec<String>| {
+            encoded(&LayerPlan {
+                note_lines,
+                ..plan_sent_of(&page.planned())
+            })
+        };
+        let too_many_lines = vec![String::new(); MAXIMUM_NOTE_LINE_COUNT_OF_PLAN + 1];
+        let too_long_line = vec!["x".repeat(MAXIMUM_NOTE_LINE_LENGTH_OF_PLAN + 1)];
+        for bytes in [
+            plan_with_note_lines(too_many_lines),
+            plan_with_note_lines(too_long_line),
+        ] {
+            assert!(matches!(
+                Decoder::new(&bytes, []).decode::<UnvalidatedLayerPlan>(),
+                Err(DecodeError::SizeTooLarge(_))
+            ));
+        }
+        // A count of many spans that the bytes cannot hold is refused too.
+        let mut bytes = encoded(&plan_sent_of(&page.planned()));
         bytes.truncate(bytes.len() / 2);
         assert!(decoded_and_validated_plan(&page, &bytes).is_err());
     }
@@ -2338,29 +2299,6 @@ mod tests {
         });
     }
 
-    // Anchors spaces at the nested scrollers of the crowded page that have none, past the most a plan makes.
-    fn anchor_spaces_at_nested_scrollers_without_spaces(stack: &mut LayerStack) {
-        let document_space = RasterSpaceIndex(1);
-        let mut candidate_anchor = SpatialNodeIndex(document_space.0 as u32);
-        while stack.spaces.len() <= MAXIMUM_RASTER_SPACE_COUNT {
-            candidate_anchor.0 += 1;
-            if stack.spaces.iter().any(|space| space.anchor == candidate_anchor) {
-                continue;
-            }
-            stack.spaces.push(RasterSpace {
-                anchor: candidate_anchor,
-                identity: u64::from(candidate_anchor.0),
-                parent_index: document_space,
-                anchor_kind: RasterSpaceAnchorKind::Scroller,
-                lowest_anchor_translation: FloatPoint::default(),
-                highest_anchor_translation: FloatPoint::default(),
-                extent: IntRect::new(0, 0, 300, 700),
-            });
-            stack.tiles_hold_content_moving_within_space_by_space_index.push(false);
-            stack.swept_reach_in_parent_space_by_space_index.push(None);
-        }
-    }
-
     // Moves the records of the band of the fixed header of the plain page into a band of a node of the viewport's space
     // that no barrier names.
     fn move_header_into_band_no_barrier_names(stack: &mut LayerStack) {
@@ -2428,11 +2366,6 @@ mod tests {
             ("2: node of a band out of range", page_with_two_canvases, |stack| {
                 stack.bands[0].placement_node_index = PlacementNodeIndex(stack.nodes.len());
             }),
-            (
-                "2: node of a composited effect out of range",
-                page_with_nested_composited_effects,
-                |stack| stack.composited_effects[0].placement_node_index = PlacementNodeIndex(stack.nodes.len()),
-            ),
             ("3: band of a layer out of range", page_with_two_canvases, |stack| {
                 stack.layers[0].band_index = BandIndex(stack.bands.len());
             }),
@@ -2471,20 +2404,6 @@ mod tests {
                     });
                 },
             ),
-            ("5: no space", page_with_two_canvases, |stack| stack.spaces.clear()),
-            (
-                "5: first space is not the viewport's",
-                page_with_two_canvases,
-                |stack| stack.spaces[0].anchor_kind = RasterSpaceAnchorKind::Scroller,
-            ),
-            ("5: space in itself", page_with_canvas_in_nested_scroller, |stack| {
-                stack.spaces[2].parent_index = RasterSpaceIndex(2);
-            }),
-            (
-                "5: space in a later space",
-                page_with_canvas_in_nested_scroller,
-                |stack| stack.spaces[1].parent_index = RasterSpaceIndex(2),
-            ),
             ("6: node in itself", page_with_two_canvases, |stack| {
                 stack.nodes[1].parent_index = Some(PlacementNodeIndex(1));
             }),
@@ -2502,54 +2421,8 @@ mod tests {
                 |stack| {
                     let node = composited_node_index(stack);
                     stack.nodes[node].composited_effect = Some(EffectNodeIndex(9999));
-                    for composited in &mut stack.composited_effects {
-                        if composited.placement_node_index == PlacementNodeIndex(node) {
-                            composited.effect = EffectNodeIndex(9999);
-                        }
-                    }
                 },
             ),
-            (
-                "7: composited effect that is not the effect of its node",
-                page_with_nested_composited_effects,
-                |stack| {
-                    let other_effect = stack.composited_effects[1].effect;
-                    stack.composited_effects[0].effect = other_effect;
-                },
-            ),
-            (
-                "7: composited node without composited effect",
-                page_with_nested_composited_effects,
-                |stack| {
-                    stack.composited_effects.pop();
-                },
-            ),
-            (
-                "8: scroller anchored at a node that does not scroll",
-                page_with_canvas_in_nested_scroller,
-                |stack| {
-                    stack.spaces[2].anchor_kind = RasterSpaceAnchorKind::StickyBox {
-                        border_box_origin: FloatPoint::default(),
-                    }
-                },
-            ),
-            ("8: anchor out of range", page_with_canvas_in_nested_scroller, |stack| {
-                stack.spaces[2].anchor = SpatialNodeIndex(9999);
-            }),
-            (
-                "8: two spaces at one anchor",
-                page_with_canvas_in_nested_scroller,
-                |stack| stack.spaces[2].anchor = stack.spaces[1].anchor,
-            ),
-            ("8: raster scale that is not a number", page_with_spinner, |stack| {
-                stack.spaces[1].anchor_kind = RasterSpaceAnchorKind::AnimatedTransform { raster_scale: f32::NAN }
-            }),
-            ("8: raster scale of zero", page_with_spinner, |stack| {
-                stack.spaces[1].anchor_kind = RasterSpaceAnchorKind::AnimatedTransform { raster_scale: 0.0 }
-            }),
-            ("8: raster scale past the largest", page_with_spinner, |stack| {
-                stack.spaces[1].anchor_kind = RasterSpaceAnchorKind::AnimatedTransform { raster_scale: 1e9 }
-            }),
             (
                 "9: composited effects nested otherwise than in the tree",
                 page_with_nested_composited_effects,
@@ -2557,8 +2430,6 @@ mod tests {
                     let (first, second) = (stack.composited_effects[0], stack.composited_effects[1]);
                     stack.nodes[first.placement_node_index.0].composited_effect = Some(second.effect);
                     stack.nodes[second.placement_node_index.0].composited_effect = Some(first.effect);
-                    stack.composited_effects[0].effect = second.effect;
-                    stack.composited_effects[1].effect = first.effect;
                 },
             ),
             (
@@ -2766,25 +2637,6 @@ mod tests {
                 stack.bands[band].cuts[0].cut_reach = Reach::Within(IntRect::new(0, 0, i32::MAX, 1));
             }),
             (
-                "19: extent of a space past the limit",
-                page_with_two_canvases,
-                |stack| stack.spaces[1].extent = IntRect::new(0, i32::MIN / 2, 10, i32::MAX),
-            ),
-            (
-                "19: translation of an anchor that is not a number",
-                page_with_two_canvases,
-                |stack| stack.spaces[1].lowest_anchor_translation = FloatPoint { x: 0.0, y: f32::NAN },
-            ),
-            (
-                "19: origin of a sticky box past the limit",
-                page_with_sticky_header,
-                |stack| {
-                    stack.spaces[2].anchor_kind = RasterSpaceAnchorKind::StickyBox {
-                        border_box_origin: FloatPoint { x: 1e30, y: 0.0 },
-                    }
-                },
-            ),
-            (
                 "19: negative radius of a composite clip",
                 page_with_two_canvases,
                 |stack| {
@@ -2794,11 +2646,6 @@ mod tests {
                         corner_radii: libgfx_rust::CornerRadii::uniform(-5),
                     });
                 },
-            ),
-            (
-                "19: backdrop read past the limit",
-                page_with_nested_composited_effects,
-                |stack| stack.composited_effects[0].backdrop_read_reach = Reach::Within(IntRect::new(0, 0, 1 << 30, 1)),
             ),
             ("19: swept reach past the limit", page_with_spinner, |stack| {
                 stack.swept_reach_in_parent_space_by_space_index[1] = Some(IntRect::new(1 << 30, 0, 1, 1));
@@ -2815,24 +2662,6 @@ mod tests {
                 "20: a swept reach of a space the compositor does not animate",
                 page_with_two_canvases,
                 |stack| stack.swept_reach_in_parent_space_by_space_index[1] = Some(IntRect::new(0, 0, 1, 1)),
-            ),
-            (
-                "21: layered stack that says it replays the whole list",
-                page_with_two_canvases,
-                |stack| stack.why_list_is_one_layer = Some(WhyListIsOneLayer::SortingContext3D),
-            ),
-            (
-                "21: one layer that replays part of the list",
-                page_under_translucent_root,
-                |stack| stack.bands[0].record_spans[0].end.offset -= 1,
-            ),
-            (
-                "21: one layer with a second layer",
-                page_under_translucent_root,
-                |stack| {
-                    let layer = stack.layers[0].clone();
-                    stack.layers.push(layer);
-                },
             ),
             ("22: record held by two bands", plain_page, |stack| {
                 let span_of_document = stack.bands[1].record_spans[0];
@@ -2875,18 +2704,12 @@ mod tests {
                 give_last_of_nine_canvases_a_layer,
             ),
             (
-                "25: more spaces than a plan makes",
-                page_with_many_nested_scrollers,
-                anchor_spaces_at_nested_scrollers_without_spaces,
-            ),
-            (
                 "26: two nodes composited inside one effect",
                 page_with_two_fading_siblings,
                 |stack| {
                     let first_effect = stack.composited_effects[0].effect;
                     let second_node = stack.composited_effects[1].placement_node_index;
                     stack.nodes[second_node.0].composited_effect = Some(first_effect);
-                    stack.composited_effects[1].effect = first_effect;
                 },
             ),
             ("27: node in a node of its own space", plain_page, |stack| {
@@ -2978,7 +2801,8 @@ mod tests {
     #[test]
     fn a_plan_whose_bands_each_repeat_the_whole_list_is_refused() {
         for page in [plain_page(), page_with_canvas_in_nested_scroller()] {
-            let mut stack = page.planned().stack;
+            let planned = page.planned();
+            let mut stack = planned.stack.clone();
             assert!(stack.bands.len() >= 2);
             for band in &mut stack.bands {
                 band.record_spans = vec![page.list.whole_span()];
@@ -2987,7 +2811,11 @@ mod tests {
                 page.validated(stack.clone()),
                 Err("two spans of the stack hold the same record")
             );
-            assert!(decoded_and_validated_plan(&page, &encoded_plan(&page, &stack)).is_err());
+            let sent = LayerPlan {
+                stack,
+                ..plan_sent_of(&planned)
+            };
+            assert!(decoded_and_validated_plan(&page, &encoded(&sent)).is_err());
         }
     }
 
@@ -3046,6 +2874,7 @@ mod tests {
         let presentation = stack.window_server_presentation_of_media(list, frame_tree, &scroll_offsets, VIEWPORT);
         let planned_with_stack = PlannedLayers {
             stack: stack.clone(),
+            notes: planned.notes.clone(),
             placement: planned.placement.clone(),
         };
         planned_with_stack.layer_lines(&presentation, &NodeNamesFromIndices, |layer| {
@@ -3059,11 +2888,7 @@ mod tests {
         for run_index in 0..list.run_count() {
             planned_with_stack.layers_of_record(list.start_of_run(run_index));
         }
-        stack.lines_of_composited_effects(&NodeNamesFromIndices).count();
-        stack.lines_of_media_without_layers().count();
-        stack
-            .lines_of_effects_reading_only_own_layer(&NodeNamesFromIndices)
-            .count();
+        planned_with_stack.note_lines_for_layers_overlay();
         for layer_index in 0..stack.layers.len() {
             stack.layer_with_identity(stack.layers[layer_index].identity);
             stack.space_holds_content_that_moves_within_it(stack.space_of_layer(LayerIndex(layer_index)));
@@ -3212,7 +3037,7 @@ mod tests {
             let planned = page.planned();
             let frame_tree = page.tree.with_visual_animation_samples(250_000_000);
             read_as_consumers_do(&page, &frame_tree, &planned, &planned.stack);
-            let bytes = encoded_plan(&page, &planned.stack);
+            let bytes = encoded(&plan_sent_of(&planned));
             for trial in 0..3000 {
                 let mutated_bytes = mutated(&bytes, &mut generator);
                 let Ok(plan) = decoded_and_validated_plan(&page, &mutated_bytes) else {

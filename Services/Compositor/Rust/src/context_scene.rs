@@ -28,6 +28,8 @@ pub struct ReceivedLayerPlan {
     /// Per spatial node, whether the plan leaves out its scroll offset, as the plan holds wherever the node is scrolled
     /// to.
     pub leaves_out_scroll_offset_of_node: Rc<Vec<bool>>,
+    /// What the overlay of layers tells of the stack past its layers, as WebContent wrote it.
+    pub note_lines: Rc<[String]>,
 }
 
 #[derive(Default)]
@@ -192,6 +194,7 @@ impl ContextScene {
             leaves_out_scroll_offset_of_node: Rc::new(spatial_nodes_whose_scroll_offset_layer_plans_leave_out(
                 tree.as_arc(),
             )),
+            note_lines: layer_plan.note_lines.into(),
         });
         Ok(())
     }
@@ -354,8 +357,8 @@ mod tests {
     use super::*;
     use libcompositing_rust::display_list::builder::DisplayListBuilder;
     use libcompositing_rust::display_list::commands::{ContextRef, EffectNodeIndex, FillRect};
+    use libcompositing_rust::display_list::layers::LayerPlan;
     use libcompositing_rust::display_list::layers::planning::InputsOfLayerPlan;
-    use libcompositing_rust::display_list::layers::{LayerPlan, WhyListIsOneLayer};
     use libcompositing_rust::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
     use libcompositing_rust::ipc_types::LayerPlanOnWire;
     use libcompositing_rust::visual_context::{TransformData, TransformDataRole, VisualContextTree};
@@ -414,6 +417,7 @@ mod tests {
                 display_list_id,
                 viewport_rect: VIEWPORT,
                 stack,
+                note_lines: Vec::new(),
             })))
             .unwrap();
         let (bytes, _) = encoder.finish();
@@ -433,16 +437,15 @@ mod tests {
     fn a_plan_is_taken_with_the_list_it_is_of_and_one_that_does_not_fit_it_is_refused() {
         let (mut scene, list, tree) = scene_with_one_rect();
         let planned = InputsOfLayerPlan::new(list.clone(), tree, &[], VIEWPORT).plan().stack;
+        assert_eq!(planned.why_list_is_one_layer, None);
         let span_past_end_of_list = ListSpan {
             begin: ListPosition::default(),
             end: ListPosition::new(ChunkIndexInList(0), list.whole_span().end.offset + 8),
         };
         let stack_not_fitting_list = || {
-            LayerStack::single_layer(
-                VIEWPORT,
-                span_past_end_of_list,
-                Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
-            )
+            let mut stack = planned.clone();
+            stack.bands[0].record_spans = vec![span_past_end_of_list];
+            stack
         };
 
         scene.forget_layer_plan();
