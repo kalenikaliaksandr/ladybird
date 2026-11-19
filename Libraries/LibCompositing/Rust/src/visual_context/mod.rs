@@ -770,6 +770,7 @@ pub struct VisualContextTree {
     effect_slots: SlotAccounting<EffectNodeIndex>,
     sampled_background_color_by_effect_index: HashMap<u32, libgfx_rust::Color>,
     visual_animations: std::sync::Arc<[VisualAnimation]>,
+    visual_animation_targets: std::sync::Arc<visual_animations::VisualAnimationTargets>,
     compositor_scroll_table: CompositorScrollTable,
 }
 
@@ -927,6 +928,7 @@ impl VisualContextTree {
             effect_slots: SlotAccounting::default(),
             sampled_background_color_by_effect_index: HashMap::new(),
             visual_animations: std::sync::Arc::from(Vec::new()),
+            visual_animation_targets: std::sync::Arc::default(),
             compositor_scroll_table: CompositorScrollTable::default(),
         }
     }
@@ -971,6 +973,7 @@ impl VisualContextTree {
             structural_epoch,
             sampled_background_color_by_effect_index: HashMap::new(),
             visual_animations: std::sync::Arc::from(Vec::new()),
+            visual_animation_targets: std::sync::Arc::default(),
             compositor_scroll_table: CompositorScrollTable::default(),
         }
     }
@@ -1431,12 +1434,28 @@ impl VisualContextTree {
         self.spatial_nodes.iter().any(plane_leaves_plane_of_its_sorting_context)
     }
 
+    // A plane whose transform an animation animates holds the value the tree holds while the animation shows none, and
+    // the samples of the animation otherwise.
+    fn plane_may_leave_plane_of_its_sorting_context(&self, index: usize) -> bool {
+        let node = &self.spatial_nodes[index];
+        plane_leaves_plane_of_its_sorting_context(node)
+            || (matches!(&node.data, SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
+                && self.transform_animation_of_node_leaves_plane(SpatialNodeIndex(index as u32)))
+    }
+
+    /// As `sorts_planes_by_depth`, for some sample of the animations of the tree: what a plan that holds for every
+    /// sample is made for.
+    pub fn may_sort_planes_by_depth(&self) -> bool {
+        (0..self.spatial_nodes.len()).any(|index| self.plane_may_leave_plane_of_its_sorting_context(index))
+    }
+
     /// Per spatial node, the root of the outermost 3D sorting context around the content of the node, where some
-    /// plane of that context or of one inside it leaves the plane of its context, so that the content is sorted by
-    /// depth with the rest of the context.
+    /// plane of that context or of one inside it leaves the plane of its context at some sample of the animations of
+    /// the tree, so that the content is sorted by depth with the rest of the context. Every sample of the tree has the
+    /// same roots.
     pub fn roots_of_contexts_sorting_planes_by_depth(&self) -> Vec<Option<SpatialNodeIndex>> {
         let mut root_of_outermost_context: Vec<Option<SpatialNodeIndex>> = vec![None; self.spatial_nodes.len()];
-        if !self.sorts_planes_by_depth() {
+        if !self.may_sort_planes_by_depth() {
             return root_of_outermost_context;
         }
         let sorting_context_root_of = |node: &SpatialNode| match &node.data {
@@ -1459,9 +1478,9 @@ impl VisualContextTree {
                 .or(is_sorting_context_root[index].then_some(SpatialNodeIndex(index as u32)));
         });
         let mut context_of_root_sorts_by_depth = vec![false; self.spatial_nodes.len()];
-        for (index, node) in self.spatial_nodes.iter().enumerate() {
-            if plane_leaves_plane_of_its_sorting_context(node)
-                && let Some(root) = root_of_outermost_context[index]
+        for (index, root) in root_of_outermost_context.iter().enumerate() {
+            if self.plane_may_leave_plane_of_its_sorting_context(index)
+                && let Some(root) = root
             {
                 context_of_root_sorts_by_depth[root.0 as usize] = true;
             }

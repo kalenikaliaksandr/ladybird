@@ -25,7 +25,7 @@
 use crate::display_list::builder::read_command;
 use crate::display_list::commands::{DeclareMaskContent, DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
-    filter_moves_what_it_filters, nearest_spreading_effects, spreading_filter_of,
+    KeyframeFiltersOfEffects, filter_may_spread_at_some_sample, nearest_effects_spreading_at_some_sample,
 };
 pub use crate::display_list::placement::{
     CompositeClip, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex, RunGroupIndex, raster_space_anchors,
@@ -42,7 +42,7 @@ use crate::display_list::tiles::{
     TILE_SIZE_IN_DEVICE_PIXELS, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching,
 };
 use crate::display_list::window_server_placement::{WhyWindowServerCannotShowMedia, WindowServerPlacement};
-use crate::visual_context::{EffectNodeData, SpatialData, VisualContextTree, WorldTransforms, device_offset_for_index};
+use crate::visual_context::{EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index};
 use libgfx_rust::{AffineTransform, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, enclosing_int_rect};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
@@ -1257,6 +1257,7 @@ pub struct LayerStackInputs<'a> {
     pub viewport_to_raster_transform: FloatMatrix4x4,
 }
 
+// An animation of the opacity or filter of the root isolation effect makes it more than a plain group at some sample.
 fn root_isolation_effect_is_plain_group(tree: &VisualContextTree) -> bool {
     let Some(root) = tree.root_isolation_effect else {
         return true;
@@ -1267,95 +1268,25 @@ fn root_isolation_effect_is_plain_group(tree: &VisualContextTree) -> bool {
                 && effects.blend_mode == libgfx_rust::CompositingAndBlendingOperator::Normal
                 && effects.filter.is_none()
                 && effects.backdrop_filter.is_none()
+                && !tree.effect_opacity_or_filter_is_animated(root)
         }
         _ => false,
     }
 }
 
-/// The hash of what placing `list` reads of the values the compositor's animations give the tree, which change from
-/// one sample of them to the next while the main thread publishes nothing: whether each effect an opacity or filter
-/// animates pushes a layer and spreads what it holds, whether the root's effect is a plain group, and the matrices of
-/// animated transforms over a backdrop filter, or over a canvas, video or nested context where the animation leaves
-/// the plane, which placing tells such media apart by. Two samples of a tree with the same hash place `list` alike.
-pub fn hash_of_animated_values_placement_reads(list: &DisplayListStorage, tree: &VisualContextTree) -> u64 {
-    use crate::host::FfiVisualAnimationTargetKind;
-    let mut hasher = crate::fast_hash::fast_hasher();
-    hasher.write_u8(u8::from(root_isolation_effect_is_plain_group(tree)));
-    for (spatial_index, depth_sorting_root) in tree.roots_of_contexts_sorting_planes_by_depth().iter().enumerate() {
-        if let Some(depth_sorting_root) = depth_sorting_root {
-            hasher.write_u32(spatial_index as u32);
-            hasher.write_u32(depth_sorting_root.0);
-        }
-    }
-    let mut has_transform_animations = false;
-    for animation in tree.visual_animations() {
-        match animation.target_kind {
-            FfiVisualAnimationTargetKind::Opacity | FfiVisualAnimationTargetKind::Filter => {
-                for &effect_index in &animation.node_indices {
-                    let Some(effect_node) = tree.effect_nodes.get(effect_index as usize) else {
-                        continue;
-                    };
-                    hasher.write_u32(effect_index);
-                    hasher.write_u8(u8::from(
-                        tree.effect_pushes_layer_at_replay(EffectNodeIndex(effect_index)),
-                    ));
-                    hasher.write_u8(u8::from(spreading_filter_of(effect_node).is_some()));
-                }
-            }
-            FfiVisualAnimationTargetKind::Transform => has_transform_animations = true,
-            _ => {}
-        }
-    }
-    if !has_transform_animations {
-        return hasher.finish();
-    }
-    let in_animated_subtree_by_spatial_index = tree.spatial_nodes_in_subtrees_of_transform_animations();
-    let is_under_animated_transform = |spatial: SpatialNodeIndex| {
-        in_animated_subtree_by_spatial_index
-            .get(spatial.0 as usize)
-            .copied()
-            .unwrap_or(false)
-    };
-    let roots_of_animations_leaving_plane: Vec<SpatialNodeIndex> = tree
+// Empty where no transform animation of the tree leaves the plane.
+fn spatial_nodes_under_transform_animations_leaving_plane(tree: &VisualContextTree) -> Vec<bool> {
+    let roots: Vec<SpatialNodeIndex> = tree
         .visual_animations()
         .iter()
-        .filter(|animation| {
-            animation.target_kind == FfiVisualAnimationTargetKind::Transform
-                && !crate::display_list::animated_transform_spaces::transform_animation_stays_in_plane(animation)
-        })
+        .filter(|animation| animation.target_kind == crate::host::FfiVisualAnimationTargetKind::Transform)
         .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
+        .filter(|&node| tree.transform_animation_of_node_leaves_plane(node))
         .collect();
-    let in_subtree_of_animation_leaving_plane = tree.spatial_nodes_in_subtrees_of(&roots_of_animations_leaving_plane);
-    let media_under_animated_transforms = list.summary().live_content_records.iter().any(|record| {
-        let spatial = list.run(record.record.run_index as usize).context.spatial;
-        in_subtree_of_animation_leaving_plane
-            .get(spatial.0 as usize)
-            .copied()
-            .unwrap_or(false)
-    });
-    let backdrop_filters_under_animated_transforms = tree.effect_nodes.iter().any(|effect_node| {
-        matches!(&effect_node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some())
-            && is_under_animated_transform(effect_node.spatial)
-    });
-    if !media_under_animated_transforms && !backdrop_filters_under_animated_transforms {
-        return hasher.finish();
+    if roots.is_empty() {
+        return Vec::new();
     }
-    for animation in tree.visual_animations() {
-        if animation.target_kind != FfiVisualAnimationTargetKind::Transform {
-            continue;
-        }
-        for &spatial_index in &animation.node_indices {
-            if let Some(SpatialData::Transform(transform)) =
-                tree.spatial_nodes.get(spatial_index as usize).map(|node| &node.data)
-            {
-                hasher.write_u32(spatial_index);
-                for value in transform.matrix.elements.iter().flatten() {
-                    hasher.write_u32(value.to_bits());
-                }
-            }
-        }
-    }
-    hasher.finish()
+    tree.spatial_nodes_in_subtrees_of(&roots)
 }
 
 fn effect_is_or_is_inside(tree: &VisualContextTree, mut effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
@@ -1382,7 +1313,7 @@ fn mask_declarations_are_on_effect_chains_of_their_masks(list: &DisplayListStora
 }
 
 /// What of a tree and its list keeps the list from being layered, or the tiles of its layers from replaying only the
-/// records that reach them.
+/// records that reach them, at some sample of the animations of the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LayeringObstacles {
     pub sorts_planes_by_depth: bool,
@@ -1393,7 +1324,7 @@ pub struct LayeringObstacles {
 impl LayeringObstacles {
     pub fn of(list: &DisplayListStorage, tree: &VisualContextTree) -> Self {
         Self {
-            sorts_planes_by_depth: tree.sorts_planes_by_depth(),
+            sorts_planes_by_depth: tree.may_sort_planes_by_depth(),
             root_isolation_effect_is_not_a_plain_group: !root_isolation_effect_is_plain_group(tree),
             mask_declared_under_effects_its_mask_is_not_under: !mask_declarations_are_on_effect_chains_of_their_masks(
                 list, tree,
@@ -1538,7 +1469,8 @@ pub struct PlacedMedia {
     pub reach: IntRect,
 }
 
-/// Where each part of a list is placed at the spaces a tree offers, under the values a frame shows.
+/// Where each part of a list is placed at the spaces a tree offers, under the values a frame shows. What it decides
+/// holds for every sample of the animations of the tree.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListPlacement {
     pub layering_obstacles: LayeringObstacles,
@@ -1599,6 +1531,8 @@ fn one_composite_clip_per_space_sorted_by_space(clips: &[CompositeClip]) -> Vec<
     clip_per_space
 }
 
+// Under a transform animation that leaves the plane, a sample can draw the media through a matrix that is not 2D
+// affine, whatever the tree holds.
 fn why_media_has_no_layer(
     inputs: &LayerStackInputs<'_>,
     geometry: &RasterSpaceGeometry,
@@ -1606,6 +1540,7 @@ fn why_media_has_no_layer(
     run_index: u32,
     media_record_position: ListPosition,
     reach_of_run_holding_only_media: IntRect,
+    is_under_transform_animation_leaving_plane: bool,
 ) -> Option<WhyMediaHasNoLayer> {
     let record_table = inputs.list.chunk(media_record_position.chunk_index).record_table();
     let record = record_table.record(
@@ -1622,7 +1557,7 @@ fn why_media_has_no_layer(
         return Some(WhyMediaHasNoLayer::DrawnInsideAnotherCommand);
     }
     let run = inputs.list.run(run_index as usize);
-    if !geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
+    if is_under_transform_animation_leaving_plane || !geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
         return Some(WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine);
     }
     if let Some(why) = why_compositor_cannot_composite_effects_around(run.context.effect) {
@@ -1686,26 +1621,37 @@ pub fn place_list(
             run_blends_with_root_group_by_run_index[record.run_index as usize] = true;
         }
     }
-    let nearest_spreading_effects = nearest_spreading_effects(tree);
+    // Placing decides for the filter that the tree holds and for each filter that an animation can give the effect.
+    let nearest_spreading_effects = nearest_effects_spreading_at_some_sample(tree);
+    let keyframe_filters = KeyframeFiltersOfEffects::of(tree);
     // A space whose anchor the compositor animates rasters at a scale of its own, so how far a filter reads in the
-    // pixels of tiles is told by the deepest space of the filter.
+    // pixels of tiles is told by the deepest space of the filter. Where a transform the compositor animates within that
+    // space scales the filter, it is not known.
     let why_compositor_cannot_composite_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>> = tree
         .effect_nodes
         .iter()
-        .map(|effect_node| {
-            if filter_moves_what_it_filters(effect_node) {
+        .enumerate()
+        .map(|(index, effect_node)| {
+            let effect = EffectNodeIndex(index as u32);
+            if keyframe_filters.filter_may_move_what_it_filters(tree, effect) {
                 return Some(WhyCompositorCannotCompositeEffect::FilterMovesWhatItFilters);
             }
-            let filter_reads_farther_than_tiles_are_followed = spreading_filter_of(effect_node).is_some_and(|filter| {
-                crate::display_list::tile_keys::filter_read_reach_in_device_pixels(
-                    filter,
-                    &geometries[tables.deepest_space_of(effect_node.spatial).0]
-                        .world
-                        .draw_matrix(effect_node.spatial),
+            if !filter_may_spread_at_some_sample(tree, effect) {
+                return None;
+            }
+            let deepest_space = tables.deepest_space_of(effect_node.spatial);
+            let read_reach_in_device_pixels = (!tables
+                .animation_samples_move_spatial_within_space(effect_node.spatial, deepest_space))
+            .then(|| {
+                keyframe_filters.filter_read_reach_in_device_pixels(
+                    tree,
+                    effect,
+                    &geometries[deepest_space.0].world.draw_matrix(effect_node.spatial),
                 )
+            })
+            .flatten();
+            read_reach_in_device_pixels
                 .is_none()
-            });
-            filter_reads_farther_than_tiles_are_followed
                 .then_some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
         })
         .collect();
@@ -1722,6 +1668,7 @@ pub fn place_list(
         tree,
         nearest_spreading_effects: &nearest_spreading_effects,
         effect_clips,
+        follows_filters_of_every_sample: true,
     };
     let mut reach_of_run_by_run_index = vec![IntRect::default(); list.run_count()];
     let mut run_moves_within_space_by_run_index = vec![false; list.run_count()];
@@ -1900,6 +1847,8 @@ pub fn place_list(
 
     let mut placed_media: Vec<PlacedMedia> = Vec::new();
     let mut media_without_layers = Vec::new();
+    let spatial_node_is_under_transform_animation_leaving_plane =
+        spatial_nodes_under_transform_animations_leaving_plane(tree);
     for live_content_record in &list.summary().live_content_records {
         let content = live_content_record.content;
         if matches!(content, LiveContent::ImageFrame(_)) {
@@ -1917,6 +1866,10 @@ pub fn place_list(
                 run_index,
                 record_position,
                 reach_of_run_by_run_index[run_index as usize],
+                spatial_node_is_under_transform_animation_leaving_plane
+                    .get(list.run(run_index as usize).context.spatial.0 as usize)
+                    .copied()
+                    .unwrap_or(false),
             )
         };
         match why_no_layer {
@@ -2036,7 +1989,7 @@ pub fn place_list(
             .filter(|&run_index| effect_is_or_is_inside(tree, list.run(run_index).context.effect, effect));
         let why_no_layer =
             (|| {
-                if filter_is_animated && spreading_filter_of(&tree.effect_nodes[effect.0 as usize]).is_some() {
+                if filter_is_animated && filter_may_spread_at_some_sample(tree, effect) {
                     return Some(WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters);
                 }
                 if let Some(why) = why_compositor_cannot_composite_effect_or_effects_around(effect) {
@@ -2118,7 +2071,13 @@ pub fn place_list(
                     .backdrop_filter
                     .as_ref()
                     .expect("a reader with a backdrop filter has one");
-                let backdrop_read_reach = if run_group.moves_within_space {
+                // Where a transform the compositor animates moves or scales the backdrop filter within the space, a
+                // sample can read anywhere.
+                let backdrop_read_reach = if tables
+                    .animation_samples_move_spatial_within_space(effect_node.spatial, run_group.raster_space_index)
+                {
+                    Reach::Anywhere
+                } else if run_group.moves_within_space {
                     crate::display_list::tile_keys::filter_read_reach_in_device_pixels(
                         &backdrop_filter.filter,
                         &geometry.world.draw_matrix(effect_node.spatial),
@@ -2230,7 +2189,7 @@ pub fn place_list(
             backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
             reads_root_group,
             why_composited_regardless_of_layer_content,
-            filter_spreads_what_it_composites: spreading_filter_of(&tree.effect_nodes[effect.0 as usize]).is_some(),
+            filter_spreads_what_it_composites: filter_may_spread_at_some_sample(tree, effect),
         });
     }
     let innermost_placed_effect_of_run = |run_index: usize| {
@@ -2358,9 +2317,16 @@ fn swept_reach_of_animated_space_in_parent_space(
     }
 
     let geometry = &geometries[space.0];
+    // Content that moves within the space, as a sample of an animation inside it moves it or spreads it, reaches
+    // wherever its clips fixed in the space let it.
     let content_reach_in_space = run_indices_of_space.iter().fold(Reach::Nothing, |reach, &run_index| {
         let run = list.run(run_index);
-        reach.united(geometry.reach_of_content(filters_and_clips, Some(run.ink_bounds.to_float()), run.context))
+        if run.ink_bounds.is_empty() {
+            return reach;
+        }
+        let drawn_within =
+            (!tables.context_moves_within_space(tree, run.context, space)).then(|| run.ink_bounds.to_float());
+        reach.united(geometry.reach_of_content(filters_and_clips, drawn_within, run.context))
     });
     let content_rect_in_anchor_space = match content_reach_in_space {
         Reach::Nothing => return Ok(IntRect::default()),
@@ -3284,7 +3250,8 @@ mod tests {
     };
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
-        CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, TransformData, TransformDataRole,
+        CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, SpatialData, TransformData,
+        TransformDataRole,
     };
     use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatRect, ScalingMode};
 
@@ -3515,7 +3482,11 @@ mod tests {
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
             .with(fill(IntRect::new(100, 300, 50, 50)), fading_box)
             .with(fill(IntRect::new(0, 500, 800, 50)), document);
-        // The effect pushes no layer at the start, where it is opaque.
+        // The effect pushes a layer at every sample, also at the start, where it is opaque.
+        assert!(
+            tree.with_visual_animation_samples(0)
+                .effect_pushes_layer_at_replay(fading_box.effect)
+        );
         let at_start = list.stack(&tree.with_visual_animation_samples(0), &[]);
         let halfway = list.stack(&tree.with_visual_animation_samples(500_000_000), &[]);
         assert_eq!(at_start.placement, halfway.placement);
@@ -3869,7 +3840,11 @@ mod tests {
                 .iter()
                 .map(|composited| (composited.effect, composited.why))
                 .collect::<Vec<_>>(),
-            [(fading_spinner.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
+            // The fading effect pushes a layer at every sample, so it applies over the spinner at every sample.
+            [(
+                fading_spinner.effect,
+                WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates
+            )]
         );
     }
 
@@ -3943,5 +3918,496 @@ mod tests {
                 WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo
             )]
         );
+    }
+
+    // Before the animation starts, at its first keyframe, between its keyframes, at its last keyframe and after its
+    // end, for an animation that `played_once_after_a_delay` gives.
+    const SAMPLE_TIMES_NS: [i64; 6] = [0, 200_000_000, 450_000_000, 700_000_000, 1_200_000_000, 2_000_000_000];
+
+    fn played_once_after_a_delay(
+        animation: crate::visual_animation::VisualAnimation,
+    ) -> crate::visual_animation::VisualAnimation {
+        crate::visual_animation::VisualAnimation {
+            timing: crate::animation_timing::AnimationEffectTiming {
+                start_delay: crate::animation_timing::TimeValue::milliseconds(200.0),
+                iteration_count: 1.0,
+                ..animation.timing
+            },
+            ..animation
+        }
+    }
+
+    // As the compositor plans a stack, without where the window server shows the media of a frame.
+    fn planned_stack(list: &DisplayListStorage, tree: &VisualContextTree) -> LayerStack {
+        let inputs = LayerStackInputs {
+            list,
+            tree,
+            scroll_offsets: &[],
+            viewport_rect: VIEWPORT,
+            viewport_to_raster_transform: FloatMatrix4x4::identity(),
+        };
+        let anchors = raster_space_anchors(tree, &spatial_nodes_that_move_on_their_own(tree));
+        let (spaces, geometries) = spaces_with_geometries(tree, &anchors, &[], VIEWPORT, FloatMatrix4x4::identity());
+        build_layer_stack(&inputs, place_list(&inputs, spaces, &geometries))
+    }
+
+    fn stack_planned_alike_for_every_sample(list: &TestList, tree: &VisualContextTree) -> LayerStack {
+        let list = DisplayListStorage::of_builder(&list.builder);
+        let stack = planned_stack(&list, tree);
+        for time_ns in SAMPLE_TIMES_NS {
+            assert!(
+                planned_stack(&list, &tree.with_visual_animation_samples(time_ns)) == stack,
+                "the stack of the sample at {time_ns} ns differs from the stack of the tree"
+            );
+        }
+        stack
+    }
+
+    fn filter_function(
+        kind: crate::filter_bytes::FfiFilterFunctionKind,
+        amount: f32,
+    ) -> crate::filter_bytes::FfiFilterFunction {
+        crate::filter_bytes::FfiFilterFunction {
+            kind,
+            amount,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            color: Color::TRANSPARENT,
+            color_operation: libgfx_rust::ColorFilterType::Grayscale,
+        }
+    }
+
+    fn grayscale(amount: f32) -> crate::filter_bytes::FfiFilterFunction {
+        filter_function(crate::filter_bytes::FfiFilterFunctionKind::Color, amount)
+    }
+
+    fn blur(radius: f32) -> crate::filter_bytes::FfiFilterFunction {
+        filter_function(crate::filter_bytes::FfiFilterFunctionKind::Blur, radius)
+    }
+
+    fn filter_bytes_of(functions: &[crate::filter_bytes::FfiFilterFunction]) -> Option<std::sync::Arc<Vec<u8>>> {
+        crate::filter_bytes::filter_functions_graph(functions.iter().copied().map(libgfx_rust::filter::Filter::from))
+            .map(|graph| std::sync::Arc::new(graph.serialize()))
+    }
+
+    fn filter_animation_of(
+        effect: EffectNodeIndex,
+        from: Vec<crate::filter_bytes::FfiFilterFunction>,
+        to: Vec<crate::filter_bytes::FfiFilterFunction>,
+    ) -> crate::visual_animation::VisualAnimation {
+        let keyframe = |offset: f64, functions| crate::visual_animation::VisualAnimationKeyframe {
+            offset,
+            easing: crate::easing::Easing::default(),
+            value: crate::visual_animation::VisualAnimationValue::Filter(functions),
+        };
+        animation_of(
+            crate::host::FfiVisualAnimationTargetKind::Filter,
+            effect.0,
+            vec![keyframe(0.0, from), keyframe(1.0, to)],
+        )
+    }
+
+    fn element_with_filter(
+        tree: &mut VisualContextTree,
+        parent: ContextRef,
+        filter: Option<std::sync::Arc<Vec<u8>>>,
+    ) -> ContextRef {
+        tree.append_effect_node_under(
+            parent,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter,
+                backdrop_filter: None,
+            }),
+        )
+    }
+
+    fn frosted_glass(tree: &mut VisualContextTree, parent: ContextRef, region: IntRect) -> ContextRef {
+        tree.append_effect_node_under(
+            parent,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
+                    filter: std::sync::Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize()),
+                    region,
+                    corner_radii: libgfx_rust::CornerRadii::default(),
+                }),
+            }),
+        )
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Animated {
+        OpacityFromOne,
+        ColorFilter,
+        BlurFilter,
+        BlurFilterFromNone,
+        Translation,
+        Rotation,
+        Scale,
+        RotationOutOfPlane,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum UnderAnimatedNode {
+        Fill,
+        Canvas,
+        BackdropFilter,
+    }
+
+    const ELEMENT: IntRect = IntRect::new(50, 50, 40, 40);
+
+    // An element whose own value equals that of the first keyframe of its animation, between two fills of the page.
+    fn page_with_animated_element(
+        animated: Animated,
+        under_animated_node: UnderAnimatedNode,
+    ) -> (VisualContextTree, TestList, ContextRef) {
+        use crate::host::FfiVisualAnimationTransformOperationKind as Kind;
+        let mut tree = tree_with_root_isolation_effect();
+        let viewport = root_context(&tree);
+        let (element, animation) = match animated {
+            Animated::OpacityFromOne => {
+                let element =
+                    tree.append_effect_node_under(viewport, effects(1.0, CompositingAndBlendingOperator::Normal));
+                let animation = animation_of(
+                    crate::host::FfiVisualAnimationTargetKind::Opacity,
+                    element.effect.0,
+                    vec![
+                        opacity_animation_keyframe(0.0, 1.0),
+                        opacity_animation_keyframe(1.0, 0.0),
+                    ],
+                );
+                (element, animation)
+            }
+            Animated::ColorFilter => {
+                let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[grayscale(0.0)]));
+                let animation = filter_animation_of(element.effect, vec![grayscale(0.0)], vec![grayscale(1.0)]);
+                (element, animation)
+            }
+            Animated::BlurFilter => {
+                let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[blur(0.0)]));
+                let animation = filter_animation_of(element.effect, vec![blur(0.0)], vec![blur(4.0)]);
+                (element, animation)
+            }
+            Animated::BlurFilterFromNone => {
+                let element = element_with_filter(&mut tree, viewport, None);
+                let animation = filter_animation_of(element.effect, Vec::new(), vec![blur(4.0)]);
+                (element, animation)
+            }
+            Animated::Translation | Animated::Rotation | Animated::Scale | Animated::RotationOutOfPlane => {
+                let element = transformed_context(&mut tree, viewport, ELEMENT.to_float());
+                let (kind, from, to) = match animated {
+                    Animated::Translation => (Kind::TranslateX, 0.0, 100.0),
+                    Animated::Rotation => (Kind::Rotate, 0.0, 360.0),
+                    Animated::Scale => (Kind::Scale, 1.0, 2.0),
+                    _ => (Kind::RotateX, 0.0, 180.0),
+                };
+                (element, transform_animation_of(element.spatial, kind, from, to))
+            }
+        };
+        tree.set_visual_animations(vec![played_once_after_a_delay(animation)]);
+        let list = TestList::new().with(fill(IntRect::new(0, 0, 200, 200)), viewport);
+        let list = match under_animated_node {
+            UnderAnimatedNode::Fill => list.with(fill(ELEMENT), element),
+            UnderAnimatedNode::Canvas => list.with(canvas(ELEMENT), element),
+            UnderAnimatedNode::BackdropFilter => {
+                let glass = frosted_glass(&mut tree, element, ELEMENT);
+                list.with(fill(ELEMENT), glass)
+            }
+        };
+        let list = list.with(fill(IntRect::new(0, 150, 200, 50)), viewport);
+        (tree, list, element)
+    }
+
+    #[test]
+    fn every_sample_of_an_animation_starting_at_the_value_of_the_tree_is_planned_as_the_tree_is() {
+        for animated in [
+            Animated::OpacityFromOne,
+            Animated::ColorFilter,
+            Animated::BlurFilter,
+            Animated::BlurFilterFromNone,
+            Animated::Translation,
+            Animated::Rotation,
+            Animated::Scale,
+            Animated::RotationOutOfPlane,
+        ] {
+            for under_animated_node in [
+                UnderAnimatedNode::Fill,
+                UnderAnimatedNode::Canvas,
+                UnderAnimatedNode::BackdropFilter,
+            ] {
+                let (tree, list, _) = page_with_animated_element(animated, under_animated_node);
+                let stack = stack_planned_alike_for_every_sample(&list, &tree);
+                assert!(
+                    stack.why_list_is_one_layer.is_none(),
+                    "{animated:?} over {under_animated_node:?} is one layer: {:?}",
+                    stack.why_list_is_one_layer
+                );
+            }
+        }
+    }
+
+    fn whys_of_composited_effects(stack: &LayerStack) -> Vec<(EffectNodeIndex, WhyEffectIsComposited)> {
+        stack
+            .composited_effects
+            .iter()
+            .map(|composited| (composited.effect, composited.why))
+            .collect()
+    }
+
+    #[test]
+    fn an_opacity_animation_starting_opaque_is_composited_at_every_sample() {
+        let (tree, list, element) = page_with_animated_element(Animated::OpacityFromOne, UnderAnimatedNode::Fill);
+        assert!(
+            tree.with_visual_animation_samples(0)
+                .effect_pushes_layer_at_replay(element.effect)
+        );
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(
+            whys_of_composited_effects(&stack),
+            [(element.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
+        );
+    }
+
+    #[test]
+    fn a_backdrop_filter_in_an_element_whose_opacity_is_animated_reads_the_layer_of_the_element() {
+        let (tree, list, _) = page_with_animated_element(Animated::OpacityFromOne, UnderAnimatedNode::BackdropFilter);
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert!(
+            stack
+                .placement
+                .placed_effects
+                .iter()
+                .all(|placed| !placed.reads_root_group)
+        );
+    }
+
+    #[test]
+    fn a_color_filter_animation_is_composited_and_a_blur_animation_is_not() {
+        let (tree, list, element) = page_with_animated_element(Animated::ColorFilter, UnderAnimatedNode::Fill);
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(
+            whys_of_composited_effects(&stack),
+            [(element.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
+        );
+
+        let (tree, list, element) = page_with_animated_element(Animated::BlurFilter, UnderAnimatedNode::Fill);
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert!(stack.composited_effects.is_empty());
+        assert_eq!(
+            stack.placement.animations_without_layers,
+            [(
+                AnimatedNode::Effect(element.effect),
+                WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters
+            )]
+        );
+        assert_eq!(
+            stack.placement.why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
+            None
+        );
+
+        // Also where the tree holds no filter, as the first keyframe gives none.
+        let (tree, list, element) = page_with_animated_element(Animated::BlurFilterFromNone, UnderAnimatedNode::Fill);
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(
+            stack.placement.animations_without_layers,
+            [(
+                AnimatedNode::Effect(element.effect),
+                WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters
+            )]
+        );
+    }
+
+    #[test]
+    fn an_element_with_its_own_blur_animated_between_color_filters_is_planned_for_its_blur() {
+        let mut tree = tree_with_root_isolation_effect();
+        let viewport = root_context(&tree);
+        let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[blur(5.0)]));
+        tree.set_visual_animations(vec![filter_animation_of(
+            element.effect,
+            vec![grayscale(0.0)],
+            vec![grayscale(1.0)],
+        )]);
+        let list = DisplayListStorage::of_builder(
+            &TestList::new()
+                .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
+                .with(fill(ELEMENT), element)
+                .builder,
+        );
+        let stack = planned_stack(&list, &tree);
+        assert!(stack.composited_effects.is_empty());
+        assert_eq!(
+            stack.placement.animations_without_layers,
+            [(
+                AnimatedNode::Effect(element.effect),
+                WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters
+            )]
+        );
+    }
+
+    #[test]
+    fn a_blur_animation_whose_easing_overshoots_reads_farther_than_is_known() {
+        let mut tree = tree_with_root_isolation_effect();
+        let viewport = root_context(&tree);
+        let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[blur(0.0)]));
+        let mut animation = filter_animation_of(element.effect, vec![blur(0.0)], vec![blur(4.0)]);
+        animation.keyframes[0].easing = crate::easing::Easing::CubicBezier {
+            x1: 0.3,
+            y1: 1.6,
+            x2: 0.6,
+            y2: 1.0,
+        };
+        tree.set_visual_animations(vec![animation]);
+        let list = DisplayListStorage::of_builder(
+            &TestList::new()
+                .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
+                .with(fill(ELEMENT), element)
+                .builder,
+        );
+        assert_eq!(
+            planned_stack(&list, &tree)
+                .placement
+                .why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
+            Some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
+        );
+    }
+
+    #[test]
+    fn transforms_that_stay_in_the_plane_get_spaces_and_one_that_leaves_it_keeps_its_canvas_from_a_layer() {
+        for animated in [Animated::Translation, Animated::Rotation, Animated::Scale] {
+            let (tree, list, element) = page_with_animated_element(animated, UnderAnimatedNode::Canvas);
+            let stack = stack_planned_alike_for_every_sample(&list, &tree);
+            assert_eq!(
+                space_names(&stack),
+                ["viewport", &format!("animated@s{} in viewport", element.spatial.0)]
+            );
+            assert!(stack.media_without_layers.is_empty());
+        }
+        let (tree, list, _) = page_with_animated_element(Animated::RotationOutOfPlane, UnderAnimatedNode::Canvas);
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(space_names(&stack), ["viewport"]);
+        assert_eq!(
+            stack.media_without_layers,
+            [(
+                LiveContent::Canvas(CanvasId(1)),
+                WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine
+            )]
+        );
+    }
+
+    #[test]
+    fn a_backdrop_filter_moved_by_a_transform_animation_reads_anywhere() {
+        let (tree, list, _) = page_with_animated_element(Animated::Translation, UnderAnimatedNode::BackdropFilter);
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(space_names(&stack), ["viewport"]);
+        assert!(
+            stack
+                .placement
+                .placed_effects
+                .iter()
+                .any(|placed| placed.backdrop_read_reach == Reach::Anywhere)
+        );
+    }
+
+    #[test]
+    fn a_plane_whose_animation_turns_it_out_of_its_sorting_context_is_sorted_by_depth_at_every_sample() {
+        use crate::host::FfiVisualAnimationTransformOperationKind as Kind;
+        let mut tree = tree_with_root_isolation_effect();
+        let viewport = root_context(&tree);
+        let plane_of = |tree: &mut VisualContextTree, parent: SpatialNodeIndex, root: Option<SpatialNodeIndex>| {
+            tree.append_spatial(
+                SpatialData::Transform(TransformData {
+                    matrix: FloatMatrix4x4::identity(),
+                    origin: FloatPoint { x: 70.0, y: 70.0 },
+                    sorting_context_root_index: root,
+                    flattens_inherited_transform: false,
+                    role: TransformDataRole::CssTransform,
+                    synthetic_plane: false,
+                    establishes_sorting_context: root.is_none(),
+                    bounds: ELEMENT.to_float(),
+                }),
+                parent,
+            )
+        };
+        let root = plane_of(&mut tree, viewport.spatial, None);
+        let still_plane = plane_of(&mut tree, root, Some(root));
+        let turning_plane = plane_of(&mut tree, root, Some(root));
+        tree.set_visual_animations(vec![played_once_after_a_delay(transform_animation_of(
+            turning_plane,
+            Kind::RotateY,
+            0.0,
+            180.0,
+        ))]);
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
+            .with(
+                fill(ELEMENT),
+                ContextRef {
+                    spatial: still_plane,
+                    ..viewport
+                },
+            )
+            .with(
+                fill(ELEMENT),
+                ContextRef {
+                    spatial: turning_plane,
+                    ..viewport
+                },
+            );
+        // Replay sorts the planes by depth where they leave the plane of their context in the frame.
+        assert!(!tree.with_visual_animation_samples(0).sorts_planes_by_depth());
+        assert!(tree.with_visual_animation_samples(700_000_000).sorts_planes_by_depth());
+        let storage = DisplayListStorage::of_builder(&list.builder);
+        for time_ns in SAMPLE_TIMES_NS {
+            let sample = tree.with_visual_animation_samples(time_ns);
+            assert!(sample.may_sort_planes_by_depth());
+            assert_eq!(
+                sample.roots_of_contexts_sorting_planes_by_depth()[turning_plane.0 as usize],
+                Some(root)
+            );
+            let run_groups = storage.run_groups(&sample);
+            assert!(!run_groups.run_is_sorted_by_depth(0));
+            assert!(run_groups.run_is_sorted_by_depth(1) && run_groups.run_is_sorted_by_depth(2));
+        }
+        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        assert!(stack.layering_obstacles.sorts_planes_by_depth);
+        assert!(stack.why_list_is_one_layer.is_none());
+    }
+
+    #[test]
+    fn a_rotation_out_of_the_plane_stays_in_it_only_where_it_keeps_its_angle() {
+        use crate::display_list::animated_transform_spaces::transform_animation_stays_in_plane;
+        use crate::host::FfiVisualAnimationTransformOperationKind as Kind;
+        let node = SpatialNodeIndex(1);
+        assert!(transform_animation_stays_in_plane(&transform_animation_of(
+            node,
+            Kind::Rotate,
+            0.0,
+            360.0
+        )));
+        assert!(transform_animation_stays_in_plane(&transform_animation_of(
+            node,
+            Kind::RotateX,
+            0.0,
+            0.0
+        )));
+        // Each keyframe is in the plane within the precision of a rotation matrix, but the angle changes.
+        assert!(!transform_animation_stays_in_plane(&transform_animation_of(
+            node,
+            Kind::RotateX,
+            0.0,
+            1e-8
+        )));
+        assert!(!transform_animation_stays_in_plane(&transform_animation_of(
+            node,
+            Kind::RotateY,
+            0.0,
+            180.0
+        )));
     }
 }

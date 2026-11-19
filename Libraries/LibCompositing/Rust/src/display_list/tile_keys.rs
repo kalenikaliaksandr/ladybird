@@ -1160,6 +1160,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             tree: list.tree,
             nearest_spreading_effects: &list.nearest_spreading_effects,
             effect_clips: list.effect_clips,
+            follows_filters_of_every_sample: false,
         };
         let composited_effect = if context.effect.is_none() {
             EffectNodeIndex::NONE

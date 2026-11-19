@@ -11,11 +11,17 @@
 //! subtree. Content is therefore mapped into each effect's space before that effect's filter
 //! spreads it, and an effect's output becomes part of its parent's content.
 
+use crate::display_list::animated_transform_spaces::easing_stays_within_unit_interval;
 use crate::display_list::commands::{DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::reach::Reach;
-use crate::filter_bytes;
+use crate::display_list::tile_keys::filter_read_reach_in_device_pixels;
+use crate::filter_bytes::{self, filter_functions_graph};
+use crate::host::FfiVisualAnimationTargetKind;
+use crate::visual_animation::VisualAnimationValue;
 use crate::visual_context::{EffectNode, EffectNodeData, VisualContextTree, WorldTransforms};
-use libgfx_rust::FloatRect;
+use libgfx_rust::filter::Filter;
+use libgfx_rust::{FloatMatrix4x4, FloatRect};
+use std::collections::HashMap;
 
 /// Where content lies in an effect's space. It reaches anywhere through a filter that paints everywhere or through a
 /// space that does not map onto the effect's as a two-dimensional transform.
@@ -83,13 +89,119 @@ pub fn filter_moves_what_it_filters(node: &EffectNode) -> bool {
         if effects.filter.as_deref().is_some_and(|filter| filter_bytes::may_move_what_it_filters(filter)))
 }
 
+/// Whether the effect's filter can spread its content outside its bounds at some sample of the animations of the tree:
+/// the filter the tree holds or one a keyframe of a filter animation of the effect gives it can.
+pub fn filter_may_spread_at_some_sample(tree: &VisualContextTree, effect: EffectNodeIndex) -> bool {
+    spreading_filter_of(&tree.effect_nodes[effect.0 as usize]).is_some()
+        || tree.some_keyframe_filter_of_effect_spreads(effect)
+}
+
+/// The filters the keyframes of the filter animations of a tree give the effects they animate, which placing follows
+/// along with the filters the tree holds, so that what it decides of a filter holds for every sample.
+pub struct KeyframeFiltersOfEffects {
+    by_effect_index: HashMap<u32, KeyframeFilters>,
+}
+
+#[derive(Default)]
+struct KeyframeFilters {
+    /// One per keyframe that gives the effect a filter.
+    filters: Vec<Vec<u8>>,
+    /// Whether a sample can take a value past those of the two keyframes it is between, as an easing that overshoots
+    /// does.
+    samples_can_pass_keyframes: bool,
+}
+
+impl KeyframeFiltersOfEffects {
+    pub fn of(tree: &VisualContextTree) -> Self {
+        let mut by_effect_index: HashMap<u32, KeyframeFilters> = HashMap::new();
+        for animation in tree
+            .visual_animations()
+            .iter()
+            .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Filter)
+        {
+            let samples_can_pass_keyframes = !easing_stays_within_unit_interval(&animation.easing)
+                || animation
+                    .keyframes
+                    .iter()
+                    .any(|keyframe| !easing_stays_within_unit_interval(&keyframe.easing));
+            let filters: Vec<Vec<u8>> = animation
+                .keyframes
+                .iter()
+                .filter_map(|keyframe| match &keyframe.value {
+                    VisualAnimationValue::Filter(functions) => {
+                        filter_functions_graph(functions.iter().copied().map(Filter::from))
+                            .map(|graph| graph.serialize())
+                    }
+                    _ => None,
+                })
+                .collect();
+            for &effect_index in &animation.node_indices {
+                let keyframe_filters = by_effect_index.entry(effect_index).or_default();
+                keyframe_filters.filters.extend(filters.iter().cloned());
+                keyframe_filters.samples_can_pass_keyframes |= samples_can_pass_keyframes;
+            }
+        }
+        Self { by_effect_index }
+    }
+
+    /// Whether the effect's filter can show its content away from where the content is drawn at some sample.
+    pub fn filter_may_move_what_it_filters(&self, tree: &VisualContextTree, effect: EffectNodeIndex) -> bool {
+        filter_moves_what_it_filters(&tree.effect_nodes[effect.0 as usize])
+            || self.by_effect_index.get(&effect.0).is_some_and(|keyframe_filters| {
+                keyframe_filters
+                    .filters
+                    .iter()
+                    .any(|filter| filter_bytes::may_move_what_it_filters(filter))
+            })
+    }
+
+    /// How far past each pixel the effect's filter reads at any sample, in device pixels where `effect_to_device` maps
+    /// the space of the effect, or none where that is not known or is farther than tiles are followed.
+    pub fn filter_read_reach_in_device_pixels(
+        &self,
+        tree: &VisualContextTree,
+        effect: EffectNodeIndex,
+        effect_to_device: &FloatMatrix4x4,
+    ) -> Option<i32> {
+        let keyframe_filters = self.by_effect_index.get(&effect.0);
+        let spreading_keyframe_filters = keyframe_filters
+            .into_iter()
+            .flat_map(|keyframe_filters| keyframe_filters.filters.iter())
+            .map(|filter| &filter[..])
+            .filter(|filter| filter_bytes::may_affect_output_bounds(filter));
+        if keyframe_filters.is_some_and(|keyframe_filters| keyframe_filters.samples_can_pass_keyframes)
+            && spreading_keyframe_filters.clone().next().is_some()
+        {
+            return None;
+        }
+        spreading_filter_of(&tree.effect_nodes[effect.0 as usize])
+            .into_iter()
+            .chain(spreading_keyframe_filters)
+            .try_fold(0, |read_reach, filter| {
+                Some(read_reach.max(filter_read_reach_in_device_pixels(filter, effect_to_device)?))
+            })
+    }
+}
+
 /// Per effect, the nearest effect at or above it whose filter can spread content outside its
 /// bounds, or `EffectNodeIndex::NONE`.
 pub fn nearest_spreading_effects(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
+    nearest_effects_at_or_above_where(tree, |_, node| spreading_filter_of(node).is_some())
+}
+
+/// As `nearest_spreading_effects`, for some sample of the animations of the tree.
+pub fn nearest_effects_spreading_at_some_sample(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
+    nearest_effects_at_or_above_where(tree, |effect, _| filter_may_spread_at_some_sample(tree, effect))
+}
+
+fn nearest_effects_at_or_above_where(
+    tree: &VisualContextTree,
+    holds: impl Fn(EffectNodeIndex, &EffectNode) -> bool,
+) -> Vec<EffectNodeIndex> {
     let mut nearest = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
     tree.visit_effect_nodes_parents_first(|index| {
         let node = &tree.effect_nodes[index];
-        nearest[index] = if spreading_filter_of(node).is_some() {
+        nearest[index] = if holds(EffectNodeIndex(index as u32), node) {
             EffectNodeIndex(index as u32)
         } else if node.parent.is_none() {
             EffectNodeIndex::NONE

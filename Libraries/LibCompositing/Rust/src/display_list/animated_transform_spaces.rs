@@ -38,10 +38,34 @@ fn transform_keyframe_matrices(animation: &VisualAnimation) -> impl Iterator<Ite
     })
 }
 
-/// Whether every keyframe of a transform animation keeps what it transforms in the plane, so that its samples are 2D
-/// affine.
+/// Whether every sample of a transform animation keeps what it transforms in the plane, so that its samples are 2D
+/// affine. A sample interpolates the values of each operation of two keyframes, so each operation has to stay in the
+/// plane at every keyframe, and a rotation out of the plane has to keep its angle, as one between two angles that stay
+/// in the plane can leave it.
 pub fn transform_animation_stays_in_plane(animation: &VisualAnimation) -> bool {
-    transform_keyframe_matrices(animation).all(|matrix| matrix.is_2d_affine())
+    use FfiVisualAnimationTransformOperationKind as Kind;
+    let Some(operations_of_keyframes) = animation
+        .keyframes
+        .iter()
+        .map(|keyframe| match &keyframe.value {
+            VisualAnimationValue::Transform(operations) => Some(operations.as_slice()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    let each_operation_stays_in_plane = operations_of_keyframes
+        .iter()
+        .flat_map(|operations| operations.iter())
+        .all(|operation| operation.to_matrix().is_2d_affine());
+    let each_rotation_out_of_plane_keeps_its_angle = operations_of_keyframes.windows(2).all(|pair| {
+        pair[0]
+            .iter()
+            .zip(pair[1])
+            .all(|(from, to)| !matches!(from.kind, Kind::RotateX | Kind::RotateY) || from.values() == to.values())
+    });
+    each_operation_stays_in_plane && each_rotation_out_of_plane_keeps_its_angle
 }
 
 /// The largest factor a 2D affine matrix scales lengths along either axis by.
@@ -172,7 +196,7 @@ pub fn effect_reads_below_it(tree: &VisualContextTree, effect: EffectNodeIndex) 
     effect_reads_what_is_below_it(&tree.effect_nodes[effect.0 as usize].data)
 }
 
-fn easing_stays_within_unit_interval(easing: &Easing) -> bool {
+pub(crate) fn easing_stays_within_unit_interval(easing: &Easing) -> bool {
     match easing {
         Easing::Linear(points) => points.iter().all(|point| (0.0..=1.0).contains(&point.output)),
         Easing::CubicBezier { y1, y2, .. } => (0.0..=1.0).contains(y1) && (0.0..=1.0).contains(y2),

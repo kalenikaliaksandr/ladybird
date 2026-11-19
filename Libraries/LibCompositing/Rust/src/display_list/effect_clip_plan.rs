@@ -91,13 +91,22 @@ impl EffectClipPlan {
         self.output_clips.get(effect.0 as usize).copied().flatten()
     }
 
-    pub fn clip_outside_every_filter(&self, tree: &VisualContextTree, context: ContextRef) -> ClipNodeIndex {
+    /// The output clip of the outermost effect of `context` that holds a filter, or where `counts_animated_filters`
+    /// holds, that an animation of its filter can give one.
+    pub fn clip_outside_every_filter(
+        &self,
+        tree: &VisualContextTree,
+        context: ContextRef,
+        counts_animated_filters: bool,
+    ) -> ClipNodeIndex {
         let mut clip = context.clip;
         let mut effect = context.effect;
         while !effect.is_none() {
             let node = &tree.effect_nodes[effect.0 as usize];
             if let EffectNodeData::Effects(effects) = &node.data
-                && (effects.filter.is_some() || effects.backdrop_filter.is_some())
+                && (effects.filter.is_some()
+                    || effects.backdrop_filter.is_some()
+                    || (counts_animated_filters && tree.effect_filter_is_animated(effect)))
             {
                 clip = self.output_clip(effect);
             }

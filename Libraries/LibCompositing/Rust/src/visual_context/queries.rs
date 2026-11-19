@@ -471,10 +471,15 @@ impl StickyData {
 impl VisualContextTree {
     /// An effects node whose values are all no-ops (opacity 1, normal blending, no filters) exists as the target of
     /// values that may arrive later; replay draws its content directly rather than through a layer. The root isolation
-    /// effect keeps its layer at those values.
+    /// effect keeps its layer at those values, and so does an effect whose opacity or filter an animation of the tree
+    /// animates, which isolates its content at every sample of the animation.
     pub fn effect_pushes_layer_at_replay(&self, effect: EffectNodeIndex) -> bool {
         match &self.effect_nodes[effect.0 as usize].data {
-            EffectNodeData::Effects(effects) => effects.needs_layer() || self.root_isolation_effect == Some(effect),
+            EffectNodeData::Effects(effects) => {
+                effects.needs_layer()
+                    || self.root_isolation_effect == Some(effect)
+                    || self.effect_opacity_or_filter_is_animated(effect)
+            }
             EffectNodeData::Mask(_) => true,
             EffectNodeData::BackgroundColorAnimation | EffectNodeData::Dead => false,
         }

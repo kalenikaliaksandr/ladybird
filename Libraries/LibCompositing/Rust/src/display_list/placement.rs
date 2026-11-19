@@ -17,7 +17,8 @@ use crate::display_list::commands::{
 };
 use crate::display_list::effect_clip_plan::EffectClipPlan;
 use crate::display_list::effect_geometry::{
-    Extent, changed_extent_through_filters, changed_extent_through_filters_inside, spreading_filter_of,
+    Extent, changed_extent_through_filters, changed_extent_through_filters_inside, filter_may_spread_at_some_sample,
+    spreading_filter_of,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage};
@@ -318,6 +319,24 @@ fn spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
     tree.spatial_nodes_in_subtrees_of(&roots_of_subtrees_moving_on_their_own)
 }
 
+// Empty where the tree has no transform animations.
+fn spatial_nodes_that_animation_samples_move_within_their_space(
+    tree: &VisualContextTree,
+    spaces: &[RasterSpace],
+) -> Vec<bool> {
+    let roots: Vec<SpatialNodeIndex> = tree
+        .visual_animations()
+        .iter()
+        .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Transform)
+        .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
+        .filter(|&node| spaces.iter().skip(1).all(|space| space.anchor != node))
+        .collect();
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    tree.spatial_nodes_in_subtrees_of(&roots)
+}
+
 fn compositor_scrolled_nodes_without_own_space<'a>(
     tree: &'a VisualContextTree,
     scrollers_with_spaces: &'a [SpatialNodeIndex],
@@ -330,25 +349,22 @@ fn compositor_scrolled_nodes_without_own_space<'a>(
 }
 
 /// Per effect node, whether how far its filters spread its content can change while the list and the tree's structure
-/// stay, as the compositor animates the filter of it or of an effect above it.
+/// stay, as the compositor animates the filter of it or of an effect above it, and the filter spreads at some sample.
 pub fn effects_whose_spread_moves_on_its_own(tree: &VisualContextTree) -> Vec<bool> {
-    let mut filter_is_animated = vec![false; tree.effect_nodes.len()];
-    for animation in tree
+    let mut spread_moves = vec![false; tree.effect_nodes.len()];
+    if !tree
         .visual_animations()
         .iter()
-        .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Filter)
+        .any(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Filter)
     {
-        for &index in &animation.node_indices {
-            if let Some(is_animated) = filter_is_animated.get_mut(index as usize) {
-                *is_animated = true;
-            }
-        }
+        return spread_moves;
     }
-    let mut spread_moves = vec![false; tree.effect_nodes.len()];
     tree.visit_effect_nodes_parents_first(|index| {
         let node = &tree.effect_nodes[index];
+        let effect = EffectNodeIndex(index as u32);
         let spread_of_parent_moves = !node.parent.is_none() && spread_moves[node.parent.0 as usize];
-        spread_moves[index] = spread_of_parent_moves || filter_is_animated[index];
+        spread_moves[index] = spread_of_parent_moves
+            || (tree.effect_filter_is_animated(effect) && filter_may_spread_at_some_sample(tree, effect));
     });
     spread_moves
 }
@@ -875,9 +891,13 @@ pub(crate) fn is_finite_rect(rect: FloatRect) -> bool {
 #[derive(Clone, Copy)]
 pub struct FiltersAndClipsOfList<'a> {
     pub tree: &'a VisualContextTree,
-    /// What `nearest_spreading_effects` gives for the tree.
+    /// What `nearest_spreading_effects` gives for the tree, or where `follows_filters_of_every_sample` holds, what
+    /// `nearest_effects_spreading_at_some_sample` gives.
     pub nearest_spreading_effects: &'a [EffectNodeIndex],
     pub effect_clips: &'a EffectClipPlan,
+    /// Whether an effect counts as filtered where an animation of its filter gives it a filter at some sample, as
+    /// placing follows, rather than only where the tree holds a filter, as keying the tiles of a frame does.
+    pub follows_filters_of_every_sample: bool,
 }
 
 fn antialiased_reach_in_device_pixels(bounds: Option<FloatRect>) -> Reach<IntRect> {
@@ -1004,7 +1024,8 @@ impl RasterSpaceGeometry {
         let is_spread_by_filters =
             !context.effect.is_none() && !list.nearest_spreading_effects[context.effect.0 as usize].is_none();
         let clip_bounding_filter_spread = if is_spread_by_filters {
-            list.effect_clips.clip_outside_every_filter(list.tree, context)
+            list.effect_clips
+                .clip_outside_every_filter(list.tree, context, list.follows_filters_of_every_sample)
         } else {
             context.clip
         };
@@ -1159,6 +1180,10 @@ type CompositeClipsOfContextInSpace = Option<Rc<[CompositeClip]>>;
 /// it is first asked for.
 pub struct PlacementTables {
     spaces: RasterSpaces,
+    /// Per spatial node, whether a sample of the compositor's animations can move it within the deepest space it is
+    /// in, as it is under a node whose transform the compositor animates that anchors no space. Empty where the tree
+    /// has no transform animations.
+    spatial_node_moves_with_animation_samples: Vec<bool>,
     composite_form_of_clips: Vec<Option<CompositeClip>>,
     placement_constraint_of_effects: Vec<EffectPlacementConstraint>,
     deepest_space_and_backdrop_filter_read_rect_by_effect: Vec<Option<(RasterSpaceIndex, IntRect)>>,
@@ -1227,6 +1252,14 @@ impl PlacementTables {
             spatial_node_moves_on_its_own,
             effect_node_spread_moves_on_its_own,
         };
+        let spatial_node_moves_with_animation_samples =
+            spatial_nodes_that_animation_samples_move_within_their_space(tree, spaces.spaces());
+        let moves_with_animation_samples = |spatial: SpatialNodeIndex| {
+            spatial_node_moves_with_animation_samples
+                .get(spatial.0 as usize)
+                .copied()
+                .unwrap_or(false)
+        };
         let composite_form_of_clips = tree
             .clip_nodes
             .iter()
@@ -1234,7 +1267,7 @@ impl PlacementTables {
                 let ClipNodeData::Rect(data) = &node.data else {
                     return None;
                 };
-                if data.mode != ClipMode::Intersect {
+                if data.mode != ClipMode::Intersect || moves_with_animation_samples(node.spatial) {
                     return None;
                 }
                 let clip_space = spaces.deepest_space_of(node.spatial);
@@ -1289,6 +1322,9 @@ impl PlacementTables {
             .iter()
             .enumerate()
             .map(|(index, node)| {
+                if moves_with_animation_samples(node.spatial) {
+                    return None;
+                }
                 let space = spaces.deepest_space_of(node.spatial);
                 match super::layers::backdrop_filter_read_reach(
                     tree,
@@ -1302,6 +1338,7 @@ impl PlacementTables {
             .collect();
         Self {
             spaces,
+            spatial_node_moves_with_animation_samples,
             composite_form_of_clips,
             placement_constraint_of_effects,
             deepest_space_and_backdrop_filter_read_rect_by_effect,
@@ -1493,6 +1530,35 @@ impl PlacementTables {
             }
             clip.leaves_all_of(read_rect_swept_over_anchor_translations)
         })
+    }
+
+    /// Whether a sample of the compositor's animations can change how rasters of `space`, which `spatial` moves with,
+    /// draw what is drawn in `spatial`, as a transform the compositor animates is between them.
+    pub fn animation_samples_move_spatial_within_space(
+        &self,
+        spatial: SpatialNodeIndex,
+        space: RasterSpaceIndex,
+    ) -> bool {
+        if self
+            .spatial_node_moves_with_animation_samples
+            .get(spatial.0 as usize)
+            .copied()
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        let spaces = self.spaces.spaces();
+        let mut space_of_spatial = self.deepest_space_of(spatial);
+        while space_of_spatial != space && space_of_spatial != RasterSpaceIndex::VIEWPORT {
+            if matches!(
+                spaces[space_of_spatial.0].anchor_kind,
+                RasterSpaceAnchorKind::AnimatedTransform { .. }
+            ) {
+                return true;
+            }
+            space_of_spatial = spaces[space_of_spatial.0].parent_index;
+        }
+        false
     }
 
     /// Whether what is drawn in `spatial` moves within rasters of `space`: it is in a space inside it, or moves on its

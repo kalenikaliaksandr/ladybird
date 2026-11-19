@@ -28,8 +28,8 @@ use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
     BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayerStackInputs,
     NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind,
-    RasterSpaceIndex, SpaceToFrame, StackLayer, backdrop_filter_read_reach, build_layer_stack,
-    hash_of_animated_values_placement_reads, place_list, raster_space_anchors,
+    RasterSpaceIndex, SpaceToFrame, StackLayer, backdrop_filter_read_reach, build_layer_stack, place_list,
+    raster_space_anchors,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
@@ -440,7 +440,6 @@ struct ViewportInRaster {
 struct InputsOfLatestPlacement {
     display_list: Rc<DisplayList>,
     tree_copy_without_animation_samples: u64,
-    hash_of_animated_values_placement_reads: u64,
     viewport_rect: IntRect,
     viewport_to_raster_transform: FloatMatrix4x4,
     scroll_offsets_placement_depends_on: Vec<FloatPoint>,
@@ -1490,7 +1489,6 @@ impl ContextPresenting {
         };
 
         let moves_on_its_own = self.layers.spatial_nodes_that_move_on_their_own_of(tree);
-        let hash_of_animated_values_placement_reads = hash_of_animated_values_placement_reads(storage, tree);
         let cached_per_tree_copy = self.layers.cached_per_tree_copy(tree, moves_on_its_own.as_slice());
         let placement_leaves_out_scroll_offset_of_node =
             cached_per_tree_copy.placement_leaves_out_scroll_offset_of_node.clone();
@@ -1505,7 +1503,6 @@ impl ContextPresenting {
         let cached_stack_still_holds = self.layers.inputs_of_latest_placement.as_ref().is_some_and(|cached| {
             lists_hold_same_chunks(&cached.display_list, frame.display_list)
                 && cached.tree_copy_without_animation_samples == tree.copy_without_animation_samples()
-                && cached.hash_of_animated_values_placement_reads == hash_of_animated_values_placement_reads
                 && cached.viewport_rect == viewport_rect
                 && cached.viewport_to_raster_transform == raster_transform
                 && cached.anchors_of_raster_spaces == *anchors_of_raster_spaces
@@ -1546,7 +1543,6 @@ impl ContextPresenting {
             self.layers.inputs_of_latest_placement = Some(InputsOfLatestPlacement {
                 display_list: frame.display_list.clone(),
                 tree_copy_without_animation_samples: tree.copy_without_animation_samples(),
-                hash_of_animated_values_placement_reads,
                 viewport_rect,
                 viewport_to_raster_transform: raster_transform,
                 scroll_offsets_placement_depends_on: scroll_offsets_placement_depends_on(
