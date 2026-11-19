@@ -299,6 +299,10 @@ impl ContextState {
         );
         FrameInputs {
             visual_context_tree: self.scene.visual_context_tree_for_compositing().clone(),
+            published_visual_context_tree: self
+                .scene
+                .published_visual_context_tree_unless_visual_viewport_differs()
+                .cloned(),
             presented_scroll_state_snapshot,
             scrollbars,
             painted_at: now,

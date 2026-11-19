@@ -2865,7 +2865,7 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{CanvasId, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
-    use crate::display_list::layers::{LayerStack, LayerStackInputs, layer_stack_of};
+    use crate::display_list::layers::{LayerStack, LayerStackInputs, plan_layer_stack};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::CompositingAndBlendingOperator;
@@ -2981,12 +2981,11 @@ mod tests {
         list = list.with(fill(IntRect::new(10, 10, 80, 80), BLUE), masked);
 
         let display_list = DisplayListStorage::of_builder(&list.builder);
-        let stack = layer_stack_of(&LayerStackInputs {
+        let stack = plan_layer_stack(&LayerStackInputs {
             list: &display_list,
             tree: &tree,
             scroll_offsets: &[],
             viewport_rect: VIEWPORT,
-            viewport_to_raster_transform: FloatMatrix4x4::identity(),
         });
         assert_eq!(stack.why_list_is_one_layer, None);
         let list_keying = TileKeyingOfList::new(
@@ -3058,12 +3057,11 @@ mod tests {
     }
 
     fn stack_of(display_list: &DisplayListStorage, tree: &VisualContextTree) -> LayerStack {
-        layer_stack_of(&LayerStackInputs {
+        plan_layer_stack(&LayerStackInputs {
             list: display_list,
             tree,
             scroll_offsets: &[],
             viewport_rect: VIEWPORT,
-            viewport_to_raster_transform: FloatMatrix4x4::identity(),
         })
     }
 

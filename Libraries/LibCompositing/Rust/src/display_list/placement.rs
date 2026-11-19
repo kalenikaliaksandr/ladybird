@@ -319,6 +319,22 @@ fn spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
     tree.spatial_nodes_in_subtrees_of(&roots_of_subtrees_moving_on_their_own)
 }
 
+/// Per spatial node, whether placing a list among the spaces at `anchors` leaves out the node's scroll offset: the
+/// compositor scrolls the node, or the node moves on its own in those spaces. What moves with such a node is placed in
+/// a space that follows it, or wherever the node can take it.
+pub fn spatial_nodes_whose_scroll_offset_placement_leaves_out(
+    tree: &VisualContextTree,
+    anchors: &[SpatialNodeIndex],
+) -> Vec<bool> {
+    let mut leaves_out_by_node = spatial_nodes_that_move_on_their_own_relative_to_spaces_at(tree, Some(anchors));
+    for record in tree.compositor_scroll_table().nodes.iter() {
+        if let Some(leaves_out) = leaves_out_by_node.get_mut(record.scroll_node_index.0 as usize) {
+            *leaves_out = true;
+        }
+    }
+    leaves_out_by_node
+}
+
 // Empty where the tree has no transform animations.
 fn spatial_nodes_that_animation_samples_move_within_their_space(
     tree: &VisualContextTree,
@@ -1210,12 +1226,12 @@ impl PartialEq for PlacementTables {
     }
 }
 
+/// The spaces at `anchors` and the geometry of each, in the device pixels of the viewport.
 pub fn spaces_with_geometries(
     tree: &VisualContextTree,
     anchors: &[SpatialNodeIndex],
     scroll_offsets: &[FloatPoint],
     viewport_rect: IntRect,
-    viewport_to_raster_transform: FloatMatrix4x4,
 ) -> (RasterSpaces, Vec<Rc<RasterSpaceGeometry>>) {
     let spaces = RasterSpaces::at_anchors(tree, anchors, viewport_rect);
     let geometries: Vec<Rc<RasterSpaceGeometry>> = (0..spaces.len())
@@ -1226,7 +1242,7 @@ pub fn spaces_with_geometries(
                 RasterSpaceIndex(space),
                 scroll_offsets,
                 viewport_rect,
-                viewport_to_raster_transform,
+                FloatMatrix4x4::identity(),
             ))
         })
         .collect();

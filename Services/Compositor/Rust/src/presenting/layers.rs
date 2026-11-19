@@ -28,11 +28,11 @@ use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
     BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayerStackInputs,
     NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind,
-    RasterSpaceIndex, SpaceToFrame, StackLayer, backdrop_filter_read_reach, build_layer_stack, place_list,
-    raster_space_anchors,
+    RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer, backdrop_filter_read_reach, plan_layer_stack,
+    spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
 };
 use libcompositing_rust::display_list::placement::{
-    RasterSpace, RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets, spatial_nodes_that_move_on_their_own,
+    RasterSpace, RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets,
 };
 use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::{CompositeClipsOfRaster, ReplaySelection};
@@ -418,11 +418,9 @@ struct CachedRasterSpaceGeometry {
     geometry: Rc<RasterSpaceGeometry>,
 }
 
-struct CachedPerTreeCopy {
+struct CachedRasterSpaces {
     tree_copy_number: u64,
-    raster_space_anchors: Rc<Vec<SpatialNodeIndex>>,
-    placement_leaves_out_scroll_offset_of_node: Rc<Vec<bool>>,
-    raster_spaces_asked_for_last: Option<RasterSpaces>,
+    raster_spaces: RasterSpaces,
 }
 
 #[derive(Clone, Copy)]
@@ -437,13 +435,19 @@ struct ViewportInRaster {
     viewport_to_raster_transform: FloatMatrix4x4,
 }
 
-struct InputsOfLatestPlacement {
+/// What WebContent published that a plan of layers read.
+struct PublishedInputsOfPlan {
+    tree_copy_number: u64,
+    leaves_out_scroll_offset_of_node: Rc<Vec<bool>>,
+    scroll_offsets_plan_reads: Vec<FloatPoint>,
+}
+
+/// What the stack of the frames was made for: a plan of the list, or for frames that are not drawn as a plan is made
+/// for, one layer that replays the whole list.
+struct InputsOfStack {
     display_list: Rc<DisplayList>,
-    tree_copy_without_animation_samples: u64,
     viewport_rect: IntRect,
-    viewport_to_raster_transform: FloatMatrix4x4,
-    scroll_offsets_placement_depends_on: Vec<FloatPoint>,
-    anchors_of_raster_spaces: Vec<SpatialNodeIndex>,
+    plan: Option<PublishedInputsOfPlan>,
 }
 
 /// The layers of the frames of a context under their identities, the pool of their tiles, and what of them the window
@@ -451,7 +455,7 @@ struct InputsOfLatestPlacement {
 #[derive(Default)]
 pub struct ContextLayers {
     stack: Option<LayerStack>,
-    inputs_of_latest_placement: Option<InputsOfLatestPlacement>,
+    inputs_of_stack: Option<InputsOfStack>,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
     tile_pool: TilePool,
     compositing_of_latest_frame: Vec<LayerCompositingInFrame>,
@@ -461,8 +465,7 @@ pub struct ContextLayers {
     compositor_overlays_rect: IntRect,
     cached_raster_space_geometries: Vec<CachedRasterSpaceGeometry>,
     next_presentable_surface_pool: u32,
-    cached_spatial_nodes_that_move_on_their_own: Option<(u64, Rc<Vec<bool>>)>,
-    cached_per_tree_copy: Option<CachedPerTreeCopy>,
+    cached_raster_spaces: Option<CachedRasterSpaces>,
     band_tile_keys_of_latest_frame: Vec<BandTileKeysOfFrame>,
     content_hash_by_composited_node_of_latest_frame: HashMap<PlacementNodeIdentity, ContentHash>,
 }
@@ -496,58 +499,107 @@ impl ContextLayers {
         }
     }
 
-    fn spatial_nodes_that_move_on_their_own_of(&mut self, tree: &VisualContextTree) -> Rc<Vec<bool>> {
-        let tree_copy_without_animation_samples = tree.copy_without_animation_samples();
-        if let Some((cached_tree_copy_without_animation_samples, moves_on_its_own)) =
-            &self.cached_spatial_nodes_that_move_on_their_own
-            && *cached_tree_copy_without_animation_samples == tree_copy_without_animation_samples
-        {
-            return moves_on_its_own.clone();
-        }
-        let moves_on_its_own = Rc::new(spatial_nodes_that_move_on_their_own(tree));
-        self.cached_spatial_nodes_that_move_on_their_own =
-            Some((tree_copy_without_animation_samples, moves_on_its_own.clone()));
-        moves_on_its_own
-    }
-
-    fn cached_per_tree_copy(&mut self, tree: &VisualContextTree, moves_on_its_own: &[bool]) -> &mut CachedPerTreeCopy {
-        if self
-            .cached_per_tree_copy
-            .as_ref()
-            .is_none_or(|cached| cached.tree_copy_number != tree.copy.number())
-        {
-            self.cached_per_tree_copy = Some(CachedPerTreeCopy {
-                tree_copy_number: tree.copy.number(),
-                raster_space_anchors: Rc::new(raster_space_anchors(tree, moves_on_its_own)),
-                placement_leaves_out_scroll_offset_of_node: Rc::new(
-                    placement_leaves_out_scroll_offset_by_spatial_node(tree, moves_on_its_own),
-                ),
-                raster_spaces_asked_for_last: None,
-            });
-        }
-        self.cached_per_tree_copy
-            .as_mut()
-            .expect("what is cached of the copy was just made sure of")
-    }
-
-    fn raster_spaces_of(
+    /// Keeps the stack while what it was made for stays. Otherwise plans the list again with what WebContent published,
+    /// or where frames are not drawn as a plan of the published tree is made for, makes one layer that replays the
+    /// whole list. Answers whether it made a new stack.
+    fn make_stack_unless_kept(
         &mut self,
-        tree: &VisualContextTree,
-        moves_on_its_own: &[bool],
-        spaces: Vec<RasterSpace>,
-    ) -> RasterSpaces {
-        let cached = self.cached_per_tree_copy(tree, moves_on_its_own);
-        if let Some(raster_spaces) = &cached.raster_spaces_asked_for_last
-            && raster_spaces
+        display_list: &Rc<DisplayList>,
+        published_tree: Option<&VisualContextTree>,
+        scroll_offsets: &[FloatPoint],
+        viewport_rect: IntRect,
+    ) -> bool {
+        let stack_still_holds = self.inputs_of_stack.as_ref().is_some_and(|cached| {
+            lists_hold_same_chunks(&cached.display_list, display_list)
+                && cached.viewport_rect == viewport_rect
+                && match (&cached.plan, published_tree) {
+                    (Some(plan), Some(published_tree)) => {
+                        plan.tree_copy_number == published_tree.copy.number()
+                            && scroll_offsets_plan_reads_are_unchanged(
+                                &plan.scroll_offsets_plan_reads,
+                                scroll_offsets,
+                                &plan.leaves_out_scroll_offset_of_node,
+                            )
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
+        });
+        if stack_still_holds {
+            if let Some(cached) = self.inputs_of_stack.as_mut()
+                && !Rc::ptr_eq(&cached.display_list, display_list)
+            {
+                cached.display_list = display_list.clone();
+            }
+            return false;
+        }
+        let storage = display_list.storage();
+        let Some(published_tree) = published_tree else {
+            self.stack = Some(LayerStack::single_layer(
+                viewport_rect,
+                storage.whole_span(),
+                Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            ));
+            self.inputs_of_stack = Some(InputsOfStack {
+                display_list: display_list.clone(),
+                viewport_rect,
+                plan: None,
+            });
+            return true;
+        };
+        let leaves_out_scroll_offset_of_node =
+            match self.inputs_of_stack.as_ref().and_then(|cached| cached.plan.as_ref()) {
+                Some(plan) if plan.tree_copy_number == published_tree.copy.number() => {
+                    plan.leaves_out_scroll_offset_of_node.clone()
+                }
+                _ => Rc::new(spatial_nodes_whose_scroll_offset_layer_plans_leave_out(published_tree)),
+            };
+        // The compositor scrolls only nodes a plan leaves out, so the frame shows the others at the offsets WebContent
+        // published.
+        self.stack = Some(plan_layer_stack(&LayerStackInputs {
+            list: storage,
+            tree: published_tree,
+            scroll_offsets,
+            viewport_rect,
+        }));
+        self.inputs_of_stack = Some(InputsOfStack {
+            display_list: display_list.clone(),
+            viewport_rect,
+            plan: Some(PublishedInputsOfPlan {
+                tree_copy_number: published_tree.copy.number(),
+                scroll_offsets_plan_reads: scroll_offsets_plan_reads(scroll_offsets, &leaves_out_scroll_offset_of_node),
+                leaves_out_scroll_offset_of_node,
+            }),
+        });
+        true
+    }
+
+    /// Per spatial node, whether the plan the frames are drawn with leaves out its scroll offset, as the plan holds
+    /// wherever the node is scrolled to. None for frames drawn with one layer that replays the whole list.
+    fn scroll_offsets_plan_leaves_out(&self) -> Option<Rc<Vec<bool>>> {
+        self.inputs_of_stack
+            .as_ref()
+            .and_then(|inputs| inputs.plan.as_ref())
+            .map(|plan| plan.leaves_out_scroll_offset_of_node.clone())
+    }
+
+    fn raster_spaces_of(&mut self, tree: &VisualContextTree, spaces: &[RasterSpace]) -> RasterSpaces {
+        if let Some(cached) = &self.cached_raster_spaces
+            && cached.tree_copy_number == tree.copy.number()
+            && cached
+                .raster_spaces
                 .spaces()
                 .iter()
                 .map(|space| space.anchor)
                 .eq(spaces.iter().map(|space| space.anchor))
         {
-            return raster_spaces.clone().with_other_extents(spaces);
+            return cached.raster_spaces.clone().with_other_extents(spaces.to_vec());
         }
-        let raster_spaces = RasterSpaces::of_spaces(tree, spaces);
-        cached.raster_spaces_asked_for_last = Some(raster_spaces.clone());
+        let raster_spaces = RasterSpaces::of_spaces(tree, spaces.to_vec());
+        self.cached_raster_spaces = Some(CachedRasterSpaces {
+            tree_copy_number: tree.copy.number(),
+            raster_spaces: raster_spaces.clone(),
+        });
         raster_spaces
     }
 
@@ -705,8 +757,7 @@ impl ContextLayers {
             return cached.geometry.clone();
         }
         if raster_spaces.is_none() {
-            let moves_on_its_own = self.spatial_nodes_that_move_on_their_own_of(tree);
-            *raster_spaces = Some(self.raster_spaces_of(tree, moves_on_its_own.as_slice(), spaces.to_vec()));
+            *raster_spaces = Some(self.raster_spaces_of(tree, spaces));
         }
         let raster_spaces = raster_spaces
             .as_ref()
@@ -739,11 +790,11 @@ impl ContextLayers {
         &mut self,
         tree: &VisualContextTree,
         spaces: &[RasterSpace],
-        raster_spaces: &mut Option<RasterSpaces>,
         scroll_offsets: &'a [FloatPoint],
         geometry_readers_leave_out_offset_of_node_in_space: impl Fn(RasterSpaceIndex) -> Option<&'a [bool]>,
         viewport_in_raster: ViewportInRaster,
     ) -> Vec<Rc<RasterSpaceGeometry>> {
+        let mut raster_spaces = None;
         (0..spaces.len())
             .map(RasterSpaceIndex)
             .map(|raster_space_index| {
@@ -756,20 +807,13 @@ impl ContextLayers {
                 self.geometry_of_space(
                     tree,
                     spaces,
-                    raster_spaces,
+                    &mut raster_spaces,
                     raster_space_index,
                     scroll_offsets,
                     viewport_in_raster,
                 )
             })
             .collect()
-    }
-
-    fn placement_leaves_out_scroll_offset_of_node(&mut self, tree: &VisualContextTree) -> Rc<Vec<bool>> {
-        let moves_on_its_own = self.spatial_nodes_that_move_on_their_own_of(tree);
-        self.cached_per_tree_copy(tree, moves_on_its_own.as_slice())
-            .placement_leaves_out_scroll_offset_of_node
-            .clone()
     }
 }
 
@@ -1354,32 +1398,16 @@ fn unclipped_untransformed_surface_sublayer(
     }
 }
 
-// Content that moves with a node the compositor scrolls, or with one that moves on its own, is rastered in a space that
-// follows the node or placed wherever it could be taken.
-fn placement_leaves_out_scroll_offset_by_spatial_node(
-    tree: &VisualContextTree,
-    moves_on_its_own: &[bool],
-) -> Vec<bool> {
-    let mut leaves_out_by_node = moves_on_its_own.to_vec();
-    leaves_out_by_node.resize(tree.spatial_nodes.len(), false);
-    for record in tree.compositor_scroll_table().nodes.iter() {
-        if let Some(leaves_out) = leaves_out_by_node.get_mut(record.scroll_node_index.0 as usize) {
-            *leaves_out = true;
-        }
-    }
-    leaves_out_by_node
-}
-
 fn lists_hold_same_chunks(cached_list: &Rc<DisplayList>, list: &Rc<DisplayList>) -> bool {
     Rc::ptr_eq(cached_list, list) || cached_list.storage().chunk_names() == list.storage().chunk_names()
 }
 
-fn scroll_offset_placement_depends_on(
+fn scroll_offset_plan_reads(
     node_index: usize,
     scroll_offset: FloatPoint,
-    placement_leaves_out_scroll_offset_of_node: &[bool],
+    plan_leaves_out_scroll_offset_of_node: &[bool],
 ) -> FloatPoint {
-    if placement_leaves_out_scroll_offset_of_node
+    if plan_leaves_out_scroll_offset_of_node
         .get(node_index)
         .copied()
         .unwrap_or(false)
@@ -1390,37 +1418,34 @@ fn scroll_offset_placement_depends_on(
     }
 }
 
-fn scroll_offsets_placement_depends_on(
+fn scroll_offsets_plan_reads(
     scroll_offsets: &[FloatPoint],
-    placement_leaves_out_scroll_offset_of_node: &[bool],
+    plan_leaves_out_scroll_offset_of_node: &[bool],
 ) -> Vec<FloatPoint> {
     scroll_offsets
         .iter()
         .enumerate()
         .map(|(node_index, scroll_offset)| {
-            scroll_offset_placement_depends_on(node_index, *scroll_offset, placement_leaves_out_scroll_offset_of_node)
+            scroll_offset_plan_reads(node_index, *scroll_offset, plan_leaves_out_scroll_offset_of_node)
         })
         .collect()
 }
 
-fn scroll_offsets_placement_depends_on_are_unchanged(
-    cached_scroll_offsets_placement_depends_on: &[FloatPoint],
+fn scroll_offsets_plan_reads_are_unchanged(
+    cached_scroll_offsets_plan_reads: &[FloatPoint],
     scroll_offsets: &[FloatPoint],
-    placement_leaves_out_scroll_offset_of_node: &[bool],
+    plan_leaves_out_scroll_offset_of_node: &[bool],
 ) -> bool {
-    cached_scroll_offsets_placement_depends_on.len() == scroll_offsets.len()
-        && cached_scroll_offsets_placement_depends_on
-            .iter()
-            .zip(scroll_offsets)
-            .enumerate()
-            .all(|(node_index, (cached, scroll_offset))| {
-                *cached
-                    == scroll_offset_placement_depends_on(
-                        node_index,
-                        *scroll_offset,
-                        placement_leaves_out_scroll_offset_of_node,
-                    )
-            })
+    // A list of scroll offsets leaves out the zero offsets of the nodes past its end.
+    let offset_at = |offsets: &[FloatPoint], node_index: usize| offsets.get(node_index).copied().unwrap_or_default();
+    (0..cached_scroll_offsets_plan_reads.len().max(scroll_offsets.len())).all(|node_index| {
+        offset_at(cached_scroll_offsets_plan_reads, node_index)
+            == scroll_offset_plan_reads(
+                node_index,
+                offset_at(scroll_offsets, node_index),
+                plan_leaves_out_scroll_offset_of_node,
+            )
+    })
 }
 
 /// Per raster space, how the frame composites its rasters, from the anchors' draw matrices in the frame where the stack
@@ -1467,7 +1492,7 @@ fn compositing_of_layer(
 
 impl ContextPresenting {
     /// Works out the layers of the frame within `viewport_rect`, in the device pixels of the raster: keeps the stack
-    /// while what placing the list reads stays, and places the list and builds the stack again otherwise.
+    /// while what it was made for stays, and plans the list with what WebContent published again otherwise.
     pub(super) fn layer_update_for(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -1480,78 +1505,20 @@ impl ContextPresenting {
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         self.layers.work_counts_of_this_frame = FrameWorkCounts::default();
-        let inputs = LayerStackInputs {
-            list: storage,
-            tree,
+        // A plan places spaces that scroll at whole device pixels of the viewport, which a raster that scales them or
+        // shifts them by a fraction lacks.
+        let published_tree_to_plan_with = frame
+            .frame_inputs
+            .published_visual_context_tree
+            .as_ref()
+            .map(|published_tree| published_tree.as_arc().as_ref())
+            .filter(|_| raster_transform == FloatMatrix4x4::identity());
+        self.layers.work_counts_of_this_frame.list_was_placed = self.layers.make_stack_unless_kept(
+            frame.display_list,
+            published_tree_to_plan_with,
             scroll_offsets,
             viewport_rect,
-            viewport_to_raster_transform: raster_transform,
-        };
-
-        let moves_on_its_own = self.layers.spatial_nodes_that_move_on_their_own_of(tree);
-        let cached_per_tree_copy = self.layers.cached_per_tree_copy(tree, moves_on_its_own.as_slice());
-        let placement_leaves_out_scroll_offset_of_node =
-            cached_per_tree_copy.placement_leaves_out_scroll_offset_of_node.clone();
-        // A space that scrolls composites at whole device pixels of the viewport, which a raster that scales them or
-        // shifts them by a fraction lacks.
-        let raster_keeps_whole_device_pixels_of_viewport = raster_transform == FloatMatrix4x4::identity();
-        let anchors_of_raster_spaces = if raster_keeps_whole_device_pixels_of_viewport {
-            cached_per_tree_copy.raster_space_anchors.clone()
-        } else {
-            Rc::new(Vec::new())
-        };
-        let cached_stack_still_holds = self.layers.inputs_of_latest_placement.as_ref().is_some_and(|cached| {
-            lists_hold_same_chunks(&cached.display_list, frame.display_list)
-                && cached.tree_copy_without_animation_samples == tree.copy_without_animation_samples()
-                && cached.viewport_rect == viewport_rect
-                && cached.viewport_to_raster_transform == raster_transform
-                && cached.anchors_of_raster_spaces == *anchors_of_raster_spaces
-                && scroll_offsets_placement_depends_on_are_unchanged(
-                    &cached.scroll_offsets_placement_depends_on,
-                    scroll_offsets,
-                    &placement_leaves_out_scroll_offset_of_node,
-                )
-        });
-        if cached_stack_still_holds
-            && let Some(cached) = self.layers.inputs_of_latest_placement.as_mut()
-            && !Rc::ptr_eq(&cached.display_list, frame.display_list)
-        {
-            cached.display_list = frame.display_list.clone();
-        }
-        if !cached_stack_still_holds {
-            let spaces = self.layers.raster_spaces_of(
-                tree,
-                moves_on_its_own.as_slice(),
-                RasterSpaces::spaces_at_anchors(tree, &anchors_of_raster_spaces, viewport_rect),
-            );
-            let spaces_at_anchors = spaces.spaces().to_vec();
-            let mut raster_spaces = Some(spaces);
-            let geometries = self.layers.geometries_of_spaces(
-                tree,
-                &spaces_at_anchors,
-                &mut raster_spaces,
-                scroll_offsets,
-                |_| Some(placement_leaves_out_scroll_offset_of_node.as_slice()),
-                ViewportInRaster {
-                    viewport_rect,
-                    viewport_to_raster_transform: raster_transform,
-                },
-            );
-            let spaces = raster_spaces.expect("the spaces stay until the list is placed among them");
-            self.layers.stack = Some(build_layer_stack(&inputs, place_list(&inputs, spaces, &geometries)));
-            self.layers.work_counts_of_this_frame.list_was_placed = true;
-            self.layers.inputs_of_latest_placement = Some(InputsOfLatestPlacement {
-                display_list: frame.display_list.clone(),
-                tree_copy_without_animation_samples: tree.copy_without_animation_samples(),
-                viewport_rect,
-                viewport_to_raster_transform: raster_transform,
-                scroll_offsets_placement_depends_on: scroll_offsets_placement_depends_on(
-                    scroll_offsets,
-                    &placement_leaves_out_scroll_offset_of_node,
-                ),
-                anchors_of_raster_spaces: anchors_of_raster_spaces.to_vec(),
-            });
-        }
+        );
         let stack = self.layers.stack.as_mut().expect("a frame with layers has a stack");
         stack.update_window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
         let stack = self.layers.stack.as_ref().expect("a frame with layers has a stack");
@@ -1673,15 +1640,16 @@ impl ContextPresenting {
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         let composite_offsets = &layer_update.composite_offsets;
         let raster_transform = self.raster_transform();
-        let placement_leaves_out_scroll_offset_of_node = self.layers.placement_leaves_out_scroll_offset_of_node(tree);
+        let scroll_offsets_plan_leaves_out = self.layers.scroll_offsets_plan_leaves_out();
         let geometry_readers_leave_out_offset_of_node_in_space = |raster_space_index| {
-            (!stack.space_holds_content_that_moves_within_it(raster_space_index))
-                .then_some(placement_leaves_out_scroll_offset_of_node.as_slice())
+            scroll_offsets_plan_leaves_out
+                .as_deref()
+                .filter(|_| !stack.space_holds_content_that_moves_within_it(raster_space_index))
+                .map(Vec::as_slice)
         };
         let geometries = self.layers.geometries_of_spaces(
             tree,
             &stack.spaces,
-            &mut None,
             scroll_offsets,
             geometry_readers_leave_out_offset_of_node_in_space,
             ViewportInRaster {

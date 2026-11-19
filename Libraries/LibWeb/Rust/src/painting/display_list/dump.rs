@@ -13,7 +13,7 @@ use super::dump_format::{
     DumpNames, DumpValue, dumped_record_field, json_corner_radii, json_fields, json_float, json_float_point,
     json_float_rect, json_int_rect, json_name, path_description, push_clip_radii, push_fields, push_value,
 };
-use super::layers::{LayerIndex, LayerStack, LayerStackInputs, VisualContextNodeNamer, layer_stack_of};
+use super::layers::{LayerIndex, LayerStack, LayerStackInputs, VisualContextNodeNamer, plan_layer_stack};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
 };
@@ -309,13 +309,20 @@ pub unsafe extern "C" fn painting_dump(
         visual_context_tree.compositor_scroll_table(),
         options.jsonl,
     );
-    let layer_stack = layer_stack_of(&LayerStackInputs {
+    let scroll_state = host.scroll_state();
+    let scroll_offsets = scroll_state.device_offsets();
+    let mut layer_stack = plan_layer_stack(&LayerStackInputs {
         list: &display_list,
         tree: visual_context_tree,
-        scroll_offsets: host.scroll_state().device_offsets(),
+        scroll_offsets,
         viewport_rect: device_viewport_rect,
-        viewport_to_raster_transform: libgfx_rust::FloatMatrix4x4::identity(),
     });
+    layer_stack.update_window_server_placements_and_shown_layers(
+        &display_list,
+        visual_context_tree,
+        scroll_offsets,
+        device_viewport_rect,
+    );
     dump_layers(
         &mut output,
         &mut names,

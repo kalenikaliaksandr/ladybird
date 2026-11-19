@@ -34,6 +34,7 @@ use crate::display_list::placement::{
     FiltersAndClipsOfList, PlacementTables, RasterSpaceGeometry, RasterSpaces, RunsReachingOutsideTheirContext,
     is_finite_rect, lowest_common_ancestor_space, rect_swept_over_translations, space_and_ancestors_below_viewport,
     spaces_with_geometries, spatial_nodes_that_move_on_their_own,
+    spatial_nodes_whose_scroll_offset_placement_leaves_out,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
@@ -192,6 +193,9 @@ pub enum WhyListIsOneLayer {
     MaskDeclaredUnderEffectsItsMaskIsNotUnder,
     RecordsBlendWithWhatOtherLayersHoldBelowThem,
     EffectTheCompositorCannotCompositeIsComposited(WhyCompositorCannotCompositeEffect),
+    /// The frame draws the list otherwise than a plan of its layers is made for, as through a raster transform or a
+    /// visual viewport transform the plan does not know.
+    FrameIsNotDrawnAsPlanned,
 }
 
 impl std::fmt::Display for WhyListIsOneLayer {
@@ -210,6 +214,7 @@ impl std::fmt::Display for WhyListIsOneLayer {
             WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why) => {
                 return write!(formatter, "{why} is composited");
             }
+            WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => "frame is not drawn as the plan was made for",
         })
     }
 }
@@ -1247,14 +1252,17 @@ impl LayerStack {
     }
 }
 
+/// What a plan of the layers of a list reads, all of which WebContent publishes.
 pub struct LayerStackInputs<'a> {
     pub list: &'a DisplayListStorage,
+    /// The tree as WebContent published it, without the samples of the compositor's animations and without a visual
+    /// viewport transform of the compositor's.
     pub tree: &'a VisualContextTree,
+    /// The scroll offsets WebContent published with the tree. A plan reads only those that
+    /// `spatial_nodes_whose_scroll_offset_layer_plans_leave_out` does not name.
     pub scroll_offsets: &'a [FloatPoint],
-    /// The viewport in the device pixels of the raster, into which `viewport_to_raster_transform` maps those of the
-    /// viewport.
+    /// The viewport in device pixels.
     pub viewport_rect: IntRect,
-    pub viewport_to_raster_transform: FloatMatrix4x4,
 }
 
 // An animation of the opacity or filter of the root isolation effect makes it more than a plain group at some sample.
@@ -1600,7 +1608,7 @@ fn effect_is_inside(tree: &VisualContextTree, effect: EffectNodeIndex, around: E
 }
 
 /// Where each part of the list is placed among `spaces`, given the geometry of each of them.
-pub fn place_list(
+fn place_list(
     inputs: &LayerStackInputs<'_>,
     spaces: RasterSpaces,
     geometries: &[Rc<RasterSpaceGeometry>],
@@ -3186,14 +3194,13 @@ fn why_compositor_cannot_composite_effect_of_stack(stack: &LayerStack) -> Option
     })
 }
 
-/// Works out the layers of a list from where `place_list` placed its parts. Where the window server can show the media
-/// of the stack is left to be worked out for each frame.
+/// Works out the layers of a list from where `place_list` placed its parts.
 ///
 /// Nothing limits how many layers a stack holds past the spaces a tree offers, which are limited before the list is
 /// placed: the layers an effect the compositor composites or a canvas, video or nested context needs cannot be given
 /// up without drawing the list wrong, and a layer holds tiles only where its content reaches, which the pool of tiles
 /// gives back.
-pub fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) -> LayerStack {
+fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) -> LayerStack {
     let layering_obstacles = placement.layering_obstacles;
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
         Some(why) => why,
@@ -3219,26 +3226,47 @@ pub fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement
     stack
 }
 
-/// Works out the layers of a list from scratch, and where the window server can show their media, as a dump or a test
-/// does.
-pub fn layer_stack_of(inputs: &LayerStackInputs<'_>) -> LayerStack {
-    let anchors = raster_space_anchors(inputs.tree, &spatial_nodes_that_move_on_their_own(inputs.tree));
-    let (spaces, geometries) = spaces_with_geometries(
-        inputs.tree,
-        &anchors,
-        inputs.scroll_offsets,
-        inputs.viewport_rect,
-        inputs.viewport_to_raster_transform,
-    );
-    let placement = place_list(inputs, spaces, &geometries);
-    let mut stack = build_layer_stack(inputs, placement);
-    stack.update_window_server_placements_and_shown_layers(
-        inputs.list,
-        inputs.tree,
-        inputs.scroll_offsets,
-        inputs.viewport_rect,
-    );
-    stack
+fn anchors_of_layer_plans(tree: &VisualContextTree) -> Vec<SpatialNodeIndex> {
+    raster_space_anchors(tree, &spatial_nodes_that_move_on_their_own(tree))
+}
+
+/// Per spatial node, whether `plan_layer_stack` leaves out the node's scroll offset as it plans a list under the tree.
+/// A plan reads the scroll offsets of the other nodes only.
+pub fn spatial_nodes_whose_scroll_offset_layer_plans_leave_out(tree: &VisualContextTree) -> Vec<bool> {
+    spatial_nodes_whose_scroll_offset_placement_leaves_out(tree, &anchors_of_layer_plans(tree))
+}
+
+/// Plans the layers of a list. The plan holds for every sample of the compositor's animations and wherever the
+/// compositor scrolls the nodes it scrolls. Where the window server can show the media of the stack is left to be
+/// worked out for each frame.
+pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> LayerStack {
+    let anchors = anchors_of_layer_plans(inputs.tree);
+    let leaves_out_scroll_offset_of_node =
+        spatial_nodes_whose_scroll_offset_placement_leaves_out(inputs.tree, &anchors);
+    let scroll_offsets_read: Vec<FloatPoint> = inputs
+        .scroll_offsets
+        .iter()
+        .enumerate()
+        .map(|(node_index, &scroll_offset)| {
+            if leaves_out_scroll_offset_of_node
+                .get(node_index)
+                .copied()
+                .unwrap_or(false)
+            {
+                FloatPoint::default()
+            } else {
+                scroll_offset
+            }
+        })
+        .collect();
+    let inputs = LayerStackInputs {
+        scroll_offsets: &scroll_offsets_read,
+        ..*inputs
+    };
+    let (spaces, geometries) =
+        spaces_with_geometries(inputs.tree, &anchors, inputs.scroll_offsets, inputs.viewport_rect);
+    let placement = place_list(&inputs, spaces, &geometries);
+    build_layer_stack(&inputs, placement)
 }
 
 #[cfg(test)]
@@ -3332,14 +3360,17 @@ mod tests {
             self
         }
 
+        // As a dump plans a stack, with where the window server can show its media.
         fn stack(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> LayerStack {
-            layer_stack_of(&LayerStackInputs {
-                list: &DisplayListStorage::of_builder(&self.builder),
+            let list = DisplayListStorage::of_builder(&self.builder);
+            let mut stack = plan_layer_stack(&LayerStackInputs {
+                list: &list,
                 tree,
                 scroll_offsets,
                 viewport_rect: VIEWPORT,
-                viewport_to_raster_transform: FloatMatrix4x4::identity(),
-            })
+            });
+            stack.update_window_server_placements_and_shown_layers(&list, tree, scroll_offsets, VIEWPORT);
+            stack
         }
     }
 
@@ -3690,7 +3721,7 @@ mod tests {
         let geometry_of_spinner_space_at = |time_ns: i64| {
             let sample = tree.with_visual_animation_samples(time_ns);
             let anchors = raster_space_anchors(&sample, &spatial_nodes_that_move_on_their_own(&sample));
-            let (_, geometries) = spaces_with_geometries(&sample, &anchors, &[], VIEWPORT, FloatMatrix4x4::identity());
+            let (_, geometries) = spaces_with_geometries(&sample, &anchors, &[], VIEWPORT);
             geometries[1].world.draw_matrix(spinner.spatial)
         };
         assert_eq!(
@@ -3939,16 +3970,12 @@ mod tests {
 
     // As the compositor plans a stack, without where the window server shows the media of a frame.
     fn planned_stack(list: &DisplayListStorage, tree: &VisualContextTree) -> LayerStack {
-        let inputs = LayerStackInputs {
+        plan_layer_stack(&LayerStackInputs {
             list,
             tree,
             scroll_offsets: &[],
             viewport_rect: VIEWPORT,
-            viewport_to_raster_transform: FloatMatrix4x4::identity(),
-        };
-        let anchors = raster_space_anchors(tree, &spatial_nodes_that_move_on_their_own(tree));
-        let (spaces, geometries) = spaces_with_geometries(tree, &anchors, &[], VIEWPORT, FloatMatrix4x4::identity());
-        build_layer_stack(&inputs, place_list(&inputs, spaces, &geometries))
+        })
     }
 
     fn stack_planned_alike_for_every_sample(list: &TestList, tree: &VisualContextTree) -> LayerStack {

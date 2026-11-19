@@ -50,6 +50,10 @@ pub use libcompositing_rust::display_list::replay::thumb_rect_kept_inside_track;
 
 pub struct FrameInputs {
     pub visual_context_tree: AccumulatedVisualContextTree,
+    /// The tree as WebContent published it, which the layers of the frame are planned with. None where the frame draws
+    /// the page through a visual viewport transform other than that of the published tree, as no plan of that tree
+    /// holds for the frame.
+    pub published_visual_context_tree: Option<AccumulatedVisualContextTree>,
     pub presented_scroll_state_snapshot: ScrollStateSnapshot,
     pub scrollbars: Vec<ScrollbarOfFrame>,
     /// When the frame is painted, which is the time a blinking caret shows as of.

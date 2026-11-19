@@ -154,6 +154,21 @@ impl ContextScene {
         self.sampled_visual_context_tree.as_ref().unwrap()
     }
 
+    /// The tree as WebContent published it, unless frames draw it through a visual viewport transform other than its
+    /// own.
+    pub fn published_visual_context_tree_unless_visual_viewport_differs(
+        &self,
+    ) -> Option<&AccumulatedVisualContextTree> {
+        let tree = self.visual_context_tree.as_ref()?;
+        if let Some(transform) = self.async_visual_viewport_transform {
+            let published_transform = tree.visual_viewport_transform();
+            if transform.matrix != published_transform.matrix || transform.origin != published_transform.origin {
+                return None;
+            }
+        }
+        Some(tree)
+    }
+
     pub fn visual_viewport_transform(&self) -> TransformWithOrigin {
         if let Some(transform) = self.async_visual_viewport_transform {
             return transform;
