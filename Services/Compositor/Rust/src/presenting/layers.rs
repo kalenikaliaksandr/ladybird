@@ -2098,7 +2098,9 @@ impl ContextPresenting {
     }
 
     /// Paints the frame from its layers over `damage_rect`, and answers the rect it painted, which grows to the whole
-    /// raster where the frame has to hold what the window server was to show above it.
+    /// raster where the frame has to hold what the window server was to show above it. Unless `paints_ui_overlays`
+    /// is set, the frame leaves out the overlays of the browser and of the layers.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn paint_layered_frame(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -2107,9 +2109,19 @@ impl ContextPresenting {
         damage_rect: IntRect,
         layer_update: &mut LayerUpdate,
         live_content: &LiveContent,
+        paints_ui_overlays: bool,
     ) -> IntRect {
         self.with_stack(|this, stack| {
-            this.paint_layers(env, surface, frame, damage_rect, layer_update, stack, live_content)
+            this.paint_layers(
+                env,
+                surface,
+                frame,
+                damage_rect,
+                layer_update,
+                stack,
+                live_content,
+                paints_ui_overlays,
+            )
         })
     }
 
@@ -2123,6 +2135,7 @@ impl ContextPresenting {
         layer_update: &mut LayerUpdate,
         stack: &LayerStack,
         live_content: &LiveContent,
+        paints_ui_overlays: bool,
     ) -> IntRect {
         env.raster.start_raster_cache_frame(env.context_id);
         // A store can miss the damage of several frames, which joined can reach part of what a composited effect reads.
@@ -2218,6 +2231,7 @@ impl ContextPresenting {
             layer_update,
             stack,
             &rects_painted_straight,
+            paints_ui_overlays,
         );
         damage_rect
     }
@@ -2232,6 +2246,7 @@ impl ContextPresenting {
         layer_update: &LayerUpdate,
         stack: &LayerStack,
         rects_painted_straight: &[IntRect],
+        paints_ui_overlays: bool,
     ) {
         let raster = env.raster;
         let save_count = raster.save(surface);
@@ -2288,8 +2303,10 @@ impl ContextPresenting {
                 raster.restore_to_count(surface, save_count);
             }
             self.apply_raster_transform(raster, surface);
-            paint_overlays(env, surface, frame.frame_inputs, true);
-            self.paint_layer_overlay(env, surface);
+            paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
+            if paints_ui_overlays {
+                self.paint_layer_overlay(env, surface);
+            }
         }
         raster.restore_to_count(surface, save_count);
     }

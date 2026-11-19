@@ -86,6 +86,39 @@ impl FrameToPaint<'_> {
     }
 }
 
+/// Whether screenshots paint through the layers and tiles that frames are presented from, so that tests that compare
+/// screenshots check that path.
+fn screenshots_paint_from_layers() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("LADYBIRD_SCREENSHOTS_FROM_LAYERS").is_some_and(|value| !value.is_empty()))
+}
+
+/// The state of a context that painting a frame through its layers reads and changes, besides the frame itself.
+struct LayeredPaintState {
+    layers: ContextLayers,
+    painted_frame: Option<PaintedFrame>,
+    layer_overlay: LayerOverlaySwitch,
+    viewport_size: IntSize,
+    shown_in_remote_layer: bool,
+    store_publication: StorePublication,
+}
+
+impl LayeredPaintState {
+    /// The state of a first frame of the screenshot's size that the window server and the presentation do not show:
+    /// no layers, tiles or frame from before, and no overlay of the layers. Without a published store, the frame
+    /// draws no LCD text, as a replay of the list into a screenshot does not.
+    fn of_screenshot(target_size: IntSize) -> Self {
+        Self {
+            layers: ContextLayers::default(),
+            painted_frame: None,
+            layer_overlay: LayerOverlaySwitch::default(),
+            viewport_size: target_size,
+            shown_in_remote_layer: false,
+            store_publication: StorePublication::Unpublished,
+        }
+    }
+}
+
 fn bounded_composited_raster_scale(mut scale: FloatSize, viewport_size: IntSize) -> FloatSize {
     if viewport_size.width <= 0 || viewport_size.height <= 0 {
         return FloatSize {
@@ -631,6 +664,7 @@ impl ContextPresenting {
             repaint_rect,
             &mut frame_damage.layers,
             &live_content,
+            true,
         );
         self.layer_overlay.did_paint_frame();
         // The other stores miss all of what this one now holds.
@@ -705,6 +739,7 @@ impl ContextPresenting {
             repaint_rect,
             &mut frame_damage.layers,
             &live_content,
+            true,
         );
         self.layer_overlay.did_paint_frame();
         self.commit_layer_update(env, frame_damage.layers);
@@ -734,8 +769,67 @@ impl ContextPresenting {
             display_list,
             frame_inputs,
         };
-        self.paint_current_display_list(env, target, &frame, None, false, false);
+        if !screenshots_paint_from_layers() || !self.paint_screenshot_from_layers(env, target, &frame) {
+            self.paint_current_display_list(env, target, &frame, None, false, false);
+        }
         env.raster.flush(target);
+    }
+
+    /// Paints a screenshot as the first frame of a context that only the reader of the screenshot sees, through layers
+    /// and tiles of its own. Answers false, and paints nothing, where the layers cannot paint the screenshot as a replay
+    /// of the list paints it.
+    fn paint_screenshot_from_layers(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        target: &SurfaceHandle,
+        frame: &FrameToPaint<'_>,
+    ) -> bool {
+        // The layers are rastered under the raster transform, which a screenshot does not apply.
+        let target_size = env.raster.surface_size(target);
+        if target_size.is_empty() || self.raster_transform() != FloatMatrix4x4::identity() {
+            return false;
+        }
+        self.with_layered_paint_state(LayeredPaintState::of_screenshot(target_size), |this| {
+            let live_content = this.live_content(env, frame.display_list);
+            let pending_frame = PendingFrame::repainting_everything(rect_of_size(target_size));
+            let mut frame_damage = this.frame_damage_for(env, &pending_frame, frame, &live_content);
+            this.paint_layered_frame(
+                env,
+                target,
+                frame,
+                frame_damage.rect_in_raster_device_pixels,
+                &mut frame_damage.layers,
+                &live_content,
+                false,
+            );
+        });
+        true
+    }
+
+    /// Runs `paint` with the state that painting through the layers reads and changes swapped for `state`, and then
+    /// puts the context's own state back.
+    fn with_layered_paint_state(&mut self, mut state: LayeredPaintState, paint: impl FnOnce(&mut Self)) {
+        self.swap_layered_paint_state(&mut state);
+        paint(self);
+        self.swap_layered_paint_state(&mut state);
+    }
+
+    fn swap_layered_paint_state(&mut self, state: &mut LayeredPaintState) {
+        // Each field is named, so a new field of the state does not compile until it is swapped too.
+        let LayeredPaintState {
+            layers,
+            painted_frame,
+            layer_overlay,
+            viewport_size,
+            shown_in_remote_layer,
+            store_publication,
+        } = state;
+        std::mem::swap(&mut self.layers, layers);
+        std::mem::swap(&mut self.painted_frame, painted_frame);
+        std::mem::swap(&mut self.layer_overlay, layer_overlay);
+        std::mem::swap(&mut self.viewport_size, viewport_size);
+        std::mem::swap(&mut self.shown_in_remote_layer, shown_in_remote_layer);
+        std::mem::swap(&mut self.store_publication, store_publication);
     }
 
     /// The surface that holds the frame on screen as a whole, with what the window server shows above the store
