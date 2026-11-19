@@ -25,7 +25,6 @@ pub use crate::display_list::placement::{
 use crate::display_list::placement::{
     EXTENT_LIMIT_IN_DEVICE_PIXELS, RasterSpaceGeometry, enclosing_int_rect_within_extent_limit, is_finite_rect,
     space_and_ancestors_below_viewport, spatial_nodes_that_move_on_their_own,
-    spatial_nodes_whose_scroll_offset_placement_leaves_out,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
@@ -1170,10 +1169,4 @@ pub fn backdrop_filter_read_reach(
 
 fn anchors_of_layer_plans(tree: &VisualContextTree) -> Vec<SpatialNodeIndex> {
     raster_space_anchors(tree, &spatial_nodes_that_move_on_their_own(tree))
-}
-
-/// Per spatial node, whether `plan_layer_stack` leaves out the node's scroll offset as it plans a list under the tree.
-/// A plan reads the scroll offsets of the other nodes only.
-pub fn spatial_nodes_whose_scroll_offset_layer_plans_leave_out(tree: &VisualContextTree) -> Vec<bool> {
-    spatial_nodes_whose_scroll_offset_placement_leaves_out(tree, &anchors_of_layer_plans(tree))
 }

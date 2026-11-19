@@ -6,9 +6,9 @@
 
 //! What WebContent last sent a context to draw, and the visual context tree it is drawn with: the one WebContent sent, with the visual viewport this context has pinch-zoomed or panned since, and with its visual animations sampled.
 
-use libcompositing_rust::display_list::layers::{
-    LayerStack, UnvalidatedLayerPlan, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
-};
+use libcompositing_rust::display_list::commands::SpatialNodeIndex;
+use libcompositing_rust::display_list::layers::{LayerStack, UnvalidatedLayerPlan};
+use libcompositing_rust::display_list::placement::spatial_nodes_whose_scroll_offset_placement_leaves_out;
 use libcompositing_rust::scrolling::{
     AccumulatedVisualContextTree, DisplayList, ScrollStateSnapshot, TransformWithOrigin,
     animated_content_may_affect_viewport,
@@ -188,12 +188,21 @@ impl ContextScene {
             return Ok(());
         }
         let layer_plan = layer_plan.validated(display_list.storage(), tree.as_arc())?;
+        // The spaces of a plan of more than one layer are at the anchors that plans take for the tree. A plan of one
+        // layer replays the whole display list, and no frame reads which scroll offsets it leaves out.
+        let anchors_of_spaces: Vec<SpatialNodeIndex> = layer_plan
+            .stack
+            .spaces
+            .iter()
+            .skip(1)
+            .map(|space| space.anchor)
+            .collect();
+        let leaves_out_scroll_offset_of_node =
+            spatial_nodes_whose_scroll_offset_placement_leaves_out(tree.as_arc(), &anchors_of_spaces);
         self.layer_plan = Some(ReceivedLayerPlan {
             viewport_rect: layer_plan.viewport_rect,
             stack: Rc::new(layer_plan.stack),
-            leaves_out_scroll_offset_of_node: Rc::new(spatial_nodes_whose_scroll_offset_layer_plans_leave_out(
-                tree.as_arc(),
-            )),
+            leaves_out_scroll_offset_of_node: Rc::new(leaves_out_scroll_offset_of_node),
             note_lines: layer_plan.note_lines.into(),
         });
         Ok(())

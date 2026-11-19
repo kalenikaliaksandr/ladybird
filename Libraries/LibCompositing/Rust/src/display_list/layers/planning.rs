@@ -21,8 +21,7 @@ use super::{
     PlacementNodeIdentity, PlacementNodeIndex, StackLayer, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect,
     WhyEffectIsComposited, WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia,
     anchors_of_layer_plans, backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index,
-    effect_is_or_is_inside, identity_of_node, media_name, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
-    wire,
+    effect_is_or_is_inside, identity_of_node, media_name, wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
@@ -2251,6 +2250,12 @@ fn build_layer_stack(
         notes: NotesOfStack::default(),
         placement,
     }
+}
+
+/// Per spatial node, whether `plan_layer_stack` leaves out the node's scroll offset as it plans a list under the tree.
+/// A plan reads the scroll offsets of the other nodes only.
+fn spatial_nodes_whose_scroll_offset_layer_plans_leave_out(tree: &VisualContextTree) -> Vec<bool> {
+    spatial_nodes_whose_scroll_offset_placement_leaves_out(tree, &anchors_of_layer_plans(tree))
 }
 
 // The scroll offsets a plan reads of `scroll_offsets`: zero for each node that `leaves_out_scroll_offset_of_node` names.
