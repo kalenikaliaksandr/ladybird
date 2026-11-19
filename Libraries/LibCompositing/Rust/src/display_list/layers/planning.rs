@@ -3579,6 +3579,16 @@ mod tests {
         for y in [800.0, highest_offset.y] {
             assert_eq!(stack_with_box_held_at(FloatPoint { x: 0.0, y }), stack);
         }
+
+        // WebContent does not plan again as it publishes where the box is held.
+        let storage = DisplayListStorage::of_builder(&list.builder);
+        let tree = Arc::new(tree);
+        let inputs_with_box_held_at = |y: f32| {
+            let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
+            offsets[sticky_node.0 as usize].y = y;
+            InputsOfLayerPlan::new(storage.clone(), tree.clone(), &offsets, VIEWPORT)
+        };
+        assert!(inputs_with_box_held_at(0.0).plan_alike_as(&inputs_with_box_held_at(800.0)));
     }
 
     #[test]

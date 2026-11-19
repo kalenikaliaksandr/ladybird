@@ -320,15 +320,21 @@ fn spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
 }
 
 /// Per spatial node, whether placing a list among the spaces at `anchors` leaves out the node's scroll offset: the
-/// compositor scrolls the node, or the node moves on its own in those spaces. What moves with such a node is placed in
-/// a space that follows it, or wherever the node can take it.
+/// node is one of the anchors, the compositor scrolls the node, or the node moves on its own in those spaces. What
+/// moves with such a node is placed in a space that follows it, or wherever the node can take it.
 pub fn spatial_nodes_whose_scroll_offset_placement_leaves_out(
     tree: &VisualContextTree,
     anchors: &[SpatialNodeIndex],
 ) -> Vec<bool> {
     let mut leaves_out_by_node = spatial_nodes_that_move_on_their_own_relative_to_spaces_at(tree, Some(anchors));
-    for record in tree.compositor_scroll_table().nodes.iter() {
-        if let Some(leaves_out) = leaves_out_by_node.get_mut(record.scroll_node_index.0 as usize) {
+    let nodes_the_compositor_scrolls = tree
+        .compositor_scroll_table()
+        .nodes
+        .iter()
+        .map(|record| record.scroll_node_index);
+    // The compositor also moves a sticky box at an anchor as it scrolls the scroller of the box.
+    for node in nodes_the_compositor_scrolls.chain(anchors.iter().copied()) {
+        if let Some(leaves_out) = leaves_out_by_node.get_mut(node.0 as usize) {
             *leaves_out = true;
         }
     }
