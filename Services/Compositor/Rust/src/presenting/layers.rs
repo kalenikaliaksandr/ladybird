@@ -28,8 +28,8 @@ use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
     BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayerStackInputs,
     NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind,
-    RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer, backdrop_filter_read_reach, plan_layer_stack,
-    spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
+    RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia,
+    backdrop_filter_read_reach, plan_layer_stack, spatial_nodes_whose_scroll_offset_layer_plans_leave_out,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpace, RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets,
@@ -456,6 +456,8 @@ struct InputsOfStack {
 pub struct ContextLayers {
     stack: Option<LayerStack>,
     inputs_of_stack: Option<InputsOfStack>,
+    /// Where the window server can show the media of the stack, as the latest frame worked it out.
+    window_server_placements_of_media: WindowServerPlacementsOfMedia,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
     tile_pool: TilePool,
     compositing_of_latest_frame: Vec<LayerCompositingInFrame>,
@@ -556,12 +558,15 @@ impl ContextLayers {
             };
         // The compositor scrolls only nodes a plan leaves out, so the frame shows the others at the offsets WebContent
         // published.
-        self.stack = Some(plan_layer_stack(&LayerStackInputs {
-            list: storage,
-            tree: published_tree,
-            scroll_offsets,
-            viewport_rect,
-        }));
+        self.stack = Some(
+            plan_layer_stack(&LayerStackInputs {
+                list: storage,
+                tree: published_tree,
+                scroll_offsets,
+                viewport_rect,
+            })
+            .stack,
+        );
         self.inputs_of_stack = Some(InputsOfStack {
             display_list: display_list.clone(),
             viewport_rect,
@@ -1519,15 +1524,20 @@ impl ContextPresenting {
             scroll_offsets,
             viewport_rect,
         );
-        let stack = self.layers.stack.as_mut().expect("a frame with layers has a stack");
-        stack.update_window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
         let stack = self.layers.stack.as_ref().expect("a frame with layers has a stack");
+        self.layers.window_server_placements_of_media =
+            stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
         let composite_offsets = stack.composite_offsets(scroll_offsets);
         let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets, raster_transform);
         let shown_by_window_server_by_layer = if self.why_window_server_shows_no_media_of_this_context(env).is_none() {
             stack.layers_the_window_server_shows(&composite_offsets, |layer_index| {
-                self.why_window_server_does_not_show_media_layer(env, &stack.layers[layer_index.0], live_content)
-                    .is_none()
+                self.why_window_server_does_not_show_media_layer(
+                    env,
+                    layer_index,
+                    &stack.layers[layer_index.0],
+                    live_content,
+                )
+                .is_none()
             })
         } else {
             vec![false; stack.layers.len()]
@@ -1893,18 +1903,14 @@ impl ContextPresenting {
     fn why_window_server_does_not_show_media_layer(
         &self,
         env: &PresentingEnvironment<'_>,
+        layer_index: LayerIndex,
         layer: &StackLayer,
         live_content: &LiveContent,
     ) -> Option<WhyMediaIsReplayed> {
-        let LayerContent::Media {
-            content,
-            window_server_placement,
-            ..
-        } = &layer.content
-        else {
+        let LayerContent::Media { content, .. } = &layer.content else {
             return None;
         };
-        let placement = match window_server_placement {
+        let placement = match self.layers.window_server_placements_of_media.of_layer(layer_index) {
             Some(Ok(placement)) => placement,
             Some(Err(why)) => return Some(WhyMediaIsReplayed::Placement(*why)),
             None => return Some(WhyMediaIsReplayed::NoPlacement(*content)),
@@ -1987,7 +1993,14 @@ impl ContextPresenting {
                             MediaPresentation::ShownByWindowServer
                         } else {
                             let why = why_context_shows_no_media
-                                .or_else(|| self.why_window_server_does_not_show_media_layer(env, layer, live_content))
+                                .or_else(|| {
+                                    self.why_window_server_does_not_show_media_layer(
+                                        env,
+                                        layer_index,
+                                        layer,
+                                        live_content,
+                                    )
+                                })
                                 .unwrap_or(if some_tiles_were_painted_straight {
                                     WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame
                                 } else if !stack.composited_bands_around_layer(layer_index).is_empty() {
@@ -2854,16 +2867,11 @@ impl ContextPresenting {
             .filter(|compositing| compositing.shown_by_window_server)
             .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
         {
-            let Some((_, layer)) = stack.layer_with_identity(compositing.identity) else {
+            let Some((layer_index, layer)) = stack.layer_with_identity(compositing.identity) else {
                 continue;
             };
-            if let LayerContent::Media {
-                content,
-                window_server_placement,
-                ..
-            } = &layer.content
-            {
-                let Some(Ok(placement)) = window_server_placement else {
+            if let LayerContent::Media { content, .. } = &layer.content {
+                let Some(Ok(placement)) = layers.window_server_placements_of_media.of_layer(layer_index) else {
                     continue;
                 };
                 let LayerIdentity::Media { ordinal, .. } = layer.identity else {

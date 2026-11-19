@@ -31,8 +31,9 @@ pub use crate::display_list::placement::{
     CompositeClip, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex, RunGroupIndex, raster_space_anchors,
 };
 use crate::display_list::placement::{
-    FiltersAndClipsOfList, PlacementTables, RasterSpaceGeometry, RasterSpaces, RunsReachingOutsideTheirContext,
-    is_finite_rect, lowest_common_ancestor_space, rect_swept_over_translations, space_and_ancestors_below_viewport,
+    EXTENT_LIMIT_IN_DEVICE_PIXELS, FiltersAndClipsOfList, PlacementTables, RasterSpaceGeometry, RasterSpaces,
+    RunsReachingOutsideTheirContext, enclosing_int_rect_within_extent_limit, is_finite_rect,
+    lowest_common_ancestor_space, rect_swept_over_translations, space_and_ancestors_below_viewport,
     spaces_with_geometries, spatial_nodes_that_move_on_their_own,
     spatial_nodes_whose_scroll_offset_placement_leaves_out,
 };
@@ -49,7 +50,15 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::rc::Rc;
 
+mod wire;
+
+pub use wire::{LayerPlan, UnvalidatedLayerPlan, UnvalidatedLayerStack};
+
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
+// Twice the extent limit of a plan, which leaves room for the margins that planning adds past the extent of a space.
+// The rects of a stack from another process are within it, and so are the offsets a frame composites spaces at, so that
+// a rect offset by such an offset still fits in an `IntRect`.
+const COORDINATE_LIMIT_IN_DEVICE_PIXELS: i32 = 2 * EXTENT_LIMIT_IN_DEVICE_PIXELS as i32;
 /// How many effects and subtrees the compositor animates get layers of their own, first in paint order.
 pub const MAXIMUM_ANIMATED_NODES_WITH_LAYERS: usize = 32;
 
@@ -280,13 +289,17 @@ pub enum SpaceToFrame {
 
 impl Eq for SpaceToFrame {}
 
+// A rect that a transform maps past the extent limit shows nothing there, and is kept within the limit so that the
+// arithmetic of the rect does not overflow.
 impl SpaceToFrame {
     /// The frame's pixels that `rect_in_space` covers, or the bounds of them.
     pub fn rect_in_frame(self, rect_in_space: IntRect) -> IntRect {
         match self {
             SpaceToFrame::Offset(offset) => rect_in_space.translated(offset.x, offset.y),
             SpaceToFrame::Transform(_) if rect_in_space.is_empty() => IntRect::default(),
-            SpaceToFrame::Transform(transform) => enclosing_int_rect(transform.map_rect(rect_in_space.to_float())),
+            SpaceToFrame::Transform(transform) => {
+                enclosing_int_rect_within_extent_limit(transform.map_rect(rect_in_space.to_float()))
+            }
         }
     }
 
@@ -296,7 +309,7 @@ impl SpaceToFrame {
             SpaceToFrame::Offset(offset) => rect_in_frame.translated(-offset.x, -offset.y),
             SpaceToFrame::Transform(_) if rect_in_frame.is_empty() => IntRect::default(),
             SpaceToFrame::Transform(transform) => transform.inverse().map_or(IntRect::default(), |inverse| {
-                enclosing_int_rect(inverse.map_rect(rect_in_frame.to_float()))
+                enclosing_int_rect_within_extent_limit(inverse.map_rect(rect_in_frame.to_float()))
             }),
         }
     }
@@ -432,8 +445,6 @@ pub enum LayerContent {
         record_span: ListSpan,
         /// In the raster coordinates of the node's space.
         reach: IntRect,
-        /// For a canvas or a video, where the window server can show its content by itself, or why it cannot.
-        window_server_placement: Option<Result<WindowServerPlacement, WhyWindowServerCannotShowMedia>>,
     },
 }
 
@@ -448,9 +459,6 @@ pub struct StackLayer {
     pub may_hold_content: bool,
     /// Where what the layer holds can show, in the raster coordinates of its space.
     pub reach: IntRect,
-    /// Whether the window server shows the layer above the frame, as `update_window_server_placements_and_shown_layers`
-    /// worked it out, where it can show every canvas and video it has a placement for.
-    pub shown_by_window_server: bool,
 }
 
 /// An effect that the compositor composites the layers of its content inside, and why.
@@ -467,7 +475,8 @@ pub struct CompositedEffect {
 }
 
 /// The layers of a list bottom to top, with the base layer, which is rastered over the surface's clear color and
-/// replaces what is below it. Layers below the base layer hold nothing.
+/// replaces what is below it. Layers below the base layer hold nothing. A stack does not change once it is planned:
+/// what a frame works out of it is kept apart from it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerStack {
     pub spaces: Vec<RasterSpace>,
@@ -484,10 +493,52 @@ pub struct LayerStack {
     /// The backdrop filters and blend modes that find all they read in the layer they go into, and read it there
     /// rather than the compositor compositing them, in paint order.
     pub effects_reading_only_own_layer: Vec<EffectNodeIndex>,
-    /// Where the parts of the list are placed among the spaces of the stack.
-    pub placement: ListPlacement,
+    /// Per raster space, whether records its tiles hold move within it as nodes that move on their own, or that the
+    /// compositor scrolls without the space following them, do. Canvases, videos and nested contexts with layers of
+    /// their own hold none of those records.
+    pub tiles_hold_content_moving_within_space_by_space_index: Vec<bool>,
+    /// Per raster space whose anchor the compositor animates and that holds content, where that content can show in
+    /// the raster coordinates of the space it is in wherever the animation takes it.
+    pub swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
     index_of_layer_with_identity: HashMap<LayerIdentity, LayerIndex>,
     has_layer_at_or_above_base_by_band_index: Vec<bool>,
+}
+
+/// Where the window server can show each canvas and video layer of a stack under the values of one frame, or why it
+/// cannot, by layer index. A stack is kept while its spaces scroll and its media move with them, so each frame works
+/// this out anew.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowServerPlacementsOfMedia {
+    placement_by_layer_index: Vec<Option<Result<WindowServerPlacement, WhyWindowServerCannotShowMedia>>>,
+}
+
+impl WindowServerPlacementsOfMedia {
+    /// Where the window server can show the canvas or video of the layer, or why it cannot. None for a layer that holds
+    /// no canvas or video.
+    pub fn of_layer(
+        &self,
+        layer_index: LayerIndex,
+    ) -> Option<&Result<WindowServerPlacement, WhyWindowServerCannotShowMedia>> {
+        self.placement_by_layer_index.get(layer_index.0)?.as_ref()
+    }
+}
+
+/// Where the window server can show the canvases and videos of a stack under the values of one frame, and which layers
+/// it shows above the frame where it can show every canvas and video it has a placement for, as the dump tells them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowServerPresentationOfMedia {
+    pub placements: WindowServerPlacementsOfMedia,
+    /// By layer index.
+    pub shown_by_window_server_by_layer_index: Vec<bool>,
+}
+
+impl WindowServerPresentationOfMedia {
+    fn layer_is_shown_by_window_server(&self, layer_index: LayerIndex) -> bool {
+        self.shown_by_window_server_by_layer_index
+            .get(layer_index.0)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 fn which_bands_have_layer_at_or_above_base(
@@ -571,11 +622,8 @@ impl LayerStack {
             },
             may_hold_content: true,
             reach: viewport_rect,
-            shown_by_window_server: false,
         }];
         Self {
-            index_of_layer_with_identity: index_of_layer_with_identity(&layers),
-            has_layer_at_or_above_base_by_band_index: vec![true],
             layers,
             bands: vec![PlacementNodeBand {
                 placement_node_index: PlacementNodeIndex(0),
@@ -594,8 +642,20 @@ impl LayerStack {
             layering_obstacles: LayeringObstacles::default(),
             media_without_layers: Vec::new(),
             effects_reading_only_own_layer: Vec::new(),
-            placement: ListPlacement::default(),
+            tiles_hold_content_moving_within_space_by_space_index: vec![true],
+            swept_reach_in_parent_space_by_space_index: vec![None],
+            index_of_layer_with_identity: HashMap::new(),
+            has_layer_at_or_above_base_by_band_index: Vec::new(),
         }
+        .with_lookups()
+    }
+
+    // The lookups that the methods read, built from what the stack holds. Every index the stack holds must be in range.
+    fn with_lookups(mut self) -> Self {
+        self.index_of_layer_with_identity = index_of_layer_with_identity(&self.layers);
+        self.has_layer_at_or_above_base_by_band_index =
+            which_bands_have_layer_at_or_above_base(&self.layers, self.bands.len(), self.base_layer);
+        self
     }
 
     pub fn replays_whole_list(&self) -> bool {
@@ -608,7 +668,6 @@ impl LayerStack {
     pub fn space_holds_content_that_moves_within_it(&self, raster_space_index: RasterSpaceIndex) -> bool {
         self.replays_whole_list()
             || self
-                .placement
                 .tiles_hold_content_moving_within_space_by_space_index
                 .get(raster_space_index.0)
                 .copied()
@@ -628,24 +687,31 @@ impl LayerStack {
         self.nodes[self.layers[layer_index.0].placement_node_index.0].raster_space_index
     }
 
+    // An offset past the coordinate limit shows nothing of the space, and is kept within the limit so that a rect of the
+    // stack offset by it still fits in an `IntRect`.
     fn composite_offset_of_space(
         &self,
         raster_space_index: RasterSpaceIndex,
         scroll_offsets: &[FloatPoint],
     ) -> IntPoint {
-        space_and_ancestors_below_viewport(&self.spaces, raster_space_index).fold(
-            IntPoint::default(),
-            |offset_so_far, space_or_ancestor_index| {
+        let (x, y) = space_and_ancestors_below_viewport(&self.spaces, raster_space_index).fold(
+            (0i64, 0i64),
+            |(x_so_far, y_so_far), space_or_ancestor_index| {
                 let space_or_ancestor = &self.spaces[space_or_ancestor_index.0];
                 let anchor_translation = space_or_ancestor.anchor_translation_on_whole_device_pixels(
                     device_offset_for_index(scroll_offsets, space_or_ancestor.anchor),
                 );
-                IntPoint {
-                    x: offset_so_far.x + anchor_translation.x,
-                    y: offset_so_far.y + anchor_translation.y,
-                }
+                (
+                    x_so_far + i64::from(anchor_translation.x),
+                    y_so_far + i64::from(anchor_translation.y),
+                )
             },
-        )
+        );
+        let limit = i64::from(COORDINATE_LIMIT_IN_DEVICE_PIXELS);
+        IntPoint {
+            x: x.clamp(-limit, limit) as i32,
+            y: y.clamp(-limit, limit) as i32,
+        }
     }
 
     /// Per raster space, by its index, where the frame composites its rasters, or for a space whose anchor the
@@ -777,7 +843,6 @@ impl LayerStack {
     fn reach_of_layer_in_viewport(&self, layer_index: LayerIndex, composite_offsets: &[IntPoint]) -> IntRect {
         let node = &self.nodes[self.layers[layer_index.0].placement_node_index.0];
         let swept_reach_of_animated_space = self
-            .placement
             .swept_reach_in_parent_space_by_space_index
             .get(node.raster_space_index.0)
             .copied()
@@ -869,75 +934,73 @@ impl LayerStack {
         shown_by_window_server
     }
 
-    /// Works out again where the window server can show the content of each canvas and video layer, under
-    /// `scroll_offsets`, as the stack is kept while its spaces scroll and its media move with them, and which layers it
-    /// shows where it can show every canvas and video it has a placement for.
-    pub fn update_window_server_placements_and_shown_layers(
-        &mut self,
+    /// Works out where the window server can show the content of each canvas and video layer under `scroll_offsets`,
+    /// and which layers it shows where it can show every canvas and video it has a placement for.
+    pub fn window_server_presentation_of_media(
+        &self,
         list: &DisplayListStorage,
         tree: &VisualContextTree,
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
-    ) {
-        self.update_window_server_placements_of_media(list, tree, scroll_offsets, viewport_rect);
+    ) -> WindowServerPresentationOfMedia {
+        let placements = self.window_server_placements_of_media(list, tree, scroll_offsets, viewport_rect);
         let composite_offsets = self.composite_offsets(scroll_offsets);
-        let shown_by_window_server = self.layers_the_window_server_shows(&composite_offsets, |layer| {
-            matches!(
-                self.layers[layer.0].content,
-                LayerContent::Media {
-                    window_server_placement: Some(Ok(_)),
-                    ..
-                }
-            )
+        let shown_by_window_server_by_layer_index = self.layers_the_window_server_shows(&composite_offsets, |layer| {
+            matches!(placements.of_layer(layer), Some(Ok(_)))
         });
-        for (layer, shown) in self.layers.iter_mut().zip(shown_by_window_server) {
-            layer.shown_by_window_server = shown;
+        WindowServerPresentationOfMedia {
+            placements,
+            shown_by_window_server_by_layer_index,
         }
     }
 
     /// Works out where the window server could show each canvas and video of the stack under the frame's values.
-    pub fn update_window_server_placements_of_media(
-        &mut self,
+    pub fn window_server_placements_of_media(
+        &self,
         list: &DisplayListStorage,
         tree: &VisualContextTree,
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
-    ) {
+    ) -> WindowServerPlacementsOfMedia {
         let window_server_may_show_content =
             |content: &LiveContent| !matches!(content, LiveContent::CompositedContext(_));
         let has_media_the_window_server_may_show = self.layers.iter().any(|layer| {
             matches!(&layer.content, LayerContent::Media { content, .. } if window_server_may_show_content(content))
         });
         if !has_media_the_window_server_may_show {
-            return;
+            return WindowServerPlacementsOfMedia::default();
         }
         let world_transforms = WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity()));
-        for layer in &mut self.layers {
-            let LayerContent::Media {
-                content,
-                record_span,
-                window_server_placement,
-                ..
-            } = &mut layer.content
-            else {
-                continue;
-            };
-            if !window_server_may_show_content(content) {
-                continue;
-            }
-            let media_record_position = record_span.begin;
-            let runs_of_chunk = list.chunk(media_record_position.chunk_index).runs();
-            let run_holding_media = &runs_of_chunk
-                [runs_of_chunk.partition_point(|run| run.offset + run.size <= media_record_position.offset)];
-            let (header, payload) = list.record_at(media_record_position);
-            *window_server_placement = Some(crate::display_list::window_server_placement::window_server_placement(
-                tree,
-                &world_transforms,
-                viewport_rect,
-                run_holding_media,
-                &header,
-                payload,
-            ));
+        let placement_by_layer_index = self
+            .layers
+            .iter()
+            .map(|layer| {
+                let LayerContent::Media {
+                    content, record_span, ..
+                } = &layer.content
+                else {
+                    return None;
+                };
+                if !window_server_may_show_content(content) {
+                    return None;
+                }
+                let media_record_position = record_span.begin;
+                let runs_of_chunk = list.chunk(media_record_position.chunk_index).runs();
+                let run_holding_media = &runs_of_chunk
+                    [runs_of_chunk.partition_point(|run| run.offset + run.size <= media_record_position.offset)];
+                let (header, payload) = list.record_at(media_record_position);
+                Some(crate::display_list::window_server_placement::window_server_placement(
+                    tree,
+                    &world_transforms,
+                    viewport_rect,
+                    run_holding_media,
+                    &header,
+                    payload,
+                ))
+            })
+            .collect();
+        WindowServerPlacementsOfMedia {
+            placement_by_layer_index,
         }
     }
 
@@ -1087,7 +1150,17 @@ impl LayerStack {
             .iter()
             .map(|(content, why_no_layer)| format!("no layer for {}: {why_no_layer}", media_name(*content)))
     }
+}
 
+/// A plan of the layers of a list: the stack the compositor composites frames from, and where the parts of the list
+/// are placed among the spaces of the stack, which only the dump and the tests read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlannedLayers {
+    pub stack: LayerStack,
+    pub placement: ListPlacement,
+}
+
+impl PlannedLayers {
     /// What the dump says of each node the compositor animates whose content was not given layers of its own, and why.
     pub fn lines_of_animations_without_layers<'a>(
         &'a self,
@@ -1108,38 +1181,40 @@ impl LayerStack {
     /// The lines of the Layers section of the dump, each with the layer it is about, if it is about one. There is one
     /// line per layer, bottom to top: its index, what it holds, the space it is rastered in, what it sits above, the
     /// records `describe_records` names for it, what it is clipped to as it is composited, and for a canvas or video
-    /// whether the window server shows it. A layer below the base layer, or one that can hold nothing, is left out. Then
-    /// a line for each effect the compositor composites, each canvas, video or nested context without a layer, and each
-    /// effect that reads only its own layer.
+    /// whether the window server shows it, as `presentation` tells. A layer below the base layer, or one that can hold
+    /// nothing, is left out. Then a line for each effect the compositor composites, each canvas, video or nested context
+    /// without a layer, each animation without a layer, and each effect that reads only its own layer.
     pub fn layer_lines(
         &self,
+        presentation: &WindowServerPresentationOfMedia,
         node_namer: &dyn VisualContextNodeNamer,
         describe_records: impl Fn(LayerIndex) -> Option<String>,
     ) -> Vec<(Option<LayerIndex>, String)> {
+        let stack = &self.stack;
         let records_suffix_of = |layer_index: LayerIndex| {
             describe_records(layer_index).map_or_else(String::new, |records| format!(" records={records}"))
         };
-        if let Some(why_list_is_one_layer) = self.why_list_is_one_layer {
+        if let Some(why_list_is_one_layer) = stack.why_list_is_one_layer {
             let only_layer = LayerIndex(0);
             return vec![(
                 Some(only_layer),
                 format!(
                     "{}{}: {why_list_is_one_layer}",
-                    self.name_of_layer(only_layer, node_namer),
+                    stack.name_of_layer(only_layer, node_namer),
                     records_suffix_of(only_layer)
                 ),
             )];
         }
         let mut lines = Vec::new();
-        for (index, layer) in self.layers.iter().enumerate() {
+        for (index, layer) in stack.layers.iter().enumerate() {
             let layer_index = LayerIndex(index);
-            if layer_index < self.base_layer || (layer_index != self.base_layer && !layer.may_hold_content) {
+            if layer_index < stack.base_layer || (layer_index != stack.base_layer && !layer.may_hold_content) {
                 continue;
             }
-            let node = &self.nodes[layer.placement_node_index.0];
+            let node = &stack.nodes[layer.placement_node_index.0];
             let mut line = format!(
                 "{}{}",
-                self.name_of_layer(layer_index, node_namer),
+                stack.name_of_layer(layer_index, node_namer),
                 records_suffix_of(layer_index)
             );
             for clip in &node.composite_clips {
@@ -1151,39 +1226,32 @@ impl LayerStack {
                     clip_rect.width,
                     clip_rect.height,
                     text_of_corner_radii_if_any(clip.corner_radii),
-                    self.name_of_space(clip.raster_space_index, node_namer)
+                    stack.name_of_space(clip.raster_space_index, node_namer)
                 ));
             }
-            match &layer.content {
-                LayerContent::Media {
-                    window_server_placement: Some(Ok(placement)),
-                    ..
-                } if layer.shown_by_window_server => {
-                    line.push_str(&format!(" shown by the window server: {placement}"));
+            if matches!(layer.content, LayerContent::Media { .. }) {
+                match presentation.placements.of_layer(layer_index) {
+                    Some(Ok(placement)) if presentation.layer_is_shown_by_window_server(layer_index) => {
+                        line.push_str(&format!(" shown by the window server: {placement}"));
+                    }
+                    Some(Ok(_)) if !stack.composited_bands_around_layer(layer_index).is_empty() => {
+                        line.push_str(" replayed: inside an effect the compositor composites");
+                    }
+                    Some(Ok(_)) => line.push_str(" replayed: under a layer the frame holds"),
+                    Some(Err(why_window_server_cannot_show)) => {
+                        line.push_str(&format!(" replayed: {why_window_server_cannot_show}"));
+                    }
+                    None => {}
                 }
-                LayerContent::Media {
-                    window_server_placement: Some(Ok(_)),
-                    ..
-                } if !self.composited_bands_around_layer(layer_index).is_empty() => {
-                    line.push_str(" replayed: inside an effect the compositor composites");
-                }
-                LayerContent::Media {
-                    window_server_placement: Some(Ok(_)),
-                    ..
-                } => line.push_str(" replayed: under a layer the frame holds"),
-                LayerContent::Media {
-                    window_server_placement: Some(Err(why_window_server_cannot_show)),
-                    ..
-                } => line.push_str(&format!(" replayed: {why_window_server_cannot_show}")),
-                _ => {}
             }
             lines.push((Some(layer_index), line));
         }
         lines.extend(
-            self.lines_of_composited_effects(node_namer)
-                .chain(self.lines_of_media_without_layers())
+            stack
+                .lines_of_composited_effects(node_namer)
+                .chain(stack.lines_of_media_without_layers())
                 .chain(self.lines_of_animations_without_layers(node_namer))
-                .chain(self.lines_of_effects_reading_only_own_layer(node_namer))
+                .chain(stack.lines_of_effects_reading_only_own_layer(node_namer))
                 .map(|line| (None, line)),
         );
         lines
@@ -1194,10 +1262,11 @@ impl LayerStack {
         &self,
         output: &mut impl std::fmt::Write,
         indent: &str,
+        presentation: &WindowServerPresentationOfMedia,
         node_namer: &dyn VisualContextNodeNamer,
         describe_records: impl Fn(LayerIndex) -> Option<String>,
     ) -> std::fmt::Result {
-        for (_, line) in self.layer_lines(node_namer, describe_records) {
+        for (_, line) in self.layer_lines(presentation, node_namer, describe_records) {
             writeln!(output, "{indent}{line}")?;
         }
         Ok(())
@@ -1205,10 +1274,11 @@ impl LayerStack {
 
     /// The layers that the record at `position` can be drawn into, in the tiles it reaches.
     pub fn layers_of_record(&self, position: ListPosition) -> Vec<LayerIndex> {
-        if self.replays_whole_list() {
+        let stack = &self.stack;
+        if stack.replays_whole_list() {
             return vec![LayerIndex(0)];
         }
-        for (index, layer) in self.layers.iter().enumerate() {
+        for (index, layer) in stack.layers.iter().enumerate() {
             let LayerContent::Media { record_span, .. } = &layer.content else {
                 continue;
             };
@@ -1224,14 +1294,14 @@ impl LayerStack {
         else {
             return Vec::new();
         };
-        let Some(band_index) = self
+        let Some(band_index) = stack
             .bands
             .iter()
             .position(|band| band.record_spans.iter().any(|span| span.contains(position)))
         else {
             return Vec::new();
         };
-        let band = &self.bands[band_index];
+        let band = &stack.bands[band_index];
         let mut layers: Vec<LayerIndex> = if reaches_too_many_cells_to_follow_one_by_one(stretch.reach) {
             std::iter::once(band.layer_below_all_cuts)
                 .chain(
@@ -1320,12 +1390,11 @@ fn mask_declarations_are_on_effect_chains_of_their_masks(list: &DisplayListStora
     })
 }
 
-/// What of a tree and its list keeps the list from being layered, or the tiles of its layers from replaying only the
-/// records that reach them, at some sample of the animations of the tree.
+/// What of a tree and its list keeps the tiles of its layers from replaying only the records that reach them, or keeps
+/// the list from being layered, at some sample of the animations of the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LayeringObstacles {
     pub sorts_planes_by_depth: bool,
-    pub root_isolation_effect_is_not_a_plain_group: bool,
     pub mask_declared_under_effects_its_mask_is_not_under: bool,
 }
 
@@ -1333,7 +1402,6 @@ impl LayeringObstacles {
     pub fn of(list: &DisplayListStorage, tree: &VisualContextTree) -> Self {
         Self {
             sorts_planes_by_depth: tree.may_sort_planes_by_depth(),
-            root_isolation_effect_is_not_a_plain_group: !root_isolation_effect_is_plain_group(tree),
             mask_declared_under_effects_its_mask_is_not_under: !mask_declarations_are_on_effect_chains_of_their_masks(
                 list, tree,
             ),
@@ -1357,7 +1425,7 @@ pub fn why_list_cannot_be_layered(
     if inputs.list.run_count() == 0 {
         return Some(WhyListIsOneLayer::EmptyDisplayList);
     }
-    if layering_obstacles.root_isolation_effect_is_not_a_plain_group {
+    if !root_isolation_effect_is_plain_group(inputs.tree) {
         return Some(WhyListIsOneLayer::RootIsolationEffectIsNotPlainGroup);
     }
     if layering_obstacles.mask_declared_under_effects_its_mask_is_not_under {
@@ -1410,7 +1478,7 @@ pub fn backdrop_filter_read_reach(
     if !is_finite_rect(backdrop_region) {
         return Reach::Anywhere;
     }
-    Reach::Within(libgfx_rust::enclosing_int_rect(backdrop_region).inflated_edges(
+    Reach::Within(enclosing_int_rect_within_extent_limit(backdrop_region).inflated_edges(
         read_reach_in_device_pixels,
         read_reach_in_device_pixels,
         read_reach_in_device_pixels,
@@ -2910,7 +2978,6 @@ impl StackBeingBuilt<'_> {
             content: LayerContent::Painted { band_index },
             may_hold_content: false,
             reach: IntRect::default(),
-            shown_by_window_server: false,
         });
         let layer_below_all_cuts = LayerIndex(self.layers.len() - 1);
         let mut cuts = Vec::with_capacity(barriers.len());
@@ -2933,11 +3000,9 @@ impl StackBeingBuilt<'_> {
                             content: media.content,
                             record_span: media_stretch.record_span,
                             reach: media_stretch.reach,
-                            window_server_placement: None,
                         },
                         may_hold_content: true,
                         reach: media_stretch.reach,
-                        shown_by_window_server: false,
                     });
                     (
                         BarrierIdentity::Media {
@@ -2978,7 +3043,6 @@ impl StackBeingBuilt<'_> {
                 content: LayerContent::Painted { band_index },
                 may_hold_content: false,
                 reach: IntRect::default(),
-                shown_by_window_server: false,
             });
             cuts.push(BarrierCut {
                 barrier_first_record_position,
@@ -3056,9 +3120,9 @@ fn node_covers_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node_in
     }
 }
 
-fn assemble_stack_unless_records_blend_with_other_layers(placement: ListPlacement) -> Option<LayerStack> {
+fn assemble_stack_unless_records_blend_with_other_layers(placement: &ListPlacement) -> Option<LayerStack> {
     let mut stack_being_built = StackBeingBuilt {
-        placement: &placement,
+        placement,
         nodes: Vec::new(),
         node_of_run_group: Vec::new(),
         children_of_node: Vec::new(),
@@ -3131,23 +3195,27 @@ fn assemble_stack_unless_records_blend_with_other_layers(placement: ListPlacemen
         _ => LayerIndex(0),
     };
 
-    let has_layer_at_or_above_base_by_band_index =
-        which_bands_have_layer_at_or_above_base(&layers, bands.len(), base_layer);
-    Some(LayerStack {
-        spaces: placement.spaces.clone(),
-        nodes,
-        bands,
-        index_of_layer_with_identity: index_of_layer_with_identity(&layers),
-        has_layer_at_or_above_base_by_band_index,
-        layers,
-        composited_effects,
-        base_layer,
-        why_list_is_one_layer: None,
-        layering_obstacles: placement.layering_obstacles,
-        media_without_layers: placement.media_without_layers.clone(),
-        effects_reading_only_own_layer,
-        placement,
-    })
+    Some(
+        LayerStack {
+            spaces: placement.spaces.clone(),
+            nodes,
+            bands,
+            layers,
+            composited_effects,
+            base_layer,
+            why_list_is_one_layer: None,
+            layering_obstacles: placement.layering_obstacles,
+            media_without_layers: placement.media_without_layers.clone(),
+            effects_reading_only_own_layer,
+            tiles_hold_content_moving_within_space_by_space_index: placement
+                .tiles_hold_content_moving_within_space_by_space_index
+                .clone(),
+            swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
+            index_of_layer_with_identity: HashMap::new(),
+            has_layer_at_or_above_base_by_band_index: Vec::new(),
+        }
+        .with_lookups(),
+    )
 }
 
 // A 3D sorting context that sorts its planes by depth is placed whole into the tiles of one band, which replay it
@@ -3155,6 +3223,7 @@ fn assemble_stack_unless_records_blend_with_other_layers(placement: ListPlacemen
 // composited apart from it.
 fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     inputs: &LayerStackInputs<'_>,
+    placement: &ListPlacement,
     stack: &LayerStack,
 ) -> bool {
     if !stack.layering_obstacles.sorts_planes_by_depth {
@@ -3163,7 +3232,7 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     let tree = inputs.tree;
     let run_groups = inputs.list.run_groups(tree);
     let reads_backdrop_or_is_composited = |effect: EffectNodeIndex| {
-        stack.placement.backdrop_readers_in_paint_order.contains(&effect)
+        placement.backdrop_readers_in_paint_order.contains(&effect)
             || stack
                 .composited_effects
                 .iter()
@@ -3187,9 +3256,12 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
 // over and around where that is drawn, as the barriers inside it cut its tiles there, and reads no farther past each
 // pixel than tiles are followed past the frame. Media and animations get no layer inside any other filter;
 // an effect that reads what is below its layer can still make one composited.
-fn why_compositor_cannot_composite_effect_of_stack(stack: &LayerStack) -> Option<WhyListIsOneLayer> {
+fn why_compositor_cannot_composite_effect_of_stack(
+    placement: &ListPlacement,
+    stack: &LayerStack,
+) -> Option<WhyListIsOneLayer> {
     stack.composited_effects.iter().find_map(|composited| {
-        stack.placement.why_compositor_cannot_composite_by_effect_index[composited.effect.0 as usize]
+        placement.why_compositor_cannot_composite_by_effect_index[composited.effect.0 as usize]
             .map(WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited)
     })
 }
@@ -3200,19 +3272,21 @@ fn why_compositor_cannot_composite_effect_of_stack(stack: &LayerStack) -> Option
 /// placed: the layers an effect the compositor composites or a canvas, video or nested context needs cannot be given
 /// up without drawing the list wrong, and a layer holds tiles only where its content reaches, which the pool of tiles
 /// gives back.
-fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) -> LayerStack {
+fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) -> PlannedLayers {
     let layering_obstacles = placement.layering_obstacles;
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
         Some(why) => why,
-        None => match assemble_stack_unless_records_blend_with_other_layers(placement) {
+        None => match assemble_stack_unless_records_blend_with_other_layers(&placement) {
             Some(stack)
-                if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, &stack) =>
+                if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
+                    inputs, &placement, &stack,
+                ) =>
             {
                 WhyListIsOneLayer::SortingContext3D
             }
-            Some(stack) => match why_compositor_cannot_composite_effect_of_stack(&stack) {
+            Some(stack) => match why_compositor_cannot_composite_effect_of_stack(&placement, &stack) {
                 Some(why) => why,
-                None => return stack,
+                None => return PlannedLayers { stack, placement },
             },
             None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
         },
@@ -3223,7 +3297,7 @@ fn build_layer_stack(inputs: &LayerStackInputs<'_>, placement: ListPlacement) ->
         Some(why_list_is_one_layer),
     );
     stack.layering_obstacles = layering_obstacles;
-    stack
+    PlannedLayers { stack, placement }
 }
 
 fn anchors_of_layer_plans(tree: &VisualContextTree) -> Vec<SpatialNodeIndex> {
@@ -3236,10 +3310,10 @@ pub fn spatial_nodes_whose_scroll_offset_layer_plans_leave_out(tree: &VisualCont
     spatial_nodes_whose_scroll_offset_placement_leaves_out(tree, &anchors_of_layer_plans(tree))
 }
 
-/// Plans the layers of a list. The plan holds for every sample of the compositor's animations and wherever the
-/// compositor scrolls the nodes it scrolls. Where the window server can show the media of the stack is left to be
-/// worked out for each frame.
-pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> LayerStack {
+/// Plans the layers of a list, and gives the stack with where it placed the parts of the list. The plan holds for every
+/// sample of the compositor's animations and wherever the compositor scrolls the nodes it scrolls. Where the window
+/// server can show the media of the stack is left to be worked out for each frame.
+pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
     let anchors = anchors_of_layer_plans(inputs.tree);
     let leaves_out_scroll_offset_of_node =
         spatial_nodes_whose_scroll_offset_placement_leaves_out(inputs.tree, &anchors);
@@ -3360,17 +3434,18 @@ mod tests {
             self
         }
 
-        // As a dump plans a stack, with where the window server can show its media.
-        fn stack(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> LayerStack {
+        fn planned(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> PlannedLayers {
             let list = DisplayListStorage::of_builder(&self.builder);
-            let mut stack = plan_layer_stack(&LayerStackInputs {
+            plan_layer_stack(&LayerStackInputs {
                 list: &list,
                 tree,
                 scroll_offsets,
                 viewport_rect: VIEWPORT,
-            });
-            stack.update_window_server_placements_and_shown_layers(&list, tree, scroll_offsets, VIEWPORT);
-            stack
+            })
+        }
+
+        fn stack(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> LayerStack {
+            self.planned(tree, scroll_offsets).stack
         }
     }
 
@@ -3483,12 +3558,12 @@ mod tests {
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
             .with(canvas(IntRect::new(500, 300, 200, 100)), document)
             .with(fill(IntRect::new(100, 300, 50, 50)), moving);
-        let at_start = list.stack(&tree.with_visual_animation_samples(0), &[]);
-        let halfway = list.stack(&tree.with_visual_animation_samples(500_000_000), &[]);
+        let at_start = list.planned(&tree.with_visual_animation_samples(0), &[]);
+        let halfway = list.planned(&tree.with_visual_animation_samples(500_000_000), &[]);
         assert_eq!(at_start.placement, halfway.placement);
         // Wherever the animation takes the box, it can go over the canvas, so it sits above it.
         assert_eq!(
-            kinds_of_layers_from_base_up_that_may_hold_content(&halfway),
+            kinds_of_layers_from_base_up_that_may_hold_content(&halfway.stack),
             [
                 "base document band 0",
                 "canvas #0 document",
@@ -3518,12 +3593,13 @@ mod tests {
             tree.with_visual_animation_samples(0)
                 .effect_pushes_layer_at_replay(fading_box.effect)
         );
-        let at_start = list.stack(&tree.with_visual_animation_samples(0), &[]);
-        let halfway = list.stack(&tree.with_visual_animation_samples(500_000_000), &[]);
+        let at_start = list.planned(&tree.with_visual_animation_samples(0), &[]);
+        let halfway = list.planned(&tree.with_visual_animation_samples(500_000_000), &[]);
         assert_eq!(at_start.placement, halfway.placement);
-        assert_eq!(at_start.layers, halfway.layers);
+        assert_eq!(at_start.stack.layers, halfway.stack.layers);
         assert_eq!(
             halfway
+                .stack
                 .composited_effects
                 .iter()
                 .map(|composited| (composited.effect, composited.why))
@@ -3704,7 +3780,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            stack.placement.swept_reach_in_parent_space_by_space_index[1],
+            stack.swept_reach_in_parent_space_by_space_index[1],
             Some(IntRect::new(34, 34, 72, 72))
         );
     }
@@ -3754,10 +3830,9 @@ mod tests {
             geometry_of_spinner_space_at(0),
             geometry_of_spinner_space_at(250_000_000)
         );
-        let at_start = list.stack(&tree.with_visual_animation_samples(0), &[]);
-        let a_quarter_in = list.stack(&tree.with_visual_animation_samples(250_000_000), &[]);
-        assert_eq!(at_start.placement, a_quarter_in.placement);
-        assert_eq!(at_start.layers, a_quarter_in.layers);
+        let at_start = list.planned(&tree.with_visual_animation_samples(0), &[]);
+        let a_quarter_in = list.planned(&tree.with_visual_animation_samples(250_000_000), &[]);
+        assert_eq!(at_start, a_quarter_in);
     }
 
     #[test]
@@ -3772,7 +3847,7 @@ mod tests {
             .stack(&tree, &[]);
         assert_eq!(space_names(&stack), ["viewport", "animated@s1 in viewport"]);
         assert_eq!(
-            stack.placement.swept_reach_in_parent_space_by_space_index[1],
+            stack.swept_reach_in_parent_space_by_space_index[1],
             Some(IntRect::new(0, 0, 356, 56))
         );
     }
@@ -3789,12 +3864,16 @@ mod tests {
         );
         let slider = transformed_context(&mut tree, track, FloatRect::new(0.0, 0.0, 50.0, 50.0));
         tree.set_visual_animations(vec![sliding(slider.spatial)]);
-        let stack = TestList::new()
+        let planned = TestList::new()
             .with(fill(IntRect::new(0, 0, 200, 50)), track)
             .with(fill(IntRect::new(0, 0, 50, 50)), slider)
-            .stack(&tree, &[]);
-        let lines: Vec<String> = stack
-            .layer_lines(&NodeNamesFromIndices, |_| None)
+            .planned(&tree, &[]);
+        let lines: Vec<String> = planned
+            .layer_lines(
+                &WindowServerPresentationOfMedia::default(),
+                &NodeNamesFromIndices,
+                |_| None,
+            )
             .into_iter()
             .map(|(_, line)| line)
             .collect();
@@ -3825,16 +3904,16 @@ mod tests {
             transform_animation_of(skewed.spatial, Kind::SkewX, 0.0, 0.3),
             overshooting_slide,
         ]);
-        let stack = TestList::new()
+        let planned = TestList::new()
             .with(fill(IntRect::new(0, 0, 50, 50)), skewed)
             .with(fill(IntRect::new(0, 100, 50, 50)), overshooting)
-            .stack(&tree, &[]);
+            .planned(&tree, &[]);
         assert_eq!(
-            kinds_of_layers_from_base_up_that_may_hold_content(&stack),
+            kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
             ["base viewport band 0"]
         );
         assert_eq!(
-            stack.placement.animations_without_layers,
+            planned.placement.animations_without_layers,
             [
                 (
                     AnimatedNode::Transform(skewed.spatial),
@@ -3928,12 +4007,12 @@ mod tests {
         let viewport = root_context(&tree);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let stack = TestList::new()
+        let planned = TestList::new()
             .with(canvas(IntRect::new(0, 0, 200, 120)), viewport)
             .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
-            .stack(&tree, &[]);
+            .planned(&tree, &[]);
         assert_eq!(
-            stack.placement.animations_without_layers,
+            planned.placement.animations_without_layers,
             [(
                 AnimatedNode::Transform(spinner.spatial),
                 WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo
@@ -3963,13 +4042,13 @@ mod tests {
         let viewport = root_context(&tree);
         let controls = tree.append_effect_node_under(viewport, effects(1.0, CompositingAndBlendingOperator::Normal));
         tree.set_visual_animations(vec![fading(controls.effect)]);
-        let stack = TestList::new()
+        let planned = TestList::new()
             .with(canvas(IntRect::new(0, 0, 200, 120)), viewport)
             .with(fill(IntRect::new(0, 80, 200, 40)), controls)
-            .stack(&tree, &[]);
-        assert!(stack.composited_effects.is_empty());
+            .planned(&tree, &[]);
+        assert!(planned.stack.composited_effects.is_empty());
         assert_eq!(
-            stack.placement.animations_without_layers,
+            planned.placement.animations_without_layers,
             [(
                 AnimatedNode::Effect(controls.effect),
                 WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo
@@ -3994,8 +4073,7 @@ mod tests {
         }
     }
 
-    // As the compositor plans a stack, without where the window server shows the media of a frame.
-    fn planned_stack(list: &DisplayListStorage, tree: &VisualContextTree) -> LayerStack {
+    fn planned_layers(list: &DisplayListStorage, tree: &VisualContextTree) -> PlannedLayers {
         plan_layer_stack(&LayerStackInputs {
             list,
             tree,
@@ -4004,16 +4082,16 @@ mod tests {
         })
     }
 
-    fn stack_planned_alike_for_every_sample(list: &TestList, tree: &VisualContextTree) -> LayerStack {
+    fn layers_planned_alike_for_every_sample(list: &TestList, tree: &VisualContextTree) -> PlannedLayers {
         let list = DisplayListStorage::of_builder(&list.builder);
-        let stack = planned_stack(&list, tree);
+        let planned = planned_layers(&list, tree);
         for time_ns in SAMPLE_TIMES_NS {
             assert!(
-                planned_stack(&list, &tree.with_visual_animation_samples(time_ns)) == stack,
-                "the stack of the sample at {time_ns} ns differs from the stack of the tree"
+                planned_layers(&list, &tree.with_visual_animation_samples(time_ns)) == planned,
+                "the plan of the sample at {time_ns} ns differs from the plan of the tree"
             );
         }
-        stack
+        planned
     }
 
     fn filter_function(
@@ -4195,7 +4273,7 @@ mod tests {
                 UnderAnimatedNode::BackdropFilter,
             ] {
                 let (tree, list, _) = page_with_animated_element(animated, under_animated_node);
-                let stack = stack_planned_alike_for_every_sample(&list, &tree);
+                let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
                 assert!(
                     stack.why_list_is_one_layer.is_none(),
                     "{animated:?} over {under_animated_node:?} is one layer: {:?}",
@@ -4220,7 +4298,7 @@ mod tests {
             tree.with_visual_animation_samples(0)
                 .effect_pushes_layer_at_replay(element.effect)
         );
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
         assert_eq!(
             whys_of_composited_effects(&stack),
             [(element.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
@@ -4230,9 +4308,9 @@ mod tests {
     #[test]
     fn a_backdrop_filter_in_an_element_whose_opacity_is_animated_reads_the_layer_of_the_element() {
         let (tree, list, _) = page_with_animated_element(Animated::OpacityFromOne, UnderAnimatedNode::BackdropFilter);
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
         assert!(
-            stack
+            planned
                 .placement
                 .placed_effects
                 .iter()
@@ -4243,32 +4321,32 @@ mod tests {
     #[test]
     fn a_color_filter_animation_is_composited_and_a_blur_animation_is_not() {
         let (tree, list, element) = page_with_animated_element(Animated::ColorFilter, UnderAnimatedNode::Fill);
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
         assert_eq!(
             whys_of_composited_effects(&stack),
             [(element.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
         );
 
         let (tree, list, element) = page_with_animated_element(Animated::BlurFilter, UnderAnimatedNode::Fill);
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
-        assert!(stack.composited_effects.is_empty());
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
+        assert!(planned.stack.composited_effects.is_empty());
         assert_eq!(
-            stack.placement.animations_without_layers,
+            planned.placement.animations_without_layers,
             [(
                 AnimatedNode::Effect(element.effect),
                 WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters
             )]
         );
         assert_eq!(
-            stack.placement.why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
+            planned.placement.why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
             None
         );
 
         // Also where the tree holds no filter, as the first keyframe gives none.
         let (tree, list, element) = page_with_animated_element(Animated::BlurFilterFromNone, UnderAnimatedNode::Fill);
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
         assert_eq!(
-            stack.placement.animations_without_layers,
+            planned.placement.animations_without_layers,
             [(
                 AnimatedNode::Effect(element.effect),
                 WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters
@@ -4292,10 +4370,10 @@ mod tests {
                 .with(fill(ELEMENT), element)
                 .builder,
         );
-        let stack = planned_stack(&list, &tree);
-        assert!(stack.composited_effects.is_empty());
+        let planned = planned_layers(&list, &tree);
+        assert!(planned.stack.composited_effects.is_empty());
         assert_eq!(
-            stack.placement.animations_without_layers,
+            planned.placement.animations_without_layers,
             [(
                 AnimatedNode::Effect(element.effect),
                 WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters
@@ -4323,7 +4401,7 @@ mod tests {
                 .builder,
         );
         assert_eq!(
-            planned_stack(&list, &tree)
+            planned_layers(&list, &tree)
                 .placement
                 .why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
             Some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
@@ -4334,7 +4412,7 @@ mod tests {
     fn transforms_that_stay_in_the_plane_get_spaces_and_one_that_leaves_it_keeps_its_canvas_from_a_layer() {
         for animated in [Animated::Translation, Animated::Rotation, Animated::Scale] {
             let (tree, list, element) = page_with_animated_element(animated, UnderAnimatedNode::Canvas);
-            let stack = stack_planned_alike_for_every_sample(&list, &tree);
+            let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
             assert_eq!(
                 space_names(&stack),
                 ["viewport", &format!("animated@s{} in viewport", element.spatial.0)]
@@ -4342,7 +4420,7 @@ mod tests {
             assert!(stack.media_without_layers.is_empty());
         }
         let (tree, list, _) = page_with_animated_element(Animated::RotationOutOfPlane, UnderAnimatedNode::Canvas);
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
         assert_eq!(space_names(&stack), ["viewport"]);
         assert_eq!(
             stack.media_without_layers,
@@ -4356,10 +4434,10 @@ mod tests {
     #[test]
     fn a_backdrop_filter_moved_by_a_transform_animation_reads_anywhere() {
         let (tree, list, _) = page_with_animated_element(Animated::Translation, UnderAnimatedNode::BackdropFilter);
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
-        assert_eq!(space_names(&stack), ["viewport"]);
+        let planned = layers_planned_alike_for_every_sample(&list, &tree);
+        assert_eq!(space_names(&planned.stack), ["viewport"]);
         assert!(
-            stack
+            planned
                 .placement
                 .placed_effects
                 .iter()
@@ -4427,7 +4505,7 @@ mod tests {
             assert!(!run_groups.run_is_sorted_by_depth(0));
             assert!(run_groups.run_is_sorted_by_depth(1) && run_groups.run_is_sorted_by_depth(2));
         }
-        let stack = stack_planned_alike_for_every_sample(&list, &tree);
+        let stack = layers_planned_alike_for_every_sample(&list, &tree).stack;
         assert!(stack.layering_obstacles.sorts_planes_by_depth);
         assert!(stack.why_list_is_one_layer.is_none());
     }

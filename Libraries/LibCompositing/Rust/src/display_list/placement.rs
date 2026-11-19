@@ -50,7 +50,7 @@ const MAXIMUM_STICKY_BOX_SPACE_COUNT: usize = 32;
 pub(crate) const ANTIALIASING_MARGIN_IN_DEVICE_PIXELS: i32 = 3;
 const LARGEST_DEVICE_PIXEL_RATIO_EXTENTS_COVER_PAGES_AT: f32 = 8.0;
 // Small enough that a rect twice as wide still fits in an `IntRect`.
-const EXTENT_LIMIT_IN_DEVICE_PIXELS: f32 =
+pub(crate) const EXTENT_LIMIT_IN_DEVICE_PIXELS: f32 =
     (crate::css_pixels::MAX_INTEGER_VALUE as f32 + 1.0) * LARGEST_DEVICE_PIXEL_RATIO_EXTENTS_COVER_PAGES_AT;
 const COMPOSITE_CLIP_EDGE_TOLERANCE_IN_DEVICE_PIXELS: f32 = 1.0 / 64.0;
 const ANCHOR_TRANSLATION_ROUNDING_OVERSHOOT_IN_DEVICE_PIXELS: i32 = 1;
@@ -623,7 +623,7 @@ fn identity_of_sticky_box_anchor(sticky: &StickyData, node: SpatialNodeIndex) ->
     hasher.finish() | 1
 }
 
-fn enclosing_int_rect_within_extent_limit(rect: FloatRect) -> IntRect {
+pub(crate) fn enclosing_int_rect_within_extent_limit(rect: FloatRect) -> IntRect {
     enclosing_int_rect(rect.intersected(extent_limit_rect()))
 }
 

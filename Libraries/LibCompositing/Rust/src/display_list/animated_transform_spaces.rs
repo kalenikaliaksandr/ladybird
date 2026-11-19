@@ -16,7 +16,7 @@ use libgfx_rust::{FloatMatrix4x4, FloatRect};
 
 pub const MAXIMUM_ANIMATED_TRANSFORM_SPACE_COUNT: usize = 32;
 const LARGEST_RASTER_SCALE_PAST_PARENT_SCALE: f32 = 4.0;
-const SMALLEST_RASTER_SCALE: f32 = 1.0 / 64.0;
+pub(crate) const SMALLEST_RASTER_SCALE: f32 = 1.0 / 64.0;
 const RASTER_SCALE_STEPS_PER_UNIT: f32 = 64.0;
 
 fn transform_animations_of(tree: &VisualContextTree) -> impl Iterator<Item = &VisualAnimation> {

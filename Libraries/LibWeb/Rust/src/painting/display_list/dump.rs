@@ -13,7 +13,10 @@ use super::dump_format::{
     DumpNames, DumpValue, dumped_record_field, json_corner_radii, json_fields, json_float, json_float_point,
     json_float_rect, json_int_rect, json_name, path_description, push_clip_radii, push_fields, push_value,
 };
-use super::layers::{LayerIndex, LayerStack, LayerStackInputs, VisualContextNodeNamer, plan_layer_stack};
+use super::layers::{
+    LayerIndex, LayerStackInputs, PlannedLayers, VisualContextNodeNamer, WindowServerPresentationOfMedia,
+    plan_layer_stack,
+};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
 };
@@ -311,13 +314,13 @@ pub unsafe extern "C" fn painting_dump(
     );
     let scroll_state = host.scroll_state();
     let scroll_offsets = scroll_state.device_offsets();
-    let mut layer_stack = plan_layer_stack(&LayerStackInputs {
+    let planned_layers = plan_layer_stack(&LayerStackInputs {
         list: &display_list,
         tree: visual_context_tree,
         scroll_offsets,
         viewport_rect: device_viewport_rect,
     });
-    layer_stack.update_window_server_placements_and_shown_layers(
+    let presentation_of_media = planned_layers.stack.window_server_presentation_of_media(
         &display_list,
         visual_context_tree,
         scroll_offsets,
@@ -327,7 +330,8 @@ pub unsafe extern "C" fn painting_dump(
         &mut output,
         &mut names,
         &display_list,
-        &layer_stack,
+        &planned_layers,
+        &presentation_of_media,
         record_ids.as_ref(),
         options.jsonl,
     );
@@ -356,7 +360,7 @@ pub unsafe extern "C" fn painting_dump(
         current_chunk: None,
         layer_label_of_current_top_level_record: String::new(),
     };
-    records.dump_top_level_commands_with_their_layers(&display_list, &layer_stack);
+    records.dump_top_level_commands_with_their_layers(&display_list, &planned_layers);
     callbacks.append_text(&main_thread, &output);
 }
 
@@ -602,19 +606,20 @@ fn dump_layers(
     output: &mut String,
     names: &mut DumpNames,
     display_list: &DisplayListStorage,
-    layer_stack: &LayerStack,
+    planned_layers: &PlannedLayers,
+    presentation_of_media: &WindowServerPresentationOfMedia,
     record_ids: Option<&RecordIdsOfTopLevelRecords>,
     jsonl: bool,
 ) {
     let record_id_ranges_by_layer = record_ids.map(|record_ids| {
-        record_ids.record_id_ranges_by_layer_joining_adjacent_ranges(layer_stack.layers.len(), |position| {
+        record_ids.record_id_ranges_by_layer_joining_adjacent_ranges(planned_layers.stack.layers.len(), |position| {
             let (header, _) = display_list.record_at(position);
-            layers_labelling_top_level_record(layer_stack, &header, position)
+            layers_labelling_top_level_record(planned_layers, &header, position)
         })
     });
     let names = DumpNodeNamer(std::cell::RefCell::new(names));
     if jsonl {
-        for (layer, line) in layer_stack.layer_lines(&names, |_| None) {
+        for (layer, line) in planned_layers.layer_lines(presentation_of_media, &names, |_| None) {
             let mut object = serde_json::Map::new();
             object.insert("type".into(), serde_json::json!("layer"));
             if let Some(layer) = layer {
@@ -629,8 +634,8 @@ fn dump_layers(
         return;
     }
     output.push_str("\nLayers:\n");
-    layer_stack
-        .write_layer_lines(output, "  ", &names, |layer| {
+    planned_layers
+        .write_layer_lines(output, "  ", presentation_of_media, &names, |layer| {
             record_id_ranges_by_layer
                 .as_ref()
                 .map(|ranges| describe_record_id_ranges(&ranges[layer.0]))
@@ -651,17 +656,17 @@ impl VisualContextNodeNamer for DumpNodeNamer<'_> {
 }
 
 fn layers_labelling_top_level_record(
-    layer_stack: &LayerStack,
+    planned_layers: &PlannedLayers,
     header: &DisplayListCommandHeader,
     position: ListPosition,
 ) -> Vec<LayerIndex> {
     let mut layers = if header.command_type.is_compositor_metadata() {
         Vec::new()
     } else {
-        layer_stack.layers_of_record(position)
+        planned_layers.layers_of_record(position)
     };
     if layers.is_empty() {
-        layers.push(layer_stack.base_layer);
+        layers.push(planned_layers.stack.base_layer);
     }
     layers
 }
@@ -937,7 +942,7 @@ impl RecordDump<'_> {
     fn dump_top_level_commands_with_their_layers(
         &mut self,
         display_list: &DisplayListStorage,
-        layer_stack: &LayerStack,
+        planned_layers: &PlannedLayers,
     ) {
         for (chunk_index, chunk) in display_list.chunks().iter().enumerate() {
             self.mark_chunk_start(chunk_index);
@@ -946,7 +951,7 @@ impl RecordDump<'_> {
                 for_each_command(run_bytes, |header, offset_in_run, payload| {
                     let position =
                         ListPosition::new(ChunkIndexInList(chunk_index as u32), run.offset + offset_in_run as u32);
-                    let layer_names: Vec<String> = layers_labelling_top_level_record(layer_stack, header, position)
+                    let layer_names: Vec<String> = layers_labelling_top_level_record(planned_layers, header, position)
                         .iter()
                         .map(|layer| format!("L{}", layer.0))
                         .collect();

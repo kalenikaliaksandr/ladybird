@@ -2744,14 +2744,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     continue;
                 };
                 let layer_index = band.layer_of_record_in_cell(paint_position, coord.cell_rect());
-                // The stack composites only the layers its stretches reach. A stretch and a placed record range both
-                // take their reach from `RasterSpaceGeometry::reach_of_content`, the stretch for the ink of its runs,
-                // so a range stays within the reach of its stretch wherever the space's extent lets it show.
-                debug_assert!(
-                    stack.layers[layer_index.0].may_hold_content,
-                    "an item at {paint_position:?} goes into L{}, which no stretch reaches, in the tile at {coord}",
-                    layer_index.0
-                );
+                // A frame composites only the base layer and the layers the stack says can hold content. A stretch and
+                // a placed record range both take their reach from `RasterSpaceGeometry::reach_of_content`, the
+                // stretch for the ink of its runs, so a range stays within the reach of its stretch wherever the
+                // space's extent lets it show. A stack from another process can say otherwise, which only leaves out
+                // what the item draws there.
+                if layer_index != stack.base_layer && !stack.layers[layer_index.0].may_hold_content {
+                    continue;
+                }
                 let items_of_layer = match bin
                     .iter_mut()
                     .position(|(bin_layer_index, _)| *bin_layer_index == layer_index)
@@ -2986,7 +2986,8 @@ mod tests {
             tree: &tree,
             scroll_offsets: &[],
             viewport_rect: VIEWPORT,
-        });
+        })
+        .stack;
         assert_eq!(stack.why_list_is_one_layer, None);
         let list_keying = TileKeyingOfList::new(
             &display_list,
@@ -3063,6 +3064,7 @@ mod tests {
             scroll_offsets: &[],
             viewport_rect: VIEWPORT,
         })
+        .stack
     }
 
     fn viewport_tile_hashes_of_only_band_keyed_from_nothing(
