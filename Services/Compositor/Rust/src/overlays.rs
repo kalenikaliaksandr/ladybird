@@ -56,11 +56,29 @@ pub struct PictureInPictureControlsState {
     pub hovered_control: Option<PictureInPictureControl>,
 }
 
+/// The layers the frames are composited from and the tiles each holds, drawn by the compositor that knows them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CompositorLayersOverlayState {
+    pub font_family: Option<String>,
+    /// The layers the frames leave out, by the ids the descriptions the compositor publishes give them.
+    pub hidden_layer_ids: Vec<u64>,
+}
+
 /// What the browser draws over a context's page, with each overlay the view has present.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UIOverlays {
     pub paused_debugger: Option<PausedDebuggerOverlayState>,
     pub picture_in_picture_controls: Option<PictureInPictureControlsState>,
+    pub compositor_layers: Option<CompositorLayersOverlayState>,
+}
+
+/// What a new set of overlays changes of the frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UIOverlaysChange {
+    Nothing,
+    /// The compositor layers overlay is drawn over tiles that stay as they are, so the frame rasters nothing for it.
+    OnlyCompositorLayers,
+    RepaintsEverything,
 }
 
 /// A label of an overlay as the host shapes it: the font it resolved, in the overlays' resources, and where each glyph
@@ -79,17 +97,20 @@ pub struct OverlayLabel {
     pub font_ascent: f32,
 }
 
-/// Shapes the label of an overlay, in the font family given or the default one, at a device pixel ratio.
+/// Shapes the label of an overlay, in the font family given or the default one, at a font size and a device pixel
+/// ratio.
 pub trait OverlayLabelShaper {
     fn shape_overlay_label(
         &self,
         font_family: Option<&str>,
+        font_size_in_points: f32,
         device_pixel_ratio: f64,
         text: &str,
     ) -> Option<OverlayLabel>;
 }
 
 const PAUSED_DEBUGGER_LABEL: &str = "Paused in debugger";
+const PAUSED_DEBUGGER_LABEL_FONT_SIZE_IN_POINTS: f32 = 12.0;
 
 #[derive(Default)]
 pub struct ContextOverlays {
@@ -97,6 +118,7 @@ pub struct ContextOverlays {
     picture_in_picture_controls_fade: OverlayFade,
     // The label of the paused debugger overlay, for the font family and device pixel ratio it was shaped for.
     paused_debugger_label: Option<(Option<String>, f64, Option<OverlayLabel>)>,
+    compositor_layers_overlay_needs_frames_until: Option<MonotonicTime>,
 }
 
 impl ContextOverlays {
@@ -104,23 +126,45 @@ impl ContextOverlays {
         &self.ui_overlays
     }
 
-    /// Returns false, changing nothing, for the overlays already shown.
-    pub fn set_ui_overlays(&mut self, ui_overlays: UIOverlays, now: MonotonicTime) -> bool {
+    pub fn set_ui_overlays(&mut self, ui_overlays: UIOverlays, now: MonotonicTime) -> UIOverlaysChange {
         if self.ui_overlays == ui_overlays {
-            return false;
+            return UIOverlaysChange::Nothing;
         }
+        let only_compositor_layers_changed = UIOverlays {
+            compositor_layers: self.ui_overlays.compositor_layers.clone(),
+            ..ui_overlays.clone()
+        } == self.ui_overlays;
         self.ui_overlays = ui_overlays;
+        if only_compositor_layers_changed {
+            return UIOverlaysChange::OnlyCompositorLayers;
+        }
         let shows_picture_in_picture_controls = self
             .ui_overlays
             .picture_in_picture_controls
             .is_some_and(|controls| controls.shown);
         self.picture_in_picture_controls_fade
             .fade_to(if shows_picture_in_picture_controls { 1.0 } else { 0.0 }, now);
-        true
+        UIOverlaysChange::RepaintsEverything
     }
 
-    pub fn fades_need_frame(&self) -> bool {
-        self.picture_in_picture_controls_fade.is_fading()
+    pub fn set_compositor_layers_overlay_needs_frames_until(&mut self, until: Option<MonotonicTime>) {
+        self.compositor_layers_overlay_needs_frames_until = until;
+    }
+
+    pub fn fades_or_compositor_layers_overlay_need_frame(&self) -> bool {
+        self.picture_in_picture_controls_fade.is_fading() || self.compositor_layers_overlay_needs_frames_until.is_some()
+    }
+
+    /// Answers whether the compositor layers overlay needs a frame: until one is presented at the end of the time it
+    /// needs them for, which no longer shows a highlight.
+    pub fn compositor_layers_overlay_needs_frame(&mut self, frame_time: MonotonicTime) -> bool {
+        let Some(until) = self.compositor_layers_overlay_needs_frames_until else {
+            return false;
+        };
+        if frame_time >= until {
+            self.compositor_layers_overlay_needs_frames_until = None;
+        }
+        true
     }
 
     /// Advances the fades to a frame, answering what of the viewport they repaint.
@@ -195,6 +239,7 @@ impl ContextOverlays {
             ui_overlay_records: AlignedRecords::new(&ui_overlay_records.finish().bytes),
             picture_in_picture_controls,
             bounds: bounds.intersected(viewport_rect),
+            compositor_layers: self.ui_overlays.compositor_layers.clone(),
         }
     }
 
@@ -213,6 +258,7 @@ impl ContextOverlays {
         if !is_cached {
             let label = label_shaper.shape_overlay_label(
                 paused_debugger.font_family.as_deref(),
+                PAUSED_DEBUGGER_LABEL_FONT_SIZE_IN_POINTS,
                 device_pixel_ratio,
                 PAUSED_DEBUGGER_LABEL,
             );
@@ -263,6 +309,8 @@ pub struct OverlayPicture {
     ui_overlay_records: AlignedRecords,
     picture_in_picture_controls: Option<PictureInPictureControlsPicture>,
     pub bounds: IntRect,
+    /// The compositor records that overlay once it has rastered the frame's tiles, which it shows.
+    pub compositor_layers: Option<CompositorLayersOverlayState>,
 }
 
 thread_local! {
@@ -279,6 +327,37 @@ thread_local! {
     });
 }
 
+/// Records drawn over a frame in the space of the viewport, as the overlays of the browser are.
+pub struct OverlayRecords(AlignedRecords);
+
+impl OverlayRecords {
+    pub(crate) fn record(record: impl FnOnce(&mut OverlayRecorder<'_>)) -> Self {
+        let mut builder = DisplayListBuilder::new();
+        record(&mut OverlayRecorder {
+            builder: &mut builder,
+            clip_of_appended_commands: None,
+        });
+        Self(AlignedRecords::new(&builder.finish().bytes))
+    }
+
+    pub fn paint(&self, painter: &mut impl ReplayPainter) {
+        replay_overlay_records(&self.0, painter);
+    }
+}
+
+fn replay_overlay_records(records: &AlignedRecords, painter: &mut impl ReplayPainter) {
+    OVERLAY_TREE.with(|tree| {
+        let list = ListReplay::new(tree);
+        let frame = ReplayFrame::unscrolled(0);
+        let context = RecordsContext {
+            list_replay: &list,
+            frame: &frame,
+            to_root_matrix_of_inline_clip_space: &|_| None,
+        };
+        replay_records(records.as_bytes(), &context, painter);
+    });
+}
+
 impl OverlayPicture {
     /// Paints the overlays over a frame: the scrollbars the compositor paints, and unless they are left out, the
     /// overlays of the browser.
@@ -289,35 +368,26 @@ impl OverlayPicture {
         if !paints_ui_overlays {
             return;
         }
-        OVERLAY_TREE.with(|tree| {
-            let list = ListReplay::new(tree);
-            let frame = ReplayFrame::unscrolled(0);
-            let context = RecordsContext {
-                list_replay: &list,
-                frame: &frame,
-                to_root_matrix_of_inline_clip_space: &|_| None,
-            };
-            replay_records(self.ui_overlay_records.as_bytes(), &context, painter);
-            if let Some(controls) = &self.picture_in_picture_controls {
-                painter.push_layer(&ReplayLayer {
-                    can_draw_directly_for_lcd_text: false,
-                    opacity: controls.opacity,
-                    blend_mode: CompositingAndBlendingOperator::Normal,
-                    filter_bytes: std::ptr::null(),
-                    filter_bytes_size: 0,
-                    backdrop_filter_bytes: std::ptr::null(),
-                    backdrop_filter_bytes_size: 0,
-                    backdrop_region: IntRect::default(),
-                    backdrop_corner_radii: Default::default(),
-                    backdrop_base_color: Color::TRANSPARENT,
-                    backdrop_blur_edge: OptionalFloatRect::none(),
-                    filter_cache_key: 0,
-                    content_bounds: OptionalFloatRect::from(Some(controls.bounds.to_float())),
-                });
-                replay_records(controls.records.as_bytes(), &context, painter);
-                painter.pop();
-            }
-        });
+        replay_overlay_records(&self.ui_overlay_records, painter);
+        if let Some(controls) = &self.picture_in_picture_controls {
+            painter.push_layer(&ReplayLayer {
+                can_draw_directly_for_lcd_text: false,
+                opacity: controls.opacity,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter_bytes: std::ptr::null(),
+                filter_bytes_size: 0,
+                backdrop_filter_bytes: std::ptr::null(),
+                backdrop_filter_bytes_size: 0,
+                backdrop_region: IntRect::default(),
+                backdrop_corner_radii: Default::default(),
+                backdrop_base_color: Color::TRANSPARENT,
+                backdrop_blur_edge: OptionalFloatRect::none(),
+                filter_cache_key: 0,
+                content_bounds: OptionalFloatRect::from(Some(controls.bounds.to_float())),
+            });
+            replay_overlay_records(&controls.records, painter);
+            painter.pop();
+        }
     }
 }
 
@@ -334,13 +404,30 @@ fn presented_compositor_scrollbar(scrollbar: &ScrollbarOfFrame) -> PresentedScro
 }
 
 /// The records of one overlay, with the payload of each command laid out after the command as the painter reads it.
-struct OverlayRecorder<'a> {
+pub(crate) struct OverlayRecorder<'a> {
     builder: &'a mut DisplayListBuilder,
+    clip_of_appended_commands: Option<IntRect>,
 }
 
 impl OverlayRecorder<'_> {
     fn append<C: DisplayListCommand>(&mut self, command: &C, inline_data: &[u8]) {
-        self.builder.append(command, inline_data, ContextRef::default());
+        match self.clip_of_appended_commands {
+            Some(clip) => self.builder.append_with_inline_clips(
+                command,
+                inline_data,
+                ContextRef::default(),
+                &[PendingInlineClip::intersecting_device_rect(clip)],
+            ),
+            None => self.builder.append(command, inline_data, ContextRef::default()),
+        }
+    }
+
+    /// Clips what `record` appends to `clip`.
+    pub(crate) fn clipped_to(&mut self, clip: IntRect, record: impl FnOnce(&mut Self)) {
+        let outer_clip = self.clip_of_appended_commands;
+        self.clip_of_appended_commands = Some(outer_clip.map_or(clip, |outer_clip| outer_clip.intersected(clip)));
+        record(self);
+        self.clip_of_appended_commands = outer_clip;
     }
 
     // The span of `data` placed after a command of type `C`, at an offset aligned for the data, with the padding
@@ -362,7 +449,7 @@ impl OverlayRecorder<'_> {
         (span, inline_data)
     }
 
-    fn fill_rect(&mut self, rect: IntRect, color: Color) {
+    pub(crate) fn fill_rect(&mut self, rect: IntRect, color: Color) {
         self.append(
             &FillRect {
                 rect,
@@ -438,7 +525,7 @@ impl OverlayRecorder<'_> {
         );
     }
 
-    fn draw_label(&mut self, label: &OverlayLabel, baseline_origin: FloatPoint, color: Color, scale: f32) {
+    pub(crate) fn draw_label(&mut self, label: &OverlayLabel, baseline_origin: FloatPoint, color: Color, scale: f32) {
         if label.glyph_ids.is_empty() {
             return;
         }
@@ -602,7 +689,10 @@ fn record_paused_debugger_overlay(
     state: &PausedDebuggerOverlayState,
     label: Option<&OverlayLabel>,
 ) {
-    let mut recorder = OverlayRecorder { builder };
+    let mut recorder = OverlayRecorder {
+        builder,
+        clip_of_appended_commands: None,
+    };
     let geometry: PausedDebuggerOverlayGeometry = paused_debugger_overlay_geometry(viewport_size, device_pixel_ratio);
     let radius = 1.0f32.max((4.0 * device_pixel_ratio) as f32);
 
@@ -770,7 +860,10 @@ fn record_picture_in_picture_controls(
     device_pixel_ratio: f64,
     state: &PictureInPictureControlsState,
 ) -> IntRect {
-    let mut recorder = OverlayRecorder { builder };
+    let mut recorder = OverlayRecorder {
+        builder,
+        clip_of_appended_commands: None,
+    };
     let geometry = picture_in_picture_controls_geometry(viewport_size, device_pixel_ratio);
 
     // The icons are stroked on a grid of 16 units, and drawn at the given size in points.

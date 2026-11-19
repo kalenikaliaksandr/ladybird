@@ -12,8 +12,8 @@ use crate::core::presenting::{GpuBackend, PresentationCapabilities};
 use crate::core::{CompositorCore, ContextOwnerCheckResult};
 use crate::host::{ContextTimer, FfiCompositorCoreHost, Host, PresentationId, WebContentClientId};
 use crate::overlays::{
-    PausedDebuggerOverlayAction, PausedDebuggerOverlayState, PictureInPictureControl, PictureInPictureControlsState,
-    UIOverlays,
+    CompositorLayersOverlayState, PausedDebuggerOverlayAction, PausedDebuggerOverlayState, PictureInPictureControl,
+    PictureInPictureControlsState, UIOverlays,
 };
 use crate::raster_host::{FfiRasterHost, RasterHost};
 use libcompositing_rust::display_list::commands::CompositorContextId;
@@ -512,6 +512,10 @@ pub struct FfiUIOverlays<'a> {
     pub picture_in_picture_controls_shown: bool,
     pub picture_in_picture_controls_has_hovered_control: bool,
     pub picture_in_picture_controls_hovered_control: u8,
+    pub has_compositor_layers: bool,
+    pub compositor_layers_has_font_family: bool,
+    pub compositor_layers_font_family: ak::Span<'a, u8>,
+    pub compositor_layers_hidden_layer_ids: ak::Span<'a, u64>,
 }
 
 #[unsafe(no_mangle)]
@@ -586,6 +590,12 @@ pub extern "C" fn compositor_core_set_ui_overlays(
         UIOverlays {
             paused_debugger,
             picture_in_picture_controls,
+            compositor_layers: ui_overlays.has_compositor_layers.then(|| CompositorLayersOverlayState {
+                font_family: ui_overlays.compositor_layers_has_font_family.then(|| {
+                    String::from_utf8_lossy(ui_overlays.compositor_layers_font_family.as_slice()).into_owned()
+                }),
+                hidden_layer_ids: ui_overlays.compositor_layers_hidden_layer_ids.as_slice().to_vec(),
+            }),
         },
         MonotonicTime::from_nanoseconds(now_nanoseconds),
     );

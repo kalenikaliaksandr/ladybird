@@ -86,10 +86,28 @@ ErrorOr<Compositing::PictureInPictureControlsState> decode(Decoder& decoder)
 }
 
 template<>
+ErrorOr<void> encode(Encoder& encoder, Compositing::CompositorLayersOverlayState const& state)
+{
+    TRY(encoder.encode(state.font_family));
+    TRY(encoder.encode(state.hidden_layer_ids));
+    return {};
+}
+
+template<>
+ErrorOr<Compositing::CompositorLayersOverlayState> decode(Decoder& decoder)
+{
+    return Compositing::CompositorLayersOverlayState {
+        .font_family = TRY(decoder.decode<Optional<String>>()),
+        .hidden_layer_ids = TRY(decoder.decode<Vector<u64>>()),
+    };
+}
+
+template<>
 ErrorOr<void> encode(Encoder& encoder, Compositing::UIOverlays const& overlays)
 {
     TRY(encoder.encode(overlays.paused_debugger));
     TRY(encoder.encode(overlays.picture_in_picture_controls));
+    TRY(encoder.encode(overlays.compositor_layers));
     return {};
 }
 
@@ -99,6 +117,7 @@ ErrorOr<Compositing::UIOverlays> decode(Decoder& decoder)
     return Compositing::UIOverlays {
         .paused_debugger = TRY(decoder.decode<Optional<Compositing::PausedDebuggerOverlayState>>()),
         .picture_in_picture_controls = TRY(decoder.decode<Optional<Compositing::PictureInPictureControlsState>>()),
+        .compositor_layers = TRY(decoder.decode<Optional<Compositing::CompositorLayersOverlayState>>()),
     };
 }
 

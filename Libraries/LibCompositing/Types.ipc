@@ -201,3 +201,26 @@ struct Compositing::WheelStepLetThrough {
     Web::ScrollGesturePhase scroll_gesture_phase;
     Vector<Web::AsyncScrollNodeStableID> scroll_chain;
 }
+
+[ExistingCpp, RustDerive=Eq+Default]
+struct Compositing::CompositorLayerDescription {
+    u64 id;
+    String name;
+    String details;
+    u32 rgb_of_outline;
+    bool hidden;
+}
+
+[ExistingCpp, RustDerive=Eq+Default]
+struct Compositing::CompositorTileHighlightDescription {
+    String raster_cause;
+    u32 rgb;
+}
+
+[ExistingCpp, RustDerive=Eq+Default]
+struct Compositing::CompositorLayersDescription {
+    Vector<Compositing::CompositorLayerDescription> layers;
+    Vector<String> notes;
+    String summary_of_last_frame;
+    Vector<Compositing::CompositorTileHighlightDescription> tile_highlights;
+}
