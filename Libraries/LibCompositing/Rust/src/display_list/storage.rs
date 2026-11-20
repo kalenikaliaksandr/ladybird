@@ -276,11 +276,19 @@ impl DisplayListStorage {
         })
     }
 
-    /// The list of `chunks`, which another process sent, in paint order.
+    /// The list of `chunks`, which another process sent, in paint order. A list may name one chunk many times, and
+    /// what is worked out of a list, such as its summary, holds what is worked out of each chunk once per time the list
+    /// names it, so the records of the chunks, counted so, are limited as a list was limited when it was one tape.
     pub fn of_chunks(chunks: Vec<Arc<ListChunk>>) -> Result<Arc<Self>, &'static str> {
         let run_count = chunks.iter().map(|chunk| chunk.runs().len()).sum::<usize>();
         if u32::try_from(chunks.len()).is_err() || u32::try_from(run_count).is_err() {
             return Err("Display list has more chunks or runs than a list can hold");
+        }
+        let record_byte_count = chunks.iter().fold(0u64, |byte_count, chunk| {
+            byte_count.saturating_add(chunk.records().len() as u64)
+        });
+        if record_byte_count > u64::from(u32::MAX) {
+            return Err("Display list holds more bytes of records than a list can hold");
         }
         Ok(Self::new(chunks, None))
     }
@@ -706,6 +714,20 @@ mod tests {
             compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
             background_color_animation_effect: EffectNodeIndex::NONE,
         }
+    }
+
+    #[test]
+    fn a_list_naming_chunks_whose_records_add_up_past_the_limit_is_refused() {
+        let mut builder = DisplayListBuilder::new();
+        let mut y = 0;
+        while builder.byte_size() < 1 << 20 {
+            builder.append(&fill_rect(y), &[], ContextRef::default());
+            y += 1;
+        }
+        let chunk = Arc::new(ListChunk::copied(builder.bytes(), builder.command_runs(), 0));
+        let occurrences_within_limit = (u32::MAX as usize) / chunk.records().len();
+        assert!(DisplayListStorage::of_chunks(vec![chunk.clone(); occurrences_within_limit]).is_ok());
+        assert!(DisplayListStorage::of_chunks(vec![chunk; occurrences_within_limit + 1]).is_err());
     }
 
     #[test]
