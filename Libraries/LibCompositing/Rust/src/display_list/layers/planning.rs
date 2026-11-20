@@ -3526,6 +3526,96 @@ mod tests {
         assert!(inputs_with_box_held_at(0.0).plan_alike_as(&inputs_with_box_held_at(800.0)));
     }
 
+    fn scroller_with_record(
+        tree: &mut VisualContextTree,
+        records: &mut Vec<CompositorScrollNodeRecord>,
+        parent: ContextRef,
+        scrollport: IntRect,
+        max_scroll_offset_y: f32,
+    ) -> ContextRef {
+        let clipped_to_scrollport = clipped_context(tree, parent, scrollport, libgfx_rust::CornerRadii::default());
+        let scroll_node = tree.append_spatial(
+            SpatialData::Scroll(ScrollData {
+                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
+                owner_paintable: NodeSlotId::INVALID,
+            }),
+            parent.spatial,
+        );
+        records.push(CompositorScrollNodeRecord {
+            scroll_node_index: scroll_node,
+            parent_scroll_node_index: parent.spatial,
+            scrollport_rect: scrollport,
+            max_scroll_offset: FloatPoint {
+                x: 0.0,
+                y: max_scroll_offset_y,
+            },
+            can_be_wheel_scrolled_vertically: true,
+            ..CompositorScrollNodeRecord::default()
+        });
+        ContextRef {
+            spatial: scroll_node,
+            ..clipped_to_scrollport
+        }
+    }
+
+    #[test]
+    fn a_backdrop_filter_that_the_compositor_scrolls_within_a_space_is_not_placed_under_its_composite_clips() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let mut records = tree.compositor_scroll_table().nodes.to_vec();
+        let outer_scroller =
+            scroller_with_record(&mut tree, &mut records, document, IntRect::new(0, 0, 400, 400), 10.0);
+        for index in 0..5 {
+            scroller_with_record(
+                &mut tree,
+                &mut records,
+                document,
+                IntRect::new(420, 80 * index, 300, 70),
+                500.0,
+            );
+        }
+        // The inner scroller is past the most scrollers that get spaces, so the compositor scrolls it within the space
+        // of the outer scroller.
+        let inner_scroller = scroller_with_record(
+            &mut tree,
+            &mut records,
+            outer_scroller,
+            IntRect::new(0, 100, 400, 200),
+            500.0,
+        );
+        assert!(tree.set_compositor_scroll_table(CompositorScrollTable {
+            nodes: records.into(),
+            ..CompositorScrollTable::default()
+        }));
+        let glass = frosted_glass(&mut tree, inner_scroller, IntRect::new(50, 150, 100, 100));
+        let planned = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(0, 0, 400, 1000)), outer_scroller)
+            .with(fill(IntRect::new(50, 150, 100, 100)), glass)
+            .planned(&tree, &[]);
+        let space_of_outer_scroller = planned
+            .stack
+            .spaces
+            .iter()
+            .position(|space| space.anchor == outer_scroller.spatial)
+            .expect("the outer scroller anchors a space");
+        assert!(
+            planned
+                .stack
+                .spaces
+                .iter()
+                .all(|space| space.anchor != inner_scroller.spatial)
+        );
+        // Scrolled to the end of its range, the inner scroller moves the glass far past the outer scrollport, which
+        // would cut what the glass reads where it is composited in the space of the outer scroller.
+        let run_group_of_glass = planned
+            .placement
+            .run_groups
+            .iter()
+            .find(|run_group| run_group.first_run_index.0 <= 2 && 2 <= run_group.last_run_index.0)
+            .expect("the run of the glass is placed");
+        assert_ne!(run_group_of_glass.raster_space_index.0, space_of_outer_scroller);
+    }
+
     #[test]
     fn a_plan_holds_for_inputs_that_differ_only_in_what_it_does_not_read() {
         let (mut tree, _, document) = tree_with_document_scroll();

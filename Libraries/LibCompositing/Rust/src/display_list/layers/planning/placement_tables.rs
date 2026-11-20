@@ -151,12 +151,6 @@ impl PlacementTables {
         let spaces = spaces.with_other_extents(spaces_with_extents);
         let spatial_node_moves_with_animation_samples =
             spatial_nodes_that_animation_samples_move_within_their_space(tree, spaces.spaces());
-        let moves_with_animation_samples = |spatial: SpatialNodeIndex| {
-            spatial_node_moves_with_animation_samples
-                .get(spatial.0 as usize)
-                .copied()
-                .unwrap_or(false)
-        };
         let composite_form_of_clips = tree
             .clip_nodes
             .iter()
@@ -164,7 +158,7 @@ impl PlacementTables {
                 let ClipNodeData::Rect(data) = &node.data else {
                     return None;
                 };
-                if data.mode != ClipMode::Intersect || moves_with_animation_samples(node.spatial) {
+                if data.mode != ClipMode::Intersect || spaces.spatial_moves_on_its_own(node.spatial) {
                     return None;
                 }
                 let clip_space = spaces.deepest_space_of(node.spatial);
@@ -219,7 +213,7 @@ impl PlacementTables {
             .iter()
             .enumerate()
             .map(|(index, node)| {
-                if moves_with_animation_samples(node.spatial) {
+                if spaces.spatial_moves_on_its_own(node.spatial) {
                     return None;
                 }
                 let space = spaces.deepest_space_of(node.spatial);
