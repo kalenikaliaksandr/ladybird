@@ -19,8 +19,8 @@ use super::wire::plan_holds_more_than_compositor_decodes;
 use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
     MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NestingOfLiveEffects, NodeOfPlan,
-    PaintedLayerOfPlan, PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer,
-    backdrop_reader_by_reading_effect_index, media_name,
+    PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, backdrop_reader_by_reading_effect_index,
+    media_name,
 };
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
@@ -1732,7 +1732,7 @@ impl StackBeingBuilt<'_> {
             placement_node_index,
             first_record_position,
             record_spans: Vec::new(),
-            layer_below_all_cuts: PaintedLayerOfPlan::default(),
+            reach_of_layer_below_all_cuts: IntRect::default(),
             cuts: Vec::new(),
         });
         // Here a layer index counts the band's painted layers: the one below all cuts, then the one above each cut.
@@ -1785,14 +1785,13 @@ impl StackBeingBuilt<'_> {
 
         // A record draws nothing past the reach of its stretch, so the layers it is replayed into anywhere else stay
         // empty.
-        let mut painted_layers = vec![PaintedLayerOfPlan::default(); cuts.len() + 1];
+        let mut reach_of_painted_layers = vec![IntRect::default(); cuts.len() + 1];
         let mut record_spans: Vec<ListSpan> = Vec::with_capacity(own_record_stretch_indices.len());
         for &stretch_index in &own_record_stretch_indices {
             let stretch = &placement.record_stretches[stretch_index.0];
             let stretch_span = stretch.record_span;
             for_each_layer_records_go_into(&cuts, LayerIndex(0), stretch_span.begin, stretch.reach, |layer| {
-                painted_layers[layer.0].may_hold_content = true;
-                painted_layers[layer.0].reach = painted_layers[layer.0].reach.united(stretch.reach);
+                reach_of_painted_layers[layer.0] = reach_of_painted_layers[layer.0].united(stretch.reach);
             });
             match record_spans.last_mut() {
                 Some(last) if last.end == stretch_span.begin => last.end = stretch_span.end,
@@ -1801,13 +1800,13 @@ impl StackBeingBuilt<'_> {
         }
         let band = &mut bands[band_position];
         band.record_spans = record_spans;
-        band.layer_below_all_cuts = painted_layers[0];
+        band.reach_of_layer_below_all_cuts = reach_of_painted_layers[0];
         band.cuts = barriers_of_plan
             .into_iter()
-            .zip(&painted_layers[1..])
-            .map(|(barrier, &layer_above_cut)| CutOfPlan {
+            .zip(&reach_of_painted_layers[1..])
+            .map(|(barrier, &reach_of_layer_above_cut)| CutOfPlan {
                 barrier,
-                layer_above_cut,
+                reach_of_layer_above_cut,
             })
             .collect();
     }

@@ -624,7 +624,7 @@ struct BandOfPlan {
     first_record_position: ListPosition,
     /// In paint order.
     record_spans: Vec<ListSpan>,
-    layer_below_all_cuts: PaintedLayerOfPlan,
+    reach_of_layer_below_all_cuts: IntRect,
     /// In paint order.
     cuts: Vec<CutOfPlan>,
 }
@@ -632,7 +632,7 @@ struct BandOfPlan {
 #[derive(Clone, Copy, Debug)]
 struct CutOfPlan {
     barrier: BarrierOfPlan,
-    layer_above_cut: PaintedLayerOfPlan,
+    reach_of_layer_above_cut: IntRect,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -649,19 +649,12 @@ enum BarrierOfPlan {
     NestedBand,
 }
 
-/// What a band knows of one of its painted layers.
-#[derive(Clone, Copy, Debug, Default)]
-struct PaintedLayerOfPlan {
-    may_hold_content: bool,
-    reach: IntRect,
-}
-
-// A band the walk of the bands of a plan is in, with the cuts of it that the walk has yet to pass, and the layer above
-// the cut whose nested band the walk is in.
+// A band the walk of the bands of a plan is in, with the cuts of it that the walk has yet to pass, and the reach of the
+// layer above the cut whose nested band the walk is in.
 struct BandOfWalk {
     band_index: BandIndex,
     cuts_to_pass: std::vec::IntoIter<CutOfPlan>,
-    layer_above_nested_band: PaintedLayerOfPlan,
+    reach_of_layer_above_nested_band: IntRect,
 }
 
 fn painted_layer_of_band(
@@ -669,7 +662,7 @@ fn painted_layer_of_band(
     bands: &[PlacementNodeBand],
     band_index: BandIndex,
     above_barrier: Option<BarrierIdentity>,
-    layer: PaintedLayerOfPlan,
+    reach: IntRect,
 ) -> StackLayer {
     let band = &bands[band_index.0];
     StackLayer {
@@ -681,8 +674,8 @@ fn painted_layer_of_band(
         placement_node_index: band.placement_node_index,
         band_index,
         content: LayerContent::Painted,
-        may_hold_content: layer.may_hold_content,
-        reach: layer.reach,
+        may_hold_content: !reach.is_empty(),
+        reach,
     }
 }
 
@@ -800,12 +793,12 @@ impl LayerStack {
                     layer_below_all_cuts: LayerIndex(layers.len()),
                 });
                 *band_ordinal_in_node += 1;
-                let layer = painted_layer_of_band(&nodes, &bands, band_index, None, band.layer_below_all_cuts);
+                let layer = painted_layer_of_band(&nodes, &bands, band_index, None, band.reach_of_layer_below_all_cuts);
                 layers.push(layer);
                 walk.push(BandOfWalk {
                     band_index,
                     cuts_to_pass: band.cuts.into_iter(),
-                    layer_above_nested_band: PaintedLayerOfPlan::default(),
+                    reach_of_layer_above_nested_band: IntRect::default(),
                 });
             }
             enters_next_band = false;
@@ -822,7 +815,7 @@ impl LayerStack {
                             record_span,
                             reach,
                         },
-                    layer_above_cut,
+                    reach_of_layer_above_cut,
                 }) => {
                     layers.push(StackLayer {
                         identity: LayerIdentity::Media { content, ordinal },
@@ -833,7 +826,7 @@ impl LayerStack {
                         reach,
                     });
                     let barrier = Some(BarrierIdentity::Media { content, ordinal });
-                    let layer = painted_layer_of_band(&nodes, &bands, band_index, barrier, layer_above_cut);
+                    let layer = painted_layer_of_band(&nodes, &bands, band_index, barrier, reach_of_layer_above_cut);
                     layers.push(layer);
                     bands[band_index.0].cuts.push(BarrierCut {
                         barrier_first_record_position: record_span.begin,
@@ -843,9 +836,9 @@ impl LayerStack {
                 }
                 Some(CutOfPlan {
                     barrier: BarrierOfPlan::NestedBand,
-                    layer_above_cut,
+                    reach_of_layer_above_cut,
                 }) => {
-                    walked.layer_above_nested_band = layer_above_cut;
+                    walked.reach_of_layer_above_nested_band = reach_of_layer_above_cut;
                     enters_next_band = true;
                 }
                 None => {
@@ -864,9 +857,9 @@ impl LayerStack {
                         node: nested_node.identity,
                         band_ordinal_in_node: nested_band.band_ordinal_in_node,
                     });
-                    let (band_index, layer_above_cut) =
-                        (walked_around.band_index, walked_around.layer_above_nested_band);
-                    let layer = painted_layer_of_band(&nodes, &bands, band_index, barrier, layer_above_cut);
+                    let (band_index, reach_of_layer_above_cut) =
+                        (walked_around.band_index, walked_around.reach_of_layer_above_nested_band);
+                    let layer = painted_layer_of_band(&nodes, &bands, band_index, barrier, reach_of_layer_above_cut);
                     layers.push(layer);
                     bands[band_index.0].cuts.push(cut);
                 }

@@ -11,8 +11,8 @@
 use super::{
     BandOfPlan, BarrierOfPlan, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CutOfPlan, LayerContent, LayerIdentity, LayerStack,
     LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS,
-    NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex, StackLayer,
-    WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
+    NestingOfLiveEffects, NodeOfPlan, PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect,
+    WhyListIsOneLayer, anchors_of_layer_plans,
 };
 use crate::display_list::commands::{
     CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VideoSinkHandle,
@@ -255,22 +255,11 @@ impl Decode for NodeOfPlan {
     }
 }
 
-impl Decode for PaintedLayerOfPlan {
-    const MIN_ENCODED_SIZE: usize = bool::MIN_ENCODED_SIZE + IntRect::MIN_ENCODED_SIZE;
-
-    fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(Self {
-            may_hold_content: decoder.decode()?,
-            reach: decoder.decode()?,
-        })
-    }
-}
-
 const BARRIER_KIND_MEDIA: u8 = 0;
 const BARRIER_KIND_NESTED_BAND: u8 = 1;
 
 impl Decode for CutOfPlan {
-    const MIN_ENCODED_SIZE: usize = size_of::<u8>() + PaintedLayerOfPlan::MIN_ENCODED_SIZE;
+    const MIN_ENCODED_SIZE: usize = size_of::<u8>() + IntRect::MIN_ENCODED_SIZE;
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let barrier = match decoder.decode::<u8>()? {
@@ -285,7 +274,7 @@ impl Decode for CutOfPlan {
         };
         Ok(Self {
             barrier,
-            layer_above_cut: decoder.decode()?,
+            reach_of_layer_above_cut: decoder.decode()?,
         })
     }
 }
@@ -294,7 +283,7 @@ impl Decode for BandOfPlan {
     const MIN_ENCODED_SIZE: usize = PlacementNodeIndex::MIN_ENCODED_SIZE
         + ListPosition::MIN_ENCODED_SIZE
         + Vec::<ListSpan>::MIN_ENCODED_SIZE
-        + PaintedLayerOfPlan::MIN_ENCODED_SIZE
+        + IntRect::MIN_ENCODED_SIZE
         + Vec::<CutOfPlan>::MIN_ENCODED_SIZE;
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
@@ -302,7 +291,7 @@ impl Decode for BandOfPlan {
             placement_node_index: decoder.decode()?,
             first_record_position: decoder.decode()?,
             record_spans: decoder.decode_with_max_size(MAXIMUM_SPAN_COUNT_OF_RECEIVED_BAND)?,
-            layer_below_all_cuts: decoder.decode()?,
+            reach_of_layer_below_all_cuts: decoder.decode()?,
             cuts: decoder.decode_with_max_size(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND)?,
         })
     }
@@ -407,10 +396,6 @@ impl Encode for LayerStack {
             encoder.encode(&PLAN_KIND_ONE_LAYER)?;
             return encoder.encode(&why_list_is_one_layer);
         }
-        let encode_painted_layer = |encoder: &mut Encoder, layer: &StackLayer| {
-            encoder.encode(&layer.may_hold_content)?;
-            encoder.encode(&layer.reach)
-        };
         encoder.encode(&PLAN_KIND_LAYERED)?;
         encoder.encode_size(self.nodes.len())?;
         for node in &self.nodes {
@@ -425,7 +410,7 @@ impl Encode for LayerStack {
             encoder.encode(&band.placement_node_index)?;
             encoder.encode(&band.first_record_position)?;
             encoder.encode(&band.record_spans)?;
-            encode_painted_layer(encoder, &self.layers[band.layer_below_all_cuts.0])?;
+            encoder.encode(&self.layers[band.layer_below_all_cuts.0].reach)?;
             encoder.encode_size(band.cuts.len())?;
             for cut in &band.cuts {
                 match &self.layers[cut.layer_above_cut.0 - 1] {
@@ -443,7 +428,7 @@ impl Encode for LayerStack {
                     }
                     _ => encoder.encode(&BARRIER_KIND_NESTED_BAND)?,
                 }
-                encode_painted_layer(encoder, &self.layers[cut.layer_above_cut.0])?;
+                encoder.encode(&self.layers[cut.layer_above_cut.0].reach)?;
             }
         }
         encoder.encode(&self.tiles_hold_content_moving_within_space_by_space_index)?;
@@ -583,9 +568,9 @@ fn check_rects_and_coordinates(plan: &LayeredPlan) -> Result<(), &'static str> {
             })
     });
     let layers_are_within = plan.bands.iter().all(|band| {
-        within(band.layer_below_all_cuts.reach)
+        within(band.reach_of_layer_below_all_cuts)
             && band.cuts.iter().all(|cut| {
-                within(cut.layer_above_cut.reach)
+                within(cut.reach_of_layer_above_cut)
                     && match cut.barrier {
                         BarrierOfPlan::Media { reach, .. } => within(reach),
                         BarrierOfPlan::NestedBand => true,
@@ -1949,7 +1934,7 @@ mod tests {
                 record_span: span_of_last_canvas,
                 reach,
             },
-            layer_above_cut: PaintedLayerOfPlan::default(),
+            reach_of_layer_above_cut: IntRect::default(),
         });
     }
 
@@ -1975,10 +1960,7 @@ mod tests {
             placement_node_index: PlacementNodeIndex(plan.nodes.len() - 1),
             first_record_position: header_span.begin,
             record_spans: vec![header_span],
-            layer_below_all_cuts: PaintedLayerOfPlan {
-                may_hold_content: true,
-                reach: IntRect::new(0, 0, 800, 50),
-            },
+            reach_of_layer_below_all_cuts: IntRect::new(0, 0, 800, 50),
             cuts: Vec::new(),
         });
     }
@@ -2107,17 +2089,17 @@ mod tests {
                 *ordinal = 0;
             }),
             ("reach of a layer past the limit", page_with_two_canvases, |plan| {
-                plan.bands[0].layer_below_all_cuts.reach = IntRect::new(i32::MAX - 10, 0, 100, 100);
+                plan.bands[0].reach_of_layer_below_all_cuts = IntRect::new(i32::MAX - 10, 0, 100, 100);
             }),
             ("rect of negative size", page_with_two_canvases, |plan| {
-                plan.bands[0].layer_below_all_cuts.reach = IntRect::new(0, 0, -10, 100);
+                plan.bands[0].reach_of_layer_below_all_cuts = IntRect::new(0, 0, -10, 100);
             }),
             (
                 "reach of a layer above a cut past the limit",
                 page_with_two_canvases,
                 |plan| {
                     let band = band_with_cuts(plan);
-                    plan.bands[band].cuts[0].layer_above_cut.reach = IntRect::new(0, i32::MIN, 1, 1);
+                    plan.bands[band].cuts[0].reach_of_layer_above_cut = IntRect::new(0, i32::MIN, 1, 1);
                 },
             ),
             ("reach of a node past the limit", page_with_two_canvases, |plan| {
@@ -2231,7 +2213,7 @@ mod tests {
                     .cuts
                     .push(CutOfPlan {
                         barrier: BarrierOfPlan::NestedBand,
-                        layer_above_cut: PaintedLayerOfPlan::default(),
+                        reach_of_layer_above_cut: IntRect::default(),
                     });
             }),
             (
