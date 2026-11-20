@@ -85,7 +85,9 @@ struct PooledTile {
     pixels: TilePixels,
     held_part_of_cell: IntRect,
     holds_current_pixels: bool,
+    /// Of a tile no layer holds, when a layer last held it.
     last_held_at: MonotonicTime,
+    held_at_latest_eviction: bool,
 }
 
 enum TilePixels {
@@ -695,6 +697,11 @@ pub struct ContextLayers {
     layering_obstacles_of_frames_not_drawn_as_planned: Option<LayeringObstaclesOfListAndTree>,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
     tile_pool: TilePool,
+    /// Whether a layer took or let go of tiles, or the pixels of pooled tiles changed, since spare tiles were last
+    /// evicted.
+    tiles_changed_since_eviction: bool,
+    /// The latest time at which every tile held at the latest eviction was still held.
+    tiles_held_at_eviction_still_held_at: MonotonicTime,
     tile_raster_scratch_surface: Option<SurfaceHandle>,
     latest_compositor_overlays_surface: Option<PresentableSurfaceHandle>,
     compositor_overlays_rect: IntRect,
@@ -710,6 +717,7 @@ impl ContextLayers {
     }
 
     fn invalidate_every_tile(&mut self) {
+        self.tiles_changed_since_eviction = true;
         for tile in self.tile_pool.values_mut() {
             tile.holds_current_pixels = false;
         }
@@ -813,6 +821,16 @@ impl ContextLayers {
         Some(band_tile_keys_of_latest_stack)
     }
 
+    /// Evicts spare tiles where the tiles changed since spare tiles were last evicted, as otherwise every tile held then
+    /// is still held, and the timer evicts what grows too old.
+    fn evict_spare_tiles_if_tiles_changed(&mut self, env: &PresentingEnvironment<'_>) {
+        if self.tiles_changed_since_eviction {
+            self.evict_spare_tiles(env);
+        } else {
+            self.tiles_held_at_eviction_still_held_at = env.now;
+        }
+    }
+
     fn evict_spare_tiles(&mut self, env: &PresentingEnvironment<'_>) {
         let held_content_hashes: HashSet<ContentHash> = self
             .cached_layer_by_identity
@@ -827,11 +845,16 @@ impl ContextLayers {
         };
         let mut pixel_count_of_held_tiles = 0u64;
         let mut spare_tiles: Vec<(MonotonicTime, ContentHash, u64)> = Vec::new();
+        let tiles_held_at_eviction_still_held_at = self.tiles_held_at_eviction_still_held_at;
         self.tile_pool.retain(|content_hash, tile| {
             if held_content_hashes.contains(content_hash) {
-                tile.last_held_at = env.now;
+                tile.held_at_latest_eviction = true;
                 pixel_count_of_held_tiles += surface_pixel_count_of(tile);
                 return true;
+            }
+            // A tile let go since the latest eviction was held for as long as every tile held then still was.
+            if std::mem::take(&mut tile.held_at_latest_eviction) {
+                tile.last_held_at = tiles_held_at_eviction_still_held_at;
             }
             if !tile.holds_current_pixels
                 || env.now - tile.last_held_at >= TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK
@@ -841,6 +864,8 @@ impl ContextLayers {
             spare_tiles.push((tile.last_held_at, *content_hash, surface_pixel_count_of(tile)));
             true
         });
+        self.tiles_changed_since_eviction = false;
+        self.tiles_held_at_eviction_still_held_at = env.now;
         let spare_tiles_least_recently_held_first = {
             spare_tiles.sort_unstable();
             spare_tiles
@@ -2144,6 +2169,7 @@ impl ContextPresenting {
             .map(|compositing| compositing.identity)
             .collect();
         let layers = &mut self.layers;
+        let layer_count_before = layers.cached_layer_by_identity.len();
         layers.cached_layer_by_identity.retain(|identity, cached_layer| {
             let is_in_stack = identities_in_stack.contains(identity);
             if !is_in_stack && let Some(presentation) = &cached_layer.window_server_presentation {
@@ -2152,7 +2178,8 @@ impl ContextPresenting {
             }
             is_in_stack
         });
-        layers.evict_spare_tiles(env);
+        layers.tiles_changed_since_eviction |= layers.cached_layer_by_identity.len() != layer_count_before;
+        layers.evict_spare_tiles_if_tiles_changed(env);
         painted_layers
     }
 
@@ -2450,6 +2477,7 @@ impl ContextPresenting {
                         held_part_of_cell: tile.part_of_cell_needed,
                         holds_current_pixels: true,
                         last_held_at: env.now,
+                        held_at_latest_eviction: false,
                     },
                 );
                 held_tiles_changed = true;
@@ -2515,6 +2543,7 @@ impl ContextPresenting {
                             held_part_of_cell: tile.part_of_cell_needed,
                             holds_current_pixels: false,
                             last_held_at: env.now,
+                            held_at_latest_eviction: false,
                         },
                     );
                 }
@@ -2527,6 +2556,7 @@ impl ContextPresenting {
         }
         if held_tiles_changed || !tiles_to_raster.is_empty() {
             cached_layer.bump_content_version_of_held_tiles();
+            self.layers.tiles_changed_since_eviction = true;
         }
         if tiles_to_raster.is_empty() {
             return (rects_painted_straight, 0);
@@ -3299,6 +3329,7 @@ mod tests {
                         held_part_of_cell: coord.cell_rect(),
                         holds_current_pixels: true,
                         last_held_at: MonotonicTime::default(),
+                        held_at_latest_eviction: false,
                     },
                 )
             })
@@ -3520,6 +3551,7 @@ mod tests {
                 held_part_of_cell: long_label,
                 holds_current_pixels: true,
                 last_held_at: MonotonicTime::default(),
+                held_at_latest_eviction: false,
             },
         )]);
         let cached_layer_by_identity = HashMap::from([(
