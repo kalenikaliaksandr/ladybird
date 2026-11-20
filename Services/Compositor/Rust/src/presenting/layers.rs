@@ -9,7 +9,7 @@
 //! hashes all they depend on, so a layer finds the tiles another layer or an earlier stack rastered.
 
 use super::layer_overlay::{
-    FrameOfLayerOverlay, FrameWorkCounts, HeldTile, LayerOfFrame, LayerOfFrameContent, MediaPresentation, RasterCause,
+    FrameWorkCounts, LayerOverlayModel, MediaPresentation, ModelLayer, ModelLayerContent, ModelTile, RasterCause,
 };
 use super::{
     ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform,
@@ -2091,23 +2091,25 @@ impl ContextPresenting {
                 let layer_index = compositing.layer_index;
                 let layer = &stack.layers[layer_index.0];
                 let content = match &layer.content {
-                    LayerContent::Painted { .. } => LayerOfFrameContent::Painted {
-                        held_tiles: self
+                    LayerContent::Painted { .. } => ModelLayerContent::Painted {
+                        tiles: self
                             .layers
                             .cached_layer_by_identity
                             .get(&compositing.identity)
                             .map(|cached_layer| {
                                 pooled_held_tiles(&cached_layer.held_tiles, &self.layers.tile_pool)
-                                    .map(|(coord, tile)| HeldTile {
+                                    .map(|(coord, tile)| ModelTile {
                                         coord,
-                                        held_part_of_cell: tile.held_part_of_cell,
+                                        held_part_of_cell: Some(tile.held_part_of_cell),
                                         is_one_color: tile.surface().is_none(),
+                                        raster_count: 0,
+                                        last_raster: None,
                                     })
                                     .collect()
                             })
                             .unwrap_or_default(),
                     },
-                    LayerContent::Media { reach, .. } => LayerOfFrameContent::Media {
+                    LayerContent::Media { reach, .. } => ModelLayerContent::Media {
                         reach: *reach,
                         presentation: if window_server_shows_layers && compositing.shown_by_window_server {
                             MediaPresentation::ShownByWindowServer
@@ -2133,30 +2135,31 @@ impl ContextPresenting {
                         },
                     },
                 };
-                LayerOfFrame {
+                ModelLayer {
                     identity: compositing.identity,
                     name: names_of_layers[layer_index.0].clone(),
+                    hidden: self.layer_overlay.hides_layer(&compositing.identity),
                     space_to_frame: compositing.space_to_frame,
                     composite_clip: compositing.composite_clip,
                     content,
                 }
             })
             .collect();
-        let overlay_frame = FrameOfLayerOverlay {
+        let model = LayerOverlayModel {
             viewport_rect: self.raster_rect(),
-            painted_at: frame.frame_inputs.painted_at,
             layers,
             why_list_is_one_layer: stack.why_list_is_one_layer.map(|why| why.to_string()),
             notes_of_layer_stack: stack_of_frames
                 .layer_plan
                 .as_ref()
                 .map_or_else(Vec::new, |layer_plan| layer_plan.note_lines.to_vec()),
-            work_counts: self.layers.work_counts_of_this_frame,
+            work_counts_of_frame: self.layers.work_counts_of_this_frame,
         };
+        let painted_at = frame.frame_inputs.painted_at;
         let device_pixel_ratio = self.device_pixel_ratio;
         let shaper = env.host.overlay_label_shaper(env.context_id);
         if let Some(overlay) = self.layer_overlay.overlay_mut() {
-            overlay.update_with_frame(overlay_frame, device_pixel_ratio, &shaper);
+            overlay.update_with_frame(model, painted_at, device_pixel_ratio, &shaper);
         }
     }
 

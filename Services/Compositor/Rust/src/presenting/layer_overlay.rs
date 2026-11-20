@@ -121,47 +121,6 @@ pub struct FrameWorkCounts {
     pub took_plan_into_use: bool,
 }
 
-/// A layer as a frame composites it, which the overlay is worked out from.
-pub struct LayerOfFrame {
-    pub identity: LayerIdentity,
-    /// What the display list dump calls the layer.
-    pub name: Rc<str>,
-    /// From the raster coordinates of the layer's space into those of the frame.
-    pub space_to_frame: SpaceToFrame,
-    /// In the raster coordinates of the frame.
-    pub composite_clip: Option<IntRect>,
-    pub content: LayerOfFrameContent,
-}
-
-/// A tile a layer holds. A tile of one color has no surface.
-pub struct HeldTile {
-    pub coord: TileCoord,
-    pub held_part_of_cell: IntRect,
-    pub is_one_color: bool,
-}
-
-pub enum LayerOfFrameContent {
-    Painted {
-        held_tiles: Vec<HeldTile>,
-    },
-    Media {
-        reach: IntRect,
-        presentation: MediaPresentation,
-    },
-}
-
-/// What the overlay is worked out from for a frame.
-pub struct FrameOfLayerOverlay {
-    pub viewport_rect: IntRect,
-    pub painted_at: MonotonicTime,
-    /// From the base layer up.
-    pub layers: Vec<LayerOfFrame>,
-    pub why_list_is_one_layer: Option<String>,
-    /// The layer stack's lines of composited effects, media without layers and effects reading only their own layer.
-    pub notes_of_layer_stack: Vec<String>,
-    pub work_counts: FrameWorkCounts,
-}
-
 /// The last time a tile was rastered, as the overlay shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LastRaster {
@@ -188,6 +147,7 @@ pub struct ModelTile {
     pub coord: TileCoord,
     /// None where the layer holds no tile at the cell, as where a tile was painted straight into the frame.
     pub held_part_of_cell: Option<IntRect>,
+    /// Whether the tile is of one color, which has no surface.
     pub is_one_color: bool,
     /// How often the tile was rastered while the layer kept it.
     pub raster_count: u32,
@@ -196,10 +156,8 @@ pub struct ModelTile {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelLayerContent {
-    Painted {
-        tiles: Vec<ModelTile>,
-        bytes_held_by_tile_surfaces: u64,
-    },
+    /// By cell, the tiles the layer holds, and those highlighted where it holds none.
+    Painted { tiles: Vec<ModelTile> },
     Media {
         reach: IntRect,
         presentation: MediaPresentation,
@@ -208,18 +166,23 @@ pub enum ModelLayerContent {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelLayer {
-    /// Names the layer in the descriptions the compositor publishes, for as long as its identity stays.
-    pub id: u64,
+    pub identity: LayerIdentity,
+    /// What the display list dump calls the layer.
     pub name: Rc<str>,
-    pub color: Color,
     /// Whether the frames leave the layer out.
     pub hidden: bool,
+    /// From the raster coordinates of the layer's space into those of the frame.
     pub space_to_frame: SpaceToFrame,
+    /// In the raster coordinates of the frame.
     pub composite_clip: Option<IntRect>,
     pub content: ModelLayerContent,
 }
 
 impl ModelLayer {
+    fn color(&self) -> Color {
+        color_of_layer(&self.identity)
+    }
+
     fn visible_rect_in_frame(&self, viewport_rect: IntRect) -> IntRect {
         self.composite_clip
             .map_or(viewport_rect, |clip| viewport_rect.intersected(clip))
@@ -231,7 +194,7 @@ impl ModelLayer {
 
     fn bounds_in_layer_space(&self) -> IntRect {
         match &self.content {
-            ModelLayerContent::Painted { tiles, .. } => tiles
+            ModelLayerContent::Painted { tiles } => tiles
                 .iter()
                 .filter_map(|tile| tile.held_part_of_cell)
                 .fold(IntRect::default(), IntRect::united),
@@ -247,10 +210,9 @@ pub struct LayerOverlayModel {
     /// From the base layer up.
     pub layers: Vec<ModelLayer>,
     pub why_list_is_one_layer: Option<String>,
+    /// The layer stack's lines of composited effects, media without layers and effects reading only their own layer.
     pub notes_of_layer_stack: Vec<String>,
     pub work_counts_of_frame: FrameWorkCounts,
-    /// Until when some tile stays highlighted.
-    pub highlights_fade_until: Option<MonotonicTime>,
 }
 
 /// The layers that a frame of the overlay draws labels for, from the top down, each with the tiles it labels: those it
@@ -265,7 +227,7 @@ fn labels_of_model(model: &LayerOverlayModel) -> (Vec<(&ModelLayer, Vec<&ModelTi
         .take(MAXIMUM_LABELED_LAYER_COUNT)
         .map(|layer| {
             let mut labeled_tiles = Vec::new();
-            if let ModelLayerContent::Painted { tiles, .. } = &layer.content {
+            if let ModelLayerContent::Painted { tiles } = &layer.content {
                 let visible_rect = layer.visible_rect_in_frame(model.viewport_rect);
                 for tile in tiles {
                     let Some(held_part_of_cell) = tile.held_part_of_cell else {
@@ -311,16 +273,19 @@ fn memory_size_text(bytes: u64) -> String {
 impl LayerOverlayModel {
     fn details_of_layer(layer: &ModelLayer) -> String {
         match &layer.content {
-            ModelLayerContent::Painted {
-                tiles,
-                bytes_held_by_tile_surfaces,
-            } => {
+            ModelLayerContent::Painted { tiles } => {
                 let held_tile_count = tiles.iter().filter(|tile| tile.held_part_of_cell.is_some()).count() as u64;
                 let one_color_tile_count = tiles.iter().filter(|tile| tile.is_one_color).count();
+                let bytes_held_by_tile_surfaces: u64 = tiles
+                    .iter()
+                    .filter(|tile| !tile.is_one_color)
+                    .filter_map(|tile| tile.held_part_of_cell)
+                    .map(|held_part| held_part.width.max(0) as u64 * held_part.height.max(0) as u64 * BYTES_PER_PIXEL)
+                    .sum();
                 format!(
                     "{} ({one_color_tile_count} of one color), {}",
                     count_with_noun(held_tile_count, "tile", "tiles"),
-                    memory_size_text(*bytes_held_by_tile_surfaces)
+                    memory_size_text(bytes_held_by_tile_surfaces)
                 )
             }
             ModelLayerContent::Media { presentation, .. } => presentation.to_string(),
@@ -378,10 +343,10 @@ impl LayerOverlayModel {
                 .iter()
                 .take(MAXIMUM_LISTED_LAYER_COUNT)
                 .map(|layer| CompositorLayerDescription {
-                    id: layer.id,
+                    id: id_of_layer(&layer.identity),
                     name: layer.name[..layer.name.floor_char_boundary(MAXIMUM_LISTED_LAYER_NAME_LENGTH)].into(),
                     details: Self::details_of_layer(layer).into(),
-                    rgb_of_outline: rgb_of_color(layer.color),
+                    rgb_of_outline: rgb_of_color(layer.color()),
                     hidden: layer.hidden,
                 })
                 .collect(),
@@ -410,14 +375,14 @@ fn layer_label_text(layer: &ModelLayer) -> String {
 }
 
 /// Names the layer in the descriptions the compositor publishes, for as long as its identity stays.
-pub fn id_of_layer(identity: &LayerIdentity) -> u64 {
+fn id_of_layer(identity: &LayerIdentity) -> u64 {
     let mut hasher = DefaultHasher::new();
     identity.hash(&mut hasher);
     hasher.finish()
 }
 
 /// A color of the layer's own, which stays as long as its identity does, wherever the layer is in the stack.
-pub fn color_of_layer(identity: &LayerIdentity) -> Color {
+fn color_of_layer(identity: &LayerIdentity) -> Color {
     let hash = id_of_layer(identity);
     let hue = (hash % 360) as f32;
     let lighter_shade_tells_apart_similar_hues = hash & (1 << 40) != 0;
@@ -499,6 +464,8 @@ impl ShapedLabelCache {
 pub struct LayerOverlayFrame {
     pub model: LayerOverlayModel,
     pub records: OverlayRecords,
+    /// Until when some tile stays highlighted.
+    pub highlights_fade_until: Option<MonotonicTime>,
 }
 
 /// What the overlay keeps while it is switched on: how often each tile was rastered, and why last, and what the
@@ -548,16 +515,22 @@ impl LayerOverlay {
         self.latest_frame.as_ref()
     }
 
-    /// Works out the overlay of a frame from the tiles rastered so far, and records how it is drawn.
+    /// Works out the overlay of a frame painted at `painted_at` from the layers of the frame and the tiles rastered so
+    /// far, and records how it is drawn.
     pub fn update_with_frame(
         &mut self,
-        frame: FrameOfLayerOverlay,
+        mut model: LayerOverlayModel,
+        painted_at: MonotonicTime,
         device_pixel_ratio: f64,
         shaper: &dyn OverlayLabelShaper,
     ) -> &LayerOverlayFrame {
-        let model = self.model_of_frame(frame);
+        let highlights_fade_until = self.merge_raster_history_into(&mut model.layers, painted_at);
         let records = self.record_drawing_of_model(&model, device_pixel_ratio, shaper);
-        self.latest_frame.insert(LayerOverlayFrame { model, records })
+        self.latest_frame.insert(LayerOverlayFrame {
+            model,
+            records,
+            highlights_fade_until,
+        })
     }
 
     pub fn hides_layer(&self, identity: &LayerIdentity) -> bool {
@@ -586,115 +559,66 @@ impl LayerOverlay {
     /// Until when frames are needed without anything else changing: while a highlight fades, and until the compositor
     /// layers window can be told what changed.
     pub fn needs_frames_until(&self) -> Option<MonotonicTime> {
-        let highlights_fade_until = self
-            .latest_frame
-            .as_ref()
-            .and_then(|frame| frame.model.highlights_fade_until);
+        let highlights_fade_until = self.latest_frame.as_ref().and_then(|frame| frame.highlights_fade_until);
         highlights_fade_until.max(self.unpublished_description_waits_until)
     }
 
-    /// Works out the overlay of a frame, and keeps the raster history of only the tiles that the layers of the frame
-    /// hold or that are highlighted.
-    pub fn model_of_frame(&mut self, frame: FrameOfLayerOverlay) -> LayerOverlayModel {
-        let painted_at = frame.painted_at;
+    /// Gives the tiles of the layers of a frame painted at `painted_at` their raster history, adds the tiles that are
+    /// highlighted where a layer holds none, and keeps the raster history of only those tiles. Answers until when some
+    /// tile stays highlighted.
+    fn merge_raster_history_into(
+        &mut self,
+        layers: &mut [ModelLayer],
+        painted_at: MonotonicTime,
+    ) -> Option<MonotonicTime> {
         let mut highlights_fade_until: Option<MonotonicTime> = None;
         // The history that the layers of the frame do not take is of layers that left the stack, and is dropped.
         let mut raster_history_of_tiles_by_layer = std::mem::take(&mut self.raster_history_of_tiles_by_layer);
-        let mut kept_raster_history_of_tiles_by_layer = HashMap::with_capacity(frame.layers.len());
-        let layers = frame
-            .layers
-            .into_iter()
-            .map(|layer| {
-                let color = color_of_layer(&layer.identity);
-                let content = match layer.content {
-                    LayerOfFrameContent::Painted { held_tiles } => {
-                        let bytes_held_by_tile_surfaces = held_tiles
-                            .iter()
-                            .filter(|tile| !tile.is_one_color)
-                            .map(|tile| {
-                                let held_part = tile.held_part_of_cell;
-                                held_part.width.max(0) as u64 * held_part.height.max(0) as u64 * BYTES_PER_PIXEL
-                            })
-                            .sum();
-                        let mut tiles: BTreeMap<TileCoord, ModelTile> = held_tiles
-                            .into_iter()
-                            .map(|tile| {
-                                (
-                                    tile.coord,
-                                    ModelTile {
-                                        coord: tile.coord,
-                                        held_part_of_cell: Some(tile.held_part_of_cell),
-                                        is_one_color: tile.is_one_color,
-                                        raster_count: 0,
-                                        last_raster: None,
-                                    },
-                                )
-                            })
-                            .collect();
-                        let mut raster_history_of_tiles = raster_history_of_tiles_by_layer
-                            .remove(&layer.identity)
-                            .unwrap_or_default();
-                        raster_history_of_tiles.retain(|&coord, history| {
-                            let last_raster = LastRaster {
-                                cause: history.last_cause,
-                                rect_in_layer_space: history.last_rect_in_layer_space,
-                                age: painted_at - history.last_rastered_at,
-                            };
-                            if last_raster.is_highlighted() {
-                                let fades_at = history.last_rastered_at + RASTER_HIGHLIGHT_FADE_DURATION;
-                                highlights_fade_until =
-                                    Some(highlights_fade_until.map_or(fades_at, |until| until.max(fades_at)));
-                            }
-                            let shows_cell_holding_no_tile = last_raster.is_highlighted();
-                            let tile = match tiles.entry(coord) {
-                                btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                                btree_map::Entry::Vacant(entry) if shows_cell_holding_no_tile => {
-                                    entry.insert(ModelTile {
-                                        coord,
-                                        held_part_of_cell: None,
-                                        is_one_color: false,
-                                        raster_count: 0,
-                                        last_raster: None,
-                                    })
-                                }
-                                btree_map::Entry::Vacant(_) => return false,
-                            };
-                            tile.raster_count = history.raster_count;
-                            tile.last_raster = Some(last_raster);
-                            true
-                        });
-                        if !raster_history_of_tiles.is_empty() {
-                            kept_raster_history_of_tiles_by_layer.insert(layer.identity, raster_history_of_tiles);
-                        }
-                        ModelLayerContent::Painted {
-                            tiles: tiles.into_values().collect(),
-                            bytes_held_by_tile_surfaces,
-                        }
-                    }
-                    LayerOfFrameContent::Media { reach, presentation } => {
-                        ModelLayerContent::Media { reach, presentation }
-                    }
+        let mut kept_raster_history_of_tiles_by_layer = HashMap::with_capacity(layers.len());
+        for layer in layers {
+            let ModelLayerContent::Painted { tiles } = &mut layer.content else {
+                continue;
+            };
+            let Some(mut raster_history_of_tiles) = raster_history_of_tiles_by_layer.remove(&layer.identity) else {
+                continue;
+            };
+            let mut tile_by_coord: BTreeMap<TileCoord, ModelTile> = std::mem::take(tiles)
+                .into_iter()
+                .map(|tile| (tile.coord, tile))
+                .collect();
+            raster_history_of_tiles.retain(|&coord, history| {
+                let last_raster = LastRaster {
+                    cause: history.last_cause,
+                    rect_in_layer_space: history.last_rect_in_layer_space,
+                    age: painted_at - history.last_rastered_at,
                 };
-                ModelLayer {
-                    id: id_of_layer(&layer.identity),
-                    name: layer.name,
-                    color,
-                    hidden: self.hides_layer(&layer.identity),
-                    space_to_frame: layer.space_to_frame,
-                    composite_clip: layer.composite_clip,
-                    content,
+                if last_raster.is_highlighted() {
+                    let fades_at = history.last_rastered_at + RASTER_HIGHLIGHT_FADE_DURATION;
+                    highlights_fade_until = Some(highlights_fade_until.map_or(fades_at, |until| until.max(fades_at)));
                 }
-            })
-            .collect();
-        self.raster_history_of_tiles_by_layer = kept_raster_history_of_tiles_by_layer;
-        LayerOverlayModel {
-            viewport_rect: frame.viewport_rect,
-            layers,
-            why_list_is_one_layer: frame.why_list_is_one_layer,
-            notes_of_layer_stack: frame.notes_of_layer_stack,
-            work_counts_of_frame: frame.work_counts,
-            highlights_fade_until,
+                let shows_cell_holding_no_tile = last_raster.is_highlighted();
+                let tile = match tile_by_coord.entry(coord) {
+                    btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    btree_map::Entry::Vacant(entry) if shows_cell_holding_no_tile => entry.insert(ModelTile {
+                        coord,
+                        held_part_of_cell: None,
+                        is_one_color: false,
+                        raster_count: 0,
+                        last_raster: None,
+                    }),
+                    btree_map::Entry::Vacant(_) => return false,
+                };
+                tile.raster_count = history.raster_count;
+                tile.last_raster = Some(last_raster);
+                true
+            });
+            *tiles = tile_by_coord.into_values().collect();
+            if !raster_history_of_tiles.is_empty() {
+                kept_raster_history_of_tiles_by_layer.insert(layer.identity, raster_history_of_tiles);
+            }
         }
+        self.raster_history_of_tiles_by_layer = kept_raster_history_of_tiles_by_layer;
+        highlights_fade_until
     }
 
     fn record_drawing_of_model(
@@ -783,7 +707,8 @@ impl OverlayDrawing<'_> {
         if visible_rect.is_empty() {
             return;
         }
-        if let ModelLayerContent::Painted { tiles, .. } = &layer.content {
+        let color = layer.color();
+        if let ModelLayerContent::Painted { tiles } = &layer.content {
             for tile in tiles {
                 let Some(last_raster) = tile.last_raster.filter(LastRaster::is_highlighted) else {
                     continue;
@@ -802,12 +727,12 @@ impl OverlayDrawing<'_> {
                     Self::fill_within(
                         recorder,
                         layer.rect_in_frame(held_part_of_cell),
-                        layer.color.with_alpha(ONE_COLOR_TILE_TINT_ALPHA),
+                        color.with_alpha(ONE_COLOR_TILE_TINT_ALPHA),
                         visible_rect,
                     );
                 }
             }
-            let grid_color = layer.color.with_alpha(150);
+            let grid_color = color.with_alpha(150);
             for held_part_of_cell in tiles.iter().filter_map(|tile| tile.held_part_of_cell) {
                 Self::stroke_within(
                     recorder,
@@ -831,7 +756,7 @@ impl OverlayDrawing<'_> {
             recorder,
             bounds_in_frame.inflated(-2 * halo_thickness, -2 * halo_thickness),
             self.device_pixels(2.0),
-            layer.color,
+            color,
             visible_rect,
         );
     }
@@ -918,7 +843,7 @@ impl OverlayDrawing<'_> {
                 recorder,
                 label,
                 IntPoint { x: rect.x, y: rect.y },
-                Some(layer.color),
+                Some(layer.color()),
                 Some(LABEL_BACKGROUND_COLOR),
             );
         });
@@ -1036,33 +961,35 @@ mod tests {
         }
     }
 
-    fn painted_layer_holding(identity: LayerIdentity, held_coords: &[TileCoord]) -> LayerOfFrame {
-        LayerOfFrame {
+    fn painted_layer_holding(identity: LayerIdentity, held_coords: &[TileCoord]) -> ModelLayer {
+        ModelLayer {
             identity,
             name: "painted layer".into(),
+            hidden: false,
             space_to_frame: SpaceToFrame::Offset(IntPoint::default()),
             composite_clip: None,
-            content: LayerOfFrameContent::Painted {
-                held_tiles: held_coords
+            content: ModelLayerContent::Painted {
+                tiles: held_coords
                     .iter()
-                    .map(|&coord| HeldTile {
+                    .map(|&coord| ModelTile {
                         coord,
-                        held_part_of_cell: coord.cell_rect(),
+                        held_part_of_cell: Some(coord.cell_rect()),
                         is_one_color: false,
+                        raster_count: 0,
+                        last_raster: None,
                     })
                     .collect(),
             },
         }
     }
 
-    fn frame_painted_at(painted_at: MonotonicTime, layers: Vec<LayerOfFrame>) -> FrameOfLayerOverlay {
-        FrameOfLayerOverlay {
+    fn model_of(layers: Vec<ModelLayer>) -> LayerOverlayModel {
+        LayerOverlayModel {
             viewport_rect: IntRect::new(0, 0, 800, 600),
-            painted_at,
             layers,
             why_list_is_one_layer: None,
             notes_of_layer_stack: Vec::new(),
-            work_counts: FrameWorkCounts::default(),
+            work_counts_of_frame: FrameWorkCounts::default(),
         }
     }
 
@@ -1073,15 +1000,23 @@ mod tests {
             .map_or_else(Vec::new, |history| history.keys().copied().collect())
     }
 
-    // Per tile of the first layer: where it is, whether the layer holds it, and how often it was rastered.
-    fn tiles_of_first_layer(model: &LayerOverlayModel) -> Vec<(TileCoord, bool, u32)> {
-        let ModelLayerContent::Painted { tiles, .. } = &model.layers[0].content else {
-            panic!("the first layer is painted");
+    // Per tile of the layer of a frame painted at `painted_at`, once it has its raster history: where it is, whether the
+    // layer holds it, and how often it was rastered. Answers too until when some tile stays highlighted.
+    fn tiles_with_raster_history(
+        overlay: &mut LayerOverlay,
+        painted_at: MonotonicTime,
+        layer: ModelLayer,
+    ) -> (Vec<(TileCoord, bool, u32)>, Option<MonotonicTime>) {
+        let mut layers = [layer];
+        let highlights_fade_until = overlay.merge_raster_history_into(&mut layers, painted_at);
+        let ModelLayerContent::Painted { tiles } = &layers[0].content else {
+            panic!("the layer is painted");
         };
-        tiles
+        let tiles = tiles
             .iter()
             .map(|tile| (tile.coord, tile.held_part_of_cell.is_some(), tile.raster_count))
-            .collect()
+            .collect();
+        (tiles, highlights_fade_until)
     }
 
     #[test]
@@ -1096,41 +1031,43 @@ mod tests {
         }
 
         // A tile the layer no longer holds shows while its highlight fades.
-        let while_fading = overlay.model_of_frame(frame_painted_at(
+        let while_fading = tiles_with_raster_history(
+            &mut overlay,
             rastered_at + Duration::from_milliseconds(100),
-            vec![painted_layer_holding(layer, &[held])],
-        ));
-        assert_eq!(
-            tiles_of_first_layer(&while_fading),
-            [(held, true, 1), (let_go, false, 1)]
+            painted_layer_holding(layer, &[held]),
         );
         assert_eq!(
-            while_fading.highlights_fade_until,
-            Some(rastered_at + RASTER_HIGHLIGHT_FADE_DURATION)
+            while_fading,
+            (
+                vec![(held, true, 1), (let_go, false, 1)],
+                Some(rastered_at + RASTER_HIGHLIGHT_FADE_DURATION)
+            )
         );
         assert_eq!(coords_with_raster_history(&overlay, &layer), [held, let_go]);
 
         // Once the highlight faded, only the tile the layer holds keeps its history.
-        let after_fading = overlay.model_of_frame(frame_painted_at(
+        let after_fading = tiles_with_raster_history(
+            &mut overlay,
             rastered_at + RASTER_HIGHLIGHT_FADE_DURATION,
-            vec![painted_layer_holding(layer, &[held])],
-        ));
-        assert_eq!(tiles_of_first_layer(&after_fading), [(held, true, 1)]);
-        assert_eq!(after_fading.highlights_fade_until, None);
+            painted_layer_holding(layer, &[held]),
+        );
+        assert_eq!(after_fading, (vec![(held, true, 1)], None));
         assert_eq!(coords_with_raster_history(&overlay, &layer), [held]);
 
         // A tile the layer holds again after it let the tile go counts its rasters from zero.
-        let held_again = overlay.model_of_frame(frame_painted_at(
+        let held_again = tiles_with_raster_history(
+            &mut overlay,
             rastered_at + RASTER_HIGHLIGHT_FADE_DURATION,
-            vec![painted_layer_holding(layer, &[held, let_go])],
-        ));
-        assert_eq!(tiles_of_first_layer(&held_again), [(held, true, 1), (let_go, true, 0)]);
+            painted_layer_holding(layer, &[held, let_go]),
+        );
+        assert_eq!(held_again.0, [(held, true, 1), (let_go, true, 0)]);
 
         // A layer that left the stack keeps no history.
-        overlay.model_of_frame(frame_painted_at(
+        tiles_with_raster_history(
+            &mut overlay,
             rastered_at + RASTER_HIGHLIGHT_FADE_DURATION,
-            vec![painted_layer_holding(painted_layer_identity(2), &[held])],
-        ));
+            painted_layer_holding(painted_layer_identity(2), &[held]),
+        );
         assert!(overlay.raster_history_of_tiles_by_layer.is_empty());
     }
 
@@ -1148,14 +1085,14 @@ mod tests {
     fn a_frame_labels_only_the_layers_nearest_the_top() {
         let layer_count = MAXIMUM_LABELED_LAYER_COUNT + 36;
         let layers = (0..layer_count)
-            .map(|index| LayerOfFrame {
+            .map(|index| ModelLayer {
                 name: format!("layer {index}").into(),
                 ..painted_layer_holding(painted_layer_identity(index as u64), &[TileCoord::new(0, 0)])
             })
             .collect();
         let shaper = LabelShaperCountingTexts(std::cell::RefCell::new(Vec::new()));
         let mut overlay = LayerOverlay::default();
-        let frame = overlay.update_with_frame(frame_painted_at(MonotonicTime::default(), layers), 1.0, &shaper);
+        let frame = overlay.update_with_frame(model_of(layers), MonotonicTime::default(), 1.0, &shaper);
         let shaped_texts = shaper.0.borrow();
         let shaped_names: Vec<&String> = shaped_texts.iter().filter(|text| text.starts_with("layer ")).collect();
         assert_eq!(shaped_names.len(), MAXIMUM_LABELED_LAYER_COUNT);
@@ -1176,9 +1113,8 @@ mod tests {
             viewport_rect: IntRect::new(0, 0, 800, 600),
             layers: (0..layer_count)
                 .map(|index| ModelLayer {
-                    id: index as u64,
+                    identity: painted_layer_identity(index as u64),
                     name: long_name.as_str().into(),
-                    color: Color::from_rgb(0, 0, 0),
                     hidden: false,
                     space_to_frame: SpaceToFrame::Offset(IntPoint::default()),
                     composite_clip: None,
@@ -1191,7 +1127,6 @@ mod tests {
             why_list_is_one_layer: None,
             notes_of_layer_stack: vec!["a note of the plan".into()],
             work_counts_of_frame: FrameWorkCounts::default(),
-            highlights_fade_until: None,
         };
         let notes_of = |description: &CompositorLayersDescription| -> Vec<String> {
             description
@@ -1215,7 +1150,9 @@ mod tests {
         assert_eq!(some_unlisted.layers.len(), MAXIMUM_LISTED_LAYER_COUNT);
         assert_eq!(
             some_unlisted.layers.last().map(|layer| layer.id),
-            Some(MAXIMUM_LISTED_LAYER_COUNT as u64 - 1)
+            Some(id_of_layer(&painted_layer_identity(
+                MAXIMUM_LISTED_LAYER_COUNT as u64 - 1
+            )))
         );
         assert_eq!(
             notes_of(&some_unlisted),
