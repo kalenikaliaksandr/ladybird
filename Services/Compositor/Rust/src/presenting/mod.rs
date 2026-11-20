@@ -865,7 +865,6 @@ impl ContextPresenting {
     ) -> Option<SurfaceHandle> {
         let mut source = self.latest_rendered_surface.clone()?;
         if self.layers.window_server_shows_media()
-            && self.layers.has_layers()
             && let Some(painted_frame) = self.painted_frame.take()
         {
             let source_size = env.raster.surface_size(&source);

@@ -542,12 +542,11 @@ struct CompositedStack {
 }
 
 impl CompositedStack {
-    /// The layer a frame composited, which a frame worked out after it can hold elsewhere in another stack.
-    fn layer_composited_as(&self, compositing: &LayerCompositingInFrame) -> Option<(LayerIndex, &StackLayer)> {
-        match self.stack.layers.get(compositing.layer_index.0) {
-            Some(layer) if layer.identity == compositing.identity => Some((compositing.layer_index, layer)),
-            _ => self.stack.layer_with_identity(compositing.identity),
-        }
+    /// The layer a frame composited, which the frame worked out with this stack.
+    fn layer_composited_as(&self, compositing: &LayerCompositingInFrame) -> (LayerIndex, &StackLayer) {
+        let layer = &self.stack.layers[compositing.layer_index.0];
+        debug_assert!(layer.identity == compositing.identity);
+        (compositing.layer_index, layer)
     }
 }
 
@@ -720,10 +719,6 @@ pub struct ContextLayers {
 }
 
 impl ContextLayers {
-    pub fn has_layers(&self) -> bool {
-        self.stack_of_painted_frame.is_some()
-    }
-
     /// Whether the window server shows layers above the base layer of the latest frame.
     pub fn window_server_shows_media(&self) -> bool {
         any_layer_shown_by_window_server(&self.compositing_of_latest_frame)
@@ -2825,9 +2820,7 @@ impl ContextPresenting {
                 .filter(|compositing| compositing.shown_by_window_server == composites_layers_the_window_server_shows)
                 .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
             {
-                let Some((layer_index, layer)) = composited_stack.layer_composited_as(compositing) else {
-                    continue;
-                };
+                let (layer_index, layer) = composited_stack.layer_composited_as(compositing);
                 let damage_grown_by_filter_reads = inflated(
                     damage_rect,
                     composited_filter_read_reach_by_layer
@@ -3049,9 +3042,7 @@ impl ContextPresenting {
             .filter(|compositing| compositing.shown_by_window_server)
             .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
         {
-            let Some((layer_index, layer)) = composited_stack.layer_composited_as(compositing) else {
-                continue;
-            };
+            let (layer_index, layer) = composited_stack.layer_composited_as(compositing);
             if let LayerContent::Media { content, .. } = &layer.content {
                 let Some(Ok(placement)) = layers.window_server_placements_of_media.of_layer(layer_index) else {
                     continue;
