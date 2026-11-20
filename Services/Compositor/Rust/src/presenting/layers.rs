@@ -1748,11 +1748,15 @@ impl ContextPresenting {
         );
         let stack_of_frames = &*stack_of_frames;
         let stack = stack_of_frames.stack.as_ref();
-        let window_server_placements_of_media =
-            stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
+        let window_server_may_show_media = self.why_window_server_shows_no_media_of_this_context(env).is_none();
+        let window_server_placements_of_media = if window_server_may_show_media {
+            stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect)
+        } else {
+            WindowServerPlacementsOfMedia::default()
+        };
         let composite_offsets = stack.composite_offsets(scroll_offsets);
         let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets);
-        let shown_by_window_server_by_layer = if self.why_window_server_shows_no_media_of_this_context(env).is_none() {
+        let shown_by_window_server_by_layer = if window_server_may_show_media {
             stack.layers_the_window_server_shows(&composite_offsets, |layer_index| {
                 self.why_window_server_does_not_show_media_layer(
                     env,
