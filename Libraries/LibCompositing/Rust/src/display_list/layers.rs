@@ -84,64 +84,6 @@ impl std::fmt::Display for WhyCompositorCannotCompositeEffect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WhyMediaHasNoLayer {
-    DrawnInsideAnotherCommand,
-    UnderTransformThatIsNot2DAffine,
-    DrawsNothingVisible,
-    MoreMediaThanLayersFor,
-    SortedByDepthInA3DSortingContext,
-    InsideAnEffectTheCompositorCannotComposite(WhyCompositorCannotCompositeEffect),
-}
-
-impl std::fmt::Display for WhyMediaHasNoLayer {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            WhyMediaHasNoLayer::DrawnInsideAnotherCommand => "drawn inside another command",
-            WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine => "under a transform that is not 2D affine",
-            WhyMediaHasNoLayer::DrawsNothingVisible => "draws nothing visible",
-            WhyMediaHasNoLayer::MoreMediaThanLayersFor => "past the most media that get layers",
-            WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext => "sorted by depth in a 3D sorting context",
-            WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why) => {
-                return write!(formatter, "inside a {why}");
-            }
-        })
-    }
-}
-
-/// Why the compositor composites the layers of an effect's content inside the effect, as a replay of the list
-/// composites the effect, rather than tiles holding the effect.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WhyEffectIsComposited {
-    ItReadsWhatItsOwnLayerDoesNotHold,
-    ItsBackdropFilterReadsPastTheEdgeOfTheFrame,
-    ItHoldsAnEffectTheCompositorComposites,
-    ItHoldsMedia(LiveContent),
-    TheCompositorAnimatesIt,
-    ItAppliesOverATransformTheCompositorAnimates,
-}
-
-impl std::fmt::Display for WhyEffectIsComposited {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold => "it reads what its own layer does not hold",
-            WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame => {
-                "its backdrop filter reads past the edge of the frame"
-            }
-            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites => {
-                "it holds an effect the compositor composites"
-            }
-            WhyEffectIsComposited::ItHoldsMedia(content) => {
-                return write!(formatter, "it holds a {} with a layer of its own", media_name(*content));
-            }
-            WhyEffectIsComposited::TheCompositorAnimatesIt => "the compositor animates it",
-            WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates => {
-                "it applies over a transform the compositor animates"
-            }
-        })
-    }
-}
-
 /// Why a list is painted in a single layer that replays all of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhyListIsOneLayer {
