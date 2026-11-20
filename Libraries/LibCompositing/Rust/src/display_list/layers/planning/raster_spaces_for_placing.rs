@@ -160,8 +160,8 @@ pub(super) struct RasterSpacesForPlacing {
 }
 
 impl RasterSpacesForPlacing {
-    /// The spaces at the anchors of `tree`, with the extent of each but the viewport's left to be filled in from its
-    /// geometry.
+    /// The spaces at the anchors of `tree`, without the extent of each but the viewport's, which placing reads of the
+    /// geometry of each space.
     fn at_anchors(
         tree: &VisualContextTree,
         anchors_of_tree: &RasterSpaceAnchorsOfTree,
@@ -184,13 +184,6 @@ impl RasterSpacesForPlacing {
             spatial_node_moves_on_its_own: anchors_of_tree.spatial_node_moves_on_its_own.clone(),
             effect_node_spread_moves_on_its_own: effects_whose_spread_moves_on_its_own(tree),
             raster_spaces,
-        }
-    }
-
-    pub(super) fn with_other_extents(self, spaces_at_same_anchors: Vec<RasterSpace>) -> Self {
-        Self {
-            raster_spaces: self.raster_spaces.with_other_extents(spaces_at_same_anchors),
-            ..self
         }
     }
 

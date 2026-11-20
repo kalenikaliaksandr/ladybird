@@ -126,18 +126,12 @@ enum EffectPlacementConstraint {
 }
 
 impl PlacementTables {
-    /// Also fills in the extent of each of `spaces` from its geometry in `geometries`.
     pub fn new(
         tree: &VisualContextTree,
         spaces: RasterSpacesForPlacing,
         geometries: &[RasterSpaceGeometryForPlacing],
     ) -> Self {
         let spaces_len = spaces.spaces().len();
-        let mut spaces_with_extents = spaces.spaces().to_vec();
-        for (space, geometry) in spaces_with_extents.iter_mut().zip(geometries) {
-            space.extent = geometry.extent;
-        }
-        let spaces = spaces.with_other_extents(spaces_with_extents);
         let spatial_node_moves_with_animation_samples =
             spatial_nodes_that_animation_samples_move_within_their_space(tree, spaces.spaces());
         let composite_form_of_clips = tree

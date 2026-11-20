@@ -496,7 +496,6 @@ pub struct PlacedMedia {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListPlacement {
     pub layering_obstacles: LayeringObstacles,
-    pub spaces: Vec<RasterSpace>,
     pub run_groups: Vec<PlacedRunGroup>,
     pub record_stretches: Vec<PlacedRecordStretch>,
     /// In paint order.
@@ -1354,7 +1353,6 @@ fn place_list(
 
     ListPlacement {
         layering_obstacles: LayeringObstacles::of_with_nesting_of_live_effects(list, tree, nesting_of_live_effects),
-        spaces: spaces.to_vec(),
         run_groups: placed_run_groups,
         record_stretches,
         placed_media,
@@ -1542,6 +1540,7 @@ fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
 
 struct StackBeingBuilt<'a> {
     placement: &'a ListPlacement,
+    spaces: &'a [RasterSpace],
     nodes: Vec<NodeOfPlan>,
     node_of_run_group: Vec<PlacementNodeIndex>,
     children_of_node: Vec<Vec<PlacementNodeIndex>>,
@@ -1577,7 +1576,7 @@ impl StackBeingBuilt<'_> {
         }) {
             return PlacementNodeIndex(existing_node_index);
         }
-        let spaces = &self.placement.spaces;
+        let spaces = self.spaces;
         let (parent_index, reach_in_parent_node) = if raster_space_index == RasterSpaceIndex::VIEWPORT {
             (None, Reach::Anywhere)
         } else {
@@ -1650,7 +1649,7 @@ impl StackBeingBuilt<'_> {
     // show wherever the box is held. Nodes come after the nodes they are in, so a walk from the last node sees the final
     // reach of each node before the node it is in.
     fn limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move(&mut self) {
-        let placement = self.placement;
+        let (placement, spaces) = (self.placement, self.spaces);
         let mut content_reach_by_node_index = vec![Reach::Nothing; self.nodes.len()];
         for stretch in &placement.record_stretches {
             let node_index = self.node_of_run_group[stretch.run_group_index.0];
@@ -1668,7 +1667,7 @@ impl StackBeingBuilt<'_> {
             {
                 node.reach_in_parent_node = node.reach_in_parent_node.limited_to(*swept_reach);
             }
-            let raster_space = &placement.spaces[node.raster_space_index.0];
+            let raster_space = &spaces[node.raster_space_index.0];
             if matches!(raster_space.anchor_kind, RasterSpaceAnchorKind::StickyBox { .. })
                 && let Reach::Within(content_reach) = content_reach_by_node_index[node_index]
             {
@@ -2085,9 +2084,11 @@ impl StackBeingBuilt<'_> {
 // The plan of the stack, and one note per composited node, in the order of the nodes.
 fn assemble_plan_unless_records_blend_with_other_layers(
     placement: &ListPlacement,
+    spaces: &[RasterSpace],
 ) -> Option<(LayeredPlan, Vec<NoteOfCompositedEffect>)> {
     let mut stack_being_built = StackBeingBuilt {
         placement,
+        spaces,
         nodes: Vec::new(),
         node_of_run_group: Vec::new(),
         children_of_node: Vec::new(),
@@ -2234,7 +2235,7 @@ fn build_layer_stack(
     let layering_obstacles = placement.layering_obstacles;
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
         Some(why) => why,
-        None => match assemble_plan_unless_records_blend_with_other_layers(&placement) {
+        None => match assemble_plan_unless_records_blend_with_other_layers(&placement, &spaces) {
             None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
             Some((plan, notes_of_composited_effects)) => match why_plan_goes_as_one_layer(inputs, &placement, &plan) {
                 Some(why) => why,
