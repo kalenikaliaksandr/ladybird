@@ -1320,6 +1320,29 @@ fn window_within_budget(ranges: &[CellRange], shown_cells: CellRange, middle: Ti
     CellRange::around(middle, distance_within_budget)
 }
 
+/// The indices of the nodes of a chain from `index` up to, but not with, the first node whose value `known_value` gives,
+/// and that value, or `value_above_root` where no node up to the root has a known value. `parent_index` gives the index
+/// of a node's parent, which is `u32::MAX` at the root. A caller then works out the values of the nodes down from there,
+/// each from its parent's, in a loop: a tree from another process can chain clips and effects deeper than a call stack
+/// holds.
+fn nodes_up_to_known_value<Value>(
+    index: u32,
+    parent_index: impl Fn(u32) -> u32,
+    value_above_root: Value,
+    mut known_value: impl FnMut(u32) -> Option<Value>,
+) -> (Vec<u32>, Value) {
+    let mut indices = Vec::new();
+    let mut index = index;
+    while index != u32::MAX {
+        if let Some(value) = known_value(index) {
+            return (indices, value);
+        }
+        indices.push(index);
+        index = parent_index(index);
+    }
+    (indices, value_above_root)
+}
+
 struct LazyContentHashesPerNode {
     content_hash_by_node_index: RefCell<Vec<Option<ContentHash>>>,
     node_count: usize,
@@ -1480,8 +1503,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         )
     }
 
-    // Walks up to the first effect whose read reach is known, and then down, each effect's read reach worked out from its
-    // parent's, so that the walks of all composited effects pass each effect once.
     fn read_reach_in_device_pixels_of_filters_at_and_around(&self, composited_effect: EffectNodeIndex) -> Option<i32> {
         let tree = self.list.tree;
         let mut known_read_reach_by_effect_index =
@@ -1489,19 +1510,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         if known_read_reach_by_effect_index.is_empty() {
             known_read_reach_by_effect_index.resize(tree.effect_nodes.len(), None);
         }
-        let mut effects_to_work_out = Vec::new();
-        let mut read_reach = Some(0i32);
-        let mut effect = composited_effect;
-        while !effect.is_none() {
-            if let Some(known_read_reach) = known_read_reach_by_effect_index[effect.0 as usize] {
-                read_reach = known_read_reach;
-                break;
-            }
-            effects_to_work_out.push(effect);
-            effect = tree.effect_nodes[effect.0 as usize].parent;
-        }
+        let (effects_to_work_out, mut read_reach) = nodes_up_to_known_value(
+            composited_effect.0,
+            |effect| tree.effect_nodes[effect as usize].parent.0,
+            Some(0i32),
+            |effect| known_read_reach_by_effect_index[effect as usize],
+        );
         for &effect in effects_to_work_out.iter().rev() {
-            let node = &tree.effect_nodes[effect.0 as usize];
+            let node = &tree.effect_nodes[effect as usize];
             if let Some(filter) = spreading_filter_of(node) {
                 read_reach = read_reach.and_then(|sum| {
                     let filter_read_reach =
@@ -1509,7 +1525,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     Some(sum.saturating_add(filter_read_reach))
                 });
             }
-            known_read_reach_by_effect_index[effect.0 as usize] = Some(read_reach);
+            known_read_reach_by_effect_index[effect as usize] = Some(read_reach);
         }
         read_reach
     }
@@ -1595,23 +1611,15 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         self.spatial_content_hashes.cache(spatial.0, hasher.finish())
     }
 
-    // A tree from another process can chain clips and effects deeper than a call stack holds. So the hash of a chain is
-    // found with a loop: up the chain to the first node whose hash is known, and then down, each node hashed on the hash
-    // of its parent.
     fn clip_content_hash(&self, clip: ClipNodeIndex) -> ContentHash {
         let tree = self.list.tree;
-        let mut clips_to_hash = Vec::new();
-        let mut content_hash = 0;
-        let mut clip_on_way_up = clip;
-        while !clip_on_way_up.is_none() {
-            if let Some(cached) = self.clip_content_hashes.get(clip_on_way_up.0) {
-                content_hash = cached;
-                break;
-            }
-            clips_to_hash.push(clip_on_way_up);
-            clip_on_way_up = tree.clip_nodes[clip_on_way_up.0 as usize].parent;
-        }
-        for &clip in clips_to_hash.iter().rev() {
+        let (clips_to_hash, mut content_hash) = nodes_up_to_known_value(
+            clip.0,
+            |clip| tree.clip_nodes[clip as usize].parent.0,
+            0,
+            |clip| self.clip_content_hashes.get(clip),
+        );
+        for clip in clips_to_hash.into_iter().rev().map(ClipNodeIndex) {
             if !self.geometry.clip_is_left_to_composite(clip) {
                 let mut hasher = ContentHasher::new();
                 hasher.write_content_hash(content_hash);
@@ -1646,18 +1654,13 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 
     fn clip_content_hash_near_area(&self, clip: ClipNodeIndex, near_area: &mut ContentHashesNearArea) -> ContentHash {
         let tree = self.list.tree;
-        let mut clips_to_hash = Vec::new();
-        let mut content_hash = 0;
-        let mut clip_on_way_up = clip;
-        while !clip_on_way_up.is_none() {
-            if let Some(&cached) = near_area.content_hash_by_clip.get(&clip_on_way_up.0) {
-                content_hash = cached;
-                break;
-            }
-            clips_to_hash.push(clip_on_way_up);
-            clip_on_way_up = tree.clip_nodes[clip_on_way_up.0 as usize].parent;
-        }
-        for &clip in clips_to_hash.iter().rev() {
+        let (clips_to_hash, mut content_hash) = nodes_up_to_known_value(
+            clip.0,
+            |clip| tree.clip_nodes[clip as usize].parent.0,
+            0,
+            |clip| near_area.content_hash_by_clip.get(&clip).copied(),
+        );
+        for clip in clips_to_hash.into_iter().rev().map(ClipNodeIndex) {
             content_hash = self.content_hash_of_clip_near_area(clip, content_hash, near_area);
             near_area.content_hash_by_clip.insert(clip.0, content_hash);
         }
@@ -1701,24 +1704,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     fn effect_content_hash(&self, effect: EffectNodeIndex, scope: EffectHashScope) -> ContentHash {
         let tree = self.list.tree;
         let cached_hashes = &self.effect_content_hashes_by_scope[scope as usize];
-        let mut effects_to_hash = Vec::new();
-        let mut content_hash = 0;
-        let mut effect_on_way_up = effect;
-        while !effect_on_way_up.is_none() {
-            if matches!(scope, EffectHashScope::EffectsDrawnInsideTiles)
-                && self.list.compositor_composites(effect_on_way_up)
-            {
-                content_hash = CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES;
-                break;
-            }
-            if let Some(cached) = cached_hashes.get(effect_on_way_up.0) {
-                content_hash = cached;
-                break;
-            }
-            effects_to_hash.push(effect_on_way_up);
-            effect_on_way_up = tree.effect_nodes[effect_on_way_up.0 as usize].parent;
-        }
-        for &effect in effects_to_hash.iter().rev() {
+        let (effects_to_hash, mut content_hash) = nodes_up_to_known_value(
+            effect.0,
+            |effect| tree.effect_nodes[effect as usize].parent.0,
+            0,
+            |effect| {
+                if scope == EffectHashScope::EffectsDrawnInsideTiles
+                    && self.list.compositor_composites(EffectNodeIndex(effect))
+                {
+                    return Some(CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES);
+                }
+                cached_hashes.get(effect)
+            },
+        );
+        for effect in effects_to_hash.into_iter().rev().map(EffectNodeIndex) {
             content_hash = self.content_hash_of_effect_node(
                 effect,
                 content_hash,
@@ -1736,22 +1735,18 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         near_area: &mut ContentHashesNearArea,
     ) -> ContentHash {
         let tree = self.list.tree;
-        let mut effects_to_hash = Vec::new();
-        let mut content_hash = 0;
-        let mut effect_on_way_up = effect;
-        while !effect_on_way_up.is_none() {
-            if self.list.compositor_composites(effect_on_way_up) {
-                content_hash = CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES;
-                break;
-            }
-            if let Some(&cached) = near_area.content_hash_by_effect.get(&effect_on_way_up.0) {
-                content_hash = cached;
-                break;
-            }
-            effects_to_hash.push(effect_on_way_up);
-            effect_on_way_up = tree.effect_nodes[effect_on_way_up.0 as usize].parent;
-        }
-        for &effect in effects_to_hash.iter().rev() {
+        let (effects_to_hash, mut content_hash) = nodes_up_to_known_value(
+            effect.0,
+            |effect| tree.effect_nodes[effect as usize].parent.0,
+            0,
+            |effect| {
+                if self.list.compositor_composites(EffectNodeIndex(effect)) {
+                    return Some(CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES);
+                }
+                near_area.content_hash_by_effect.get(&effect).copied()
+            },
+        );
+        for effect in effects_to_hash.into_iter().rev().map(EffectNodeIndex) {
             let output_clip_hash =
                 self.clip_content_hash_near_area(self.list.effect_clips.output_clip(effect), near_area);
             content_hash = self.content_hash_of_effect_node(
