@@ -488,7 +488,7 @@ pub struct LayerUpdate {
     shown_tiles_by_layer: Vec<Vec<TileShownInFrame>>,
     media_replayed_by_layer: Vec<Option<MediaRecordsReplayedInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
-    frame_allows_lcd_text: bool,
+    pub(super) frame_allows_lcd_text: bool,
 }
 
 impl LayerUpdate {
@@ -1642,6 +1642,7 @@ impl ContextPresenting {
         viewport_rect: IntRect,
         live_content: &LiveContent,
         invalidates_every_tile: bool,
+        frame_allows_lcd_text: bool,
     ) -> (LayerUpdate, IntRect) {
         let raster_transform = self.raster_transform();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
@@ -1670,6 +1671,7 @@ impl ContextPresenting {
                 viewport_rect,
                 live_content,
                 invalidates_every_tile,
+                frame_allows_lcd_text,
                 stack_of_frames,
             );
             // The frame paints its tiles from the stack, which keeps the tile keys where the frame is not painted.
@@ -1683,7 +1685,14 @@ impl ContextPresenting {
         {
             // Frames draw the plan as one layer from now on. The budget does not hold a frame of one layer, so the frame
             // is worked out once more at most.
-            return self.layer_update_for(env, frame, viewport_rect, live_content, invalidates_every_tile);
+            return self.layer_update_for(
+                env,
+                frame,
+                viewport_rect,
+                live_content,
+                invalidates_every_tile,
+                frame_allows_lcd_text,
+            );
         }
         (layer_update, stale_rect)
     }
@@ -1717,6 +1726,7 @@ impl ContextPresenting {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn layer_update_of_stack(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -1724,6 +1734,7 @@ impl ContextPresenting {
         viewport_rect: IntRect,
         live_content: &LiveContent,
         invalidates_every_tile: bool,
+        frame_allows_lcd_text: bool,
         stack_of_frames: &mut StackOfFrames,
     ) -> (LayerUpdate, IntRect, Vec<Option<BandTileKeysOfFrame>>) {
         let storage = frame.display_list.storage();
@@ -1788,7 +1799,6 @@ impl ContextPresenting {
             .collect();
         let surface_clear_color = frame.surface_clear_color();
         let root_group_color = frame.display_list.root_group_color();
-        let frame_allows_lcd_text = self.allows_lcd_text(frame.display_list, frame.frame_inputs);
         let raster_settings_of_layer = |layer_index: LayerIndex| LayerRasterSettings {
             raster_space_identity: stack.spaces[stack.space_of_layer(layer_index).0].identity,
             clear_color: clear_color_of_layer(stack, layer_index, surface_clear_color),

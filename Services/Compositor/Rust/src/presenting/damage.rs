@@ -137,6 +137,7 @@ impl ContextPresenting {
         display_list: &Rc<DisplayList>,
         frame_inputs: FrameInputs,
         live_content: &LiveContent,
+        allows_lcd_text: bool,
     ) {
         let canvas_generation = |id: u64| {
             live_content
@@ -162,7 +163,6 @@ impl ContextPresenting {
             .iter()
             .map(|&id| (id, env.nested_contexts.frame_generation_of(CompositorContextId(id))))
             .collect();
-        let allows_lcd_text = self.allows_lcd_text(display_list, &frame_inputs);
         self.painted_frame = Some(PaintedFrame {
             display_list: display_list.clone(),
             frame_inputs,
@@ -183,7 +183,7 @@ impl ContextPresenting {
         env: &PresentingEnvironment<'_>,
         viewport_size: IntSize,
         display_list: &DisplayList,
-        frame_inputs: &FrameInputs,
+        allows_lcd_text: bool,
         live_content: &LiveContent,
     ) -> LiveContentChangesSinceLastPaint {
         let mut changes = LiveContentChangesSinceLastPaint::default();
@@ -193,7 +193,7 @@ impl ContextPresenting {
         };
         if painted_frame.viewport_size != viewport_size
             || painted_frame.display_list.surface_clear_color() != display_list.surface_clear_color()
-            || painted_frame.allows_lcd_text != self.allows_lcd_text(display_list, frame_inputs)
+            || painted_frame.allows_lcd_text != allows_lcd_text
         {
             changes.repaints_everything = true;
         }
@@ -265,16 +265,23 @@ impl ContextPresenting {
         let viewport_rect = rect_of_size(viewport_size);
         let raster_rect = self.raster_rect();
         let forced_damage_rect = pending_frame.forced_damage_rect.intersected(viewport_rect);
+        let allows_lcd_text = self.allows_lcd_text(frame.display_list, frame.frame_inputs);
         let changes = self.live_content_changes_since_last_paint(
             env,
             viewport_size,
             frame.display_list,
-            frame.frame_inputs,
+            allows_lcd_text,
             live_content,
         );
         let invalidates_every_tile = changes.repaints_everything;
-        let (layer_update, stale_rect) =
-            self.layer_update_for(env, frame, raster_rect, live_content, invalidates_every_tile);
+        let (layer_update, stale_rect) = self.layer_update_for(
+            env,
+            frame,
+            raster_rect,
+            live_content,
+            invalidates_every_tile,
+            allows_lcd_text,
+        );
         let live_media_changed = changes.canvas_or_video_changed;
 
         let scrolled_compositor_scrollbars = self.painted_frame.as_ref().map_or(IntRect::default(), |painted_frame| {

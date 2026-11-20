@@ -630,6 +630,7 @@ impl ContextPresenting {
         if damage_rect.is_empty() && self.presented_frame == Some(pending_frame.viewport_rect) {
             let only_media_shown_by_window_server_changed =
                 frame_damage.layers.shown_by_window_server() && frame_damage.live_media_changed;
+            let allows_lcd_text = frame_damage.layers.frame_allows_lcd_text;
             self.commit_layer_update(env, frame_damage.layers);
             self.remember_painted_frame(
                 env,
@@ -637,6 +638,7 @@ impl ContextPresenting {
                 display_list,
                 frame_inputs,
                 &live_content,
+                allows_lcd_text,
             );
             let sublayers = self.sublayers_shown_by_window_server(&live_content);
             let media_shown_by_window_server_moved_resized_or_turned = sublayers != self.sublayers_of_latest_frame;
@@ -677,6 +679,7 @@ impl ContextPresenting {
             });
             self.store_damage.add_damage_to_other_stores(bitmap_id, painted_rect);
         }
+        let allows_lcd_text = frame_damage.layers.frame_allows_lcd_text;
         self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
             env,
@@ -684,6 +687,7 @@ impl ContextPresenting {
             display_list,
             frame_inputs,
             &live_content,
+            allows_lcd_text,
         );
         let sublayers = self.sublayers_shown_by_window_server(&live_content);
         self.sublayers_of_latest_frame = sublayers.clone();
@@ -751,6 +755,7 @@ impl ContextPresenting {
             true,
         );
         self.layer_overlay.did_paint_frame();
+        let allows_lcd_text = frame_damage.layers.frame_allows_lcd_text;
         self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
             env,
@@ -758,6 +763,7 @@ impl ContextPresenting {
             display_list,
             frame_inputs,
             &live_content,
+            allows_lcd_text,
         );
         env.raster.flush(&surface);
         self.surface_drawn_by_parent = Some(surface);
