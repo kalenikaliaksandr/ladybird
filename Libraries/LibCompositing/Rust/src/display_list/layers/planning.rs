@@ -16,12 +16,11 @@
 //! not their tiles.
 
 use super::{
-    BandIndex, BarrierCut, BarrierIdentity, CompositedEffect, LayerContent, LayerIdentity, LayerIndex, LayerStack,
-    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeNamesFromIndices, PlacementNode, PlacementNodeBand,
-    PlacementNodeIdentity, PlacementNodeIndex, StackLayer, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect,
-    WhyEffectIsComposited, WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia,
-    anchors_of_layer_plans, backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index,
-    effect_is_or_is_inside, identity_of_node, media_name, wire,
+    BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerContent, LayerIndex, LayerStack, LayeredPlan,
+    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeNamesFromIndices, NodeOfPlan, PaintedLayerOfPlan,
+    PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited,
+    WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, anchors_of_layer_plans,
+    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, effect_is_or_is_inside, media_name, wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
@@ -40,7 +39,7 @@ use crate::display_list::tiles::{
 use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{CornerRadii, FloatPoint, IntRect, enclosing_int_rect};
 use std::collections::HashMap;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
 
 mod placement_tables;
@@ -97,17 +96,6 @@ impl std::fmt::Display for WhyAnimationHasNoLayer {
             WhyAnimationHasNoLayer::MoreAnimationsThanLayersFor => "past the most animations that get layers",
         })
     }
-}
-
-// An effect index names the effect for as long as the tree keeps the node, which outlives lists and scrolls.
-fn identity_of_composited_node(
-    parent_identity: PlacementNodeIdentity,
-    effect: EffectNodeIndex,
-) -> PlacementNodeIdentity {
-    let mut hasher = foldhash::fast::FixedState::with_seed(0x636f_6d70_6f73_6974).build_hasher();
-    hasher.write_u64(parent_identity.0);
-    hasher.write_u32(effect.0);
-    PlacementNodeIdentity(hasher.finish())
 }
 
 /// Why the compositor composites an effect, and what the effect reads of what is composited below it, in the raster
@@ -1416,7 +1404,6 @@ struct BandBeingBuiltIndex(usize);
 
 struct BandBeingBuilt {
     placement_node_index: PlacementNodeIndex,
-    band_ordinal_in_node: u32,
     barriers: Vec<BarrierBeingBuilt>,
     own_record_stretch_indices: Vec<RecordStretchIndex>,
     first_record_stretch_index: RecordStretchIndex,
@@ -1446,12 +1433,10 @@ fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
 
 struct StackBeingBuilt<'a> {
     placement: &'a ListPlacement,
-    nodes: Vec<PlacementNode>,
+    nodes: Vec<NodeOfPlan>,
     node_of_run_group: Vec<PlacementNodeIndex>,
     children_of_node: Vec<Vec<PlacementNodeIndex>>,
     bands_being_built: Vec<BandBeingBuilt>,
-    layers: Vec<StackLayer>,
-    bands: Vec<PlacementNodeBand>,
     root_group_reach_so_far_by_band_being_built: Vec<Reach<IntRect>>,
     why_composited_once_decided_by_placed_effect: Vec<Option<Option<WhyEffectIsComposited>>>,
     composited_node_by_placed_effect: Vec<Option<PlacementNodeIndex>>,
@@ -1461,7 +1446,7 @@ struct StackBeingBuilt<'a> {
 }
 
 impl StackBeingBuilt<'_> {
-    fn add_node(&mut self, node: PlacementNode) -> PlacementNodeIndex {
+    fn add_node(&mut self, node: NodeOfPlan) -> PlacementNodeIndex {
         let parent_index = node.parent_index;
         self.nodes.push(node);
         self.children_of_node.push(Vec::new());
@@ -1503,8 +1488,7 @@ impl StackBeingBuilt<'_> {
                 reach_in_parent_node,
             )
         };
-        self.add_node(PlacementNode {
-            identity: identity_of_node(spaces, raster_space_index, &composite_clips),
+        self.add_node(NodeOfPlan {
             raster_space_index,
             composite_clips,
             composited_effect: None,
@@ -1520,8 +1504,7 @@ impl StackBeingBuilt<'_> {
         reach_in_parent_node: Reach<IntRect>,
     ) -> PlacementNodeIndex {
         let parent_node = &self.nodes[parent_index.0];
-        let composited_node = PlacementNode {
-            identity: identity_of_composited_node(parent_node.identity, effect),
+        let composited_node = NodeOfPlan {
             raster_space_index: parent_node.raster_space_index,
             composite_clips: parent_node.composite_clips.clone(),
             composited_effect: Some(effect),
@@ -1609,12 +1592,10 @@ impl StackBeingBuilt<'_> {
     fn open_band(
         &mut self,
         placement_node_index: PlacementNodeIndex,
-        band_ordinal_in_node: u32,
         first_record_stretch_index: RecordStretchIndex,
     ) -> BandBeingBuiltIndex {
         self.bands_being_built.push(BandBeingBuilt {
             placement_node_index,
-            band_ordinal_in_node,
             barriers: Vec::new(),
             own_record_stretch_indices: Vec::new(),
             first_record_stretch_index,
@@ -1729,7 +1710,6 @@ impl StackBeingBuilt<'_> {
         &mut self,
         stretch: &PlacedRecordStretch,
         open_band_by_node_index: &mut Vec<Option<BandBeingBuiltIndex>>,
-        next_band_ordinal_by_node_index: &mut Vec<u32>,
     ) -> PlacementNodeIndex {
         let mut node_index = self.node_of_run_group[stretch.run_group_index.0];
         for placed_effect_index in self.placed_effects_around_stretch_outermost_first(stretch) {
@@ -1756,7 +1736,6 @@ impl StackBeingBuilt<'_> {
                     let composited_node_index =
                         self.add_composited_node_inside(node_index, placed_effect.effect, draw_and_read_reach);
                     open_band_by_node_index.push(None);
-                    next_band_ordinal_by_node_index.push(0);
                     self.composited_node_by_placed_effect[placed_effect_index.0] = Some(composited_node_index);
                     self.notes_of_composited_effects.push(NoteOfCompositedEffect {
                         why,
@@ -1773,19 +1752,13 @@ impl StackBeingBuilt<'_> {
         let placement = self.placement;
         let root_node_index = PlacementNodeIndex(0);
         let mut open_band_by_node_index: Vec<Option<BandBeingBuiltIndex>> = vec![None; self.nodes.len()];
-        let mut next_band_ordinal_by_node_index = vec![0u32; self.nodes.len()];
-        open_band_by_node_index[root_node_index.0] = Some(self.open_band(root_node_index, 0, RecordStretchIndex(0)));
-        next_band_ordinal_by_node_index[root_node_index.0] = 1;
+        open_band_by_node_index[root_node_index.0] = Some(self.open_band(root_node_index, RecordStretchIndex(0)));
         for (index, stretch) in placement.record_stretches.iter().enumerate() {
             let stretch_index = RecordStretchIndex(index);
             if stretch.reach.is_empty() {
                 continue;
             }
-            let node_of_stretch = self.node_of_stretch(
-                stretch,
-                &mut open_band_by_node_index,
-                &mut next_band_ordinal_by_node_index,
-            );
+            let node_of_stretch = self.node_of_stretch(stretch, &mut open_band_by_node_index);
             let reach_read_by_blending_records =
                 placement.run_groups[stretch.run_group_index.0].reach_read_by_records_blending_with_root_group;
             if reach_read_by_blending_records != Reach::Nothing {
@@ -1833,9 +1806,7 @@ impl StackBeingBuilt<'_> {
                 }
                 match next_node_on_path {
                     Some(next_node) if open_band_by_node_index[next_node.0].is_none() => {
-                        let new_band_of_next_node =
-                            self.open_band(next_node, next_band_ordinal_by_node_index[next_node.0], stretch_index);
-                        next_band_ordinal_by_node_index[next_node.0] += 1;
+                        let new_band_of_next_node = self.open_band(next_node, stretch_index);
                         open_band_by_node_index[next_node.0] = Some(new_band_of_next_node);
                         self.bands_being_built[open_band_of_node_on_path.0].barriers.push(
                             BarrierBeingBuilt::NestedNodeBand {
@@ -1866,82 +1837,46 @@ impl StackBeingBuilt<'_> {
         }
     }
 
-    fn emit_band(
-        &mut self,
-        band_being_built_index: BandBeingBuiltIndex,
-        parent_band_holding_this_band_as_barrier: Option<BandIndex>,
-    ) -> BandIndex {
+    // Puts the band into `bands`, and after it the bands nested in it, in the order of a walk that enters a nested band
+    // at its barrier.
+    fn emit_band(&mut self, band_being_built_index: BandBeingBuiltIndex, bands: &mut Vec<BandOfPlan>) {
         let placement = self.placement;
-        let placement_node_index = self.bands_being_built[band_being_built_index.0].placement_node_index;
-        let band_ordinal_in_node = self.bands_being_built[band_being_built_index.0].band_ordinal_in_node;
-        let node_identity = self.nodes[placement_node_index.0].identity;
-        let own_record_stretch_indices =
-            std::mem::take(&mut self.bands_being_built[band_being_built_index.0].own_record_stretch_indices);
-        let barriers = std::mem::take(&mut self.bands_being_built[band_being_built_index.0].barriers);
-        let first_record_position_of_stretch =
-            |stretch_index: RecordStretchIndex| placement.record_stretches[stretch_index.0].record_span.begin;
-
+        let band_being_built = &mut self.bands_being_built[band_being_built_index.0];
+        let placement_node_index = band_being_built.placement_node_index;
+        let own_record_stretch_indices = std::mem::take(&mut band_being_built.own_record_stretch_indices);
+        let barriers = std::mem::take(&mut band_being_built.barriers);
         let first_record_position = placement
             .record_stretches
-            .get(
-                self.bands_being_built[band_being_built_index.0]
-                    .first_record_stretch_index
-                    .0,
-            )
+            .get(band_being_built.first_record_stretch_index.0)
             .map_or(ListPosition::default(), |stretch| stretch.record_span.begin);
-        let band_index = BandIndex(self.bands.len());
-        self.bands.push(PlacementNodeBand {
+        let band_position = bands.len();
+        bands.push(BandOfPlan {
             placement_node_index,
-            band_ordinal_in_node,
             first_record_position,
-            parent_band_holding_this_band_as_barrier,
             record_spans: Vec::new(),
+            layer_below_all_cuts: PaintedLayerOfPlan::default(),
             cuts: Vec::new(),
-            layer_below_all_cuts: LayerIndex(self.layers.len()),
         });
-        self.layers.push(StackLayer {
-            identity: LayerIdentity::Painted {
-                node: node_identity,
-                band_ordinal_in_node,
-                above_barrier: None,
-            },
-            placement_node_index,
-            band_index,
-            content: LayerContent::Painted { band_index },
-            may_hold_content: false,
-            reach: IntRect::default(),
-        });
-        let layer_below_all_cuts = LayerIndex(self.layers.len() - 1);
+        // Here a layer index counts the band's painted layers: the one below all cuts, then the one above each cut.
         let mut cuts = Vec::with_capacity(barriers.len());
+        let mut barriers_of_plan = Vec::with_capacity(barriers.len());
         for barrier in barriers {
-            let (barrier_identity, barrier_first_record_position, cut_reach) = match barrier {
+            let (barrier_of_plan, barrier_first_record_position, cut_reach) = match barrier {
                 BarrierBeingBuilt::Media { record_stretch_index } => {
                     let media_stretch = &placement.record_stretches[record_stretch_index.0];
                     let media = &placement.placed_media[media_stretch
                         .placed_media_index
                         .expect("a media barrier is a media stretch")
                         .0];
-                    self.layers.push(StackLayer {
-                        identity: LayerIdentity::Media {
-                            content: media.content,
-                            ordinal: media.ordinal,
-                        },
-                        placement_node_index,
-                        band_index,
-                        content: LayerContent::Media {
-                            content: media.content,
-                            record_span: media_stretch.record_span,
-                            reach: media_stretch.reach,
-                        },
-                        may_hold_content: true,
+                    let barrier_of_plan = BarrierOfPlan::Media {
+                        content: media.content,
+                        ordinal: media.ordinal,
+                        record_span: media_stretch.record_span,
                         reach: media_stretch.reach,
-                    });
+                    };
                     (
-                        BarrierIdentity::Media {
-                            content: media.content,
-                            ordinal: media.ordinal,
-                        },
-                        first_record_position_of_stretch(record_stretch_index),
+                        barrier_of_plan,
+                        media_stretch.record_span.begin,
                         Reach::Within(media_stretch.reach),
                     )
                 }
@@ -1949,78 +1884,57 @@ impl StackBeingBuilt<'_> {
                     band_being_built_index: nested_band_being_built_index,
                 } => {
                     let nested_band = &self.bands_being_built[nested_band_being_built_index.0];
-                    let nested_node_index = nested_band.placement_node_index;
-                    let barrier_identity = BarrierIdentity::NestedNodeBand {
-                        node: self.nodes[nested_node_index.0].identity,
-                        band_ordinal_in_node: nested_band.band_ordinal_in_node,
-                    };
-                    let first_record_position_of_nested_band =
-                        first_record_position_of_stretch(nested_band.first_record_stretch_index);
-                    self.emit_band(nested_band_being_built_index, Some(band_index));
+                    let first_record_position_of_nested_band = placement.record_stretches
+                        [nested_band.first_record_stretch_index.0]
+                        .record_span
+                        .begin;
+                    let cut_reach = self.nodes[nested_band.placement_node_index.0].reach_in_parent_node;
+                    self.emit_band(nested_band_being_built_index, bands);
                     (
-                        barrier_identity,
+                        BarrierOfPlan::NestedBand,
                         first_record_position_of_nested_band,
-                        self.nodes[nested_node_index.0].reach_in_parent_node,
+                        cut_reach,
                     )
                 }
             };
-            self.layers.push(StackLayer {
-                identity: LayerIdentity::Painted {
-                    node: node_identity,
-                    band_ordinal_in_node,
-                    above_barrier: Some(barrier_identity),
-                },
-                placement_node_index,
-                band_index,
-                content: LayerContent::Painted { band_index },
-                may_hold_content: false,
-                reach: IntRect::default(),
-            });
             cuts.push(BarrierCut {
                 barrier_first_record_position,
                 cut_reach,
-                layer_above_cut: LayerIndex(self.layers.len() - 1),
+                layer_above_cut: LayerIndex(cuts.len() + 1),
             });
+            barriers_of_plan.push(barrier_of_plan);
         }
 
         // A record draws nothing past the reach of its stretch, so the layers it is replayed into anywhere else stay
         // empty.
+        let mut painted_layers = vec![PaintedLayerOfPlan::default(); cuts.len() + 1];
         let mut record_spans: Vec<ListSpan> = Vec::with_capacity(own_record_stretch_indices.len());
-        let band_with_cuts = PlacementNodeBand {
-            placement_node_index,
-            band_ordinal_in_node,
-            first_record_position,
-            parent_band_holding_this_band_as_barrier,
-            record_spans: Vec::new(),
-            cuts,
-            layer_below_all_cuts,
-        };
         for &stretch_index in &own_record_stretch_indices {
             let stretch = &placement.record_stretches[stretch_index.0];
             let stretch_span = stretch.record_span;
-            let stretch_position = stretch_span.begin;
             let mut mark_layer_may_hold_content_within = |layer: LayerIndex, reach: IntRect| {
-                self.layers[layer.0].may_hold_content = true;
-                self.layers[layer.0].reach = self.layers[layer.0].reach.united(reach);
+                painted_layers[layer.0].may_hold_content = true;
+                painted_layers[layer.0].reach = painted_layers[layer.0].reach.united(reach);
             };
-            let cuts_painted_before_stretch = band_with_cuts
-                .cuts
+            let cuts_painted_before_stretch = cuts
                 .iter()
-                .take_while(|cut| cut.barrier_first_record_position <= stretch_position);
+                .take_while(|cut| cut.barrier_first_record_position <= stretch_span.begin);
             if cuts_painted_before_stretch.clone().next().is_none() {
-                mark_layer_may_hold_content_within(layer_below_all_cuts, stretch.reach);
+                mark_layer_may_hold_content_within(LayerIndex(0), stretch.reach);
             } else if reaches_too_many_cells_to_follow_one_by_one(stretch.reach) {
-                mark_layer_may_hold_content_within(layer_below_all_cuts, stretch.reach);
+                mark_layer_may_hold_content_within(LayerIndex(0), stretch.reach);
                 for cut in cuts_painted_before_stretch {
                     mark_layer_may_hold_content_within(cut.layer_above_cut, stretch.reach);
                 }
             } else {
                 for coord in tile_coords_touching(stretch.reach) {
                     let cell = coord.cell_rect();
-                    mark_layer_may_hold_content_within(
-                        band_with_cuts.layer_of_record_in_cell(stretch_position, cell),
-                        stretch.reach.intersected(cell),
-                    );
+                    let layer_of_record_in_cell = cuts_painted_before_stretch
+                        .clone()
+                        .filter(|cut| cut.cuts_cell(cell))
+                        .last()
+                        .map_or(LayerIndex(0), |cut| cut.layer_above_cut);
+                    mark_layer_may_hold_content_within(layer_of_record_in_cell, stretch.reach.intersected(cell));
                 }
             }
             match record_spans.last_mut() {
@@ -2028,27 +1942,17 @@ impl StackBeingBuilt<'_> {
                 _ => record_spans.push(stretch_span),
             }
         }
-        let cuts = band_with_cuts.cuts;
-        self.bands[band_index.0].record_spans = record_spans;
-        self.bands[band_index.0].cuts = cuts;
-        band_index
-    }
-}
-
-fn node_covers_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node_index: PlacementNodeIndex) -> bool {
-    let node = &nodes[node_index.0];
-    if !node.composite_clips.is_empty()
-        || node.composited_effect.is_some()
-        || node.reach_in_parent_node != Reach::Anywhere
-    {
-        return false;
-    }
-    match node.parent_index {
-        None => true,
-        Some(parent_index) => {
-            spaces[node.raster_space_index.0].anchor_kind == RasterSpaceAnchorKind::ViewportScroller
-                && node_covers_viewport(nodes, spaces, parent_index)
-        }
+        let band = &mut bands[band_position];
+        band.record_spans = record_spans;
+        band.layer_below_all_cuts = painted_layers[0];
+        band.cuts = barriers_of_plan
+            .into_iter()
+            .zip(&painted_layers[1..])
+            .map(|(barrier, &layer_above_cut)| CutOfPlan {
+                barrier,
+                layer_above_cut,
+            })
+            .collect();
     }
 }
 
@@ -2063,8 +1967,6 @@ fn assemble_stack_unless_records_blend_with_other_layers(
         node_of_run_group: Vec::new(),
         children_of_node: Vec::new(),
         bands_being_built: Vec::new(),
-        layers: Vec::new(),
-        bands: Vec::new(),
         root_group_reach_so_far_by_band_being_built: Vec::new(),
         why_composited_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
         composited_node_by_placed_effect: vec![None; placement.placed_effects.len()],
@@ -2094,62 +1996,35 @@ fn assemble_stack_unless_records_blend_with_other_layers(
     if stack_being_built.records_blend_with_what_other_layers_hold_below_them {
         return None;
     }
-    let root_band_being_built_index = BandBeingBuiltIndex(0);
-    stack_being_built.emit_band(root_band_being_built_index, None);
+    let mut bands = Vec::with_capacity(stack_being_built.bands_being_built.len());
+    stack_being_built.emit_band(BandBeingBuiltIndex(0), &mut bands);
 
     let StackBeingBuilt {
         nodes,
-        layers,
-        bands,
         notes_of_composited_effects,
         ..
     } = stack_being_built;
-    let composited_effects = CompositedEffect::of_nodes(&nodes, tree);
-    debug_assert_eq!(composited_effects.len(), notes_of_composited_effects.len());
-    let effects_reading_only_own_layer = placement
-        .backdrop_readers_in_paint_order
-        .iter()
-        .copied()
-        .filter(|reader| composited_effects.iter().all(|composited| composited.effect != *reader))
-        .collect();
-
-    let first_layer_with_content = layers.iter().position(|layer| layer.may_hold_content);
-    let base_layer = match first_layer_with_content {
-        Some(first_layer_index)
-            if matches!(
-                layers[first_layer_index].identity,
-                LayerIdentity::Painted {
-                    above_barrier: None,
-                    ..
-                }
-            ) && node_covers_viewport(
-                &nodes,
-                &placement.spaces,
-                layers[first_layer_index].placement_node_index,
-            ) =>
-        {
-            LayerIndex(first_layer_index)
-        }
-        _ => LayerIndex(0),
-    };
-
-    let stack = LayerStack {
-        spaces,
+    let plan = LayeredPlan {
         nodes,
         bands,
-        layers,
-        composited_effects,
-        base_layer,
-        why_list_is_one_layer: None,
-        layering_obstacles: placement.layering_obstacles,
         tiles_hold_content_moving_within_space_by_space_index: placement
             .tiles_hold_content_moving_within_space_by_space_index
             .clone(),
         swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
-        index_of_layer_with_identity: HashMap::new(),
-        has_layer_at_or_above_base_by_band_index: Vec::new(),
-    }
-    .with_lookups();
+    };
+    let stack = LayerStack::of_layered_plan(plan, spaces, tree, placement.layering_obstacles);
+    debug_assert_eq!(stack.composited_effects.len(), notes_of_composited_effects.len());
+    let effects_reading_only_own_layer = placement
+        .backdrop_readers_in_paint_order
+        .iter()
+        .copied()
+        .filter(|reader| {
+            stack
+                .composited_effects
+                .iter()
+                .all(|composited| composited.effect != *reader)
+        })
+        .collect();
     let notes = NotesOfStack {
         composited_effects: notes_of_composited_effects,
         media_without_layers: placement.media_without_layers.clone(),
@@ -2388,7 +2263,7 @@ mod tests {
     use crate::display_list::commands::{
         CanvasId, ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
-    use crate::display_list::layers::{NodeNamesFromIndices, media_name};
+    use crate::display_list::layers::{LayerIdentity, NodeNamesFromIndices, media_name};
     use crate::display_list::placement::{raster_space_anchors, spatial_nodes_that_move_on_their_own};
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{

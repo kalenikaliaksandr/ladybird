@@ -571,6 +571,123 @@ fn identity_of_node(
     PlacementNodeIdentity(hasher.finish())
 }
 
+// An effect index names the effect for as long as the tree keeps the node, which outlives lists and scrolls.
+fn identity_of_composited_node(
+    parent_identity: PlacementNodeIdentity,
+    effect: EffectNodeIndex,
+) -> PlacementNodeIdentity {
+    let mut hasher = foldhash::fast::FixedState::with_seed(0x636f_6d70_6f73_6974).build_hasher();
+    hasher.write_u64(parent_identity.0);
+    hasher.write_u32(effect.0);
+    PlacementNodeIdentity(hasher.finish())
+}
+
+fn node_covers_viewport(nodes: &[PlacementNode], spaces: &[RasterSpace], node_index: PlacementNodeIndex) -> bool {
+    let mut node_on_way_out = Some(node_index);
+    while let Some(index) = node_on_way_out {
+        let node = &nodes[index.0];
+        if !node.composite_clips.is_empty()
+            || node.composited_effect.is_some()
+            || node.reach_in_parent_node != Reach::Anywhere
+            || (node.parent_index.is_some()
+                && spaces[node.raster_space_index.0].anchor_kind != RasterSpaceAnchorKind::ViewportScroller)
+        {
+            return false;
+        }
+        node_on_way_out = node.parent_index;
+    }
+    true
+}
+
+/// What a plan says of a stack of more than one layer, each thing once: the nodes without their identities, and the
+/// bands in the order of a walk that enters the first band, and at each cut whose barrier is a nested band, the next
+/// band, each band with what only it knows of its layers. `LayerStack::of_layered_plan` works out the rest.
+#[derive(Clone, Debug)]
+struct LayeredPlan {
+    nodes: Vec<NodeOfPlan>,
+    bands: Vec<BandOfPlan>,
+    tiles_hold_content_moving_within_space_by_space_index: Vec<bool>,
+    swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
+}
+
+/// A placement node without its identity, which the stack works out of the node, the node it is in and the spaces.
+#[derive(Clone, Debug)]
+struct NodeOfPlan {
+    raster_space_index: RasterSpaceIndex,
+    composite_clips: Vec<CompositeClip>,
+    composited_effect: Option<EffectNodeIndex>,
+    parent_index: Option<PlacementNodeIndex>,
+    reach_in_parent_node: Reach<IntRect>,
+}
+
+#[derive(Clone, Debug)]
+struct BandOfPlan {
+    placement_node_index: PlacementNodeIndex,
+    first_record_position: ListPosition,
+    /// In paint order.
+    record_spans: Vec<ListSpan>,
+    layer_below_all_cuts: PaintedLayerOfPlan,
+    /// In paint order.
+    cuts: Vec<CutOfPlan>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CutOfPlan {
+    barrier: BarrierOfPlan,
+    layer_above_cut: PaintedLayerOfPlan,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BarrierOfPlan {
+    /// A canvas, video or nested context that is a layer of its own, the `ordinal`th drawing of its content in paint
+    /// order, which cuts the tiles its reach touches.
+    Media {
+        content: LiveContent,
+        ordinal: u32,
+        record_span: ListSpan,
+        reach: IntRect,
+    },
+    /// The next band of the walk, which is of a node in the band's node and cuts the tiles that node reaches.
+    NestedBand,
+}
+
+/// What a band knows of one of its painted layers.
+#[derive(Clone, Copy, Debug, Default)]
+struct PaintedLayerOfPlan {
+    may_hold_content: bool,
+    reach: IntRect,
+}
+
+// A band the walk of the bands of a plan is in, with the cuts of it that the walk has yet to pass, and the layer above
+// the cut whose nested band the walk is in.
+struct BandOfWalk {
+    band_index: BandIndex,
+    cuts_to_pass: std::vec::IntoIter<CutOfPlan>,
+    layer_above_nested_band: PaintedLayerOfPlan,
+}
+
+fn painted_layer_of_band(
+    nodes: &[PlacementNode],
+    bands: &[PlacementNodeBand],
+    band_index: BandIndex,
+    above_barrier: Option<BarrierIdentity>,
+    layer: PaintedLayerOfPlan,
+) -> StackLayer {
+    let band = &bands[band_index.0];
+    StackLayer {
+        identity: LayerIdentity::Painted {
+            node: nodes[band.placement_node_index.0].identity,
+            band_ordinal_in_node: band.band_ordinal_in_node,
+            above_barrier,
+        },
+        placement_node_index: band.placement_node_index,
+        band_index,
+        content: LayerContent::Painted { band_index },
+        may_hold_content: layer.may_hold_content,
+        reach: layer.reach,
+    }
+}
+
 impl LayerStack {
     /// One layer that replays the whole list, which is always correct.
     pub fn single_layer(
@@ -632,6 +749,165 @@ impl LayerStack {
         self.has_layer_at_or_above_base_by_band_index =
             which_bands_have_layer_at_or_above_base(&self.layers, self.bands.len(), self.base_layer);
         self
+    }
+
+    /// The stack of a plan of more than one layer, as the planner and the compositor both work it out. The layers come
+    /// in the order of the walk of the bands: a band's layer below all cuts, then per cut the layers of its barrier,
+    /// which are a canvas, video or nested context or those of the nested band, and the layer above the cut. The
+    /// ordinal of a band in its node counts the bands of the node before it in the walk. The base layer is the first
+    /// layer that can hold content where that is the layer below all cuts of a band of a node that covers the viewport,
+    /// and the first layer otherwise.
+    ///
+    /// Every index the plan holds must be in range, each node must come after the node it is in, and the walk must
+    /// enter each band of the plan once.
+    fn of_layered_plan(
+        plan: LayeredPlan,
+        spaces: Vec<RasterSpace>,
+        tree: &VisualContextTree,
+        layering_obstacles: LayeringObstacles,
+    ) -> Self {
+        let mut nodes: Vec<PlacementNode> = Vec::with_capacity(plan.nodes.len());
+        for node in plan.nodes {
+            let identity = match (node.composited_effect, node.parent_index) {
+                (Some(effect), Some(parent_index)) => {
+                    identity_of_composited_node(nodes[parent_index.0].identity, effect)
+                }
+                _ => identity_of_node(&spaces, node.raster_space_index, &node.composite_clips),
+            };
+            nodes.push(PlacementNode {
+                identity,
+                raster_space_index: node.raster_space_index,
+                composite_clips: node.composite_clips,
+                composited_effect: node.composited_effect,
+                parent_index: node.parent_index,
+                reach_in_parent_node: node.reach_in_parent_node,
+            });
+        }
+        let mut bands: Vec<PlacementNodeBand> = Vec::with_capacity(plan.bands.len());
+        let mut layers: Vec<StackLayer> = Vec::new();
+        let mut next_band_ordinal_by_node_index = vec![0; nodes.len()];
+        let mut bands_of_plan = plan.bands.into_iter();
+        let mut walk: Vec<BandOfWalk> = Vec::new();
+        let mut enters_next_band = true;
+        loop {
+            if enters_next_band && let Some(band) = bands_of_plan.next() {
+                let band_index = BandIndex(bands.len());
+                let band_ordinal_in_node = &mut next_band_ordinal_by_node_index[band.placement_node_index.0];
+                bands.push(PlacementNodeBand {
+                    placement_node_index: band.placement_node_index,
+                    band_ordinal_in_node: *band_ordinal_in_node,
+                    first_record_position: band.first_record_position,
+                    parent_band_holding_this_band_as_barrier: walk.last().map(|walked| walked.band_index),
+                    record_spans: band.record_spans,
+                    cuts: Vec::with_capacity(band.cuts.len()),
+                    layer_below_all_cuts: LayerIndex(layers.len()),
+                });
+                *band_ordinal_in_node += 1;
+                let layer = painted_layer_of_band(&nodes, &bands, band_index, None, band.layer_below_all_cuts);
+                layers.push(layer);
+                walk.push(BandOfWalk {
+                    band_index,
+                    cuts_to_pass: band.cuts.into_iter(),
+                    layer_above_nested_band: PaintedLayerOfPlan::default(),
+                });
+            }
+            enters_next_band = false;
+            let Some(walked) = walk.last_mut() else {
+                break;
+            };
+            let band_index = walked.band_index;
+            match walked.cuts_to_pass.next() {
+                Some(CutOfPlan {
+                    barrier:
+                        BarrierOfPlan::Media {
+                            content,
+                            ordinal,
+                            record_span,
+                            reach,
+                        },
+                    layer_above_cut,
+                }) => {
+                    layers.push(StackLayer {
+                        identity: LayerIdentity::Media { content, ordinal },
+                        placement_node_index: bands[band_index.0].placement_node_index,
+                        band_index,
+                        content: LayerContent::Media {
+                            content,
+                            record_span,
+                            reach,
+                        },
+                        may_hold_content: true,
+                        reach,
+                    });
+                    let barrier = Some(BarrierIdentity::Media { content, ordinal });
+                    let layer = painted_layer_of_band(&nodes, &bands, band_index, barrier, layer_above_cut);
+                    layers.push(layer);
+                    bands[band_index.0].cuts.push(BarrierCut {
+                        barrier_first_record_position: record_span.begin,
+                        cut_reach: Reach::Within(reach),
+                        layer_above_cut: LayerIndex(layers.len() - 1),
+                    });
+                }
+                Some(CutOfPlan {
+                    barrier: BarrierOfPlan::NestedBand,
+                    layer_above_cut,
+                }) => {
+                    walked.layer_above_nested_band = layer_above_cut;
+                    enters_next_band = true;
+                }
+                None => {
+                    walk.pop();
+                    let Some(walked_around) = walk.last() else {
+                        continue;
+                    };
+                    let nested_band = &bands[band_index.0];
+                    let nested_node = &nodes[nested_band.placement_node_index.0];
+                    let cut = BarrierCut {
+                        barrier_first_record_position: nested_band.first_record_position,
+                        cut_reach: nested_node.reach_in_parent_node,
+                        layer_above_cut: LayerIndex(layers.len()),
+                    };
+                    let barrier = Some(BarrierIdentity::NestedNodeBand {
+                        node: nested_node.identity,
+                        band_ordinal_in_node: nested_band.band_ordinal_in_node,
+                    });
+                    let (band_index, layer_above_cut) =
+                        (walked_around.band_index, walked_around.layer_above_nested_band);
+                    let layer = painted_layer_of_band(&nodes, &bands, band_index, barrier, layer_above_cut);
+                    layers.push(layer);
+                    bands[band_index.0].cuts.push(cut);
+                }
+            }
+        }
+        let base_layer = layers
+            .iter()
+            .position(|layer| layer.may_hold_content)
+            .filter(|&index| {
+                matches!(
+                    layers[index].identity,
+                    LayerIdentity::Painted {
+                        above_barrier: None,
+                        ..
+                    }
+                ) && node_covers_viewport(&nodes, &spaces, layers[index].placement_node_index)
+            })
+            .map_or(LayerIndex(0), LayerIndex);
+        LayerStack {
+            composited_effects: CompositedEffect::of_nodes(&nodes, tree),
+            spaces,
+            nodes,
+            bands,
+            layers,
+            base_layer,
+            why_list_is_one_layer: None,
+            layering_obstacles,
+            tiles_hold_content_moving_within_space_by_space_index: plan
+                .tiles_hold_content_moving_within_space_by_space_index,
+            swept_reach_in_parent_space_by_space_index: plan.swept_reach_in_parent_space_by_space_index,
+            index_of_layer_with_identity: HashMap::new(),
+            has_layer_at_or_above_base_by_band_index: Vec::new(),
+        }
+        .with_lookups()
     }
 
     pub fn replays_whole_list(&self) -> bool {
