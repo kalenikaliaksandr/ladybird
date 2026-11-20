@@ -1727,8 +1727,8 @@ mod tests {
             .expect("the canvas has a layer");
         assert_eq!(
             stack
-                .composited_bands_around_layer(LayerIndex(canvas_layer_index))
-                .len(),
+                .composited_bands_around_layer_innermost_first(LayerIndex(canvas_layer_index))
+                .count(),
             deepest
         );
         let sent = plan_sent_of(&planned);
@@ -1773,7 +1773,9 @@ mod tests {
         assert!(read_reach_of_one_filter < largest && 2 * read_reach_of_one_filter > largest);
         let expected: Vec<i32> = (0..stack.layers.len())
             .map(|layer_index| {
-                let nesting = stack.composited_bands_around_layer(LayerIndex(layer_index)).len() as i32;
+                let nesting = stack
+                    .composited_bands_around_layer_innermost_first(LayerIndex(layer_index))
+                    .count() as i32;
                 (nesting * read_reach_of_one_filter).min(largest)
             })
             .collect();
@@ -2413,7 +2415,7 @@ mod tests {
             libgfx_rust::affine_to_matrix(libgfx_rust::AffineTransform::new(0.5, 0.5, -0.5, 0.5, 10.0, 20.0))
         });
         for layer_index in (0..stack.layers.len()).map(LayerIndex) {
-            stack.composited_bands_around_layer(layer_index);
+            stack.composited_bands_around_layer_innermost_first(layer_index).count();
             stack.composite_clip_of_layer_in_viewport(layer_index, &composite_offsets);
             stack.rounded_composite_clips_of_node_in_viewport(
                 stack.layers[layer_index.0].placement_node_index,

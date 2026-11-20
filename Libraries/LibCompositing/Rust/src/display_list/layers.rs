@@ -1123,15 +1123,6 @@ impl LayerStack {
         )
     }
 
-    /// The bands the layer is in, outermost first, whose nodes the compositor composites inside their effects.
-    pub fn composited_bands_around_layer(&self, layer_index: LayerIndex) -> Vec<BandIndex> {
-        let mut composited_bands: Vec<BandIndex> = self
-            .composited_bands_around_layer_innermost_first(layer_index)
-            .collect();
-        composited_bands.reverse();
-        composited_bands
-    }
-
     /// Per layer, how far the filters of the effects the compositor composites around it read past each of its pixels,
     /// summed and cut to `LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS`, where
     /// `read_reach_of_composited_node` tells it of one composited node and its effect.
@@ -1212,14 +1203,15 @@ impl LayerStack {
         window_server_can_show: impl Fn(LayerIndex) -> bool,
     ) -> Vec<bool> {
         let mut shown_by_window_server = vec![false; self.layers.len()];
-        if self.replays_whole_list() {
+        let is_media = |layer: LayerIndex| matches!(self.layers[layer.0].content, LayerContent::Media { .. });
+        let has_media_above_base = (self.base_layer.0 + 1..self.layers.len()).any(|layer| is_media(LayerIndex(layer)));
+        if self.replays_whole_list() || !has_media_above_base {
             return shown_by_window_server;
         }
         let layers_above_base_that_may_hold_content: Vec<LayerIndex> = (self.base_layer.0 + 1..self.layers.len())
             .map(LayerIndex)
             .filter(|&layer| self.layers[layer.0].may_hold_content)
             .collect();
-        let is_media = |layer: LayerIndex| matches!(self.layers[layer.0].content, LayerContent::Media { .. });
         let frame_must_hold = |layer: LayerIndex| {
             self.layer_is_inside_composited_effects(layer)
                 || self.layer_is_composited_within_rounded_clips(layer)

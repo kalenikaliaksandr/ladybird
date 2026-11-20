@@ -170,7 +170,7 @@ impl PlannedLayers {
                     Some(Ok(placement)) if presentation.layer_is_shown_by_window_server(layer_index) => {
                         line.push_str(&format!(" shown by the window server: {placement}"));
                     }
-                    Some(Ok(_)) if !stack.composited_bands_around_layer(layer_index).is_empty() => {
+                    Some(Ok(_)) if stack.layer_is_inside_composited_effects(layer_index) => {
                         line.push_str(" replayed: inside an effect the compositor composites");
                     }
                     Some(Ok(_)) => line.push_str(" replayed: under a layer the frame holds"),
