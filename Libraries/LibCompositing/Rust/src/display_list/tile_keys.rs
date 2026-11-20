@@ -56,7 +56,7 @@ use crate::visual_context::{
 };
 use foldhash::fast::{FixedState, FoldHasher};
 use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
@@ -367,6 +367,8 @@ pub struct TileKeyingOfList<'a> {
     frame_state_hash: ContentHash,
     sampled_values_tiles_draw: SampledValuesTilesDraw,
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
+    /// The chunks of the list by name, once a band that keeps its cells across bindings looks them up.
+    chunk_index_by_name: OnceCell<HashMap<ChunkName, ChunkIndexInList>>,
 }
 
 /// What tiles draw of the values that the compositor's animations take at the sample of a tree. A frame can keep the
@@ -498,6 +500,7 @@ impl<'a> TileKeyingOfList<'a> {
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
             sampled_values_tiles_draw: SampledValuesTilesDraw::of(tree, &innermost_composited_effect_by_effect_index),
             innermost_composited_effect_by_effect_index,
+            chunk_index_by_name: OnceCell::new(),
         }
     }
 
@@ -2908,12 +2911,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let band = &stack.bands[band_index.0];
         let held_chunks_reaching_cells =
             bound_band.held_chunks_reaching_cells_in_paint_order(band_tile_keys.cells.keys().copied());
-        let chunk_index_by_name: HashMap<ChunkName, ChunkIndexInList> = bound_band
-            .chunk_names
-            .iter()
-            .enumerate()
-            .map(|(chunk_index, name)| (*name, ChunkIndexInList(chunk_index as u32)))
-            .collect();
+        let chunk_index_by_name = self.list.chunk_index_by_name.get_or_init(|| {
+            bound_band
+                .chunk_names
+                .iter()
+                .enumerate()
+                .map(|(chunk_index, name)| (*name, ChunkIndexInList(chunk_index as u32)))
+                .collect()
+        });
         band_tile_keys.cells.retain(|coord, cell| {
             let cuts_of_cell = CutsOfCell::of(band, coord.cell_rect());
             let binning_inputs_hash =
