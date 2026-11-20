@@ -23,7 +23,7 @@ use crate::raster_host::{
     SublayerContentKind, SurfaceBlend, SurfaceHandle,
 };
 use libcompositing_rust::display_list::commands::{
-    CanvasId, CompositorContextId, ImageFrameResourceId, SpatialNodeIndex, VideoSinkHandle,
+    CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle,
 };
 use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
@@ -31,12 +31,10 @@ use libcompositing_rust::display_list::layers::{
     PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind, RasterSpaceIndex,
     SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
 };
-use libcompositing_rust::display_list::placement::{
-    RasterSpace, RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets,
-};
+use libcompositing_rust::display_list::placement::{RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets};
 use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::{CompositeClipsOfRaster, ReplaySelection};
-use libcompositing_rust::display_list::storage::{ChunkName, ListSpan};
+use libcompositing_rust::display_list::storage::ChunkName;
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
 use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
@@ -229,13 +227,34 @@ impl LiveContentVersions for LiveContentVersionsOfFrame<'_> {
 /// Where a frame composites a layer: offset by the scroll offsets of its space's anchors, within its composite clip
 /// and the rounded composite clips inside it, and whether the frame holds it or the window server shows it above the
 /// frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct LayerCompositingInFrame {
+    /// Where the layer is in the stack the frame draws with.
+    layer_index: LayerIndex,
     identity: LayerIdentity,
     space_to_frame: SpaceToFrame,
     composite_clip: Option<IntRect>,
     rounded_composite_clips: Rc<[(IntRect, CornerRadii)]>,
     shown_by_window_server: bool,
+}
+
+// Two frames composite a layer alike wherever their stacks hold it.
+impl PartialEq for LayerCompositingInFrame {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            layer_index: _,
+            identity,
+            space_to_frame,
+            composite_clip,
+            rounded_composite_clips,
+            shown_by_window_server,
+        } = self;
+        *identity == other.identity
+            && *space_to_frame == other.space_to_frame
+            && *composite_clip == other.composite_clip
+            && *rounded_composite_clips == other.rounded_composite_clips
+            && *shown_by_window_server == other.shown_by_window_server
+    }
 }
 
 impl LayerCompositingInFrame {
@@ -268,6 +287,7 @@ struct ListAndGeometryOfBandTileKeys {
     base_layer: LayerIndex,
 }
 
+#[derive(Default)]
 struct BandTileKeysOfFrame {
     identities: BandIdentities,
     bound_to_list_and_geometry: Option<ListAndGeometryOfBandTileKeys>,
@@ -286,7 +306,7 @@ impl BandTileKeysOfFrame {
 
 // The first identity holds while bands of the node painted before this one come or go, the second while the records
 // the band starts with change.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct BandIdentities {
     identity_by_first_record_position: u64,
     identity_by_band_ordinal: u64,
@@ -386,6 +406,42 @@ fn reuse_tile_keys_of_matching_bands(
     reused_by_band
 }
 
+/// The tile keys of the bands of the latest frame, by the index of their band in the stack it drew with.
+enum BandTileKeysOfLatestFrame {
+    OfSameStack(Vec<Option<BandTileKeysOfFrame>>),
+    OfOtherStack(Vec<Option<BandTileKeysOfFrame>>),
+}
+
+impl BandTileKeysOfLatestFrame {
+    /// By band index, the tile keys each band of the stack takes: after a frame drawn with the same stack, those of
+    /// the same index, and otherwise those found by the identities of the band, or new ones, with the identities of the
+    /// band. Answers too whether they are of the same stack.
+    fn taken_by_bands(
+        self,
+        identities_of_bands: impl FnOnce() -> Vec<BandIdentities>,
+    ) -> (Vec<Option<BandTileKeysOfFrame>>, bool) {
+        match self {
+            Self::OfSameStack(band_tile_keys_by_band) => (band_tile_keys_by_band, true),
+            Self::OfOtherStack(band_tile_keys_by_band) => {
+                let identities_of_bands = identities_of_bands();
+                let mut band_tile_keys_of_other_stack = band_tile_keys_by_band.into_iter().flatten().collect();
+                let taken_by_band =
+                    reuse_tile_keys_of_matching_bands(&mut band_tile_keys_of_other_stack, &identities_of_bands)
+                        .into_iter()
+                        .zip(identities_of_bands)
+                        .map(|(taken, identities)| {
+                            Some(BandTileKeysOfFrame {
+                                identities,
+                                ..taken.unwrap_or_default()
+                            })
+                        })
+                        .collect();
+                (taken_by_band, false)
+            }
+        }
+    }
+}
+
 struct TileShownInFrame {
     coord: TileCoord,
     content_hash: ContentHash,
@@ -396,14 +452,14 @@ struct TileShownInFrame {
 }
 
 pub struct ShownTilesOfLayer {
-    band_tile_keys_index: usize,
+    band_index: BandIndex,
     tiles: Vec<TileShownInFrame>,
 }
 
 #[derive(Default)]
 pub struct FrameTileState {
     viewport_rect: IntRect,
-    band_tile_keys: Vec<BandTileKeysOfFrame>,
+    band_tile_keys_by_band: Vec<Option<BandTileKeysOfFrame>>,
     shown_tiles_by_layer: Vec<Option<ShownTilesOfLayer>>,
     media_replayed_by_layer: Vec<Option<MediaRecordsReplayedInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
@@ -456,41 +512,146 @@ impl LayerUpdate {
 struct CachedRasterSpaceGeometry {
     tree_copy_number: u64,
     tree_copy_without_animation_samples: u64,
-    anchors_of_spaces: Vec<SpatialNodeIndex>,
-    raster_space_index: RasterSpaceIndex,
-    viewport_in_raster: ViewportInRaster,
     geometry: Rc<RasterSpaceGeometry>,
 }
 
-struct CachedRasterSpaces {
-    tree_copy_number: u64,
-    raster_spaces: RasterSpaces,
-}
-
-#[derive(Clone, Copy)]
-struct ScrollOffsetsOfGeometry<'a> {
-    scroll_offsets: &'a [FloatPoint],
-    geometry_readers_leave_out_offset_of_node: Option<&'a [bool]>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct ViewportInRaster {
-    viewport_rect: IntRect,
+/// The stack that frames draw with, and what they keep of it from one frame to the next while they draw with the same
+/// plan, whose trees hold the same nodes and differ only in their values.
+struct StackOfFrames {
+    /// The plan WebContent sent, or none for one layer that replays the whole list, for a frame that is not drawn as a
+    /// plan was made for. One plan stands for one list, one tree without the samples of the compositor's animations,
+    /// one viewport, and the scroll offsets the plan reads.
+    layer_plan: Option<ReceivedLayerPlan>,
+    stack: Rc<LayerStack>,
     viewport_to_raster_transform: FloatMatrix4x4,
+    /// Per layer, the bands it is in, outermost first, whose nodes the compositor composites inside their effects.
+    composited_bands_around_layer: Vec<Vec<BandIndex>>,
+    raster_spaces: Option<RasterSpaces>,
+    geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
+    band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame,
+}
+
+impl StackOfFrames {
+    /// Keeps the geometries of the spaces of the stack the latest frame drew with where the spaces are at the same
+    /// anchors under the same raster transform, as the geometry of a space does not depend on the viewport.
+    fn new(
+        layer_plan: Option<ReceivedLayerPlan>,
+        stack: Rc<LayerStack>,
+        viewport_to_raster_transform: FloatMatrix4x4,
+        latest: Option<StackOfFrames>,
+    ) -> Self {
+        let mut geometry_by_space: Vec<_> = (0..stack.spaces.len()).map(|_| None).collect();
+        let mut band_tile_keys_of_latest_frame = Vec::new();
+        if let Some(latest) = latest {
+            if latest.viewport_to_raster_transform == viewport_to_raster_transform
+                && latest
+                    .stack
+                    .spaces
+                    .iter()
+                    .map(|space| space.anchor)
+                    .eq(stack.spaces.iter().map(|space| space.anchor))
+            {
+                geometry_by_space = latest.geometry_by_space;
+            }
+            let (BandTileKeysOfLatestFrame::OfSameStack(band_tile_keys_by_band)
+            | BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_by_band)) = latest.band_tile_keys_of_latest_frame;
+            band_tile_keys_of_latest_frame = band_tile_keys_by_band;
+        }
+        Self {
+            layer_plan,
+            composited_bands_around_layer: (0..stack.layers.len())
+                .map(|layer_index| stack.composited_bands_around_layer(LayerIndex(layer_index)))
+                .collect(),
+            stack,
+            viewport_to_raster_transform,
+            raster_spaces: None,
+            geometry_by_space,
+            band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_latest_frame),
+        }
+    }
+
+    fn composited_bands_around_layer(&self, layer_index: LayerIndex) -> &[BandIndex] {
+        &self.composited_bands_around_layer[layer_index.0]
+    }
+
+    /// The layer a frame composited, which a frame worked out after it can hold elsewhere in another stack.
+    fn layer_composited_as(&self, compositing: &LayerCompositingInFrame) -> Option<(LayerIndex, &StackLayer)> {
+        match self.stack.layers.get(compositing.layer_index.0) {
+            Some(layer) if layer.identity == compositing.identity => Some((compositing.layer_index, layer)),
+            _ => self.stack.layer_with_identity(compositing.identity),
+        }
+    }
+
+    /// Per raster space, its geometry under the tree and the scroll offsets of the frame.
+    fn geometries_of_spaces(
+        &mut self,
+        tree: &VisualContextTree,
+        scroll_offsets: &[FloatPoint],
+    ) -> Vec<Rc<RasterSpaceGeometry>> {
+        let stack = &self.stack;
+        let mut geometries = Vec::with_capacity(stack.spaces.len());
+        for (space_index, cached_geometry) in self.geometry_by_space.iter_mut().enumerate() {
+            let raster_space_index = RasterSpaceIndex(space_index);
+            // What reads the geometry of a space of a plan that holds nothing that moves within it reads no value the
+            // compositor animates, and no scroll offset that the plan leaves out.
+            let geometry_readers_leave_out_offset_of_node = self
+                .layer_plan
+                .as_ref()
+                .filter(|_| !stack.space_holds_content_that_moves_within_it(raster_space_index))
+                .map(|layer_plan| layer_plan.leaves_out_scroll_offset_of_node.as_slice());
+            let raster_scroll_offsets_of_space =
+                raster_scroll_offsets(&stack.spaces, raster_space_index, scroll_offsets);
+            if let Some(cached) = cached_geometry
+                && (cached.tree_copy_number == tree.copy.number()
+                    || (geometry_readers_leave_out_offset_of_node.is_some()
+                        && cached.tree_copy_without_animation_samples == tree.copy_without_animation_samples()))
+                && match geometry_readers_leave_out_offset_of_node {
+                    Some(geometry_readers_leave_out_offset_of_node) => cached
+                        .geometry
+                        .raster_scroll_offsets
+                        .iter()
+                        .zip(&raster_scroll_offsets_of_space)
+                        .enumerate()
+                        .all(|(node_index, (cached_offset, offset))| {
+                            cached_offset == offset
+                                || geometry_readers_leave_out_offset_of_node
+                                    .get(node_index)
+                                    .copied()
+                                    .unwrap_or(false)
+                        }),
+                    None => cached.geometry.raster_scroll_offsets == raster_scroll_offsets_of_space,
+                }
+            {
+                geometries.push(cached.geometry.clone());
+                continue;
+            }
+            let raster_spaces = self
+                .raster_spaces
+                .get_or_insert_with(|| RasterSpaces::of_spaces(tree, stack.spaces.clone()));
+            let geometry = Rc::new(RasterSpaceGeometry::new(
+                tree,
+                raster_spaces,
+                raster_space_index,
+                scroll_offsets,
+                self.viewport_to_raster_transform,
+            ));
+            *cached_geometry = Some(CachedRasterSpaceGeometry {
+                tree_copy_number: tree.copy.number(),
+                tree_copy_without_animation_samples: tree.copy_without_animation_samples(),
+                geometry: geometry.clone(),
+            });
+            geometries.push(geometry);
+        }
+        geometries
+    }
 }
 
 /// The layers of the frames of a context under their identities, the pool of their tiles, and what of them the window
 /// server shows.
 #[derive(Default)]
 pub struct ContextLayers {
-    /// The stack the latest frame was drawn with: the plan WebContent sent, or one layer that replays the whole list.
-    stack: Option<Rc<LayerStack>>,
-    /// Per spatial node, whether the plan the latest frame was drawn with leaves out its scroll offset, as the plan
-    /// holds wherever the node is scrolled to. None for a frame drawn with one layer that replays the whole list.
-    scroll_offsets_plan_leaves_out: Option<Rc<Vec<bool>>>,
-    /// What the overlay of layers tells of the stack the latest frame was drawn with past its layers: the note lines of
-    /// the plan, and no lines for a frame drawn with one layer that replays the whole list.
-    note_lines_of_stack: Rc<[String]>,
+    /// The stack the latest frame was drawn with.
+    stack_of_frames: Option<StackOfFrames>,
     /// Where the window server can show the media of the stack, as the latest frame worked it out.
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
@@ -500,16 +661,13 @@ pub struct ContextLayers {
     work_counts_of_this_frame: FrameWorkCounts,
     latest_compositor_overlays_surface: Option<PresentableSurfaceHandle>,
     compositor_overlays_rect: IntRect,
-    cached_raster_space_geometries: Vec<CachedRasterSpaceGeometry>,
     next_presentable_surface_pool: u32,
-    cached_raster_spaces: Option<CachedRasterSpaces>,
-    band_tile_keys_of_latest_frame: Vec<BandTileKeysOfFrame>,
     content_hash_by_composited_node_of_latest_frame: HashMap<PlacementNodeIdentity, ContentHash>,
 }
 
 impl ContextLayers {
     pub fn has_layers(&self) -> bool {
-        self.stack.is_some()
+        self.stack_of_frames.is_some()
     }
 
     /// Whether the window server shows layers above the base layer of the latest frame.
@@ -536,56 +694,33 @@ impl ContextLayers {
         }
     }
 
-    /// Takes the stack a frame is drawn with: the plan WebContent sent, or for a frame that is not drawn as a plan was
-    /// made for, one layer that replays the whole list. Answers whether the frame takes a plan into use that the frame
-    /// before did not draw with.
+    /// Takes the stack a frame draws with: the plan WebContent sent, or for a frame that is not drawn as a plan was
+    /// made for, one layer that replays the whole list. Keeps what frames kept of the stack where the frame before drew
+    /// with the same plan.
     fn take_stack_of_frame(
         &mut self,
         layer_plan: Option<&ReceivedLayerPlan>,
-        whole_list_span: ListSpan,
-        viewport_rect: IntRect,
-    ) -> bool {
-        let Some(layer_plan) = layer_plan else {
-            let one_layer = LayerStack::single_layer(
-                viewport_rect,
-                whole_list_span,
-                Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
-            );
-            if self.stack.as_deref() != Some(&one_layer) {
-                self.stack = Some(Rc::new(one_layer));
-            }
-            self.scroll_offsets_plan_leaves_out = None;
-            self.note_lines_of_stack = Rc::default();
-            return false;
-        };
-        let takes_plan_into_use = !self
-            .stack
+        one_layer: impl FnOnce() -> LayerStack,
+        viewport_to_raster_transform: FloatMatrix4x4,
+    ) -> Rc<LayerStack> {
+        let latest_plan = self
+            .stack_of_frames
             .as_ref()
-            .is_some_and(|stack| Rc::ptr_eq(stack, &layer_plan.stack));
-        self.stack = Some(layer_plan.stack.clone());
-        self.scroll_offsets_plan_leaves_out = Some(layer_plan.leaves_out_scroll_offset_of_node.clone());
-        self.note_lines_of_stack = layer_plan.note_lines.clone();
-        takes_plan_into_use
-    }
-
-    fn raster_spaces_of(&mut self, tree: &VisualContextTree, spaces: &[RasterSpace]) -> RasterSpaces {
-        if let Some(cached) = &self.cached_raster_spaces
-            && cached.tree_copy_number == tree.copy.number()
-            && cached
-                .raster_spaces
-                .spaces()
-                .iter()
-                .map(|space| space.anchor)
-                .eq(spaces.iter().map(|space| space.anchor))
+            .and_then(|stack_of_frames| stack_of_frames.layer_plan.as_ref());
+        if let Some(layer_plan) = layer_plan
+            && latest_plan.is_some_and(|latest_plan| Rc::ptr_eq(&latest_plan.stack, &layer_plan.stack))
         {
-            return cached.raster_spaces.clone().with_other_extents(spaces.to_vec());
+            return layer_plan.stack.clone();
         }
-        let raster_spaces = RasterSpaces::of_spaces(tree, spaces.to_vec());
-        self.cached_raster_spaces = Some(CachedRasterSpaces {
-            tree_copy_number: tree.copy.number(),
-            raster_spaces: raster_spaces.clone(),
-        });
-        raster_spaces
+        self.work_counts_of_this_frame.took_plan_into_use = layer_plan.is_some();
+        let stack = layer_plan.map_or_else(|| Rc::new(one_layer()), |layer_plan| layer_plan.stack.clone());
+        self.stack_of_frames = Some(StackOfFrames::new(
+            layer_plan.cloned(),
+            stack.clone(),
+            viewport_to_raster_transform,
+            self.stack_of_frames.take(),
+        ));
+        stack
     }
 
     fn evict_spare_tiles(&mut self, env: &PresentingEnvironment<'_>) {
@@ -687,118 +822,6 @@ impl ContextLayers {
         );
         self.tile_raster_scratch_surface.clone()
     }
-
-    fn geometry_of_space(
-        &mut self,
-        tree: &VisualContextTree,
-        spaces: &[RasterSpace],
-        raster_spaces: &mut Option<RasterSpaces>,
-        raster_space_index: RasterSpaceIndex,
-        scroll_offsets: ScrollOffsetsOfGeometry<'_>,
-        viewport_in_raster: ViewportInRaster,
-    ) -> Rc<RasterSpaceGeometry> {
-        let ScrollOffsetsOfGeometry {
-            scroll_offsets,
-            geometry_readers_leave_out_offset_of_node,
-        } = scroll_offsets;
-        let cached_anchors_match_spaces = |cached: &CachedRasterSpaceGeometry| {
-            cached.anchors_of_spaces.len() == spaces.len()
-                && cached
-                    .anchors_of_spaces
-                    .iter()
-                    .zip(spaces)
-                    .all(|(anchor, space)| *anchor == space.anchor)
-        };
-        let raster_scroll_offsets_of_space = raster_scroll_offsets(spaces, raster_space_index, scroll_offsets);
-        let geometry_readers_read_nothing_that_moves_within_space = geometry_readers_leave_out_offset_of_node.is_some();
-        let tree_copy_without_animation_samples = tree.copy_without_animation_samples();
-        let cached_geometry_is_of_tree = |cached: &CachedRasterSpaceGeometry| {
-            cached.tree_copy_number == tree.copy.number()
-                || (geometry_readers_read_nothing_that_moves_within_space
-                    && cached.tree_copy_without_animation_samples == tree_copy_without_animation_samples)
-        };
-        if let Some(cached) = self.cached_raster_space_geometries.iter().find(|cached| {
-            cached_geometry_is_of_tree(cached)
-                && cached.raster_space_index == raster_space_index
-                && cached.viewport_in_raster == viewport_in_raster
-                && cached_anchors_match_spaces(cached)
-                && match geometry_readers_leave_out_offset_of_node {
-                    Some(geometry_readers_leave_out_offset_of_node) => cached
-                        .geometry
-                        .raster_scroll_offsets
-                        .iter()
-                        .zip(&raster_scroll_offsets_of_space)
-                        .enumerate()
-                        .all(|(node_index, (cached_offset, offset))| {
-                            cached_offset == offset
-                                || geometry_readers_leave_out_offset_of_node
-                                    .get(node_index)
-                                    .copied()
-                                    .unwrap_or(false)
-                        }),
-                    None => cached.geometry.raster_scroll_offsets == raster_scroll_offsets_of_space,
-                }
-        }) {
-            return cached.geometry.clone();
-        }
-        if raster_spaces.is_none() {
-            *raster_spaces = Some(self.raster_spaces_of(tree, spaces));
-        }
-        let raster_spaces = raster_spaces
-            .as_ref()
-            .expect("the raster spaces were just made sure of");
-        let geometry = Rc::new(RasterSpaceGeometry::new(
-            tree,
-            raster_spaces,
-            raster_space_index,
-            scroll_offsets,
-            viewport_in_raster.viewport_to_raster_transform,
-        ));
-        self.cached_raster_space_geometries.retain(|cached| {
-            cached.tree_copy_without_animation_samples == tree_copy_without_animation_samples
-                && cached.viewport_in_raster == viewport_in_raster
-                && !(cached.raster_space_index == raster_space_index && cached_anchors_match_spaces(cached))
-        });
-        self.cached_raster_space_geometries.push(CachedRasterSpaceGeometry {
-            tree_copy_number: tree.copy.number(),
-            tree_copy_without_animation_samples,
-            anchors_of_spaces: spaces.iter().map(|space| space.anchor).collect(),
-            raster_space_index,
-            viewport_in_raster,
-            geometry: geometry.clone(),
-        });
-        geometry
-    }
-
-    fn geometries_of_spaces<'a>(
-        &mut self,
-        tree: &VisualContextTree,
-        spaces: &[RasterSpace],
-        scroll_offsets: &'a [FloatPoint],
-        geometry_readers_leave_out_offset_of_node_in_space: impl Fn(RasterSpaceIndex) -> Option<&'a [bool]>,
-        viewport_in_raster: ViewportInRaster,
-    ) -> Vec<Rc<RasterSpaceGeometry>> {
-        let mut raster_spaces = None;
-        (0..spaces.len())
-            .map(RasterSpaceIndex)
-            .map(|raster_space_index| {
-                let scroll_offsets = ScrollOffsetsOfGeometry {
-                    scroll_offsets,
-                    geometry_readers_leave_out_offset_of_node: geometry_readers_leave_out_offset_of_node_in_space(
-                        raster_space_index,
-                    ),
-                };
-                self.geometry_of_space(
-                    tree,
-                    spaces,
-                    &mut raster_spaces,
-                    raster_space_index,
-                    scroll_offsets,
-                    viewport_in_raster,
-                )
-            })
-            .collect()
-    }
 }
 
 fn replay_into_scratch_and_copy_into_tiles(
@@ -899,19 +922,21 @@ fn inflated(rect: IntRect, margin: i32) -> IntRect {
 }
 
 fn composited_filter_read_reach_by_layer(
-    stack: &LayerStack,
+    stack_of_frames: &StackOfFrames,
     tree: &VisualContextTree,
     geometries: &[Rc<RasterSpaceGeometry>],
 ) -> Vec<i32> {
+    let stack = &stack_of_frames.stack;
     if stack.composited_effects.is_empty() {
         return vec![0; stack.layers.len()];
     }
     let mut filter_read_reach_by_composited_node: HashMap<PlacementNodeIndex, i32> = HashMap::new();
-    (0..stack.layers.len())
-        .map(|layer_index| {
-            stack
-                .composited_bands_around_layer(LayerIndex(layer_index))
-                .into_iter()
+    stack_of_frames
+        .composited_bands_around_layer
+        .iter()
+        .map(|composited_bands_around_layer| {
+            composited_bands_around_layer
+                .iter()
                 .map(|band_index| {
                     let node_index = stack.bands[band_index.0].placement_node_index;
                     *filter_read_reach_by_composited_node
@@ -1090,7 +1115,7 @@ fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> boo
 // A backdrop filter that reads past its tile by an unknown reach reads its layer's tiles wherever they are, so none of
 // them may be hidden.
 fn hide_tiles_covered_by_opaque_tiles_above(
-    stack: &LayerStack,
+    stack_of_frames: &StackOfFrames,
     tile_state: &mut FrameTileState,
     compositing_of_layers: &[LayerCompositingInFrame],
     read_reaches_of_composited_effects_in_frame: &[IntRect],
@@ -1100,9 +1125,8 @@ fn hide_tiles_covered_by_opaque_tiles_above(
     let mut opaque_rects_in_frame_above: Vec<IntRect> = Vec::new();
     let mut hidden_tile_count = 0;
     for compositing in compositing_of_layers.iter().rev() {
-        let Some((layer_index, layer)) = stack.layer_with_identity(compositing.identity) else {
-            continue;
-        };
+        let layer_index = compositing.layer_index;
+        let layer = &stack_of_frames.stack.layers[layer_index.0];
         if !matches!(layer.content, LayerContent::Painted { .. }) {
             continue;
         }
@@ -1127,7 +1151,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
             hidden_tile_count += tile_count_before - shown.tiles.len();
         }
         let frame_holds_layer = !compositing.shown_by_window_server;
-        let is_inside_composited_effects = !stack.composited_bands_around_layer(layer_index).is_empty();
+        let is_inside_composited_effects = !stack_of_frames.composited_bands_around_layer(layer_index).is_empty();
         let covers_layers_below = frame_holds_layer
             && !is_inside_composited_effects
             && compositing.rounded_composite_clips.is_empty()
@@ -1195,10 +1219,14 @@ fn copy_held_tiles_into(
     raster.restore_to_count(target, save_count);
 }
 
-fn layer_allows_lcd_text(stack: &LayerStack, layer_index: LayerIndex, frame_allows_lcd_text: bool) -> bool {
+fn layer_allows_lcd_text(
+    stack_of_frames: &StackOfFrames,
+    layer_index: LayerIndex,
+    frame_allows_lcd_text: bool,
+) -> bool {
     frame_allows_lcd_text
-        && layer_index == stack.base_layer
-        && stack.composited_bands_around_layer(layer_index).is_empty()
+        && layer_index == stack_of_frames.stack.base_layer
+        && stack_of_frames.composited_bands_around_layer(layer_index).is_empty()
 }
 
 fn clear_color_of_layer(stack: &LayerStack, layer_index: LayerIndex, surface_clear_color: Color) -> Color {
@@ -1414,6 +1442,7 @@ fn compositing_of_layer(
     spaces_to_frame: &[SpaceToFrame],
 ) -> LayerCompositingInFrame {
     LayerCompositingInFrame {
+        layer_index,
         identity: stack.layers[layer_index.0].identity,
         space_to_frame: spaces_to_frame[stack.space_of_layer(layer_index).0],
         composite_clip: stack.composite_clip_of_layer_in_viewport(layer_index, composite_offsets),
@@ -1450,10 +1479,14 @@ impl ContextPresenting {
         let layer_plan = frame.frame_inputs.layer_plan.as_ref().filter(|layer_plan| {
             raster_transform == FloatMatrix4x4::identity() && layer_plan.viewport_rect == viewport_rect
         });
-        self.layers.work_counts_of_this_frame.took_plan_into_use =
-            self.layers
-                .take_stack_of_frame(layer_plan, storage.whole_span(), viewport_rect);
-        let stack = self.layers.stack.clone().expect("a frame with layers has a stack");
+        let one_layer = || {
+            LayerStack::single_layer(
+                viewport_rect,
+                storage.whole_span(),
+                Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            )
+        };
+        let stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
         let stack = stack.as_ref();
         self.layers.window_server_placements_of_media =
             stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
@@ -1507,8 +1540,15 @@ impl ContextPresenting {
             self.layers
                 .invalidate_every_tile_and_media_replay(&layer_update.compositing_of_layers);
         }
-        self.with_stack(|this, stack| {
-            this.prepare_frame_tile_state_of_stack(env, frame, live_content, layer_update, viewport_rect, stack)
+        self.with_stack_of_frames(|this, stack_of_frames| {
+            this.prepare_frame_tile_state_of_stack(
+                env,
+                frame,
+                live_content,
+                layer_update,
+                viewport_rect,
+                stack_of_frames,
+            )
         })
     }
 
@@ -1520,7 +1560,7 @@ impl ContextPresenting {
         layer_update: &LayerUpdate,
         viewport_rect: IntRect,
     ) -> Option<IntRect> {
-        let stack = self.layers.stack.as_ref()?;
+        let stack = &self.layers.stack_of_frames.as_ref()?.stack;
         let compositing_of_latest_frame = &self.layers.compositing_of_latest_frame;
         if compositing_of_latest_frame.len() != layer_update.compositing_of_layers.len() {
             return None;
@@ -1547,11 +1587,11 @@ impl ContextPresenting {
             if !moved_by_animated_transform {
                 return None;
             }
-            let (layer_index, layer) = stack.layer_with_identity(current.identity)?;
             let composited_filter_read_reach = composited_filter_read_reach_by_layer
-                .and_then(|reaches| reaches.get(layer_index.0).copied())
+                .and_then(|reaches| reaches.get(current.layer_index.0).copied())
                 .unwrap_or(0);
-            let reach_in_layer_space = inflated(layer.reach, composited_filter_read_reach);
+            let reach_in_layer_space =
+                inflated(stack.layers[current.layer_index.0].reach, composited_filter_read_reach);
             damage = damage
                 .united(latest.rect_in_frame(reach_in_layer_space, viewport_rect))
                 .united(current.rect_in_frame(reach_in_layer_space, viewport_rect));
@@ -1559,9 +1599,15 @@ impl ContextPresenting {
         Some(damage)
     }
 
-    fn with_stack<R>(&mut self, work: impl FnOnce(&mut Self, &LayerStack) -> R) -> R {
-        let stack = self.layers.stack.clone().expect("a frame with layers has a stack");
-        work(self, &stack)
+    fn with_stack_of_frames<R>(&mut self, work: impl FnOnce(&mut Self, &mut StackOfFrames) -> R) -> R {
+        let mut stack_of_frames = self
+            .layers
+            .stack_of_frames
+            .take()
+            .expect("a frame with layers has a stack");
+        let result = work(self, &mut stack_of_frames);
+        self.layers.stack_of_frames = Some(stack_of_frames);
+        result
     }
 
     fn prepare_frame_tile_state_of_stack(
@@ -1571,30 +1617,20 @@ impl ContextPresenting {
         live_content: &LiveContent,
         layer_update: &mut LayerUpdate,
         viewport_rect: IntRect,
-        stack: &LayerStack,
+        stack_of_frames: &mut StackOfFrames,
     ) -> IntRect {
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         let composite_offsets = &layer_update.composite_offsets;
         let raster_transform = self.raster_transform();
-        let scroll_offsets_plan_leaves_out = self.layers.scroll_offsets_plan_leaves_out.clone();
-        let geometry_readers_leave_out_offset_of_node_in_space = |raster_space_index| {
-            scroll_offsets_plan_leaves_out
-                .as_deref()
-                .filter(|_| !stack.space_holds_content_that_moves_within_it(raster_space_index))
-                .map(Vec::as_slice)
-        };
-        let geometries = self.layers.geometries_of_spaces(
-            tree,
-            &stack.spaces,
-            scroll_offsets,
-            geometry_readers_leave_out_offset_of_node_in_space,
-            ViewportInRaster {
-                viewport_rect,
-                viewport_to_raster_transform: raster_transform,
-            },
+        let geometries = stack_of_frames.geometries_of_spaces(tree, scroll_offsets);
+        let band_tile_keys_of_latest_frame = std::mem::replace(
+            &mut stack_of_frames.band_tile_keys_of_latest_frame,
+            BandTileKeysOfLatestFrame::OfSameStack(Vec::new()),
         );
+        let stack_of_frames = &*stack_of_frames;
+        let stack = stack_of_frames.stack.as_ref();
         let scrollbars = frame.frame_inputs.scrollbars_shown_for_the_page();
         let live_content_versions = LiveContentVersionsOfFrame {
             live_content,
@@ -1622,25 +1658,32 @@ impl ContextPresenting {
             clear_color: clear_color_of_layer(stack, layer_index, surface_clear_color),
             root_group_color,
             viewport_to_raster_transform: raster_transform,
-            allows_lcd_text: layer_allows_lcd_text(stack, layer_index, frame_allows_lcd_text),
+            allows_lcd_text: layer_allows_lcd_text(stack_of_frames, layer_index, frame_allows_lcd_text),
         };
 
+        let chunk_names = storage.chunk_names();
+        // The tile keys that a frame drawn with the same stack left are bound to the list, the bands and the base layer
+        // of this frame, as frames drawn with one stack draw one list.
+        let (mut band_tile_keys_by_band, band_tile_keys_are_of_same_stack) = band_tile_keys_of_latest_frame
+            .taken_by_bands(|| {
+                (0..stack.bands.len())
+                    .map(|band_index| BandIdentities::of(stack, BandIndex(band_index), &chunk_names))
+                    .collect()
+            });
+        band_tile_keys_by_band.resize_with(stack.bands.len(), || None);
+        let composited_filter_read_reach_by_layer =
+            composited_filter_read_reach_by_layer(stack_of_frames, tree, &geometries);
         let mut tile_state = FrameTileState {
             viewport_rect,
             shown_tiles_by_layer: (0..stack.layers.len()).map(|_| None).collect(),
             media_replayed_by_layer: vec![None; stack.layers.len()],
-            composited_filter_read_reach_by_layer: composited_filter_read_reach_by_layer(stack, tree, &geometries),
+            composited_filter_read_reach_by_layer,
             frame_allows_lcd_text,
             ..FrameTileState::default()
         };
-        let chunk_names = storage.chunk_names();
-        let identities_of_bands: Vec<BandIdentities> = (0..stack.bands.len())
-            .map(|band_index| BandIdentities::of(stack, BandIndex(band_index), &chunk_names))
-            .collect();
-        let mut reused_band_tile_keys_by_band =
-            reuse_tile_keys_of_matching_bands(&mut self.layers.band_tile_keys_of_latest_frame, &identities_of_bands);
         for (band_position, band) in stack.bands.iter().enumerate() {
             let band_index = BandIndex(band_position);
+            let band_tile_keys_of_latest_frame = band_tile_keys_by_band[band_position].take();
             if !stack.band_has_layer_at_or_above_base_layer(band_index) {
                 continue;
             }
@@ -1656,21 +1699,17 @@ impl ContextPresenting {
                 tile_state.composited_filter_read_reach_by_layer[band.layer_below_all_cuts.0];
             let shown_rect = compositing_of_layer_below_all_cuts
                 .rect_shown_in_layer_space(viewport_rect, composited_filter_read_reach);
-            let mut band_tile_keys =
-                reused_band_tile_keys_by_band[band_position]
-                    .take()
-                    .unwrap_or_else(|| BandTileKeysOfFrame {
-                        identities: identities_of_bands[band_position],
-                        bound_to_list_and_geometry: None,
-                        tile_keys: BandTileKeys::default(),
-                    });
-            band_tile_keys.identities = identities_of_bands[band_position];
+            let mut band_tile_keys = band_tile_keys_of_latest_frame.unwrap_or_else(|| BandTileKeysOfFrame {
+                identities: BandIdentities::of(stack, band_index, &chunk_names),
+                ..BandTileKeysOfFrame::default()
+            });
             let still_bound_to_same_list_and_geometry =
                 band_tile_keys.bound_to_list_and_geometry.as_ref().is_some_and(|bound| {
-                    lists_hold_same_chunks(&bound.display_list, frame.display_list)
-                        && Rc::ptr_eq(&bound.geometry, &geometries[raster_space_index.0])
-                        && bound.band == *band
-                        && bound.base_layer == stack.base_layer
+                    Rc::ptr_eq(&bound.geometry, &geometries[raster_space_index.0])
+                        && (band_tile_keys_are_of_same_stack
+                            || (lists_hold_same_chunks(&bound.display_list, frame.display_list)
+                                && bound.band == *band
+                                && bound.base_layer == stack.base_layer))
                 });
             match &mut band_tile_keys.bound_to_list_and_geometry {
                 Some(bound) if still_bound_to_same_list_and_geometry => bound.display_list = frame.display_list.clone(),
@@ -1703,7 +1742,6 @@ impl ContextPresenting {
                 ),
             );
             self.layers.work_counts_of_this_frame.cells_binned += keying_counts.cells_binned as u64;
-            let band_tile_keys_index = tile_state.band_tile_keys.len();
             for tile in band_tile_keys
                 .tile_keys
                 .tiles_within(shown_rect)
@@ -1734,7 +1772,7 @@ impl ContextPresenting {
                 };
                 let shown =
                     tile_state.shown_tiles_by_layer[tile.layer_index.0].get_or_insert_with(|| ShownTilesOfLayer {
-                        band_tile_keys_index,
+                        band_index,
                         tiles: Vec::new(),
                     });
                 shown.tiles.push(TileShownInFrame {
@@ -1746,8 +1784,9 @@ impl ContextPresenting {
                     coverage,
                 });
             }
-            tile_state.band_tile_keys.push(band_tile_keys);
+            band_tile_keys_by_band[band_position] = Some(band_tile_keys);
         }
+        tile_state.band_tile_keys_by_band = band_tile_keys_by_band;
         self.layers.work_counts_of_this_frame.chunks_placed += tile_keying_by_raster_space
             .iter()
             .map(|tile_keying| tile_keying.chunks_placed())
@@ -1768,7 +1807,7 @@ impl ContextPresenting {
         self.layers
             .work_counts_of_this_frame
             .tiles_covered_by_opaque_tiles_above += hide_tiles_covered_by_opaque_tiles_above(
-            stack,
+            stack_of_frames,
             &mut tile_state,
             &layer_update.compositing_of_layers,
             &composited_effects.read_reaches_in_frame,
@@ -1776,9 +1815,8 @@ impl ContextPresenting {
             |identity| self.layer_overlay.hides_layer(identity),
         ) as u64;
         for compositing in &layer_update.compositing_of_layers {
-            let Some((layer_index, layer)) = stack.layer_with_identity(compositing.identity) else {
-                continue;
-            };
+            let layer_index = compositing.layer_index;
+            let layer = &stack.layers[layer_index.0];
             let cached_layer = self.layers.cached_layer_by_identity.get(&layer.identity);
             if let LayerContent::Media { record_span, reach, .. } = &layer.content {
                 let raster_space_index = stack.space_of_layer(layer_index);
@@ -1884,7 +1922,7 @@ impl ContextPresenting {
         &mut self,
         env: &PresentingEnvironment<'_>,
         frame: &FrameToPaint<'_>,
-        stack: &LayerStack,
+        stack_of_frames: &StackOfFrames,
         compositing_of_layers: &[LayerCompositingInFrame],
         window_server_shows_layers: bool,
         some_tiles_were_painted_straight: bool,
@@ -1893,11 +1931,13 @@ impl ContextPresenting {
         if self.layer_overlay.overlay().is_none() {
             return;
         }
+        let stack = &stack_of_frames.stack;
         let why_context_shows_no_media = self.why_window_server_shows_no_media_of_this_context(env);
         let layers = compositing_of_layers
             .iter()
-            .filter_map(|compositing| {
-                let (layer_index, layer) = stack.layer_with_identity(compositing.identity)?;
+            .map(|compositing| {
+                let layer_index = compositing.layer_index;
+                let layer = &stack.layers[layer_index.0];
                 let content = match &layer.content {
                     LayerContent::Painted { .. } => LayerOfFrameContent::Painted {
                         held_tiles: self
@@ -1931,7 +1971,7 @@ impl ContextPresenting {
                                 })
                                 .unwrap_or(if some_tiles_were_painted_straight {
                                     WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame
-                                } else if !stack.composited_bands_around_layer(layer_index).is_empty() {
+                                } else if !stack_of_frames.composited_bands_around_layer(layer_index).is_empty() {
                                     WhyMediaIsReplayed::InsideAnEffectTheCompositorComposites
                                 } else {
                                     WhyMediaIsReplayed::UnderALayerTheFrameHolds
@@ -1940,13 +1980,13 @@ impl ContextPresenting {
                         },
                     },
                 };
-                Some(LayerOfFrame {
+                LayerOfFrame {
                     identity: compositing.identity,
                     name: stack.name_of_layer(layer_index, &NodeNamesFromIndices),
                     space_to_frame: compositing.space_to_frame,
                     composite_clip: compositing.composite_clip,
                     content,
-                })
+                }
             })
             .collect();
         let overlay_frame = FrameOfLayerOverlay {
@@ -1954,7 +1994,10 @@ impl ContextPresenting {
             painted_at: frame.frame_inputs.painted_at,
             layers,
             why_list_is_one_layer: stack.why_list_is_one_layer.map(|why| why.to_string()),
-            notes_of_layer_stack: self.layers.note_lines_of_stack.to_vec(),
+            notes_of_layer_stack: stack_of_frames
+                .layer_plan
+                .as_ref()
+                .map_or_else(Vec::new, |layer_plan| layer_plan.note_lines.to_vec()),
             work_counts: self.layers.work_counts_of_this_frame,
         };
         let device_pixel_ratio = self.device_pixel_ratio;
@@ -1968,16 +2011,24 @@ impl ContextPresenting {
     /// tiles stay in the pool for a while.
     pub(super) fn commit_layer_update(&mut self, env: &PresentingEnvironment<'_>, layer_update: LayerUpdate) {
         let layers = &mut self.layers;
-        if let Some(tile_state) = &layer_update.tile_state
-            && let Some(stack) = &layers.stack
+        if let Some(tile_state) = layer_update.tile_state
+            && let Some(stack_of_frames) = &mut layers.stack_of_frames
         {
-            for (layer, media_replayed) in stack.layers.iter().zip(&tile_state.media_replayed_by_layer) {
+            for (layer, media_replayed) in stack_of_frames
+                .stack
+                .layers
+                .iter()
+                .zip(&tile_state.media_replayed_by_layer)
+            {
                 if media_replayed.is_some()
                     && let Some(cached_layer) = layers.cached_layer_by_identity.get_mut(&layer.identity)
                 {
                     cached_layer.media_replayed_in_latest_frame = *media_replayed;
                 }
             }
+            stack_of_frames.band_tile_keys_of_latest_frame =
+                BandTileKeysOfLatestFrame::OfSameStack(tile_state.band_tile_keys_by_band);
+            layers.content_hash_by_composited_node_of_latest_frame = tile_state.content_hash_by_composited_node;
         }
         let identities_in_stack: HashSet<LayerIdentity> = layer_update
             .compositing_of_layers
@@ -1993,10 +2044,6 @@ impl ContextPresenting {
             is_in_stack
         });
         layers.compositing_of_latest_frame = layer_update.compositing_of_layers;
-        if let Some(tile_state) = layer_update.tile_state {
-            layers.band_tile_keys_of_latest_frame = tile_state.band_tile_keys;
-            layers.content_hash_by_composited_node_of_latest_frame = tile_state.content_hash_by_composited_node;
-        }
         layers.evict_spare_tiles(env);
     }
 
@@ -2014,14 +2061,14 @@ impl ContextPresenting {
         live_content: &LiveContent,
         paints_ui_overlays: bool,
     ) -> IntRect {
-        self.with_stack(|this, stack| {
+        self.with_stack_of_frames(|this, stack_of_frames| {
             this.paint_layers(
                 env,
                 surface,
                 frame,
                 damage_rect,
                 layer_update,
-                stack,
+                stack_of_frames,
                 live_content,
                 paints_ui_overlays,
             )
@@ -2036,10 +2083,11 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         mut damage_rect: IntRect,
         layer_update: &mut LayerUpdate,
-        stack: &LayerStack,
+        stack_of_frames: &StackOfFrames,
         live_content: &LiveContent,
         paints_ui_overlays: bool,
     ) -> IntRect {
+        let stack = stack_of_frames.stack.as_ref();
         env.raster.start_raster_cache_frame(env.context_id);
         // A store can miss the damage of several frames, which joined can reach part of what a composited effect reads.
         damage_rect = layer_update.damage_grown_over_what_composited_effects_read(damage_rect);
@@ -2051,9 +2099,7 @@ impl ContextPresenting {
         let mut tile_pool = std::mem::take(&mut self.layers.tile_pool);
         let mut rects_painted_straight = Vec::new();
         for compositing in &layer_update.compositing_of_layers {
-            let Some((layer_index, layer)) = stack.layer_with_identity(compositing.identity) else {
-                continue;
-            };
+            let layer = &stack.layers[compositing.layer_index.0];
             if matches!(layer.content, LayerContent::Media { .. }) {
                 self.layers
                     .cached_layer_by_identity
@@ -2070,8 +2116,7 @@ impl ContextPresenting {
                 env,
                 surface,
                 frame,
-                stack,
-                layer_index,
+                stack_of_frames,
                 compositing,
                 &mut cached_layer,
                 &mut tile_pool,
@@ -2091,7 +2136,7 @@ impl ContextPresenting {
         self.update_layer_overlay_with_frame(
             env,
             frame,
-            stack,
+            stack_of_frames,
             &layer_update.compositing_of_layers,
             expected_shown_by_window_server,
             !rects_painted_straight.is_empty(),
@@ -2118,7 +2163,7 @@ impl ContextPresenting {
             self.update_layer_overlay_with_frame(
                 env,
                 frame,
-                stack,
+                stack_of_frames,
                 &layer_update.compositing_of_layers,
                 layer_update.shown_by_window_server(),
                 !rects_painted_straight.is_empty(),
@@ -2132,7 +2177,7 @@ impl ContextPresenting {
             frame,
             damage_rect,
             layer_update,
-            stack,
+            stack_of_frames,
             &rects_painted_straight,
             paints_ui_overlays,
         );
@@ -2147,7 +2192,7 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
         layer_update: &LayerUpdate,
-        stack: &LayerStack,
+        stack_of_frames: &StackOfFrames,
         rects_painted_straight: &[IntRect],
         paints_ui_overlays: bool,
     ) {
@@ -2177,7 +2222,7 @@ impl ContextPresenting {
             surface,
             frame,
             damage_rect,
-            stack,
+            stack_of_frames,
             &layer_update.compositing_of_layers,
             layer_update
                 .tile_state
@@ -2220,14 +2265,15 @@ impl ContextPresenting {
         env: &PresentingEnvironment<'_>,
         like: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
-        stack: &LayerStack,
-        layer_index: LayerIndex,
+        stack_of_frames: &StackOfFrames,
         compositing: &LayerCompositingInFrame,
         cached_layer: &mut CachedLayer,
         tile_pool: &mut TilePool,
         holder_count_by_content_hash: &HashMap<ContentHash, usize>,
         tile_state: &FrameTileState,
     ) -> Vec<IntRect> {
+        let stack = stack_of_frames.stack.as_ref();
+        let layer_index = compositing.layer_index;
         let raster = env.raster;
         let viewport_rect = tile_state.viewport_rect;
         let raster_space_index = stack.space_of_layer(layer_index);
@@ -2242,7 +2288,7 @@ impl ContextPresenting {
             composited_filter_read_reach,
         );
         let clear_color = clear_color_of_layer(stack, layer_index, frame.surface_clear_color());
-        let allows_lcd_text = layer_allows_lcd_text(stack, layer_index, tile_state.frame_allows_lcd_text);
+        let allows_lcd_text = layer_allows_lcd_text(stack_of_frames, layer_index, tile_state.frame_allows_lcd_text);
         let painted_at = frame.frame_inputs.painted_at;
         let layer_overlay_records_rasters = self.layer_overlay.overlay().is_some();
         let mut record_raster_in_layer_overlay = |coord: TileCoord, cause: RasterCause, rect: IntRect| {
@@ -2389,10 +2435,13 @@ impl ContextPresenting {
         }
         self.layers.work_counts_of_this_frame.tiles_rastered += tiles_to_raster.len() as u64;
 
-        let band_tile_keys = &tile_state.band_tile_keys[tile_state.shown_tiles_by_layer[layer_index.0]
+        let band_tile_keys = tile_state.band_tile_keys_by_band[tile_state.shown_tiles_by_layer[layer_index.0]
             .as_ref()
             .expect("a layer with tiles to raster shows tiles")
-            .band_tile_keys_index];
+            .band_index
+            .0]
+            .as_ref()
+            .expect("a band with shown tiles has tile keys");
         let geometry = band_tile_keys.bound_geometry();
         let clips_left_to_composite =
             (!geometry.clips_left_to_composite.is_empty()).then_some(&geometry.clips_left_to_composite[..]);
@@ -2532,7 +2581,7 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
     ) {
-        let Some(stack) = &self.layers.stack else {
+        let Some(stack_of_frames) = &self.layers.stack_of_frames else {
             return;
         };
         self.composite_layers_above_base_of_stack(
@@ -2540,7 +2589,7 @@ impl ContextPresenting {
             surface,
             frame,
             damage_rect,
-            stack,
+            stack_of_frames,
             &self.layers.compositing_of_latest_frame,
             &[],
             true,
@@ -2554,11 +2603,12 @@ impl ContextPresenting {
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
-        stack: &LayerStack,
+        stack_of_frames: &StackOfFrames,
         compositing_of_layers: &[LayerCompositingInFrame],
         composited_filter_read_reach_by_layer: &[i32],
         composites_layers_the_window_server_shows: bool,
     ) {
+        let stack = &stack_of_frames.stack;
         if compositing_of_layers
             .iter()
             .skip(1)
@@ -2576,7 +2626,7 @@ impl ContextPresenting {
                 .filter(|compositing| compositing.shown_by_window_server == composites_layers_the_window_server_shows)
                 .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
             {
-                let Some((layer_index, layer)) = stack.layer_with_identity(compositing.identity) else {
+                let Some((layer_index, layer)) = stack_of_frames.layer_composited_as(compositing) else {
                     continue;
                 };
                 let damage_grown_by_filter_reads = inflated(
@@ -2586,10 +2636,10 @@ impl ContextPresenting {
                         .copied()
                         .unwrap_or(0),
                 );
-                let composited_bands_around_layer = stack.composited_bands_around_layer(layer_index);
+                let composited_bands_around_layer = stack_of_frames.composited_bands_around_layer(layer_index);
                 let count_of_bands_still_entered = entered_composited_bands
                     .iter()
-                    .zip(&composited_bands_around_layer)
+                    .zip(composited_bands_around_layer)
                     .take_while(|(entered, around_layer)| entered == around_layer)
                     .count();
                 while entered_composited_bands.len() > count_of_bands_still_entered {
@@ -2675,13 +2725,13 @@ impl ContextPresenting {
             .iter()
             .skip(1)
             .filter(|compositing| compositing.shown_by_window_server)
+            .filter(|compositing| {
+                matches!(
+                    stack.layers[compositing.layer_index.0].content,
+                    LayerContent::Painted { .. }
+                )
+            })
         {
-            let is_painted = stack
-                .layer_with_identity(compositing.identity)
-                .is_some_and(|(_, layer)| matches!(layer.content, LayerContent::Painted { .. }));
-            if !is_painted {
-                continue;
-            }
             let Some(cached_layer) = layers.cached_layer_by_identity.get_mut(&compositing.identity) else {
                 continue;
             };
@@ -2784,7 +2834,11 @@ impl ContextPresenting {
     pub(super) fn sublayers_shown_by_window_server(&self, live_content: &LiveContent) -> Vec<FfiSublayer> {
         let layers = &self.layers;
         let mut sublayers = Vec::new();
-        let Some(stack) = layers.stack.as_ref().filter(|_| layers.window_server_shows_media()) else {
+        let Some(stack_of_frames) = layers
+            .stack_of_frames
+            .as_ref()
+            .filter(|_| layers.window_server_shows_media())
+        else {
             return sublayers;
         };
         for compositing in layers
@@ -2794,7 +2848,7 @@ impl ContextPresenting {
             .filter(|compositing| compositing.shown_by_window_server)
             .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
         {
-            let Some((layer_index, layer)) = stack.layer_with_identity(compositing.identity) else {
+            let Some((layer_index, layer)) = stack_of_frames.layer_composited_as(compositing) else {
                 continue;
             };
             if let LayerContent::Media { content, .. } = &layer.content {
@@ -2868,6 +2922,13 @@ impl ContextPresenting {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libcompositing_rust::display_list::builder::DisplayListBuilder;
+    use libcompositing_rust::display_list::storage::DisplayListStorage;
+    use libcompositing_rust::visual_context::{TransformData, TransformDataRole};
+    use libgfx_rust::FloatRect;
+    use std::sync::Arc;
+
+    const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
 
     // How bands matched the tile keys of the latest frame when each was compared with each.
     fn tile_keys_reused_by_comparing_every_band_with_every_band(
@@ -2954,5 +3015,197 @@ mod tests {
                 left_over(latest_compared_each_with_each)
             );
         }
+    }
+
+    fn identities(identity_by_first_record_position: u64, identity_by_band_ordinal: u64) -> BandIdentities {
+        BandIdentities {
+            identity_by_first_record_position,
+            identity_by_band_ordinal,
+        }
+    }
+
+    #[test]
+    fn bands_drawn_with_the_same_stack_take_the_tile_keys_of_their_own_index() {
+        let band_tile_keys_by_band = vec![
+            Some(band_tile_keys_of(identities(1, 1))),
+            None,
+            Some(band_tile_keys_of(identities(2, 2))),
+        ];
+        let (taken, are_of_same_stack) = BandTileKeysOfLatestFrame::OfSameStack(band_tile_keys_by_band)
+            .taken_by_bands(|| panic!("the bands of the same stack are not matched by identity"));
+        assert_eq!(identities_of(&taken), [Some((1, 1)), None, Some((2, 2))]);
+        assert!(are_of_same_stack);
+    }
+
+    #[test]
+    fn bands_drawn_with_another_stack_take_the_tile_keys_found_by_their_identities() {
+        // The first band starts with the records that the second band of the latest frame started with, the second is
+        // the band of the node that the first band of the latest frame was, and the third is new.
+        let latest = [identities(1, 10), identities(2, 20)];
+        let bands = [identities(2, 99), identities(98, 10), identities(97, 97)];
+        let band_taking_tile_keys_of_latest_band = [1, 0];
+        // A flag of the tile keys tells which tile keys of the latest frame a band takes.
+        for marked_latest_band in 0..latest.len() {
+            let band_tile_keys_of_latest_frame = latest
+                .iter()
+                .enumerate()
+                .map(|(latest_band, identities)| {
+                    let mut band_tile_keys = band_tile_keys_of(*identities);
+                    band_tile_keys.tile_keys.replays_whole_list = latest_band == marked_latest_band;
+                    Some(band_tile_keys)
+                })
+                .collect();
+            let (taken, are_of_same_stack) = BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_latest_frame)
+                .taken_by_bands(|| bands.to_vec());
+            assert!(!are_of_same_stack);
+            assert_eq!(
+                identities_of(&taken),
+                bands
+                    .iter()
+                    .map(|identities| Some((
+                        identities.identity_by_first_record_position,
+                        identities.identity_by_band_ordinal
+                    )))
+                    .collect::<Vec<_>>()
+            );
+            let bands_taking_marked_tile_keys: Vec<usize> = taken
+                .iter()
+                .enumerate()
+                .filter(|(_, taken)| taken.as_ref().is_some_and(|taken| taken.tile_keys.replays_whole_list))
+                .map(|(band, _)| band)
+                .collect();
+            assert_eq!(
+                bands_taking_marked_tile_keys,
+                [band_taking_tile_keys_of_latest_band[marked_latest_band]]
+            );
+        }
+    }
+
+    fn tree_of_viewport() -> Arc<VisualContextTree> {
+        Arc::new(VisualContextTree::create(TransformData {
+            matrix: FloatMatrix4x4::identity(),
+            origin: FloatPoint::default(),
+            sorting_context_root_index: None,
+            flattens_inherited_transform: false,
+            role: TransformDataRole::CssTransform,
+            synthetic_plane: false,
+            establishes_sorting_context: false,
+            bounds: FloatRect::default(),
+        }))
+    }
+
+    fn empty_display_list(tree: &Arc<VisualContextTree>) -> Rc<DisplayList> {
+        Rc::new(DisplayList::new(
+            DisplayListStorage::recorded(&DisplayListBuilder::new().finish(), tree.clone()),
+            1,
+            tree.structural_epoch,
+            None,
+            None,
+            Default::default(),
+        ))
+    }
+
+    fn one_layer_of(display_list: &Rc<DisplayList>, viewport_rect: IntRect) -> LayerStack {
+        LayerStack::single_layer(viewport_rect, display_list.storage().whole_span(), None)
+    }
+
+    fn scaled_twice() -> FloatMatrix4x4 {
+        let mut matrix = FloatMatrix4x4::identity();
+        matrix.elements[0][0] = 2.0;
+        matrix.elements[1][1] = 2.0;
+        matrix
+    }
+
+    // Answers whether the frame takes a plan into use, and whether it keeps the band tile keys of the frame before, as
+    // a frame keeps what frames kept of the stack, after which the frame leaves its own.
+    fn take_stack_of_frame(
+        layers: &mut ContextLayers,
+        layer_plan: Option<&ReceivedLayerPlan>,
+        one_layer: LayerStack,
+    ) -> (bool, bool) {
+        layers.work_counts_of_this_frame = FrameWorkCounts::default();
+        layers.take_stack_of_frame(layer_plan, || one_layer, FloatMatrix4x4::identity());
+        let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
+        let keeps_band_tile_keys = matches!(
+            stack_of_frames.band_tile_keys_of_latest_frame,
+            BandTileKeysOfLatestFrame::OfSameStack(_)
+        );
+        stack_of_frames.band_tile_keys_of_latest_frame = BandTileKeysOfLatestFrame::OfSameStack(Vec::new());
+        (
+            layers.work_counts_of_this_frame.took_plan_into_use,
+            keeps_band_tile_keys,
+        )
+    }
+
+    #[test]
+    fn frames_keep_what_they_kept_of_a_stack_only_while_they_draw_with_the_same_plan() {
+        let tree = tree_of_viewport();
+        let display_list = empty_display_list(&tree);
+        let plan = ReceivedLayerPlan {
+            viewport_rect: VIEWPORT,
+            stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
+            leaves_out_scroll_offset_of_node: Rc::default(),
+            note_lines: Rc::default(),
+        };
+        // A plan received again is another plan, even where it holds what the plan before held.
+        let plan_received_again = ReceivedLayerPlan {
+            stack: Rc::new((*plan.stack).clone()),
+            ..plan.clone()
+        };
+        let mut layers = ContextLayers::default();
+        let one_layer = || one_layer_of(&display_list, VIEWPORT);
+        assert_eq!(
+            take_stack_of_frame(&mut layers, Some(&plan), one_layer()),
+            (true, false)
+        );
+        assert_eq!(
+            take_stack_of_frame(&mut layers, Some(&plan), one_layer()),
+            (false, true)
+        );
+        assert_eq!(
+            take_stack_of_frame(&mut layers, Some(&plan_received_again), one_layer()),
+            (true, false)
+        );
+        assert_eq!(take_stack_of_frame(&mut layers, None, one_layer()), (false, false));
+        assert_eq!(take_stack_of_frame(&mut layers, None, one_layer()), (false, false));
+        assert_eq!(
+            take_stack_of_frame(&mut layers, Some(&plan_received_again), one_layer()),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn a_new_stack_keeps_the_geometries_of_spaces_at_the_same_anchors_under_the_same_raster_transform() {
+        let tree = tree_of_viewport();
+        let display_list = empty_display_list(&tree);
+        let identity = FloatMatrix4x4::identity();
+        let resized_viewport = IntRect::new(0, 0, 400, 300);
+        let mut layers = ContextLayers::default();
+        layers.take_stack_of_frame(None, || one_layer_of(&display_list, VIEWPORT), identity);
+        let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
+        let geometry = stack_of_frames.geometries_of_spaces(&tree, &[]).remove(0);
+        stack_of_frames.band_tile_keys_of_latest_frame = BandTileKeysOfLatestFrame::OfSameStack(vec![
+            Some(band_tile_keys_of(identities(1, 1))),
+            None,
+            Some(band_tile_keys_of(identities(2, 2))),
+        ]);
+
+        layers.take_stack_of_frame(None, || one_layer_of(&display_list, resized_viewport), identity);
+        let resized = layers.stack_of_frames.as_mut().expect("the frame took a stack");
+        assert!(Rc::ptr_eq(&resized.geometries_of_spaces(&tree, &[])[0], &geometry));
+        let BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_other_stack) = std::mem::replace(
+            &mut resized.band_tile_keys_of_latest_frame,
+            BandTileKeysOfLatestFrame::OfSameStack(Vec::new()),
+        ) else {
+            panic!("the band tile keys of a frame drawn with another stack are matched by identity");
+        };
+        assert_eq!(
+            identities_of(&band_tile_keys_of_other_stack),
+            [Some((1, 1)), None, Some((2, 2))]
+        );
+
+        layers.take_stack_of_frame(None, || one_layer_of(&display_list, resized_viewport), scaled_twice());
+        let scaled = layers.stack_of_frames.as_ref().expect("the frame took a stack");
+        assert!(scaled.geometry_by_space.iter().all(Option::is_none));
     }
 }
