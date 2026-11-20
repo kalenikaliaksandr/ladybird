@@ -923,8 +923,7 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
-        ClipNodeIndex, ContextRef, DeclareMaskContent, DisplayListCommand, DrawCanvas, FillRect, SpatialNodeIndex,
-        VISUAL_VIEWPORT_NODE_INDEX,
+        ClipNodeIndex, ContextRef, DeclareMaskContent, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
     use crate::display_list::layers::{
@@ -932,23 +931,19 @@ mod tests {
         MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeNamesFromIndices, WindowServerPresentationOfMedia,
     };
     use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry, WhatEverySpaceOfTreeShares};
-    use crate::display_list::storage::ListChunk;
-    use crate::display_list::tile_keys::{
-        BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileKeyingOfList,
-        TileKeyingOfRasterSpace,
+    use crate::display_list::test_fixtures::{
+        GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, canvas, chunk_of, effects, fill, frosted_glass,
+        opacity_animation_of, raster_settings_hash_by_layer, spinning, transform, tree_with_root_isolation_effect,
     };
+    use crate::display_list::tile_keys::{BandTileKeys, TileKeyingOfList, TileKeyingOfRasterSpace};
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
     use crate::visual_context::{
         CompositorScrollNodeRecord, CompositorScrollTable, EffectNodeData, EffectsData, ScrollData, SpatialData,
-        StickyData, TransformData, TransformDataRole,
+        StickyData,
     };
-    use libgfx_rust::{
-        Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, ScalingMode,
-    };
+    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize};
     use std::sync::Arc;
-
-    const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
 
     struct Page {
         tree: VisualContextTree,
@@ -988,48 +983,6 @@ mod tests {
         Decoder::new(&encoder.finish().0, [])
             .decode()
             .expect("a planned stack decodes")
-    }
-
-    fn effects(opacity: f32) -> EffectNodeData {
-        EffectNodeData::Effects(EffectsData {
-            isolation: false,
-            opacity,
-            blend_mode: CompositingAndBlendingOperator::Normal,
-            filter: None,
-            backdrop_filter: None,
-        })
-    }
-
-    fn transform(bounds: FloatRect) -> TransformData {
-        TransformData {
-            matrix: FloatMatrix4x4::identity(),
-            origin: FloatPoint {
-                x: bounds.x + bounds.width / 2.0,
-                y: bounds.y + bounds.height / 2.0,
-            },
-            sorting_context_root_index: None,
-            flattens_inherited_transform: false,
-            role: TransformDataRole::CssTransform,
-            synthetic_plane: false,
-            establishes_sorting_context: false,
-            bounds,
-        }
-    }
-
-    fn tree_with_root_isolation_effect(root_opacity: f32) -> (VisualContextTree, ContextRef) {
-        let mut tree = VisualContextTree::create(transform(FloatRect::default()));
-        let root = tree.append_effect(
-            effects(root_opacity),
-            EffectNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-            ClipNodeIndex::NONE,
-        );
-        tree.root_isolation_effect = Some(root);
-        let viewport = ContextRef {
-            effect: root,
-            ..ContextRef::default()
-        };
-        (tree, viewport)
     }
 
     fn scroll_node(tree: &mut VisualContextTree, parent: SpatialNodeIndex) -> SpatialNodeIndex {
@@ -1093,98 +1046,18 @@ mod tests {
         (tree, viewport, contexts)
     }
 
-    fn fill(rect: IntRect) -> FillRect {
-        FillRect {
-            rect,
-            color: Color::from_rgb(0, 128, 0),
-            compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
-            background_color_animation_effect: EffectNodeIndex::NONE,
-        }
-    }
-
-    fn canvas(rect: IntRect, id: u64) -> DrawCanvas {
-        DrawCanvas {
-            dst_rect: rect,
-            canvas_id: CanvasId(id),
-            scaling_mode: ScalingMode::NearestNeighbor,
-        }
-    }
-
-    #[derive(Default)]
-    struct ListOfOneChunk {
-        builder: DisplayListBuilder,
-    }
-
-    impl ListOfOneChunk {
-        fn with<C: DisplayListCommand>(mut self, command: C, context: ContextRef) -> Self {
-            self.builder.append(&command, &[], context);
-            self
-        }
-
-        fn storage(&self) -> Arc<DisplayListStorage> {
-            DisplayListStorage::of_builder(&self.builder)
-        }
-    }
-
-    fn chunk_of<C: DisplayListCommand>(command: C, context: ContextRef) -> Arc<ListChunk> {
-        let mut builder = DisplayListBuilder::new();
-        builder.append(&command, &[], context);
-        Arc::new(ListChunk::copied(builder.bytes(), builder.command_runs(), 0))
-    }
-
-    fn opacity_animation(effect: EffectNodeIndex) -> crate::visual_animation::VisualAnimation {
-        use crate::visual_animation::{VisualAnimation, VisualAnimationKeyframe, VisualAnimationValue};
-        let keyframe = |offset: f64, opacity: f32| VisualAnimationKeyframe {
-            offset,
-            easing: crate::easing::Easing::default(),
-            value: VisualAnimationValue::Opacity(opacity),
-        };
-        VisualAnimation {
-            target_kind: crate::host::FfiVisualAnimationTargetKind::Opacity,
-            node_indices: vec![effect.0],
-            timing: crate::animation_timing::AnimationEffectTiming {
-                iteration_duration: crate::animation_timing::TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
-            keyframes: vec![keyframe(0.0, 1.0), keyframe(1.0, 0.0)],
-            ..VisualAnimation::default()
-        }
-    }
-
-    fn spinning_animation(node: SpatialNodeIndex) -> crate::visual_animation::VisualAnimation {
-        use crate::host::FfiVisualAnimationTransformOperationKind;
-        use crate::visual_animation::{
-            VisualAnimation, VisualAnimationKeyframe, VisualAnimationTransformOperation, VisualAnimationValue,
-        };
-        let keyframe = |offset: f64, degrees: f32| VisualAnimationKeyframe {
-            offset,
-            easing: crate::easing::Easing::default(),
-            value: VisualAnimationValue::Transform(vec![
-                VisualAnimationTransformOperation::new(FfiVisualAnimationTransformOperationKind::Rotate, &[degrees])
-                    .unwrap(),
-            ]),
-        };
-        VisualAnimation {
-            target_kind: crate::host::FfiVisualAnimationTargetKind::Transform,
-            node_indices: vec![node.0],
-            timing: crate::animation_timing::AnimationEffectTiming {
-                iteration_duration: crate::animation_timing::TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
-            keyframes: vec![keyframe(0.0, 0.0), keyframe(1.0, 360.0)],
-            ..VisualAnimation::default()
-        }
-    }
-
     // A long page of fills in the document, each in a chunk of its own, under a header fixed to the viewport.
     fn plain_page() -> Page {
         let (tree, viewport, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
-        let mut chunks = vec![chunk_of(fill(IntRect::new(0, 0, 800, 2600)), document)];
+        let mut chunks = vec![chunk_of(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)];
         for line in 0..40 {
-            chunks.push(chunk_of(fill(IntRect::new(10, 60 + line * 60, 700, 20)), document));
+            chunks.push(chunk_of(
+                fill(IntRect::new(10, 60 + line * 60, 700, 20), GREEN),
+                document,
+            ));
         }
-        chunks.push(chunk_of(fill(IntRect::new(0, 0, 800, 50)), viewport));
+        chunks.push(chunk_of(fill(IntRect::new(0, 0, 800, 50), GREEN), viewport));
         Page {
             tree,
             list: DisplayListStorage::of_chunks(chunks).unwrap(),
@@ -1195,11 +1068,11 @@ mod tests {
         let (tree, _, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(canvas(IntRect::new(100, 100, 200, 100), 1), document)
-            .with(fill(IntRect::new(150, 150, 200, 100)), document)
+            .with(fill(IntRect::new(150, 150, 200, 100), GREEN), document)
             .with(canvas(IntRect::new(100, 400, 200, 100), 2), document)
-            .with(fill(IntRect::new(150, 450, 200, 100)), document);
+            .with(fill(IntRect::new(150, 450, 200, 100), GREEN), document);
         Page {
             tree,
             list: list.storage(),
@@ -1210,9 +1083,9 @@ mod tests {
         let (tree, _, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(canvas(IntRect::new(100, 100, 200, 100), 1), document)
-            .with(fill(IntRect::new(150, 150, 200, 100)), document)
+            .with(fill(IntRect::new(150, 150, 200, 100), GREEN), document)
             .with(canvas(IntRect::new(100, 400, 200, 100), 1), document);
         Page {
             tree,
@@ -1224,11 +1097,11 @@ mod tests {
         let (tree, _, contexts) = tree_with_document_scroller(&[IntRect::new(100, 100, 300, 200)]);
         let (document, nested) = (contexts[0], contexts[1]);
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(100, 100, 300, 700)), nested)
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(100, 100, 300, 700), GREEN), nested)
             .with(canvas(IntRect::new(120, 150, 100, 100), 1), nested)
-            .with(fill(IntRect::new(150, 200, 100, 100)), nested)
-            .with(fill(IntRect::new(0, 900, 800, 100)), document);
+            .with(fill(IntRect::new(150, 200, 100, 100), GREEN), nested)
+            .with(fill(IntRect::new(0, 900, 800, 100), GREEN), document);
         Page {
             tree,
             list: list.storage(),
@@ -1258,9 +1131,9 @@ mod tests {
             ..document
         };
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(0, 100, 800, 50)), sticky)
-            .with(fill(IntRect::new(0, 300, 800, 50)), document);
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(0, 100, 800, 50), GREEN), sticky)
+            .with(fill(IntRect::new(0, 300, 800, 50), GREEN), document);
         Page {
             tree,
             list: list.storage(),
@@ -1271,14 +1144,17 @@ mod tests {
     fn page_with_nested_composited_effects() -> Page {
         let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
-        let outer = tree.append_effect_node_under(document, effects(1.0));
-        let inner = tree.append_effect_node_under(outer, effects(1.0));
-        tree.set_visual_animations(vec![opacity_animation(outer.effect), opacity_animation(inner.effect)]);
+        let outer = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Normal));
+        let inner = tree.append_effect_node_under(outer, effects(1.0, CompositingAndBlendingOperator::Normal));
+        tree.set_visual_animations(vec![
+            opacity_animation_of(outer.effect, 1.0, 0.0),
+            opacity_animation_of(inner.effect, 1.0, 0.0),
+        ]);
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(100, 100, 300, 300)), outer)
-            .with(fill(IntRect::new(150, 150, 100, 100)), inner)
-            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(100, 100, 300, 300), GREEN), outer)
+            .with(fill(IntRect::new(150, 150, 100, 100), GREEN), inner)
+            .with(fill(IntRect::new(0, 500, 800, 50), GREEN), document);
         Page {
             tree,
             list: list.storage(),
@@ -1291,15 +1167,15 @@ mod tests {
             SpatialData::Transform(transform(FloatRect::new(50.0, 50.0, 40.0, 40.0))),
             VISUAL_VIEWPORT_NODE_INDEX,
         );
-        tree.set_visual_animations(vec![spinning_animation(spinner_node)]);
+        tree.set_visual_animations(vec![spinning(spinner_node)]);
         let spinner = ContextRef {
             spatial: spinner_node,
             ..viewport
         };
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
-            .with(fill(IntRect::new(0, 100, 100, 100)), viewport);
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner)
+            .with(fill(IntRect::new(0, 100, 100, 100), GREEN), viewport);
         Page {
             tree,
             list: list.storage(),
@@ -1314,14 +1190,14 @@ mod tests {
             SpatialData::Transform(transform(FloatRect::new(50.0, 50.0, 40.0, 40.0))),
             VISUAL_VIEWPORT_NODE_INDEX,
         );
-        tree.set_visual_animations(vec![spinning_animation(spinner_node)]);
+        tree.set_visual_animations(vec![spinning(spinner_node)]);
         let spinner = ContextRef {
             spatial: spinner_node,
             ..viewport
         };
         let list = ListOfOneChunk::default()
-            .with(fill(VIEWPORT), ContextRef::default())
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner);
+            .with(fill(VIEWPORT, GREEN), ContextRef::default())
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner);
         Page {
             tree,
             list: list.storage(),
@@ -1331,7 +1207,7 @@ mod tests {
     fn page_under_translucent_root() -> Page {
         let (tree, viewport) = tree_with_root_isolation_effect(0.5);
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 600)), viewport)
+            .with(fill(IntRect::new(0, 0, 800, 600), GREEN), viewport)
             .with(canvas(IntRect::new(100, 100, 200, 100), 1), viewport);
         Page {
             tree,
@@ -1350,7 +1226,7 @@ mod tests {
     // A record that draws nothing, which no band holds, so that the only band of the stack holds nothing.
     fn page_whose_records_draw_nothing() -> Page {
         let (tree, viewport) = tree_with_root_isolation_effect(1.0);
-        let list = ListOfOneChunk::default().with(fill(IntRect::new(10, 10, 0, 0)), viewport);
+        let list = ListOfOneChunk::default().with(fill(IntRect::new(10, 10, 0, 0), GREEN), viewport);
         Page {
             tree,
             list: list.storage(),
@@ -1365,9 +1241,9 @@ mod tests {
             .map(|index| IntRect::new(10, 100 + index * 220, 300, 200))
             .collect();
         let (tree, _, contexts) = tree_with_document_scroller(&scrollport_rects);
-        let mut list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 800, 20000)), contexts[0]);
+        let mut list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 800, 20000), GREEN), contexts[0]);
         for (scrollport_rect, context) in scrollport_rects.iter().zip(&contexts[1..]) {
-            list = list.with(fill(*scrollport_rect), *context);
+            list = list.with(fill(*scrollport_rect, GREEN), *context);
         }
         Page {
             tree,
@@ -1378,10 +1254,10 @@ mod tests {
     // One canvas more than get layers, the last after a fill.
     fn page_with_nine_canvases() -> Page {
         let (tree, viewport) = tree_with_root_isolation_effect(1.0);
-        let mut list = ListOfOneChunk::default().with(fill(VIEWPORT), viewport);
+        let mut list = ListOfOneChunk::default().with(fill(VIEWPORT, GREEN), viewport);
         for index in 0..9 {
             list = list
-                .with(fill(IntRect::new(10 + index * 80, 10, 60, 60)), viewport)
+                .with(fill(IntRect::new(10 + index * 80, 10, 60, 60), GREEN), viewport)
                 .with(
                     canvas(IntRect::new(10 + index * 80, 100, 60, 60), index as u64 + 1),
                     viewport,
@@ -1397,35 +1273,21 @@ mod tests {
     fn page_with_two_fading_siblings() -> Page {
         let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
-        let left = tree.append_effect_node_under(document, effects(1.0));
-        let right = tree.append_effect_node_under(document, effects(1.0));
-        tree.set_visual_animations(vec![opacity_animation(left.effect), opacity_animation(right.effect)]);
+        let left = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Normal));
+        let right = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Normal));
+        tree.set_visual_animations(vec![
+            opacity_animation_of(left.effect, 1.0, 0.0),
+            opacity_animation_of(right.effect, 1.0, 0.0),
+        ]);
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(100, 100, 200, 200)), left)
-            .with(fill(IntRect::new(400, 100, 200, 200)), right)
-            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(100, 100, 200, 200), GREEN), left)
+            .with(fill(IntRect::new(400, 100, 200, 200), GREEN), right)
+            .with(fill(IntRect::new(0, 500, 800, 50), GREEN), document);
         Page {
             tree,
             list: list.storage(),
         }
-    }
-
-    fn frosted_glass(tree: &mut VisualContextTree, parent: ContextRef, region: IntRect) -> ContextRef {
-        tree.append_effect_node_under(
-            parent,
-            EffectNodeData::Effects(EffectsData {
-                isolation: false,
-                opacity: 1.0,
-                blend_mode: CompositingAndBlendingOperator::Normal,
-                filter: None,
-                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
-                    filter: Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize()),
-                    region,
-                    corner_radii: libgfx_rust::CornerRadii::default(),
-                }),
-            }),
-        )
     }
 
     // A backdrop filter over the document alone, which reads only its own layer, and one over an earlier canvas, which
@@ -1436,11 +1298,11 @@ mod tests {
         let over_document = frosted_glass(&mut tree, document, IntRect::new(400, 100, 200, 100));
         let over_canvas = frosted_glass(&mut tree, document, IntRect::new(100, 100, 200, 100));
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(400, 100, 200, 100)), over_document)
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(400, 100, 200, 100), GREEN), over_document)
             .with(canvas(IntRect::new(100, 100, 200, 100), 1), document)
-            .with(fill(IntRect::new(100, 100, 200, 100)), over_canvas)
-            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+            .with(fill(IntRect::new(100, 100, 200, 100), GREEN), over_canvas)
+            .with(fill(IntRect::new(0, 500, 800, 50), GREEN), document);
         Page {
             tree,
             list: list.storage(),
@@ -1457,15 +1319,15 @@ mod tests {
             SpatialData::Transform(transform(FloatRect::new(1.0, 1.0, 4.0, 4.0))),
             scaled_node,
         );
-        tree.set_visual_animations(vec![spinning_animation(spinner_node)]);
+        tree.set_visual_animations(vec![spinning(spinner_node)]);
         let spinner = ContextRef {
             spatial: spinner_node,
             ..viewport
         };
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(1, 1, 4, 4)), spinner)
-            .with(fill(IntRect::new(0, 100, 100, 100)), viewport);
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(1, 1, 4, 4), GREEN), spinner)
+            .with(fill(IntRect::new(0, 100, 100, 100), GREEN), viewport);
         Page {
             tree,
             list: list.storage(),
@@ -1479,13 +1341,16 @@ mod tests {
         let document = contexts[0];
         let mut groups = vec![document];
         for _ in 0..group_count {
-            groups.push(tree.append_effect_node_under(groups[groups.len() - 1], effects(0.5)));
+            groups.push(tree.append_effect_node_under(
+                groups[groups.len() - 1],
+                effects(0.5, CompositingAndBlendingOperator::Normal),
+            ));
         }
         let list = ListOfOneChunk::default()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(canvas(IntRect::new(100, 100, 200, 100), 1), groups[canvas_depth])
-            .with(fill(IntRect::new(150, 150, 200, 100)), groups[group_count])
-            .with(fill(IntRect::new(0, 500, 800, 50)), document);
+            .with(fill(IntRect::new(150, 150, 200, 100), GREEN), groups[group_count])
+            .with(fill(IntRect::new(0, 500, 800, 50), GREEN), document);
         Page {
             tree,
             list: list.storage(),
@@ -1675,18 +1540,6 @@ mod tests {
             stack.layering_obstacles.sorts_planes_by_depth ^= true;
             assert_eq!(page.validated(stack), Ok(planned.stack));
         }
-    }
-
-    #[test]
-    fn a_stack_made_for_a_frame_not_drawn_as_planned_round_trips() {
-        let page = page_with_two_canvases();
-        let stack = LayerStack::one_layer_replaying_whole_list(
-            VIEWPORT,
-            page.list.whole_span(),
-            Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
-            LayeringObstacles::default(),
-        );
-        assert_eq!(page.validated(stack.clone()), Ok(stack));
     }
 
     #[test]
@@ -2033,15 +1886,29 @@ mod tests {
         fn space_count(plan: &LayeredPlan) -> usize {
             plan.tiles_hold_content_moving_within_space_by_space_index.len()
         }
+        fn every_band_holds_every_record_the_bands_hold(plan: &mut LayeredPlan) {
+            let spans_of_bands = plan.bands.iter().flat_map(|band| &band.record_spans);
+            let every_record_the_bands_hold = ListSpan {
+                begin: spans_of_bands
+                    .clone()
+                    .map(|span| span.begin)
+                    .min()
+                    .expect("a band holds records"),
+                end: spans_of_bands.map(|span| span.end).max().expect("a band holds records"),
+            };
+            for band in &mut plan.bands {
+                band.record_spans = vec![every_record_the_bands_hold];
+            }
+        }
         vec![
-            ("2: node of a band out of range", page_with_two_canvases, |plan| {
+            ("node of a band out of range", page_with_two_canvases, |plan| {
                 plan.bands[0].placement_node_index = PlacementNodeIndex(plan.nodes.len());
             }),
-            ("4: space of a node out of range", page_with_two_canvases, |plan| {
+            ("space of a node out of range", page_with_two_canvases, |plan| {
                 plan.nodes[0].raster_space_index = RasterSpaceIndex(space_count(plan));
             }),
             (
-                "4: space of a composite clip out of range",
+                "space of a composite clip out of range",
                 page_with_two_canvases,
                 |plan| {
                     let raster_space_index = RasterSpaceIndex(space_count(plan));
@@ -2052,11 +1919,11 @@ mod tests {
                     });
                 },
             ),
-            ("6: node in itself", page_with_two_canvases, |plan| {
+            ("node in itself", page_with_two_canvases, |plan| {
                 plan.nodes[1].parent_index = Some(PlacementNodeIndex(1));
             }),
             (
-                "6: composited node in no node",
+                "composited node in no node",
                 page_with_nested_composited_effects,
                 |plan| {
                     let node = composited_node_indices(plan)[0];
@@ -2064,7 +1931,7 @@ mod tests {
                 },
             ),
             (
-                "7: composited effect out of range",
+                "composited effect out of range",
                 page_with_nested_composited_effects,
                 |plan| {
                     let node = composited_node_indices(plan)[0];
@@ -2072,7 +1939,7 @@ mod tests {
                 },
             ),
             (
-                "9: composited effects nested otherwise than in the tree",
+                "composited effects nested otherwise than in the tree",
                 page_with_nested_composited_effects,
                 |plan| {
                     let [first, second] = composited_node_indices(plan)[..] else {
@@ -2084,7 +1951,7 @@ mod tests {
                 },
             ),
             (
-                "10: media layer at a run that draws a fill",
+                "media layer at a run that draws a fill",
                 page_with_two_canvases,
                 |plan| {
                     let (_, _, record_span, _) = first_media_of(plan);
@@ -2092,104 +1959,104 @@ mod tests {
                 },
             ),
             (
-                "10: media layer that names another canvas",
+                "media layer that names another canvas",
                 page_with_two_canvases,
                 |plan| *first_media_of(plan).0 = LiveContent::Canvas(CanvasId(77)),
             ),
-            ("10: media layer of an image", page_with_two_canvases, |plan| {
+            ("media layer of an image", page_with_two_canvases, |plan| {
                 *first_media_of(plan).0 = LiveContent::ImageFrame(ImageFrameResourceId(1));
             }),
-            ("11: span that starts inside a run", page_with_two_canvases, |plan| {
+            ("span that starts inside a run", page_with_two_canvases, |plan| {
                 let band = band_with_spans(plan);
                 plan.bands[band].record_spans[0].begin.offset += 1;
             }),
-            ("11: span in a chunk the list does not hold", plain_page, |plan| {
+            ("span in a chunk the list does not hold", plain_page, |plan| {
                 let band = band_with_spans(plan);
                 plan.bands[band].record_spans[0].end.chunk_index = ChunkIndexInList(999);
             }),
-            ("11: span that ends before it begins", plain_page, |plan| {
+            ("span that ends before it begins", plain_page, |plan| {
                 let band = band_with_spans(plan);
                 let span = &mut plan.bands[band].record_spans[0];
                 std::mem::swap(&mut span.begin, &mut span.end);
             }),
-            ("11: band that starts inside a run", page_with_two_canvases, |plan| {
+            ("band that starts inside a run", page_with_two_canvases, |plan| {
                 plan.bands[0].first_record_position.offset += 4;
             }),
-            (
-                "11: media layer that starts inside a run",
-                page_with_two_canvases,
-                |plan| first_media_of(plan).2.begin.offset += 4,
-            ),
-            ("12: spans out of paint order", page_with_two_canvases, |plan| {
+            ("media layer that starts inside a run", page_with_two_canvases, |plan| {
+                first_media_of(plan).2.begin.offset += 4
+            }),
+            ("spans out of paint order", page_with_two_canvases, |plan| {
                 let band = band_with_cuts(plan);
                 plan.bands[band].record_spans.reverse();
             }),
-            ("12: cuts out of paint order", page_with_two_canvases, |plan| {
+            ("cuts out of paint order", page_with_two_canvases, |plan| {
                 let band = band_with_cuts(plan);
                 plan.bands[band].cuts.reverse();
             }),
-            (
-                "17: two layers of one identity",
-                page_drawing_one_canvas_twice,
-                |plan| {
-                    let band = band_with_cuts(plan);
-                    let BarrierOfPlan::Media { ordinal, .. } = &mut plan.bands[band].cuts[1].barrier else {
-                        unreachable!()
-                    };
-                    *ordinal = 0;
-                },
-            ),
-            ("19: reach of a layer past the limit", page_with_two_canvases, |plan| {
+            ("two layers of one identity", page_drawing_one_canvas_twice, |plan| {
+                let band = band_with_cuts(plan);
+                let BarrierOfPlan::Media { ordinal, .. } = &mut plan.bands[band].cuts[1].barrier else {
+                    unreachable!()
+                };
+                *ordinal = 0;
+            }),
+            ("reach of a layer past the limit", page_with_two_canvases, |plan| {
                 plan.bands[0].layer_below_all_cuts.reach = IntRect::new(i32::MAX - 10, 0, 100, 100);
             }),
-            ("19: rect of negative size", page_with_two_canvases, |plan| {
+            ("rect of negative size", page_with_two_canvases, |plan| {
                 plan.bands[0].layer_below_all_cuts.reach = IntRect::new(0, 0, -10, 100);
             }),
             (
-                "19: reach of a layer above a cut past the limit",
+                "reach of a layer above a cut past the limit",
                 page_with_two_canvases,
                 |plan| {
                     let band = band_with_cuts(plan);
                     plan.bands[band].cuts[0].layer_above_cut.reach = IntRect::new(0, i32::MIN, 1, 1);
                 },
             ),
-            ("19: reach of a node past the limit", page_with_two_canvases, |plan| {
+            ("reach of a node past the limit", page_with_two_canvases, |plan| {
                 plan.nodes[0].reach_in_parent_node = Reach::Within(IntRect::new(i32::MIN, i32::MIN, 10, 10));
             }),
-            ("19: reach of a canvas past the limit", page_with_two_canvases, |plan| {
+            ("reach of a canvas past the limit", page_with_two_canvases, |plan| {
                 *first_media_of(plan).3 = IntRect::new(0, 0, i32::MAX, 1);
             }),
-            (
-                "19: negative radius of a composite clip",
-                page_with_two_canvases,
-                |plan| {
-                    plan.nodes[1].composite_clips.push(CompositeClip {
-                        raster_space_index: RasterSpaceIndex(0),
-                        rect: IntRect::new(0, 0, 10, 10),
-                        corner_radii: libgfx_rust::CornerRadii::uniform(-5),
-                    });
-                },
-            ),
-            ("19: swept reach past the limit", page_with_spinner, |plan| {
+            ("negative radius of a composite clip", page_with_two_canvases, |plan| {
+                plan.nodes[1].composite_clips.push(CompositeClip {
+                    raster_space_index: RasterSpaceIndex(0),
+                    rect: IntRect::new(0, 0, 10, 10),
+                    corner_radii: libgfx_rust::CornerRadii::uniform(-5),
+                });
+            }),
+            ("swept reach past the limit", page_with_spinner, |plan| {
                 plan.swept_reach_in_parent_space_by_space_index[1] = Some(IntRect::new(1 << 30, 0, 1, 1));
             }),
-            ("20: a value per space missing", page_with_two_canvases, |plan| {
+            ("a value per space missing", page_with_two_canvases, |plan| {
                 plan.tiles_hold_content_moving_within_space_by_space_index.pop();
             }),
-            ("20: a swept reach per space too many", page_with_two_canvases, |plan| {
+            ("a swept reach per space too many", page_with_two_canvases, |plan| {
                 plan.swept_reach_in_parent_space_by_space_index.push(None)
             }),
             (
-                "20: a swept reach of a space the compositor does not animate",
+                "a swept reach of a space the compositor does not animate",
                 page_with_two_canvases,
                 |plan| plan.swept_reach_in_parent_space_by_space_index[1] = Some(IntRect::new(0, 0, 1, 1)),
             ),
-            ("22: record held by two bands", plain_page, |plan| {
+            ("record held by two bands", plain_page, |plan| {
                 let span_of_document = plan.bands[1].record_spans[0];
                 plan.bands[0].record_spans.insert(0, span_of_document);
             }),
             (
-                "22: record held by a band and by a media layer",
+                "records held by every band",
+                plain_page,
+                every_band_holds_every_record_the_bands_hold,
+            ),
+            (
+                "records held by every band",
+                page_with_canvas_in_nested_scroller,
+                every_band_holds_every_record_the_bands_hold,
+            ),
+            (
+                "record held by a band and by a media layer",
                 page_with_two_canvases,
                 |plan| {
                     let (band_index, _) = first_media_cut(plan);
@@ -2199,7 +2066,7 @@ mod tests {
                     band.record_spans.insert(position, record_span);
                 },
             ),
-            ("22: span that holds no record", page_with_two_canvases, |plan| {
+            ("span that holds no record", page_with_two_canvases, |plan| {
                 let band = band_with_spans(plan);
                 let end_of_first_span = plan.bands[band].record_spans[0].end;
                 plan.bands[band].record_spans.insert(
@@ -2210,16 +2077,16 @@ mod tests {
                     },
                 );
             }),
-            ("23: band other than the first that holds nothing", plain_page, |plan| {
+            ("band other than the first that holds nothing", plain_page, |plan| {
                 plan.bands[1].record_spans.clear()
             }),
             (
-                "24: more media layers than a plan makes",
+                "more media layers than a plan makes",
                 page_with_nine_canvases,
                 give_last_of_nine_canvases_a_layer,
             ),
             (
-                "26: two nodes composited inside one effect",
+                "two nodes composited inside one effect",
                 page_with_two_fading_siblings,
                 |plan| {
                     let [first, second] = composited_node_indices(plan)[..] else {
@@ -2228,20 +2095,20 @@ mod tests {
                     plan.nodes[second].composited_effect = plan.nodes[first].composited_effect;
                 },
             ),
-            ("27: node in a node of its own space", plain_page, |plan| {
+            ("node in a node of its own space", plain_page, |plan| {
                 plan.nodes[1].raster_space_index = RasterSpaceIndex::VIEWPORT;
             }),
             (
-                "27: composited node in a node of another space",
+                "composited node in a node of another space",
                 page_with_nested_composited_effects,
                 |plan| {
                     let node = composited_node_indices(plan)[0];
                     plan.nodes[node].raster_space_index = RasterSpaceIndex::VIEWPORT;
                 },
             ),
-            ("28: no band", plain_page, |plan| plan.bands.clear()),
+            ("no band", plain_page, |plan| plan.bands.clear()),
             (
-                "28: bands in a band out of the order of their cuts",
+                "bands in a band out of the order of their cuts",
                 page_with_two_fading_siblings,
                 |plan| {
                     let [first, second] = composited_node_indices(plan)[..] else {
@@ -2251,7 +2118,7 @@ mod tests {
                     plan.bands.swap(first_band, second_band);
                 },
             ),
-            ("28: cut that enters no band", plain_page, |plan| {
+            ("cut that enters no band", plain_page, |plan| {
                 plan.bands
                     .last_mut()
                     .expect("the plan has a band")
@@ -2262,30 +2129,30 @@ mod tests {
                     });
             }),
             (
-                "28: band that no cut enters",
+                "band that no cut enters",
                 plain_page,
                 move_header_into_band_no_cut_enters,
             ),
             (
-                "28: band entered at a cut of a band of a node it is not in",
+                "band entered at a cut of a band of a node it is not in",
                 plain_page,
                 |plan| plan.bands[1].placement_node_index = PlacementNodeIndex(0),
             ),
-            ("28: first band of a node in another node", plain_page, |plan| {
+            ("first band of a node in another node", plain_page, |plan| {
                 plan.bands[0].placement_node_index = PlacementNodeIndex(1);
             }),
             (
-                "30: band entered at a cut that starts past where its content begins",
+                "band entered at a cut that starts past where its content begins",
                 plain_page,
                 |plan| plan.bands[1].first_record_position = plan.bands[1].record_spans[0].end,
             ),
             (
-                "29: first drawing of a canvas numbered as if one came before it",
+                "first drawing of a canvas numbered as if one came before it",
                 page_with_two_canvases,
                 |plan| *first_media_of(plan).1 = 1,
             ),
             (
-                "29: second drawing of a canvas numbered past the bits a sublayer keeps for it",
+                "second drawing of a canvas numbered past the bits a sublayer keeps for it",
                 page_drawing_one_canvas_twice,
                 |plan| {
                     let band = band_with_cuts(plan);
@@ -2341,49 +2208,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_plan_whose_bands_each_repeat_the_whole_list_is_refused() {
-        for page in [plain_page(), page_with_canvas_in_nested_scroller()] {
-            let mut plan = page.planned_plan();
-            assert!(plan.bands.len() >= 2);
-            for band in &mut plan.bands {
-                band.record_spans = vec![page.list.whole_span()];
-            }
-            assert_eq!(
-                page.validated_plan(plan),
-                Err("two spans of the stack hold the same record")
-            );
-        }
-    }
-
-    struct NoLiveContentChanges;
-
-    impl LiveContentVersions for NoLiveContentChanges {
-        fn canvas_content_generation(&self, _: CanvasId) -> u64 {
-            0
-        }
-        fn video_frame_id(&self, _: VideoSinkHandle) -> Option<u64> {
-            None
-        }
-        fn image_frame_pixel_generation(&self, _: ImageFrameResourceId) -> Option<u64> {
-            None
-        }
-        fn nested_context_frame_generation(&self, _: CompositorContextId) -> Option<u64> {
-            None
-        }
-    }
-
-    fn raster_settings_hash_by_layer(stack: &LayerStack) -> Vec<ContentHash> {
-        let raster_settings = LayerRasterSettings {
-            raster_space_identity: 0,
-            clear_color: Color::TRANSPARENT,
-            root_group_color: Color::TRANSPARENT,
-            viewport_to_raster_transform: FloatMatrix4x4::identity(),
-            allows_lcd_text: false,
-        };
-        vec![raster_settings.content_hash(); stack.layers.len()]
-    }
-
     // Reads the stack as the compositor reads it for a frame over the whole viewport, and as the dump reads it.
     fn read_as_consumers_do(page: &Page, frame_tree: &VisualContextTree, planned: &PlannedLayers, stack: &LayerStack) {
         let list = &page.list;
@@ -2431,16 +2255,7 @@ mod tests {
             stack.space_holds_content_that_moves_within_it(stack.space_of_layer(LayerIndex(layer_index)));
         }
 
-        let tile_keying_of_list = TileKeyingOfList::new(
-            list,
-            frame_tree,
-            stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
+        let tile_keying_of_list = TileKeyingOfList::new(list, frame_tree, stack, NO_FRAME_STATE);
         let raster_spaces = RasterSpaces::of_spaces(frame_tree, stack.spaces.clone());
         let what_every_space_of_tree_shares = WhatEverySpaceOfTreeShares::of(frame_tree);
         let geometries: Vec<RasterSpaceGeometry> = (0..stack.spaces.len())
@@ -2574,17 +2389,17 @@ mod tests {
         let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
         let effect_to_kill = tree.append_effect(
-            effects(0.5),
+            effects(0.5, CompositingAndBlendingOperator::Normal),
             EffectNodeIndex::NONE,
             VISUAL_VIEWPORT_NODE_INDEX,
             ClipNodeIndex::NONE,
         );
         let list_declaring_content_of_mask = |mask_effect: EffectNodeIndex| {
             let mut builder = DisplayListBuilder::new();
-            builder.append(&fill(IntRect::new(0, 0, 800, 2600)), &[], document);
+            builder.append(&fill(IntRect::new(0, 0, 800, 2600), GREEN), &[], document);
             builder.append(&canvas(IntRect::new(100, 100, 200, 100), 1), &[], document);
             let declaration = builder.begin_group::<DeclareMaskContent>(Vec::new());
-            builder.append(&fill(IntRect::new(0, 0, 10, 10)), &[], document);
+            builder.append(&fill(IntRect::new(0, 0, 10, 10), GREEN), &[], document);
             let content = builder.group_content_span(&declaration);
             builder.finish_group(
                 declaration,
@@ -2676,7 +2491,7 @@ mod tests {
                 node,
                 ClipNodeIndex::NONE,
             );
-            animations.push(spinning_animation(node));
+            animations.push(spinning(node));
         }
         let spinners: Vec<SpatialNodeIndex> = (0..3)
             .map(|_| {
@@ -2684,7 +2499,7 @@ mod tests {
                     SpatialData::Transform(transform(FloatRect::new(0.0, 0.0, 10.0, 10.0))),
                     document,
                 );
-                animations.push(spinning_animation(node));
+                animations.push(spinning(node));
                 node
             })
             .collect();

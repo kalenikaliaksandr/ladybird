@@ -2229,6 +2229,7 @@ impl ContextPresenting {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presenting::NoCompositedContexts;
     use libcompositing_rust::display_list::builder::DisplayListBuilder;
     use libcompositing_rust::display_list::commands::{
         ContextRef, EffectNodeIndex, FillRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
@@ -2491,23 +2492,6 @@ mod tests {
         assert!(scaled.geometry_by_space.iter().all(Option::is_none));
     }
 
-    struct NoLiveContent;
-
-    impl LiveContentVersions for NoLiveContent {
-        fn canvas_content_generation(&self, _: CanvasId) -> u64 {
-            0
-        }
-        fn video_frame_id(&self, _: VideoSinkHandle) -> Option<u64> {
-            None
-        }
-        fn image_frame_pixel_generation(&self, _: ImageFrameResourceId) -> Option<u64> {
-            None
-        }
-        fn nested_context_frame_generation(&self, _: CompositorContextId) -> Option<u64> {
-            None
-        }
-    }
-
     // A red plane in front of a blue plane that covers the viewport, though the red plane comes first in the list, as
     // `transform-style: preserve-3d` and `translateZ()` make them.
     fn planes_sorted_by_depth() -> (Arc<VisualContextTree>, Rc<DisplayList>) {
@@ -2567,6 +2551,10 @@ mod tests {
         let mut layers = ContextLayers::default();
         let not_as_planned = WhyListIsOneLayer::FrameIsNotDrawnAsPlanned;
         let stack = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT, not_as_planned);
+        let no_live_content = LiveContentVersionsOfFrame {
+            live_content: &LiveContent::default(),
+            nested_contexts: &NoCompositedContexts,
+        };
         let list_keying = TileKeyingOfList::new(
             display_list.storage(),
             &tree,
@@ -2574,7 +2562,7 @@ mod tests {
             FrameStateReadByReplay {
                 scrollbars: &[],
                 time_ns: 0,
-                live_content: &NoLiveContent,
+                live_content: &no_live_content,
             },
         );
         let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());

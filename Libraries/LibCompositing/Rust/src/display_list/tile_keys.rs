@@ -3169,106 +3169,27 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
-    use crate::display_list::commands::{
-        CanvasId, DeclareMaskContent, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
-    };
+    use crate::display_list::commands::{DeclareMaskContent, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
     use crate::display_list::layers::{LayerStack, LayeringObstacles, SpaceToFrame, WhyListIsOneLayer};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
+    use crate::display_list::test_fixtures::{
+        GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, animation_of, chunk_of, effects, fill, frosted_glass,
+        opacity_animation_of, raster_settings_hash_by_layer, transform_animation_of, tree_with_root_isolation_effect,
+    };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::{AffineTransform, CompositingAndBlendingOperator};
 
-    const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
     const RED: Color = Color::from_rgb(255, 0, 0);
     const BLUE: Color = Color::from_rgb(0, 0, 255);
-    const GREEN: Color = Color::from_rgb(0, 128, 0);
-
-    struct NoLiveContentChanges;
-
-    impl LiveContentVersions for NoLiveContentChanges {
-        fn canvas_content_generation(&self, _: CanvasId) -> u64 {
-            0
-        }
-        fn video_frame_id(&self, _: VideoSinkHandle) -> Option<u64> {
-            None
-        }
-        fn image_frame_pixel_generation(&self, _: ImageFrameResourceId) -> Option<u64> {
-            None
-        }
-        fn nested_context_frame_generation(&self, _: CompositorContextId) -> Option<u64> {
-            None
-        }
-    }
-
-    const NO_FRAME_STATE: FrameStateReadByReplay<'static> = FrameStateReadByReplay {
-        scrollbars: &[],
-        time_ns: 0,
-        live_content: &NoLiveContentChanges,
-    };
-
-    fn tree_with_root_isolation_effect() -> VisualContextTree {
-        let mut tree = VisualContextTree::create(TransformData {
-            matrix: FloatMatrix4x4::identity(),
-            origin: FloatPoint::default(),
-            sorting_context_root_index: None,
-            flattens_inherited_transform: false,
-            role: TransformDataRole::CssTransform,
-            synthetic_plane: false,
-            establishes_sorting_context: false,
-            bounds: FloatRect::default(),
-        });
-        let root = tree.append_effect(
-            EffectNodeData::Effects(EffectsData {
-                isolation: false,
-                opacity: 1.0,
-                blend_mode: CompositingAndBlendingOperator::Normal,
-                filter: None,
-                backdrop_filter: None,
-            }),
-            EffectNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-            ClipNodeIndex::NONE,
-        );
-        tree.root_isolation_effect = Some(root);
-        tree
-    }
-
-    fn root_context(tree: &VisualContextTree) -> ContextRef {
-        ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        }
-    }
-
-    fn fill(rect: IntRect, color: Color) -> FillRect {
-        FillRect {
-            rect,
-            color,
-            compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
-            background_color_animation_effect: EffectNodeIndex::NONE,
-        }
-    }
-
-    #[derive(Default)]
-    struct TestList {
-        builder: DisplayListBuilder,
-    }
-
-    impl TestList {
-        fn with<C: DisplayListCommand>(mut self, command: C, context: ContextRef) -> Self {
-            self.builder.append(&command, &[], context);
-            self
-        }
-    }
 
     // The recorder declares a mask's content under the effects of what the mask holds, so no page has a declaration made
     // around the mask.
     #[test]
     fn a_mask_declared_around_its_mask_is_replayed_with_what_it_masks() {
         use crate::visual_context::{MaskData, MaskLayerOrigin};
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let masked = tree.append_effect_node_under(
             root,
             EffectNodeData::Mask(MaskData {
@@ -3278,7 +3199,7 @@ mod tests {
                 masks_backdrop: false,
             }),
         );
-        let mut list = TestList::default().with(fill(VIEWPORT, GREEN), root);
+        let mut list = ListOfOneChunk::default().with(fill(VIEWPORT, GREEN), root);
         let declaration_position = ListPosition::new(ChunkIndexInList(0), list.builder.byte_size() as u32);
         let declaration = list.builder.begin_group::<DeclareMaskContent>(Vec::new());
         list.builder.append(&fill(IntRect::new(0, 0, 50, 50), RED), &[], root);
@@ -3328,23 +3249,6 @@ mod tests {
         assert!(spans.windows(2).all(|pair| pair[0].end <= pair[1].begin));
     }
 
-    fn raster_settings_hash_by_layer_for_tests(stack: &LayerStack) -> Vec<ContentHash> {
-        let raster_settings = LayerRasterSettings {
-            raster_space_identity: 0,
-            clear_color: Color::TRANSPARENT,
-            root_group_color: Color::TRANSPARENT,
-            viewport_to_raster_transform: FloatMatrix4x4::identity(),
-            allows_lcd_text: false,
-        };
-        vec![raster_settings.content_hash(); stack.layers.len()]
-    }
-
-    fn chunk_of(command: FillRect, context: ContextRef) -> Arc<ListChunk> {
-        let mut builder = DisplayListBuilder::new();
-        builder.append(&command, &[], context);
-        Arc::new(ListChunk::copied(builder.bytes(), builder.command_runs(), 0))
-    }
-
     fn stack_of(display_list: &DisplayListStorage, tree: &VisualContextTree) -> LayerStack {
         plan_layer_stack(&LayerStackInputs {
             list: display_list,
@@ -3383,7 +3287,7 @@ mod tests {
             band_tile_keys,
             stack,
             band_index,
-            &raster_settings_hash_by_layer_for_tests(stack),
+            &raster_settings_hash_by_layer(stack),
             shown_rect,
             shown_rect,
             None,
@@ -3435,13 +3339,9 @@ mod tests {
     fn sliding_box_tree_and_list(
         overshooting_easing: bool,
     ) -> (VisualContextTree, Arc<DisplayListStorage>, SpatialNodeIndex) {
-        use crate::animation_timing::{AnimationEffectTiming, TimeValue};
-        use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
-        use crate::visual_animation::{
-            VisualAnimation, VisualAnimationKeyframe, VisualAnimationTransformOperation, VisualAnimationValue,
-        };
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        use crate::host::FfiVisualAnimationTransformOperationKind;
+        use crate::visual_animation::VisualAnimation;
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let moving_node = tree.append_spatial(
             SpatialData::Transform(TransformData {
                 matrix: FloatMatrix4x4::identity(),
@@ -3455,14 +3355,6 @@ mod tests {
             }),
             VISUAL_VIEWPORT_NODE_INDEX,
         );
-        let translate_x = |pixels: f32| VisualAnimationKeyframe {
-            offset: f64::from(pixels) / 400.0,
-            easing: crate::easing::Easing::default(),
-            value: VisualAnimationValue::Transform(vec![
-                VisualAnimationTransformOperation::new(FfiVisualAnimationTransformOperationKind::TranslateX, &[pixels])
-                    .unwrap(),
-            ]),
-        };
         let easing = if overshooting_easing {
             crate::easing::Easing::CubicBezier {
                 x1: 0.3,
@@ -3474,15 +3366,13 @@ mod tests {
             crate::easing::Easing::default()
         };
         tree.set_visual_animations(vec![VisualAnimation {
-            target_kind: FfiVisualAnimationTargetKind::Transform,
-            node_indices: vec![moving_node.0],
-            timing: AnimationEffectTiming {
-                iteration_duration: TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
             easing,
-            keyframes: vec![translate_x(0.0), translate_x(400.0)],
-            ..VisualAnimation::default()
+            ..transform_animation_of(
+                moving_node,
+                FfiVisualAnimationTransformOperationKind::TranslateX,
+                0.0,
+                400.0,
+            )
         }]);
         let moving = ContextRef {
             spatial: moving_node,
@@ -3626,10 +3516,8 @@ mod tests {
 
     #[test]
     fn a_tile_kept_through_an_animation_sample_reads_the_sampled_background_color_again() {
-        use crate::animation_timing::{AnimationEffectTiming, TimeValue};
-        use crate::visual_animation::{VisualAnimation, VisualAnimationKeyframe, VisualAnimationValue};
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        use crate::visual_animation::{VisualAnimationKeyframe, VisualAnimationValue};
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let animated_color = tree.append_effect(
             EffectNodeData::BackgroundColorAnimation,
             root.effect,
@@ -3641,16 +3529,11 @@ mod tests {
             easing: crate::easing::Easing::default(),
             value: VisualAnimationValue::BackgroundColor(color),
         };
-        tree.set_visual_animations(vec![VisualAnimation {
-            target_kind: FfiVisualAnimationTargetKind::BackgroundColor,
-            node_indices: vec![animated_color.0],
-            timing: AnimationEffectTiming {
-                iteration_duration: TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
-            keyframes: vec![color_at(0.0, RED), color_at(1.0, BLUE)],
-            ..VisualAnimation::default()
-        }]);
+        tree.set_visual_animations(vec![animation_of(
+            FfiVisualAnimationTargetKind::BackgroundColor,
+            animated_color.0,
+            vec![color_at(0.0, RED), color_at(1.0, BLUE)],
+        )]);
         let animated_box = IntRect::new(600, 400, 20, 20);
         let display_list = DisplayListStorage::of_chunks(vec![
             chunk_of(fill(VIEWPORT, GREEN), root),
@@ -3680,39 +3563,15 @@ mod tests {
     // limit, and tiles draw the opacity of the others.
     #[test]
     fn a_tile_kept_through_an_animation_sample_reads_the_sampled_opacity_of_an_effect_without_a_layer_again() {
-        use crate::animation_timing::{AnimationEffectTiming, TimeValue};
         use crate::display_list::layers::planning::MAXIMUM_ANIMATED_NODES_WITH_LAYERS;
-        use crate::visual_animation::{VisualAnimation, VisualAnimationKeyframe, VisualAnimationValue};
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        use crate::visual_animation::VisualAnimation;
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let faded: Vec<ContextRef> = (0..=MAXIMUM_ANIMATED_NODES_WITH_LAYERS)
-            .map(|_| {
-                tree.append_effect_node_under(
-                    root,
-                    EffectNodeData::Effects(EffectsData {
-                        isolation: false,
-                        opacity: 1.0,
-                        blend_mode: CompositingAndBlendingOperator::Normal,
-                        filter: None,
-                        backdrop_filter: None,
-                    }),
-                )
-            })
+            .map(|_| tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal)))
             .collect();
-        let opacity_at = |offset: f64, opacity: f32| VisualAnimationKeyframe {
-            offset,
-            easing: crate::easing::Easing::default(),
-            value: VisualAnimationValue::Opacity(opacity),
-        };
         tree.set_visual_animations(vec![VisualAnimation {
-            target_kind: FfiVisualAnimationTargetKind::Opacity,
             node_indices: faded.iter().map(|context| context.effect.0).collect(),
-            timing: AnimationEffectTiming {
-                iteration_duration: TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
-            keyframes: vec![opacity_at(0.0, 1.0), opacity_at(1.0, 0.2)],
-            ..VisualAnimation::default()
+            ..opacity_animation_of(faded[0].effect, 1.0, 0.2)
         }]);
         let box_without_layer = IntRect::new(600, 520, 20, 20);
         let mut chunks = vec![chunk_of(fill(VIEWPORT, GREEN), root)];
@@ -3790,27 +3649,9 @@ mod tests {
     }
 
     fn viewport_filled_with_green() -> (VisualContextTree, Arc<DisplayListStorage>) {
-        let tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (tree, root) = tree_with_root_isolation_effect(1.0);
         let display_list = DisplayListStorage::of_chunks(vec![chunk_of(fill(VIEWPORT, GREEN), root)]).unwrap();
         (tree, display_list)
-    }
-
-    fn frosted_glass(tree: &mut VisualContextTree, parent: ContextRef, region: IntRect) -> ContextRef {
-        tree.append_effect_node_under(
-            parent,
-            EffectNodeData::Effects(EffectsData {
-                isolation: false,
-                opacity: 1.0,
-                blend_mode: CompositingAndBlendingOperator::Normal,
-                filter: None,
-                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
-                    filter: Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize()),
-                    region,
-                    corner_radii: CornerRadii::default(),
-                }),
-            }),
-        )
     }
 
     // A run that the held ranges skip, and a held range over several runs.
@@ -3856,15 +3697,14 @@ mod tests {
     // A chunk from another process can hold many records that each reach many cells.
     #[test]
     fn a_placement_lists_cells_one_by_one_up_to_a_bound_and_reaches_past_them_after() {
-        let tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (tree, root) = tree_with_root_isolation_effect(1.0);
         let cells_per_fill = 32;
         let fill_size = cells_per_fill * crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
         let fill_count = 10;
         let fills: Vec<IntRect> = (0..fill_count)
             .map(|index| IntRect::new(0, index * fill_size, fill_size, fill_size))
             .collect();
-        let mut list = TestList::default();
+        let mut list = ListOfOneChunk::default();
         for &rect in &fills {
             list = list.with(fill(rect, GREEN), root);
         }
@@ -3894,8 +3734,7 @@ mod tests {
     #[test]
     fn content_inside_a_chain_of_100000_clips_and_effects_is_keyed() {
         const CHAIN_LENGTH: usize = 100_000;
-        let mut tree = tree_with_root_isolation_effect();
-        let mut context = root_context(&tree);
+        let (mut tree, mut context) = tree_with_root_isolation_effect(1.0);
         for _ in 0..CHAIN_LENGTH {
             let clip = tree.append_clip(
                 ClipNodeData::Rect(ClipData {
@@ -3908,17 +3747,11 @@ mod tests {
             );
             context = tree.append_effect_node_under(
                 ContextRef { clip, ..context },
-                EffectNodeData::Effects(EffectsData {
-                    isolation: false,
-                    opacity: 1.0,
-                    blend_mode: CompositingAndBlendingOperator::Normal,
-                    filter: None,
-                    backdrop_filter: None,
-                }),
+                effects(1.0, CompositingAndBlendingOperator::Normal),
             );
         }
         let display_list =
-            DisplayListStorage::of_builder(&TestList::default().with(fill(VIEWPORT, GREEN), context).builder);
+            DisplayListStorage::of_builder(&ListOfOneChunk::default().with(fill(VIEWPORT, GREEN), context).builder);
         let stack = LayerStack::one_layer_replaying_whole_list(
             VIEWPORT,
             display_list.whole_span(),
@@ -3974,11 +3807,10 @@ mod tests {
     // The region of a backdrop filter in a tree from another process can lie past the extent of any space.
     #[test]
     fn a_backdrop_filter_whose_region_lies_past_the_extent_limit_reads_within_rects_whose_edges_fit() {
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let region_past_extent_limit = IntRect::new(i32::MAX - 1000, 0, 1000, 100);
         let frosted = frosted_glass(&mut tree, root, region_past_extent_limit);
-        let list = TestList::default()
+        let list = ListOfOneChunk::default()
             .with(fill(VIEWPORT, GREEN), root)
             .with(fill(region_past_extent_limit, BLUE), frosted);
         let display_list = DisplayListStorage::of_builder(&list.builder);
@@ -4105,8 +3937,7 @@ mod tests {
     #[test]
     fn a_cell_kept_when_its_band_is_bound_again_names_only_record_ranges_the_band_holds_now() {
         use crate::visual_context::{MaskData, MaskLayerOrigin};
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let masked = tree.append_effect_node_under(
             root,
             EffectNodeData::Mask(MaskData {
@@ -4212,8 +4043,7 @@ mod tests {
     #[test]
     fn a_cell_is_keyed_again_where_a_chunk_of_its_name_holds_other_bytes() {
         use crate::visual_context::{MaskData, MaskLayerOrigin};
-        let mut tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let masked = tree.append_effect_node_under(
             root,
             EffectNodeData::Mask(MaskData {
@@ -4292,8 +4122,7 @@ mod tests {
     // at a pinch then replays the same list as one layer of the compositor's own.
     #[test]
     fn a_cell_keyed_while_every_tile_replays_every_record_is_keyed_again_once_tiles_replay_what_reaches_them() {
-        let tree = tree_with_root_isolation_effect();
-        let root = root_context(&tree);
+        let (tree, root) = tree_with_root_isolation_effect(1.0);
         let display_list =
             DisplayListStorage::of_chunks(vec![chunk_of(fill(IntRect::new(0, 0, 100, 100), GREEN), root)]).unwrap();
         let mut every_tile_replays_every_record = LayerStack::one_layer_replaying_whole_list(

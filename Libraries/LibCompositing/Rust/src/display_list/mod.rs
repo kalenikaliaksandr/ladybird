@@ -26,6 +26,8 @@ pub mod replay;
 pub mod storage;
 pub mod summary;
 pub mod tape;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod tile_keys;
 pub mod tiles;
 pub mod validate;

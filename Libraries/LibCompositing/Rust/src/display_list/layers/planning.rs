@@ -2144,12 +2144,13 @@ impl InputsOfLayerPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_list::builder::DisplayListBuilder;
-    use crate::display_list::commands::{
-        CanvasId, ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
-    };
+    use crate::display_list::commands::{CanvasId, ContextRef, VISUAL_VIEWPORT_NODE_INDEX};
     use crate::display_list::layers::{
         LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
+    };
+    use crate::display_list::test_fixtures::{
+        GREEN, ListOfOneChunk, VIEWPORT, animation_of, canvas, effects, fill, frosted_glass, opacity_animation_of,
+        spinning, transform, transform_animation_of, tree_with_root_isolation_effect,
     };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::node_slot_id::NodeSlotId;
@@ -2157,86 +2158,7 @@ mod tests {
         CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, SpatialData, TransformData,
         TransformDataRole,
     };
-    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatRect, ScalingMode};
-
-    const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
-
-    fn effects(opacity: f32, blend_mode: CompositingAndBlendingOperator) -> EffectNodeData {
-        EffectNodeData::Effects(EffectsData {
-            isolation: false,
-            opacity,
-            blend_mode,
-            filter: None,
-            backdrop_filter: None,
-        })
-    }
-
-    fn tree_with_root_isolation_effect() -> VisualContextTree {
-        let mut tree = VisualContextTree::create_identity();
-        let root = tree.append_effect(
-            effects(1.0, CompositingAndBlendingOperator::Normal),
-            EffectNodeIndex::NONE,
-            VISUAL_VIEWPORT_NODE_INDEX,
-            ClipNodeIndex::NONE,
-        );
-        tree.root_isolation_effect = Some(root);
-        tree
-    }
-
-    fn root_context(tree: &VisualContextTree) -> ContextRef {
-        ContextRef {
-            effect: tree.root_isolation_effect.unwrap(),
-            ..ContextRef::default()
-        }
-    }
-
-    fn fill(rect: IntRect) -> FillRect {
-        FillRect {
-            rect,
-            color: Color::from_rgb(0, 128, 0),
-            compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
-            background_color_animation_effect: EffectNodeIndex::NONE,
-        }
-    }
-
-    fn canvas(rect: IntRect) -> DrawCanvas {
-        DrawCanvas {
-            dst_rect: rect,
-            canvas_id: CanvasId(1),
-            scaling_mode: ScalingMode::NearestNeighbor,
-        }
-    }
-
-    struct TestList {
-        builder: DisplayListBuilder,
-    }
-
-    impl TestList {
-        fn new() -> Self {
-            Self {
-                builder: DisplayListBuilder::new(),
-            }
-        }
-
-        fn with<C: DisplayListCommand>(mut self, command: C, context: ContextRef) -> Self {
-            self.builder.append(&command, &[], context);
-            self
-        }
-
-        fn planned(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> PlannedLayers {
-            let list = DisplayListStorage::of_builder(&self.builder);
-            plan_layer_stack(&LayerStackInputs {
-                list: &list,
-                tree,
-                scroll_offsets,
-                viewport_rect: VIEWPORT,
-            })
-        }
-
-        fn stack(&self, tree: &VisualContextTree, scroll_offsets: &[FloatPoint]) -> LayerStack {
-            self.planned(tree, scroll_offsets).stack
-        }
-    }
+    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatRect};
 
     fn kinds_of_layers_from_base_up_that_may_hold_content(stack: &LayerStack) -> Vec<String> {
         stack
@@ -2273,7 +2195,7 @@ mod tests {
     }
 
     fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
-        let mut tree = tree_with_root_isolation_effect();
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let document_scroll_node = tree.append_spatial(
             SpatialData::Scroll(ScrollData {
                 state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
@@ -2295,7 +2217,6 @@ mod tests {
                 ..CompositorScrollTable::default()
             })
         );
-        let viewport = root_context(&tree);
         let document = ContextRef {
             spatial: document_scroll_node,
             ..viewport
@@ -2313,10 +2234,10 @@ mod tests {
             0.0,
             400.0,
         )]);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(canvas(IntRect::new(500, 300, 200, 100)), document)
-            .with(fill(IntRect::new(100, 300, 50, 50)), moving);
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(canvas(IntRect::new(500, 300, 200, 100), 1), document)
+            .with(fill(IntRect::new(100, 300, 50, 50), GREEN), moving);
         let at_start = list.planned(&tree.with_visual_animation_samples(0), &[]);
         let halfway = list.planned(&tree.with_visual_animation_samples(500_000_000), &[]);
         assert_eq!(at_start.placement, halfway.placement);
@@ -2331,98 +2252,17 @@ mod tests {
         );
     }
 
-    fn transform_animation_keyframe(
-        offset: f64,
-        kind: crate::host::FfiVisualAnimationTransformOperationKind,
-        value: f32,
-    ) -> crate::visual_animation::VisualAnimationKeyframe {
-        crate::visual_animation::VisualAnimationKeyframe {
-            offset,
-            easing: crate::easing::Easing::default(),
-            value: crate::visual_animation::VisualAnimationValue::Transform(vec![
-                crate::visual_animation::VisualAnimationTransformOperation::new(kind, &[value]).unwrap(),
-            ]),
-        }
-    }
-
-    fn opacity_animation_keyframe(offset: f64, opacity: f32) -> crate::visual_animation::VisualAnimationKeyframe {
-        crate::visual_animation::VisualAnimationKeyframe {
-            offset,
-            easing: crate::easing::Easing::default(),
-            value: crate::visual_animation::VisualAnimationValue::Opacity(opacity),
-        }
-    }
-
-    fn animation_of(
-        target_kind: crate::host::FfiVisualAnimationTargetKind,
-        node_index: u32,
-        keyframes: Vec<crate::visual_animation::VisualAnimationKeyframe>,
-    ) -> crate::visual_animation::VisualAnimation {
-        use crate::visual_animation::VisualAnimation;
-        VisualAnimation {
-            target_kind,
-            node_indices: vec![node_index],
-            timing: crate::animation_timing::AnimationEffectTiming {
-                iteration_duration: crate::animation_timing::TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
-            keyframes,
-            ..VisualAnimation::default()
-        }
-    }
-
-    fn spinning(node: SpatialNodeIndex) -> crate::visual_animation::VisualAnimation {
-        use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
-        animation_of(
-            FfiVisualAnimationTargetKind::Transform,
-            node.0,
-            vec![
-                transform_animation_keyframe(0.0, FfiVisualAnimationTransformOperationKind::Rotate, 0.0),
-                transform_animation_keyframe(1.0, FfiVisualAnimationTransformOperationKind::Rotate, 360.0),
-            ],
-        )
-    }
-
     fn sliding(node: SpatialNodeIndex) -> crate::visual_animation::VisualAnimation {
-        use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
-        animation_of(
-            FfiVisualAnimationTargetKind::Transform,
-            node.0,
-            vec![
-                transform_animation_keyframe(0.0, FfiVisualAnimationTransformOperationKind::TranslateX, 0.0),
-                transform_animation_keyframe(1.0, FfiVisualAnimationTransformOperationKind::TranslateX, 300.0),
-            ],
-        )
-    }
-
-    fn fading(effect: EffectNodeIndex) -> crate::visual_animation::VisualAnimation {
-        animation_of(
-            crate::host::FfiVisualAnimationTargetKind::Opacity,
-            effect.0,
-            vec![
-                opacity_animation_keyframe(0.0, 0.2),
-                opacity_animation_keyframe(1.0, 1.0),
-            ],
+        transform_animation_of(
+            node,
+            crate::host::FfiVisualAnimationTransformOperationKind::TranslateX,
+            0.0,
+            300.0,
         )
     }
 
     fn transformed_context(tree: &mut VisualContextTree, parent: ContextRef, bounds: FloatRect) -> ContextRef {
-        let spatial = tree.append_spatial(
-            SpatialData::Transform(TransformData {
-                matrix: FloatMatrix4x4::identity(),
-                origin: FloatPoint {
-                    x: bounds.x + bounds.width / 2.0,
-                    y: bounds.y + bounds.height / 2.0,
-                },
-                sorting_context_root_index: None,
-                flattens_inherited_transform: false,
-                role: TransformDataRole::CssTransform,
-                synthetic_plane: false,
-                establishes_sorting_context: false,
-                bounds,
-            }),
-            parent.spatial,
-        );
+        let spatial = tree.append_spatial(SpatialData::Transform(transform(bounds)), parent.spatial);
         ContextRef { spatial, ..parent }
     }
 
@@ -2460,22 +2300,6 @@ mod tests {
         ContextRef { effect, ..transformed }
     }
 
-    fn transform_animation_of(
-        node: SpatialNodeIndex,
-        kind: crate::host::FfiVisualAnimationTransformOperationKind,
-        from: f32,
-        to: f32,
-    ) -> crate::visual_animation::VisualAnimation {
-        animation_of(
-            crate::host::FfiVisualAnimationTargetKind::Transform,
-            node.0,
-            vec![
-                transform_animation_keyframe(0.0, kind, from),
-                transform_animation_keyframe(1.0, kind, to),
-            ],
-        )
-    }
-
     fn space_names(stack: &LayerStack) -> Vec<String> {
         (0..stack.spaces.len())
             .map(|index| stack.name_of_space(RasterSpaceIndex(index), &NodeNamesFromIndices))
@@ -2484,14 +2308,13 @@ mod tests {
 
     #[test]
     fn a_spinner_is_rastered_in_its_own_space_and_reaches_the_circle_it_turns_in() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let stack = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
-            .with(fill(IntRect::new(0, 100, 100, 100)), viewport)
+        let stack = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner)
+            .with(fill(IntRect::new(0, 100, 100, 100), GREEN), viewport)
             .stack(&tree, &[]);
         assert_eq!(space_names(&stack), ["viewport", "animated@s1 in viewport"]);
         assert_eq!(
@@ -2510,8 +2333,7 @@ mod tests {
 
     #[test]
     fn a_spinner_under_a_scale_far_below_the_smallest_raster_scale_is_rastered_at_the_smallest() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let shrunk = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 0.0, 100.0, 100.0));
         let SpatialData::Transform(shrinking) = &mut tree.spatial_nodes[shrunk.spatial.0 as usize].data else {
             unreachable!()
@@ -2519,9 +2341,9 @@ mod tests {
         shrinking.matrix = libgfx_rust::scale_matrix(0.001, 0.001, 1.0);
         let spinner = transformed_context(&mut tree, shrunk, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let stack = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
+        let stack = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner)
             .stack(&tree, &[]);
         let raster_scales: Vec<f32> = stack
             .spaces
@@ -2536,13 +2358,12 @@ mod tests {
 
     #[test]
     fn samples_of_a_spinner_leave_its_space_and_raster_geometry_alike() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner);
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner);
         let geometry_of_spinner_space_at = |time_ns: i64| {
             let sample = tree.with_visual_animation_samples(time_ns);
             let (_, geometries) =
@@ -2560,13 +2381,12 @@ mod tests {
 
     #[test]
     fn an_unclipped_slide_reaches_where_its_keyframes_take_it() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let slider = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 0.0, 50.0, 50.0));
         tree.set_visual_animations(vec![sliding(slider.spatial)]);
-        let stack = TestList::new()
-            .with(fill(IntRect::new(0, 0, 50, 50)), slider)
-            .with(fill(IntRect::new(0, 50, 100, 100)), viewport)
+        let stack = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 50, 50), GREEN), slider)
+            .with(fill(IntRect::new(0, 50, 100, 100), GREEN), viewport)
             .stack(&tree, &[]);
         assert_eq!(space_names(&stack), ["viewport", "animated@s1 in viewport"]);
         assert_eq!(
@@ -2577,8 +2397,7 @@ mod tests {
 
     #[test]
     fn a_slide_within_a_rounded_clip_is_composited_within_it() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let track = clipped_context(
             &mut tree,
             viewport,
@@ -2587,9 +2406,9 @@ mod tests {
         );
         let slider = transformed_context(&mut tree, track, FloatRect::new(0.0, 0.0, 50.0, 50.0));
         tree.set_visual_animations(vec![sliding(slider.spatial)]);
-        let planned = TestList::new()
-            .with(fill(IntRect::new(0, 0, 200, 50)), track)
-            .with(fill(IntRect::new(0, 0, 50, 50)), slider)
+        let planned = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 200, 50), GREEN), track)
+            .with(fill(IntRect::new(0, 0, 50, 50), GREEN), slider)
             .planned(&tree, &[]);
         let lines: Vec<String> = planned
             .layer_lines(
@@ -2612,8 +2431,7 @@ mod tests {
     #[test]
     fn a_skew_or_an_overshooting_slide_stays_in_the_tiles_around_it() {
         use crate::host::FfiVisualAnimationTransformOperationKind as Kind;
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let skewed = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 0.0, 50.0, 50.0));
         let overshooting = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 100.0, 50.0, 50.0));
         let mut overshooting_slide = sliding(overshooting.spatial);
@@ -2627,9 +2445,9 @@ mod tests {
             transform_animation_of(skewed.spatial, Kind::SkewX, 0.0, 0.3),
             overshooting_slide,
         ]);
-        let planned = TestList::new()
-            .with(fill(IntRect::new(0, 0, 50, 50)), skewed)
-            .with(fill(IntRect::new(0, 100, 50, 50)), overshooting)
+        let planned = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 50, 50), GREEN), skewed)
+            .with(fill(IntRect::new(0, 100, 50, 50), GREEN), overshooting)
             .planned(&tree, &[]);
         assert_eq!(
             kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
@@ -2652,14 +2470,13 @@ mod tests {
 
     #[test]
     fn a_spinner_with_its_own_opacity_is_composited_inside_it() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         let translucent_spinner = element_with_own_effect(&mut tree, spinner, viewport, 0.5);
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let planned = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), translucent_spinner)
+        let planned = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), translucent_spinner)
             .planned(&tree, &[]);
         assert_eq!(
             kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
@@ -2676,14 +2493,16 @@ mod tests {
 
     #[test]
     fn an_element_that_fades_and_spins_is_composited_through_both() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         let fading_spinner = element_with_own_effect(&mut tree, spinner, viewport, 1.0);
-        tree.set_visual_animations(vec![spinning(spinner.spatial), fading(fading_spinner.effect)]);
-        let planned = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), fading_spinner)
+        tree.set_visual_animations(vec![
+            spinning(spinner.spatial),
+            opacity_animation_of(fading_spinner.effect, 0.2, 1.0),
+        ]);
+        let planned = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), fading_spinner)
             .planned(&tree, &[]);
         assert_eq!(
             kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
@@ -2701,14 +2520,13 @@ mod tests {
 
     #[test]
     fn a_spinner_in_a_translucent_group_with_siblings_is_placed_with_the_group() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let group = tree.append_effect_node_under(viewport, effects(0.5, CompositingAndBlendingOperator::Normal));
         let spinner = transformed_context(&mut tree, group, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let stack = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), group)
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
+        let stack = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), group)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner)
             .stack(&tree, &[]);
         assert_eq!(
             kinds_of_layers_from_base_up_that_may_hold_content(&stack),
@@ -2718,13 +2536,12 @@ mod tests {
 
     #[test]
     fn a_spinner_over_an_earlier_canvas_stays_in_the_tiles_around_it() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let planned = TestList::new()
-            .with(canvas(IntRect::new(0, 0, 200, 120)), viewport)
-            .with(fill(IntRect::new(50, 50, 40, 40)), spinner)
+        let planned = ListOfOneChunk::default()
+            .with(canvas(IntRect::new(0, 0, 200, 120), 1), viewport)
+            .with(fill(IntRect::new(50, 50, 40, 40), GREEN), spinner)
             .planned(&tree, &[]);
         assert_eq!(
             planned.placement.animations_without_layers,
@@ -2737,13 +2554,12 @@ mod tests {
 
     #[test]
     fn a_spinner_holding_a_canvas_gives_the_canvas_a_layer_in_its_space() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let spinner = transformed_context(&mut tree, viewport, FloatRect::new(50.0, 50.0, 40.0, 40.0));
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
-        let stack = TestList::new()
-            .with(fill(IntRect::new(0, 0, 100, 100)), viewport)
-            .with(canvas(IntRect::new(50, 50, 40, 40)), spinner)
+        let stack = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 100, 100), GREEN), viewport)
+            .with(canvas(IntRect::new(50, 50, 40, 40), 1), spinner)
             .stack(&tree, &[]);
         assert_eq!(
             kinds_of_layers_from_base_up_that_may_hold_content(&stack),
@@ -2753,13 +2569,12 @@ mod tests {
 
     #[test]
     fn a_fade_over_an_earlier_canvas_stays_in_the_tiles_around_it() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let controls = tree.append_effect_node_under(viewport, effects(1.0, CompositingAndBlendingOperator::Normal));
-        tree.set_visual_animations(vec![fading(controls.effect)]);
-        let planned = TestList::new()
-            .with(canvas(IntRect::new(0, 0, 200, 120)), viewport)
-            .with(fill(IntRect::new(0, 80, 200, 40)), controls)
+        tree.set_visual_animations(vec![opacity_animation_of(controls.effect, 0.2, 1.0)]);
+        let planned = ListOfOneChunk::default()
+            .with(canvas(IntRect::new(0, 0, 200, 120), 1), viewport)
+            .with(fill(IntRect::new(0, 80, 200, 40), GREEN), controls)
             .planned(&tree, &[]);
         assert!(planned.stack.composited_effects.is_empty());
         assert_eq!(
@@ -2788,7 +2603,7 @@ mod tests {
         }
     }
 
-    fn layers_planned_alike_for_every_sample(list: &TestList, tree: &VisualContextTree) -> PlannedLayers {
+    fn layers_planned_alike_for_every_sample(list: &ListOfOneChunk, tree: &VisualContextTree) -> PlannedLayers {
         let planned = list.planned(tree, &[]);
         for time_ns in SAMPLE_TIMES_NS {
             assert!(
@@ -2860,23 +2675,6 @@ mod tests {
         )
     }
 
-    fn frosted_glass(tree: &mut VisualContextTree, parent: ContextRef, region: IntRect) -> ContextRef {
-        tree.append_effect_node_under(
-            parent,
-            EffectNodeData::Effects(EffectsData {
-                isolation: false,
-                opacity: 1.0,
-                blend_mode: CompositingAndBlendingOperator::Normal,
-                filter: None,
-                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
-                    filter: std::sync::Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize()),
-                    region,
-                    corner_radii: libgfx_rust::CornerRadii::default(),
-                }),
-            }),
-        )
-    }
-
     #[derive(Clone, Copy, Debug)]
     enum Animated {
         OpacityFromOne,
@@ -2902,23 +2700,14 @@ mod tests {
     fn page_with_animated_element(
         animated: Animated,
         under_animated_node: UnderAnimatedNode,
-    ) -> (VisualContextTree, TestList, ContextRef) {
+    ) -> (VisualContextTree, ListOfOneChunk, ContextRef) {
         use crate::host::FfiVisualAnimationTransformOperationKind as Kind;
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let (element, animation) = match animated {
             Animated::OpacityFromOne => {
                 let element =
                     tree.append_effect_node_under(viewport, effects(1.0, CompositingAndBlendingOperator::Normal));
-                let animation = animation_of(
-                    crate::host::FfiVisualAnimationTargetKind::Opacity,
-                    element.effect.0,
-                    vec![
-                        opacity_animation_keyframe(0.0, 1.0),
-                        opacity_animation_keyframe(1.0, 0.0),
-                    ],
-                );
-                (element, animation)
+                (element, opacity_animation_of(element.effect, 1.0, 0.0))
             }
             Animated::ColorFilter => {
                 let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[grayscale(0.0)]));
@@ -2947,16 +2736,16 @@ mod tests {
             }
         };
         tree.set_visual_animations(vec![played_once_after_a_delay(animation)]);
-        let list = TestList::new().with(fill(IntRect::new(0, 0, 200, 200)), viewport);
+        let list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 200, 200), GREEN), viewport);
         let list = match under_animated_node {
-            UnderAnimatedNode::Fill => list.with(fill(ELEMENT), element),
-            UnderAnimatedNode::Canvas => list.with(canvas(ELEMENT), element),
+            UnderAnimatedNode::Fill => list.with(fill(ELEMENT, GREEN), element),
+            UnderAnimatedNode::Canvas => list.with(canvas(ELEMENT, 1), element),
             UnderAnimatedNode::BackdropFilter => {
                 let glass = frosted_glass(&mut tree, element, ELEMENT);
-                list.with(fill(ELEMENT), glass)
+                list.with(fill(ELEMENT, GREEN), glass)
             }
         };
-        let list = list.with(fill(IntRect::new(0, 150, 200, 50)), viewport);
+        let list = list.with(fill(IntRect::new(0, 150, 200, 50), GREEN), viewport);
         (tree, list, element)
     }
 
@@ -3060,17 +2849,16 @@ mod tests {
 
     #[test]
     fn an_element_with_its_own_blur_animated_between_color_filters_is_planned_for_its_blur() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[blur(5.0)]));
         tree.set_visual_animations(vec![filter_animation_of(
             element.effect,
             vec![grayscale(0.0)],
             vec![grayscale(1.0)],
         )]);
-        let planned = TestList::new()
-            .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
-            .with(fill(ELEMENT), element)
+        let planned = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 200, 200), GREEN), viewport)
+            .with(fill(ELEMENT, GREEN), element)
             .planned(&tree, &[]);
         assert!(planned.stack.composited_effects.is_empty());
         assert_eq!(
@@ -3084,8 +2872,7 @@ mod tests {
 
     #[test]
     fn a_blur_animation_whose_easing_overshoots_reads_farther_than_is_known() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let element = element_with_filter(&mut tree, viewport, filter_bytes_of(&[blur(0.0)]));
         let mut animation = filter_animation_of(element.effect, vec![blur(0.0)], vec![blur(4.0)]);
         animation.keyframes[0].easing = crate::easing::Easing::CubicBezier {
@@ -3096,9 +2883,9 @@ mod tests {
         };
         tree.set_visual_animations(vec![animation]);
         assert_eq!(
-            TestList::new()
-                .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
-                .with(fill(ELEMENT), element)
+            ListOfOneChunk::default()
+                .with(fill(IntRect::new(0, 0, 200, 200), GREEN), viewport)
+                .with(fill(ELEMENT, GREEN), element)
                 .planned(&tree, &[])
                 .placement
                 .why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
@@ -3146,8 +2933,7 @@ mod tests {
     #[test]
     fn a_plane_whose_animation_turns_it_out_of_its_sorting_context_is_sorted_by_depth_at_every_sample() {
         use crate::host::FfiVisualAnimationTransformOperationKind as Kind;
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let plane_of = |tree: &mut VisualContextTree, parent: SpatialNodeIndex, root: Option<SpatialNodeIndex>| {
             tree.append_spatial(
                 SpatialData::Transform(TransformData {
@@ -3172,17 +2958,17 @@ mod tests {
             0.0,
             180.0,
         ))]);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 200, 200), GREEN), viewport)
             .with(
-                fill(ELEMENT),
+                fill(ELEMENT, GREEN),
                 ContextRef {
                     spatial: still_plane,
                     ..viewport
                 },
             )
             .with(
-                fill(ELEMENT),
+                fill(ELEMENT, GREEN),
                 ContextRef {
                     spatial: turning_plane,
                     ..viewport
@@ -3269,11 +3055,11 @@ mod tests {
             ..document
         };
         // The box comes over what the document paints after it only once the document is scrolled.
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(0, 100, 800, 50)), sticky)
-            .with(canvas(IntRect::new(10, 110, 30, 30)), sticky)
-            .with(fill(IntRect::new(0, 900, 800, 100)), document);
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(0, 100, 800, 50), GREEN), sticky)
+            .with(canvas(IntRect::new(10, 110, 30, 30), 1), sticky)
+            .with(fill(IntRect::new(0, 900, 800, 100), GREEN), document);
         let stack_with_box_held_at = |offset: FloatPoint| {
             let mut offsets = vec![FloatPoint::default(); tree.spatial_nodes.len()];
             offsets[sticky_node.0 as usize] = offset;
@@ -3365,10 +3151,10 @@ mod tests {
             ..CompositorScrollTable::default()
         }));
         let glass = frosted_glass(&mut tree, inner_scroller, IntRect::new(50, 150, 100, 100));
-        let planned = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(0, 0, 400, 1000)), outer_scroller)
-            .with(fill(IntRect::new(50, 150, 100, 100)), glass)
+        let planned = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(0, 0, 400, 1000), GREEN), outer_scroller)
+            .with(fill(IntRect::new(50, 150, 100, 100), GREEN), glass)
             .planned(&tree, &[]);
         let space_of_outer_scroller = planned
             .stack
@@ -3425,11 +3211,11 @@ mod tests {
         // The label and the spinner of the toolbar are in different cells, and the card covers both of them.
         let label = IntRect::new(10, 110, 100, 30);
         assert!(TILE_SIZE_IN_DEVICE_PIXELS < 650);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(label), toolbar)
-            .with(fill(IntRect::new(650, 105, 40, 40)), spinner)
-            .with(fill(IntRect::new(0, 100, 800, 50)), document);
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(label, GREEN), toolbar)
+            .with(fill(IntRect::new(650, 105, 40, 40), GREEN), spinner)
+            .with(fill(IntRect::new(0, 100, 800, 50), GREEN), document);
         let planned = list.planned(&tree, &[]);
         assert_eq!(
             space_names(&planned.stack),
@@ -3459,8 +3245,7 @@ mod tests {
 
     #[test]
     fn a_slide_farther_than_extents_reach_reaches_the_whole_viewport() {
-        let mut tree = tree_with_root_isolation_effect();
-        let viewport = root_context(&tree);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
         let slider = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 0.0, 50.0, 50.0));
         tree.set_visual_animations(vec![transform_animation_of(
             slider.spatial,
@@ -3468,9 +3253,9 @@ mod tests {
             -3.0e9,
             3.0e9,
         )]);
-        let stack = TestList::new()
-            .with(fill(IntRect::new(0, 0, 50, 50)), slider)
-            .with(fill(IntRect::new(0, 50, 100, 100)), viewport)
+        let stack = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 50, 50), GREEN), slider)
+            .with(fill(IntRect::new(0, 50, 100, 100), GREEN), viewport)
             .stack(&tree, &[]);
         assert_eq!(space_names(&stack), ["viewport", "animated@s1 in viewport"]);
         assert_eq!(
@@ -3485,7 +3270,7 @@ mod tests {
     fn the_planner_runs_the_checks_of_the_compositor_on_a_plan_of_more_layers() {
         let (tree, _, document) = tree_with_document_scroll();
         let viewport_past_coordinate_limit = IntRect::new(0, 0, 600_000_000, 600);
-        let list = TestList::new().with(fill(IntRect::new(0, 0, 800, 2600)), document);
+        let list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document);
         plan_layer_stack(&LayerStackInputs {
             list: &DisplayListStorage::of_builder(&list.builder),
             tree: &tree,
@@ -3497,7 +3282,7 @@ mod tests {
     #[test]
     fn a_plan_holds_for_a_tree_that_differs_only_in_what_the_main_thread_keeps_of_its_nodes() {
         let (tree, _, document) = tree_with_document_scroll();
-        let list = TestList::new().with(fill(IntRect::new(0, 0, 800, 2600)), document);
+        let list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document);
         let storage = DisplayListStorage::of_builder(&list.builder);
         let mut tree_of_other_paintable = tree.clone();
         let SpatialData::Scroll(scroll) = &mut tree_of_other_paintable.spatial_nodes[document.spatial.0 as usize].data
@@ -3525,10 +3310,10 @@ mod tests {
             }),
             document.spatial,
         );
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(
-                fill(IntRect::new(0, 0, 100, 100)),
+                fill(IntRect::new(0, 0, 100, 100), GREEN),
                 ContextRef {
                     spatial: scroller,
                     ..document
@@ -3583,7 +3368,7 @@ mod tests {
             &[],
             VIEWPORT
         )));
-        let other_list = TestList::new().with(fill(IntRect::new(0, 0, 800, 2600)), document);
+        let other_list = ListOfOneChunk::default().with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document);
         assert!(!inputs.plan_alike_as(&InputsOfLayerPlan::new(
             DisplayListStorage::of_builder(&other_list.builder),
             tree.clone(),
