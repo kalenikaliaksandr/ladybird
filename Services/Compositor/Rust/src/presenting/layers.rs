@@ -3217,15 +3217,19 @@ mod tests {
         }))
     }
 
-    fn empty_display_list(tree: &Arc<VisualContextTree>) -> Rc<DisplayList> {
+    fn display_list_recorded_by(builder: DisplayListBuilder, tree: &Arc<VisualContextTree>) -> Rc<DisplayList> {
         Rc::new(DisplayList::new(
-            DisplayListStorage::recorded(&DisplayListBuilder::new().finish(), tree.clone()),
+            DisplayListStorage::recorded(&builder.finish(), tree.clone()),
             1,
             tree.structural_epoch,
             None,
             None,
             Default::default(),
         ))
+    }
+
+    fn empty_display_list(tree: &Arc<VisualContextTree>) -> Rc<DisplayList> {
+        display_list_recorded_by(DisplayListBuilder::new(), tree)
     }
 
     fn one_layer_of(display_list: &Rc<DisplayList>, viewport_rect: IntRect) -> LayerStack {
@@ -3481,14 +3485,7 @@ mod tests {
                 },
             );
         }
-        let display_list = Rc::new(DisplayList::new(
-            DisplayListStorage::recorded(&builder.finish(), tree.clone()),
-            1,
-            tree.structural_epoch,
-            None,
-            None,
-            Default::default(),
-        ));
+        let display_list = display_list_recorded_by(builder, &tree);
         (tree, display_list)
     }
 
