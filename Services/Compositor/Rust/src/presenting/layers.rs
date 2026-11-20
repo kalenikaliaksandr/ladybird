@@ -476,15 +476,10 @@ struct TileShownInFrame {
     coverage: TileCoverage,
 }
 
-pub struct ShownTilesOfLayer {
-    band_index: BandIndex,
-    tiles: Vec<TileShownInFrame>,
-}
-
 #[derive(Default)]
 pub struct FrameTileState {
     viewport_rect: IntRect,
-    shown_tiles_by_layer: Vec<Option<ShownTilesOfLayer>>,
+    shown_tiles_by_layer: Vec<Vec<TileShownInFrame>>,
     media_replayed_by_layer: Vec<Option<MediaRecordsReplayedInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
     frame_allows_lcd_text: bool,
@@ -493,9 +488,7 @@ pub struct FrameTileState {
 
 impl FrameTileState {
     fn shown_tiles_of_layer(&self, layer_index: LayerIndex) -> &[TileShownInFrame] {
-        self.shown_tiles_by_layer[layer_index.0]
-            .as_ref()
-            .map_or(&[], |shown| shown.tiles.as_slice())
+        &self.shown_tiles_by_layer[layer_index.0]
     }
 }
 
@@ -908,12 +901,7 @@ impl ContextLayers {
         {
             *holder_count_by_content_hash.entry(*content_hash).or_default() += 1;
         }
-        for tile in tile_state
-            .shown_tiles_by_layer
-            .iter()
-            .flatten()
-            .flat_map(|shown| &shown.tiles)
-        {
+        for tile in tile_state.shown_tiles_by_layer.iter().flatten() {
             *holder_count_by_content_hash.entry(tile.content_hash).or_default() += 1;
         }
         holder_count_by_content_hash
@@ -1072,7 +1060,6 @@ fn tile_pixels_with_surfaces_shown(tile_state: &FrameTileState) -> u64 {
         .shown_tiles_by_layer
         .iter()
         .flatten()
-        .flat_map(|shown| &shown.tiles)
         .filter(|tile| !matches!(tile.coverage, TileCoverage::OneColor(_)))
         .map(|tile| tile.part_of_cell_needed.width.max(0) as u64 * tile.part_of_cell_needed.height.max(0) as u64)
         .sum()
@@ -1253,16 +1240,11 @@ fn hide_tiles_covered_by_opaque_tiles_above(
         if !matches!(layer.content, LayerContent::Painted { .. }) {
             continue;
         }
-        let Some(shown) = tile_state.shown_tiles_by_layer[layer_index.0].as_mut() else {
-            continue;
-        };
-        let every_backdrop_read_reach_is_known = shown
-            .tiles
-            .iter()
-            .all(|tile| tile.raster_margin_in_device_pixels.is_some());
+        let shown = &mut tile_state.shown_tiles_by_layer[layer_index.0];
+        let every_backdrop_read_reach_is_known = shown.iter().all(|tile| tile.raster_margin_in_device_pixels.is_some());
         if !opaque_rects_in_frame_above.is_empty() && every_backdrop_read_reach_is_known {
-            let tile_count_before = shown.tiles.len();
-            shown.tiles.retain(|tile| {
+            let tile_count_before = shown.len();
+            shown.retain(|tile| {
                 let needed_rect_in_frame = compositing.rect_in_frame(tile.part_of_cell_needed, viewport_rect);
                 let is_read_by_composited_effect = read_reaches_of_composited_effects_in_frame
                     .iter()
@@ -1271,7 +1253,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
                     || is_read_by_composited_effect
                     || !rect_is_covered_by_union_of(needed_rect_in_frame, &opaque_rects_in_frame_above)
             });
-            hidden_tile_count += tile_count_before - shown.tiles.len();
+            hidden_tile_count += tile_count_before - shown.len();
         }
         let frame_holds_layer = !compositing.shown_by_window_server;
         let is_inside_composited_effects = stack_of_frames.stack.layer_is_inside_composited_effects(layer_index);
@@ -1282,7 +1264,6 @@ fn hide_tiles_covered_by_opaque_tiles_above(
             && !is_hidden_from_view(&compositing.identity);
         if covers_layers_below {
             let opaque_rects_in_frame = shown
-                .tiles
                 .iter()
                 .filter(|tile| tile.coverage.is_opaque())
                 .map(|tile| (compositing.rect_in_frame(tile.part_of_cell_needed, viewport_rect), ()));
@@ -1860,7 +1841,7 @@ impl ContextPresenting {
         let composited_filter_read_reach_by_layer = composited_filter_read_reach_by_layer(stack, tree, &geometries);
         let mut tile_state = FrameTileState {
             viewport_rect,
-            shown_tiles_by_layer: (0..stack.layers.len()).map(|_| None).collect(),
+            shown_tiles_by_layer: (0..stack.layers.len()).map(|_| Vec::new()).collect(),
             media_replayed_by_layer: vec![None; stack.layers.len()],
             composited_filter_read_reach_by_layer,
             frame_allows_lcd_text,
@@ -1955,12 +1936,7 @@ impl ContextPresenting {
                         clear_color_of_layer(stack, tile.layer_index, surface_clear_color),
                     ),
                 };
-                let shown =
-                    tile_state.shown_tiles_by_layer[tile.layer_index.0].get_or_insert_with(|| ShownTilesOfLayer {
-                        band_index,
-                        tiles: Vec::new(),
-                    });
-                shown.tiles.push(TileShownInFrame {
+                tile_state.shown_tiles_by_layer[tile.layer_index.0].push(TileShownInFrame {
                     coord: tile.coord,
                     content_hash: tile.content_hash,
                     part_of_cell_needed,
@@ -2610,12 +2586,8 @@ impl ContextPresenting {
         }
         self.layers.work_counts_of_this_frame.tiles_rastered += tiles_to_raster.len() as u64;
 
-        let band_index_of_layer = tile_state.shown_tiles_by_layer[layer_index.0]
-            .as_ref()
-            .expect("a layer with tiles to raster shows tiles")
-            .band_index;
         let band_tile_keys = stack_of_frames
-            .band_tile_keys_keyed_with_this_stack(band_index_of_layer)
+            .band_tile_keys_keyed_with_this_stack(stack.layers[layer_index.0].band_index)
             .expect("a band with shown tiles has tile keys");
         let geometry = band_tile_keys.bound_geometry();
         let clips_left_to_composite =
@@ -3736,9 +3708,8 @@ mod tests {
     fn tile_state_showing(tiles: impl IntoIterator<Item = (IntRect, TileCoverage)>) -> FrameTileState {
         FrameTileState {
             viewport_rect: VIEWPORT,
-            shown_tiles_by_layer: vec![Some(ShownTilesOfLayer {
-                band_index: BandIndex(0),
-                tiles: tiles
+            shown_tiles_by_layer: vec![
+                tiles
                     .into_iter()
                     .map(|(part_of_cell_needed, coverage)| TileShownInFrame {
                         coord: TileCoord::new(0, 0),
@@ -3749,7 +3720,7 @@ mod tests {
                         coverage,
                     })
                     .collect(),
-            })],
+            ],
             ..FrameTileState::default()
         }
     }
