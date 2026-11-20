@@ -2648,6 +2648,84 @@ mod tests {
         }
     }
 
+    // A candidate turned away takes no space, so candidates after it still get one, however many are turned away.
+    #[test]
+    fn anchors_are_chosen_past_candidates_that_are_turned_away() {
+        let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
+        let document = contexts[0].spatial;
+        let scrollport = IntRect::new(0, 0, 100, 100);
+        let mut records = tree.compositor_scroll_table().nodes.to_vec();
+        let mut scrollers_without_wheel = Vec::new();
+        let mut innermost_scroller = document;
+        for _ in 0..8 {
+            let node = scroll_node(&mut tree, innermost_scroller);
+            let mut record = scroll_record(node, innermost_scroller, scrollport, 300.0, false);
+            record.can_be_wheel_scrolled_vertically = false;
+            records.push(record);
+            scrollers_without_wheel.push(node);
+            innermost_scroller = node;
+        }
+        let scroller_inside_too_many_scrollers = scroll_node(&mut tree, innermost_scroller);
+        records.push(scroll_record(
+            scroller_inside_too_many_scrollers,
+            innermost_scroller,
+            scrollport,
+            300.0,
+            false,
+        ));
+        let scroller_in_document = scroll_node(&mut tree, document);
+        records.push(scroll_record(scroller_in_document, document, scrollport, 300.0, false));
+        assert!(tree.set_compositor_scroll_table(CompositorScrollTable {
+            nodes: records.into(),
+            ..CompositorScrollTable::default()
+        }));
+        let mut animations = Vec::new();
+        for _ in 0..2000 {
+            let node = tree.append_spatial(
+                SpatialData::Transform(transform(FloatRect::new(0.0, 0.0, 10.0, 10.0))),
+                document,
+            );
+            tree.append_effect(
+                EffectNodeData::Effects(EffectsData {
+                    isolation: false,
+                    opacity: 1.0,
+                    blend_mode: CompositingAndBlendingOperator::Multiply,
+                    filter: None,
+                    backdrop_filter: None,
+                }),
+                EffectNodeIndex::NONE,
+                node,
+                ClipNodeIndex::NONE,
+            );
+            animations.push(spinning_animation(node));
+        }
+        let spinners: Vec<SpatialNodeIndex> = (0..3)
+            .map(|_| {
+                let node = tree.append_spatial(
+                    SpatialData::Transform(transform(FloatRect::new(0.0, 0.0, 10.0, 10.0))),
+                    document,
+                );
+                animations.push(spinning_animation(node));
+                node
+            })
+            .collect();
+        tree.set_visual_animations(animations);
+
+        let anchors = anchors_of_layer_plans(&tree);
+        let [first, second, third, fourth, fifth, ..] = scrollers_without_wheel[..] else {
+            unreachable!();
+        };
+        let mut expected_anchors = vec![document, first, scroller_in_document, second, third, fourth, fifth];
+        expected_anchors.extend(&spinners);
+        assert_eq!(anchors, expected_anchors);
+        let parent_indices: Vec<usize> = RasterSpaces::spaces_at_anchors(&tree, &anchors, VIEWPORT)
+            .iter()
+            .skip(1)
+            .map(|space| space.parent_index.0)
+            .collect();
+        assert_eq!(parent_indices, [0, 1, 1, 2, 4, 5, 6, 1, 1, 1]);
+    }
+
     #[test]
     fn a_mutated_plan_that_passes_its_checks_is_read_without_a_panic() {
         let mut generator = Xorshift(0x9e37_79b9_7f4a_7c15);

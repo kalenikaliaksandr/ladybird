@@ -8,6 +8,7 @@
 //! content is rastered at, and where that content can show around the node wherever the animation takes it.
 
 use crate::display_list::commands::{EffectNodeIndex, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX};
+use crate::display_list::placement::ValuesFoldedDownSpatialChains;
 use crate::easing::Easing;
 use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
 use crate::visual_animation::{VisualAnimation, VisualAnimationTransformOperation, VisualAnimationValue};
@@ -150,7 +151,12 @@ pub fn animated_transform_anchors(tree: &VisualContextTree) -> Vec<SpatialNodeIn
     if !is_animated_by_spatial_index.contains(&true) {
         return Vec::new();
     }
-    let sorting_root_by_spatial_index = tree.roots_of_contexts_sorting_planes_by_depth();
+    let mut chain_below_viewport_holds_animated_node = ValuesFoldedDownSpatialChains::<bool>::new(tree);
+    let mut matrices_from_root_to_node_spaces = ValuesFoldedDownSpatialChains::<FloatMatrix4x4>::new(tree);
+    let matrix_from_root_to_viewport_node_space = tree
+        .local_transform(VISUAL_VIEWPORT_NODE_INDEX, &[])
+        .applied_to(FloatMatrix4x4::identity());
+    let mut subtrees_that_keep_nodes_from_anchoring_spaces = None;
     let mut anchors = Vec::new();
     for (index, node) in tree.spatial_nodes.iter().enumerate() {
         if anchors.len() == MAXIMUM_ANIMATED_TRANSFORM_SPACE_COUNT {
@@ -163,36 +169,81 @@ pub fn animated_transform_anchors(tree: &VisualContextTree) -> Vec<SpatialNodeIn
         {
             continue;
         }
-        let mut ancestor = node.parent;
-        let mut is_outermost = true;
-        while ancestor != VISUAL_VIEWPORT_NODE_INDEX {
-            if is_animated_by_spatial_index[ancestor.0 as usize] {
-                is_outermost = false;
-                break;
-            }
-            ancestor = tree.spatial_nodes[ancestor.0 as usize].parent;
-        }
-        if !is_outermost || !matrix_from_root_to_node_space(tree, node.parent).is_2d_affine() {
+        let is_outermost = node.parent == VISUAL_VIEWPORT_NODE_INDEX
+            || chain_below_viewport_holds_animated_node.value_of(
+                tree,
+                node.parent,
+                false,
+                |node, chain_above_holds| chain_above_holds || is_animated_by_spatial_index[node.0 as usize],
+            ) == Some(false);
+        if !is_outermost {
             continue;
         }
-        let is_in_subtree = tree.spatial_nodes_in_subtrees_of(&[anchor]);
-        let touches_sorting_context = sorting_root_by_spatial_index
-            .iter()
-            .enumerate()
-            .any(|(spatial_index, root)| root.is_some() && (spatial_index == index || is_in_subtree[spatial_index]));
-        let holds_effect_reading_below_it = tree.effect_nodes.iter().any(|effect_node| {
-            is_in_subtree
-                .get(effect_node.spatial.0 as usize)
-                .copied()
-                .unwrap_or(false)
-                && effect_reads_what_is_below_it(&effect_node.data)
-        });
-        if touches_sorting_context || holds_effect_reading_below_it {
+        let is_under_2d_affine_transforms = matrices_from_root_to_node_spaces
+            .value_of(
+                tree,
+                node.parent,
+                matrix_from_root_to_viewport_node_space,
+                |node, matrix_from_root_to_parent_space| {
+                    tree.local_transform(node, &[])
+                        .applied_to(matrix_from_root_to_parent_space)
+                },
+            )
+            .is_some_and(|matrix| matrix.is_2d_affine());
+        if !is_under_2d_affine_transforms {
+            continue;
+        }
+        let subtrees = subtrees_that_keep_nodes_from_anchoring_spaces
+            .get_or_insert_with(|| SubtreesThatKeepNodesFromAnchoringSpaces::of(tree));
+        if subtrees.touch_sorting_context_by_spatial_index[index]
+            || subtrees.hold_effect_reading_below_it_by_spatial_index[index]
+        {
             continue;
         }
         anchors.push(anchor);
     }
     anchors
+}
+
+// Per spatial node, whether its subtree holds part of a 3D sorting context, and whether it holds an effect that reads
+// what is below it.
+struct SubtreesThatKeepNodesFromAnchoringSpaces {
+    touch_sorting_context_by_spatial_index: Vec<bool>,
+    hold_effect_reading_below_it_by_spatial_index: Vec<bool>,
+}
+
+impl SubtreesThatKeepNodesFromAnchoringSpaces {
+    fn of(tree: &VisualContextTree) -> Self {
+        let mut touch_sorting_context_by_spatial_index: Vec<bool> = tree
+            .roots_of_contexts_sorting_planes_by_depth()
+            .iter()
+            .map(Option::is_some)
+            .collect();
+        let mut hold_effect_reading_below_it_by_spatial_index = vec![false; tree.spatial_nodes.len()];
+        for effect_node in &tree.effect_nodes {
+            if effect_reads_what_is_below_it(&effect_node.data)
+                && let Some(holds) =
+                    hold_effect_reading_below_it_by_spatial_index.get_mut(effect_node.spatial.0 as usize)
+            {
+                *holds = true;
+            }
+        }
+        let mut live_nodes_parents_first = Vec::with_capacity(tree.spatial_nodes.len());
+        tree.visit_spatial_nodes_parents_first(|index| live_nodes_parents_first.push(index));
+        for &index in live_nodes_parents_first.iter().rev() {
+            if index == VISUAL_VIEWPORT_NODE_INDEX.0 as usize {
+                continue;
+            }
+            let parent = tree.spatial_nodes[index].parent.0 as usize;
+            touch_sorting_context_by_spatial_index[parent] |= touch_sorting_context_by_spatial_index[index];
+            hold_effect_reading_below_it_by_spatial_index[parent] |=
+                hold_effect_reading_below_it_by_spatial_index[index];
+        }
+        Self {
+            touch_sorting_context_by_spatial_index,
+            hold_effect_reading_below_it_by_spatial_index,
+        }
+    }
 }
 
 /// Whether an effect reads what is below it, which content of a space whose anchor the compositor animates cannot be

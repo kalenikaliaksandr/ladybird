@@ -216,6 +216,59 @@ fn node_keeps_whole_pixel_translations_below_it(data: &SpatialData) -> bool {
     }
 }
 
+/// A value per spatial node that is worked out of the node and the value of its parent, for each node asked about and
+/// the nodes above it, each once, so that questions about many nodes of a deep tree take one walk of each chain. The
+/// visual viewport's node has the value given for it. A node whose chain leaves the tree or loops has none.
+pub(crate) struct ValuesFoldedDownSpatialChains<T> {
+    value_by_spatial_index: Vec<Option<T>>,
+    chain_without_values: Vec<SpatialNodeIndex>,
+}
+
+impl<T: Copy> ValuesFoldedDownSpatialChains<T> {
+    pub(crate) fn new(tree: &VisualContextTree) -> Self {
+        Self {
+            value_by_spatial_index: vec![None; tree.spatial_nodes.len()],
+            chain_without_values: Vec::new(),
+        }
+    }
+
+    /// The value of `node`, where the value of the viewport's node is `value_of_viewport` and that of any other node
+    /// is what `fold` gives for it and the value of its parent. Every question to one table gives the same two.
+    pub(crate) fn value_of(
+        &mut self,
+        tree: &VisualContextTree,
+        node: SpatialNodeIndex,
+        value_of_viewport: T,
+        fold: impl Fn(SpatialNodeIndex, T) -> T,
+    ) -> Option<T> {
+        let mut node_on_chain = node;
+        let mut value = loop {
+            let Some(&known_value) = self.value_by_spatial_index.get(node_on_chain.0 as usize) else {
+                self.chain_without_values.clear();
+                return None;
+            };
+            if let Some(known_value) = known_value {
+                break known_value;
+            }
+            if node_on_chain == VISUAL_VIEWPORT_NODE_INDEX {
+                break value_of_viewport;
+            }
+            if self.chain_without_values.len() == self.value_by_spatial_index.len() {
+                self.chain_without_values.clear();
+                return None;
+            }
+            self.chain_without_values.push(node_on_chain);
+            node_on_chain = tree.spatial_nodes[node_on_chain.0 as usize].parent;
+        };
+        self.value_by_spatial_index[node_on_chain.0 as usize] = Some(value);
+        while let Some(node_below) = self.chain_without_values.pop() {
+            value = fold(node_below, value);
+            self.value_by_spatial_index[node_below.0 as usize] = Some(value);
+        }
+        Some(value)
+    }
+}
+
 /// Per spatial node, whether where it lands can change while the list and the tree's structure stay: it is under a
 /// sticky box, an anchor scroll shift or a transform the compositor animates.
 pub fn spatial_nodes_that_move_on_their_own(tree: &VisualContextTree) -> Vec<bool> {
@@ -303,25 +356,40 @@ fn visual_viewport_only_translates(tree: &VisualContextTree) -> bool {
     translation_if_only_translates(&transform.matrix_including_origin()).is_some()
 }
 
-fn depth_below_viewport_if_on_whole_device_pixels(
-    tree: &VisualContextTree,
-    node: SpatialNodeIndex,
-    spatial_node_moves_on_its_own: &[bool],
-) -> Option<usize> {
-    let mut depth = 1;
-    let mut ancestor = tree.spatial_nodes.get(node.0 as usize)?.parent;
-    while ancestor != VISUAL_VIEWPORT_NODE_INDEX {
-        let ancestor_node = tree.spatial_nodes.get(ancestor.0 as usize)?;
-        if depth > tree.spatial_nodes.len()
-            || !node_keeps_whole_pixel_translations_below_it(&ancestor_node.data)
-            || spatial_node_moves_on_its_own[ancestor.0 as usize]
-        {
-            return None;
+// How deep below the viewport each node is, where nothing between it and the viewport transforms or moves on its own,
+// so that content of the node lands on whole device pixels wherever it is scrolled to.
+struct DepthsBelowViewportOnWholeDevicePixels<'a> {
+    spatial_node_moves_on_its_own: &'a [bool],
+    // Per node, how many nodes from it up to the viewport there are, where none of them breaks whole pixels.
+    node_count_of_chain_on_whole_device_pixels: ValuesFoldedDownSpatialChains<Option<usize>>,
+}
+
+impl<'a> DepthsBelowViewportOnWholeDevicePixels<'a> {
+    fn new(tree: &VisualContextTree, spatial_node_moves_on_its_own: &'a [bool]) -> Self {
+        Self {
+            spatial_node_moves_on_its_own,
+            node_count_of_chain_on_whole_device_pixels: ValuesFoldedDownSpatialChains::new(tree),
         }
-        depth += 1;
-        ancestor = ancestor_node.parent;
     }
-    Some(depth)
+
+    fn depth_of(&mut self, tree: &VisualContextTree, node: SpatialNodeIndex) -> Option<usize> {
+        let parent = tree.spatial_nodes.get(node.0 as usize)?.parent;
+        let spatial_node_moves_on_its_own = self.spatial_node_moves_on_its_own;
+        let node_count_of_chain_from_parent = self.node_count_of_chain_on_whole_device_pixels.value_of(
+            tree,
+            parent,
+            Some(0),
+            |node, node_count_of_chain_from_parent| {
+                let node_breaks_whole_pixels =
+                    !node_keeps_whole_pixel_translations_below_it(&tree.spatial_nodes[node.0 as usize].data)
+                        || spatial_node_moves_on_its_own[node.0 as usize];
+                node_count_of_chain_from_parent
+                    .filter(|_| !node_breaks_whole_pixels)
+                    .map(|count| count + 1)
+            },
+        )??;
+        Some(node_count_of_chain_from_parent + 1)
+    }
 }
 
 fn shallowest_first_up_to(
@@ -369,6 +437,15 @@ fn sticky_boxes_that_can_be_held_with_depths(
         spatial_nodes_that_move_on_their_own,
         scrollers_with_spaces,
     );
+    let mut depths_below_viewport = DepthsBelowViewportOnWholeDevicePixels::new(tree, &spatial_node_moves_on_its_own);
+    const _: () = assert!(MAXIMUM_SCROLLER_SPACE_COUNT <= u64::BITS as usize);
+    let mut scrollers_with_spaces_at_or_above = ValuesFoldedDownSpatialChains::<u64>::new(tree);
+    let bit_of_scroller_with_space = |node: SpatialNodeIndex| {
+        scrollers_with_spaces
+            .iter()
+            .position(|&scroller| scroller == node)
+            .map_or(0, |position| 1u64 << position)
+    };
     tree.spatial_nodes
         .iter()
         .enumerate()
@@ -381,9 +458,12 @@ fn sticky_boxes_that_can_be_held_with_depths(
             {
                 return None;
             }
-            let depth =
-                depth_below_viewport_if_on_whole_device_pixels(tree, node_index, &spatial_node_moves_on_its_own)?;
-            let moves_with_its_scroller = tree.spatial_is_ancestor_or_self(sticky.scroller, node.parent);
+            let depth = depths_below_viewport.depth_of(tree, node_index)?;
+            let moves_with_its_scroller = scrollers_with_spaces_at_or_above
+                .value_of(tree, node.parent, 0, |node, scrollers_above| {
+                    scrollers_above | bit_of_scroller_with_space(node)
+                })
+                .is_some_and(|scrollers| scrollers & bit_of_scroller_with_space(sticky.scroller) != 0);
             let (lowest, highest) = sticky.offset_range_without_sticky_ancestors();
             let can_be_held = lowest.x < 0.0 || lowest.y < 0.0 || highest.x > 0.0 || highest.y > 0.0;
             (moves_with_its_scroller && can_be_held).then_some((depth, node_index))
@@ -397,16 +477,19 @@ struct ScrollerThatCanHaveSpace {
     can_be_wheel_scrolled: bool,
 }
 
+// A candidate that gets a space takes spaces for the candidates around it too, so it gets one only where those fit.
 fn scrollers_to_give_spaces_parents_first(
     tree: &VisualContextTree,
     mut candidates: Vec<ScrollerThatCanHaveSpace>,
     maximum_count: usize,
 ) -> Vec<SpatialNodeIndex> {
-    let mut is_candidate = vec![false; tree.spatial_nodes.len()];
+    // Zero for a node that is not a candidate, as every candidate is at least one deep.
+    let mut candidate_depth_by_spatial_index = vec![0usize; tree.spatial_nodes.len()];
     for candidate in &candidates {
-        is_candidate[candidate.node.0 as usize] = true;
+        candidate_depth_by_spatial_index[candidate.node.0 as usize] = candidate.depth;
     }
     candidates.sort_by_key(|candidate| (!candidate.can_be_wheel_scrolled, candidate.depth, candidate.node.0));
+    let mut nearest_candidate_at_or_above = ValuesFoldedDownSpatialChains::<Option<SpatialNodeIndex>>::new(tree);
     let mut is_chosen = vec![false; tree.spatial_nodes.len()];
     let mut chosen_depths_and_nodes: Vec<(usize, SpatialNodeIndex)> = Vec::new();
     let mut candidate_and_unchosen_candidate_ancestors = Vec::new();
@@ -418,17 +501,33 @@ fn scrollers_to_give_spaces_parents_first(
             continue;
         }
         candidate_and_unchosen_candidate_ancestors.clear();
-        let mut node = candidate.node;
-        let mut depth = candidate.depth;
-        while node != VISUAL_VIEWPORT_NODE_INDEX {
+        let mut candidate_on_chain = Some(candidate.node);
+        let mut fits = true;
+        while let Some(node) = candidate_on_chain {
             let index = node.0 as usize;
-            if is_candidate[index] && !is_chosen[index] {
-                candidate_and_unchosen_candidate_ancestors.push((depth, node));
+            if !is_chosen[index] {
+                candidate_and_unchosen_candidate_ancestors.push((candidate_depth_by_spatial_index[index], node));
+                if chosen_depths_and_nodes.len() + candidate_and_unchosen_candidate_ancestors.len() > maximum_count {
+                    fits = false;
+                    break;
+                }
             }
-            depth -= 1;
-            node = tree.spatial_nodes[index].parent;
+            candidate_on_chain = nearest_candidate_at_or_above
+                .value_of(
+                    tree,
+                    tree.spatial_nodes[index].parent,
+                    None,
+                    |node, nearest_candidate_above| {
+                        if candidate_depth_by_spatial_index[node.0 as usize] != 0 {
+                            Some(node)
+                        } else {
+                            nearest_candidate_above
+                        }
+                    },
+                )
+                .flatten();
         }
-        if chosen_depths_and_nodes.len() + candidate_and_unchosen_candidate_ancestors.len() > maximum_count {
+        if !fits {
             continue;
         }
         for &(_, node) in &candidate_and_unchosen_candidate_ancestors {
@@ -454,6 +553,8 @@ pub fn raster_space_anchors(
     if !visual_viewport_only_translates(tree) {
         return Vec::new();
     }
+    let mut depths_below_viewport =
+        DepthsBelowViewportOnWholeDevicePixels::new(tree, spatial_nodes_that_move_on_their_own);
     let candidate_scrollers: Vec<ScrollerThatCanHaveSpace> = tree
         .compositor_scroll_table()
         .nodes
@@ -467,11 +568,7 @@ pub fn raster_space_anchors(
                 return None;
             }
             Some(ScrollerThatCanHaveSpace {
-                depth: depth_below_viewport_if_on_whole_device_pixels(
-                    tree,
-                    node,
-                    spatial_nodes_that_move_on_their_own,
-                )?,
+                depth: depths_below_viewport.depth_of(tree, node)?,
                 node,
                 can_be_wheel_scrolled: record.can_be_wheel_scrolled_horizontally
                     || record.can_be_wheel_scrolled_vertically,
@@ -538,6 +635,71 @@ pub(crate) fn enclosing_int_rect_within_extent_limit(rect: FloatRect) -> IntRect
     enclosing_int_rect(rect.intersected(extent_limit_rect()))
 }
 
+// The space anchored at `anchor` inside the space at `parent`, unless the anchor is a scroller the compositor does not
+// scroll.
+fn space_at_anchor(
+    tree: &VisualContextTree,
+    anchor: SpatialNodeIndex,
+    parent: RasterSpaceIndex,
+) -> Option<RasterSpace> {
+    if let SpatialData::Transform(_) = &tree.spatial_nodes[anchor.0 as usize].data {
+        let raster_scale = raster_scale_of(tree, anchor);
+        return Some(RasterSpace {
+            anchor,
+            identity: identity_of_animated_transform_anchor(anchor, raster_scale),
+            parent_index: parent,
+            anchor_kind: RasterSpaceAnchorKind::AnimatedTransform { raster_scale },
+            lowest_anchor_translation: FloatPoint::default(),
+            highest_anchor_translation: FloatPoint::default(),
+            extent: IntRect::default(),
+        });
+    }
+    if let SpatialData::Sticky(sticky) = &tree.spatial_nodes[anchor.0 as usize].data {
+        let (lowest_anchor_translation, highest_anchor_translation) = sticky.offset_range_without_sticky_ancestors();
+        return Some(RasterSpace {
+            anchor,
+            identity: identity_of_sticky_box_anchor(sticky, anchor),
+            parent_index: parent,
+            anchor_kind: RasterSpaceAnchorKind::StickyBox {
+                border_box_origin: sticky.border_box_origin,
+            },
+            lowest_anchor_translation,
+            highest_anchor_translation,
+            extent: IntRect::default(),
+        });
+    }
+    let record = compositor_scroll_record_of(tree, anchor)?;
+    let mut lowest_anchor_translation = FloatPoint {
+        x: -record.max_scroll_offset.x,
+        y: -record.max_scroll_offset.y,
+    };
+    let mut highest_anchor_translation = FloatPoint {
+        x: -record.min_scroll_offset.x,
+        y: -record.min_scroll_offset.y,
+    };
+    if record.shows_overscroll_effect_horizontally {
+        lowest_anchor_translation.x -= record.scrollport_rect.width as f32;
+        highest_anchor_translation.x += record.scrollport_rect.width as f32;
+    }
+    if record.shows_overscroll_effect_vertically {
+        lowest_anchor_translation.y -= record.scrollport_rect.height as f32;
+        highest_anchor_translation.y += record.scrollport_rect.height as f32;
+    }
+    Some(RasterSpace {
+        anchor,
+        identity: identity_of_scroller_anchor(record),
+        parent_index: parent,
+        anchor_kind: if record.is_viewport {
+            RasterSpaceAnchorKind::ViewportScroller
+        } else {
+            RasterSpaceAnchorKind::Scroller
+        },
+        lowest_anchor_translation,
+        highest_anchor_translation,
+        extent: IntRect::default(),
+    })
+}
+
 /// The raster spaces of a tree at a set of anchors, and the deepest of them that each spatial node moves with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterSpaces {
@@ -553,77 +715,39 @@ impl RasterSpaces {
         viewport_rect: IntRect,
     ) -> Vec<RasterSpace> {
         let mut spaces = vec![RasterSpace::of_viewport(viewport_rect)];
+        let anchor_set: std::collections::HashSet<SpatialNodeIndex> = anchors.iter().copied().collect();
+        let mut nearest_anchor_at_or_above = ValuesFoldedDownSpatialChains::<Option<SpatialNodeIndex>>::new(tree);
+        let mut first_space_of_anchor: HashMap<SpatialNodeIndex, RasterSpaceIndex> = HashMap::new();
         for &anchor in anchors {
+            // The space is in the space of the nearest anchor above it that has a space already.
             let mut parent = RasterSpaceIndex::VIEWPORT;
             let mut ancestor = tree.spatial_nodes[anchor.0 as usize].parent;
             while ancestor != VISUAL_VIEWPORT_NODE_INDEX {
-                if let Some(space) = spaces.iter().position(|space| space.anchor == ancestor) {
-                    parent = RasterSpaceIndex(space);
+                let Some(nearest_anchor) = nearest_anchor_at_or_above
+                    .value_of(tree, ancestor, None, |node, nearest_anchor_above| {
+                        if anchor_set.contains(&node) {
+                            Some(node)
+                        } else {
+                            nearest_anchor_above
+                        }
+                    })
+                    .flatten()
+                else {
+                    break;
+                };
+                if let Some(&space) = first_space_of_anchor.get(&nearest_anchor) {
+                    parent = space;
                     break;
                 }
-                ancestor = tree.spatial_nodes[ancestor.0 as usize].parent;
+                ancestor = tree.spatial_nodes[nearest_anchor.0 as usize].parent;
             }
-            if let SpatialData::Transform(_) = &tree.spatial_nodes[anchor.0 as usize].data {
-                let raster_scale = raster_scale_of(tree, anchor);
-                spaces.push(RasterSpace {
-                    anchor,
-                    identity: identity_of_animated_transform_anchor(anchor, raster_scale),
-                    parent_index: parent,
-                    anchor_kind: RasterSpaceAnchorKind::AnimatedTransform { raster_scale },
-                    lowest_anchor_translation: FloatPoint::default(),
-                    highest_anchor_translation: FloatPoint::default(),
-                    extent: IntRect::default(),
-                });
-                continue;
-            }
-            if let SpatialData::Sticky(sticky) = &tree.spatial_nodes[anchor.0 as usize].data {
-                let (lowest_anchor_translation, highest_anchor_translation) =
-                    sticky.offset_range_without_sticky_ancestors();
-                spaces.push(RasterSpace {
-                    anchor,
-                    identity: identity_of_sticky_box_anchor(sticky, anchor),
-                    parent_index: parent,
-                    anchor_kind: RasterSpaceAnchorKind::StickyBox {
-                        border_box_origin: sticky.border_box_origin,
-                    },
-                    lowest_anchor_translation,
-                    highest_anchor_translation,
-                    extent: IntRect::default(),
-                });
-                continue;
-            }
-            let Some(record) = compositor_scroll_record_of(tree, anchor) else {
+            let Some(space) = space_at_anchor(tree, anchor, parent) else {
                 continue;
             };
-            let mut lowest_anchor_translation = FloatPoint {
-                x: -record.max_scroll_offset.x,
-                y: -record.max_scroll_offset.y,
-            };
-            let mut highest_anchor_translation = FloatPoint {
-                x: -record.min_scroll_offset.x,
-                y: -record.min_scroll_offset.y,
-            };
-            if record.shows_overscroll_effect_horizontally {
-                lowest_anchor_translation.x -= record.scrollport_rect.width as f32;
-                highest_anchor_translation.x += record.scrollport_rect.width as f32;
-            }
-            if record.shows_overscroll_effect_vertically {
-                lowest_anchor_translation.y -= record.scrollport_rect.height as f32;
-                highest_anchor_translation.y += record.scrollport_rect.height as f32;
-            }
-            spaces.push(RasterSpace {
-                anchor,
-                identity: identity_of_scroller_anchor(record),
-                parent_index: parent,
-                anchor_kind: if record.is_viewport {
-                    RasterSpaceAnchorKind::ViewportScroller
-                } else {
-                    RasterSpaceAnchorKind::Scroller
-                },
-                lowest_anchor_translation,
-                highest_anchor_translation,
-                extent: IntRect::default(),
-            });
+            first_space_of_anchor
+                .entry(anchor)
+                .or_insert(RasterSpaceIndex(spaces.len()));
+            spaces.push(space);
         }
         spaces
     }
@@ -641,21 +765,26 @@ impl RasterSpaces {
 
     /// The given spaces, which a tree offers, and the deepest of them each spatial node of the tree moves with.
     pub fn of_spaces(tree: &VisualContextTree, spaces: Vec<RasterSpace>) -> Self {
+        let mut first_space_of_anchor: HashMap<SpatialNodeIndex, RasterSpaceIndex> = HashMap::new();
+        for (index, space) in spaces.iter().enumerate().skip(1) {
+            first_space_of_anchor
+                .entry(space.anchor)
+                .or_insert(RasterSpaceIndex(index));
+        }
         let mut deepest_space_of_spatial_node = vec![RasterSpaceIndex::VIEWPORT; tree.spatial_nodes.len()];
         tree.visit_spatial_nodes_parents_first(|index| {
             if index == VISUAL_VIEWPORT_NODE_INDEX.0 as usize {
                 return;
             }
             let node = &tree.spatial_nodes[index];
-            deepest_space_of_spatial_node[index] = if let Some(index_after_viewport) =
-                spaces.iter().skip(1).position(|space| space.anchor.0 as usize == index)
-            {
-                RasterSpaceIndex(index_after_viewport + 1)
-            } else if matches!(node.data, SpatialData::AnchorScrollShift(_)) {
-                RasterSpaceIndex::VIEWPORT
-            } else {
-                deepest_space_of_spatial_node[node.parent.0 as usize]
-            };
+            deepest_space_of_spatial_node[index] =
+                if let Some(&space) = first_space_of_anchor.get(&SpatialNodeIndex(index as u32)) {
+                    space
+                } else if matches!(node.data, SpatialData::AnchorScrollShift(_)) {
+                    RasterSpaceIndex::VIEWPORT
+                } else {
+                    deepest_space_of_spatial_node[node.parent.0 as usize]
+                };
         });
         Self {
             spaces,
