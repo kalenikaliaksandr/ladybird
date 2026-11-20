@@ -2142,9 +2142,10 @@ fn build_layer_stack(
                         };
                     }
                     Err(why_plan_fails_checks) => {
-                        if cfg!(debug_assertions) {
-                            panic!("the compositor refuses a plan of layers the planner made: {why_plan_fails_checks}");
-                        }
+                        debug_assert!(
+                            false,
+                            "the compositor refuses a plan of layers the planner made: {why_plan_fails_checks}"
+                        );
                         eprintln!(
                             "WebContent: Sending one layer, as the compositor refuses the plan of layers: {why_plan_fails_checks}"
                         );
