@@ -270,9 +270,8 @@ pub struct PlacedEffect {
     pub reach: IntRect,
     /// What it reads of what is composited below it there.
     pub backdrop_read_reach: Reach<IntRect>,
-    /// Whether what it reads below it is the content of the root group, which the bands it can read are only known of
-    /// as the stack is cut into them.
-    pub reads_root_group: bool,
+    /// None for an effect placed only as it reads the content of the root group, which the bands it can read are only
+    /// known of as the stack is cut into them.
     pub why_composited_regardless_of_layer_content: Option<WhyEffectIsComposited>,
 }
 
@@ -1054,7 +1053,6 @@ fn place_list(
             placed_effect_around_index: innermost_placed_effect_around,
             reach: reach_by_effect_index[effect.0 as usize],
             backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
-            reads_root_group,
             why_composited_regardless_of_layer_content,
         });
     }
@@ -1543,9 +1541,6 @@ impl StackBeingBuilt<'_> {
     ) -> bool {
         if placed_effect.why_composited_regardless_of_layer_content.is_some() {
             return true;
-        }
-        if !placed_effect.reads_root_group {
-            return false;
         }
         let finds_all_it_reads_in_own_layer = match placed_effect.backdrop_read_reach {
             Reach::Nothing => true,
@@ -2748,7 +2743,7 @@ mod tests {
                 .placement
                 .placed_effects
                 .iter()
-                .all(|placed| !placed.reads_root_group)
+                .all(|placed| placed.why_composited_regardless_of_layer_content.is_some())
         );
     }
 
