@@ -48,6 +48,7 @@ use super::tiles::{
     CellRange, TileCoord, entries_within, for_each_entry_within, reaches_too_many_cells_to_follow_one_by_one,
     tile_coords_touching, tile_count_touching,
 };
+use super::window_server_placement::RoundedRect;
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
 use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::{
@@ -625,14 +626,9 @@ fn reach_extended_through_backdrop_reads(
     reach
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct DeviceAlignedRoundedRect {
-    rect: FloatRect,
-    horizontal_and_vertical_radii_clockwise_from_top_left: [(f32, f32); 4],
-}
-
-impl DeviceAlignedRoundedRect {
-    fn of(
+impl RoundedRect {
+    /// The rect in device pixels, where its space maps onto them by a scale and a translation.
+    fn device_aligned_of(
         world: &WorldTransforms,
         spatial: SpatialNodeIndex,
         rect: FloatRect,
@@ -667,29 +663,6 @@ impl DeviceAlignedRoundedRect {
         })
     }
 
-    fn boxes_rounded_corners_curve_within(&self) -> [FloatRect; 4] {
-        let rect = self.rect;
-        let [top_left, top_right, bottom_right, bottom_left] =
-            self.horizontal_and_vertical_radii_clockwise_from_top_left;
-        [
-            FloatRect::new(rect.x, rect.y, top_left.0, top_left.1),
-            FloatRect::new(rect.right() - top_right.0, rect.y, top_right.0, top_right.1),
-            FloatRect::new(
-                rect.right() - bottom_right.0,
-                rect.bottom() - bottom_right.1,
-                bottom_right.0,
-                bottom_right.1,
-            ),
-            FloatRect::new(rect.x, rect.bottom() - bottom_left.1, bottom_left.0, bottom_left.1),
-        ]
-    }
-
-    fn rounded_corner_reaches_into(&self, area: FloatRect) -> bool {
-        self.boxes_rounded_corners_curve_within()
-            .iter()
-            .any(|corner| !corner.is_empty() && !corner.intersected(area).is_empty())
-    }
-
     fn covers(&self, area: FloatRect) -> bool {
         self.rect.contains_rect(area) && !self.rounded_corner_reaches_into(area)
     }
@@ -721,8 +694,8 @@ impl DeviceAlignedRoundedRect {
 
 #[derive(Clone, Copy, Debug)]
 struct DeviceAlignedFill {
-    rect: DeviceAlignedRoundedRect,
-    unfilled_inner_rect_of_ring: Option<DeviceAlignedRoundedRect>,
+    rect: RoundedRect,
+    unfilled_inner_rect_of_ring: Option<RoundedRect>,
     content_hash_except_rects: ContentHash,
     color: Color,
     draws_recorded_color_with_source_over: bool,
@@ -1639,7 +1612,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     rect,
                     corner_radii,
                     mode,
-                }) => DeviceAlignedRoundedRect::of(&self.geometry.world, node.spatial, *rect, corner_radii)
+                }) => RoundedRect::device_aligned_of(&self.geometry.world, node.spatial, *rect, corner_radii)
                     .map(|rect| (rect, *mode)),
                 _ => None,
             };
@@ -2039,7 +2012,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             _ => return None,
         };
         let unfilled_inner_rect_of_ring = match unfilled_inner_rect_of_ring {
-            Some(unfilled_inner_rect) => Some(DeviceAlignedRoundedRect::of(
+            Some(unfilled_inner_rect) => Some(RoundedRect::device_aligned_of(
                 &self.geometry.world,
                 context.spatial,
                 unfilled_inner_rect.to_float(),
@@ -2048,7 +2021,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             None => None,
         };
         Some(DeviceAlignedFill {
-            rect: DeviceAlignedRoundedRect::of(&self.geometry.world, context.spatial, rect.to_float(), &corner_radii)?,
+            rect: RoundedRect::device_aligned_of(
+                &self.geometry.world,
+                context.spatial,
+                rect.to_float(),
+                &corner_radii,
+            )?,
             unfilled_inner_rect_of_ring,
             content_hash_except_rects: hasher.finish(),
             color,
@@ -2341,7 +2319,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 return false;
             };
             !node.clips_everything
-                && DeviceAlignedRoundedRect::of(&self.geometry.world, node.spatial, *rect, corner_radii)
+                && RoundedRect::device_aligned_of(&self.geometry.world, node.spatial, *rect, corner_radii)
                     .is_some_and(|rect| rect.covers(area_in_device_pixels))
         })
     }

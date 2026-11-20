@@ -109,12 +109,15 @@ fn write_float_rect(formatter: &mut std::fmt::Formatter<'_>, name: &str, rect: F
     )
 }
 
-struct RoundedClipInViewport {
-    rect: FloatRect,
-    horizontal_and_vertical_radii_clockwise_from_top_left: [(f32, f32); 4],
+/// A rect whose corners can be rounded, with the horizontal and the vertical radius of each corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RoundedRect {
+    pub(crate) rect: FloatRect,
+    pub(crate) horizontal_and_vertical_radii_clockwise_from_top_left: [(f32, f32); 4],
 }
 
-impl RoundedClipInViewport {
+impl RoundedRect {
+    /// The boxes that the rounded corners curve within, empty for a corner that is not rounded.
     fn corner_boxes(&self) -> [FloatRect; 4] {
         let rect = self.rect;
         let [top_left, top_right, bottom_right, bottom_left] =
@@ -130,6 +133,12 @@ impl RoundedClipInViewport {
             ),
             FloatRect::new(rect.x, rect.bottom() - bottom_left.1, bottom_left.0, bottom_left.1),
         ]
+    }
+
+    pub(crate) fn rounded_corner_reaches_into(&self, area: FloatRect) -> bool {
+        self.corner_boxes()
+            .iter()
+            .any(|corner_box| !corner_box.is_empty() && !corner_box.intersected(area).is_empty())
     }
 
     fn with_single_radius(&self) -> Result<RoundedClip, WhyWindowServerCannotShowMedia> {
@@ -173,39 +182,28 @@ fn clip_leaves_content_whole(
     if mode != ClipMode::Intersect || !rect.contains_rect(content_rect) {
         return false;
     }
-    let corner_box = |x: f32, y: f32, corner: CornerRadius| {
+    let radii = |corner: CornerRadius| {
         if !corner.is_present() {
-            return FloatRect::default();
+            return (0.0, 0.0);
         }
-        FloatRect::new(x, y, corner.horizontal_radius as f32, corner.vertical_radius as f32)
+        (corner.horizontal_radius as f32, corner.vertical_radius as f32)
     };
-    let boxes = [
-        corner_box(rect.x, rect.y, corner_radii.top_left),
-        corner_box(
-            rect.right() - corner_radii.top_right.horizontal_radius as f32,
-            rect.y,
-            corner_radii.top_right,
-        ),
-        corner_box(
-            rect.right() - corner_radii.bottom_right.horizontal_radius as f32,
-            rect.bottom() - corner_radii.bottom_right.vertical_radius as f32,
-            corner_radii.bottom_right,
-        ),
-        corner_box(
-            rect.x,
-            rect.bottom() - corner_radii.bottom_left.vertical_radius as f32,
-            corner_radii.bottom_left,
-        ),
-    ];
-    boxes
-        .iter()
-        .all(|corner_box| corner_box.is_empty() || corner_box.intersected(content_rect).is_empty())
+    let rounded_rect = RoundedRect {
+        rect,
+        horizontal_and_vertical_radii_clockwise_from_top_left: [
+            radii(corner_radii.top_left),
+            radii(corner_radii.top_right),
+            radii(corner_radii.bottom_right),
+            radii(corner_radii.bottom_left),
+        ],
+    };
+    !rounded_rect.rounded_corner_reaches_into(content_rect)
 }
 
 #[derive(Default)]
 struct ClipsInViewport {
     rect_clips: Vec<FloatRect>,
-    rounded_clips: Vec<RoundedClipInViewport>,
+    rounded_clips: Vec<RoundedRect>,
 }
 
 impl ClipsInViewport {
@@ -254,7 +252,7 @@ impl ClipsInViewport {
         if mirrors_top_and_bottom {
             radii = [radii[3], radii[2], radii[1], radii[0]];
         }
-        self.rounded_clips.push(RoundedClipInViewport {
+        self.rounded_clips.push(RoundedRect {
             rect: rect_in_viewport,
             horizontal_and_vertical_radii_clockwise_from_top_left: radii,
         });
@@ -350,11 +348,7 @@ pub fn window_server_placement(
         .intersected(clip_rect);
     let mut rounded_clip = None;
     for rounded_clip_in_viewport in &clips.rounded_clips {
-        let corners_cut_visible_content = rounded_clip_in_viewport
-            .corner_boxes()
-            .iter()
-            .any(|corner_box| !corner_box.is_empty() && !corner_box.intersected(visible_content).is_empty());
-        if !corners_cut_visible_content {
+        if !rounded_clip_in_viewport.rounded_corner_reaches_into(visible_content) {
             continue;
         }
         if rounded_clip.is_some() {
