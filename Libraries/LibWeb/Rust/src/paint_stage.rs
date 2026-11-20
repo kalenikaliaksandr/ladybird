@@ -233,8 +233,9 @@ impl PaintStage {
     }
 }
 
+static PAINT_THREAD: OnceLock<PaintThread> = OnceLock::new();
+
 fn the_paint_thread() -> &'static PaintThread {
-    static PAINT_THREAD: OnceLock<PaintThread> = OnceLock::new();
     PAINT_THREAD.get_or_init(|| PaintThread {
         thread: StageThread::spawn(
             "Paint",
@@ -342,6 +343,24 @@ pub unsafe extern "C" fn paint_stage_adopt_compositor_poster(poster: FfiThreadSa
     paint_thread().post(move || {
         let IncomingPoster(poster) = incoming;
         Presenting::lend(|presenting| presenting.stage.present_through(Some(poster)));
+    });
+}
+
+/// Forgets what the compositor kept of the display lists sent for the context `context_id` names, after the frames
+/// handed to the Paint thread before. Only the compositor host calls this, as it destroys the context, which declares
+/// it. The compositor never gives a destroyed context's id to another context.
+#[unsafe(no_mangle)]
+pub extern "C" fn paint_stage_forget_destroyed_compositor_context(context_id: u64) {
+    let Some(paint_thread) = PAINT_THREAD.get() else {
+        return;
+    };
+    paint_thread.thread.post(move || {
+        Presenting::lend(|presenting| {
+            presenting
+                .stage
+                .sent_display_list_chunks
+                .remove(&CompositorContextId(context_id));
+        });
     });
 }
 
