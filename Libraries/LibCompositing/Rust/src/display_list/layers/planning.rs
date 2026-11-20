@@ -28,7 +28,7 @@ use crate::display_list::effect_geometry::{
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
-    RunGroupIndex, is_finite_rect,
+    RunGroupIndex, enclosing_int_rect_within_extent_limit, is_finite_rect,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
@@ -37,7 +37,7 @@ use crate::display_list::tiles::{
     TILE_SIZE_IN_DEVICE_PIXELS, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching,
 };
 use crate::visual_context::{EffectNodeData, VisualContextTree};
-use libgfx_rust::{CornerRadii, FloatPoint, IntRect, enclosing_int_rect};
+use libgfx_rust::{CornerRadii, FloatPoint, IntRect};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -1354,7 +1354,8 @@ fn swept_reach_of_animated_space_in_parent_space(
     let swept_reach = match swept_bounds_in_parent_space {
         Some(bounds) => {
             let margin = crate::display_list::placement::ANTIALIASING_MARGIN_IN_DEVICE_PIXELS;
-            let swept_rect = enclosing_int_rect(bounds).inflated_edges(margin, margin, margin, margin);
+            let swept_rect =
+                enclosing_int_rect_within_extent_limit(bounds).inflated_edges(margin, margin, margin, margin);
             reach_within_clips_fixed_in_parent_space.limited_to(swept_rect)
         }
         None => reach_within_clips_fixed_in_parent_space,
@@ -3678,6 +3679,28 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_slide_farther_than_extents_reach_reaches_the_whole_viewport() {
+        let mut tree = tree_with_root_isolation_effect();
+        let viewport = root_context(&tree);
+        let slider = transformed_context(&mut tree, viewport, FloatRect::new(0.0, 0.0, 50.0, 50.0));
+        tree.set_visual_animations(vec![transform_animation_of(
+            slider.spatial,
+            crate::host::FfiVisualAnimationTransformOperationKind::TranslateX,
+            -3.0e9,
+            3.0e9,
+        )]);
+        let stack = TestList::new()
+            .with(fill(IntRect::new(0, 0, 50, 50)), slider)
+            .with(fill(IntRect::new(0, 50, 100, 100)), viewport)
+            .stack(&tree, &[]);
+        assert_eq!(space_names(&stack), ["viewport", "animated@s1 in viewport"]);
+        assert_eq!(
+            stack.swept_reach_in_parent_space_by_space_index[1],
+            Some(IntRect::new(0, 0, 800, 56))
+        );
     }
 
     #[test]
