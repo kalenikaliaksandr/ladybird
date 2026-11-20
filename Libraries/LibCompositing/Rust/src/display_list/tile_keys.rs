@@ -23,8 +23,8 @@ use super::commands::{
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{
-    FiltersInsideInnermostCompositedEffects, nearest_spreading_effects, outermost_effects_with_filters,
-    spreading_filter_of,
+    FiltersInsideInnermostCompositedEffects, nearest_effects_at_or_above_where, nearest_spreading_effects,
+    outermost_effects_with_filters, spreading_filter_of,
 };
 use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack};
 use super::nested_records::{
@@ -52,7 +52,7 @@ use crate::visual_context::{
 use foldhash::fast::{FixedState, FoldHasher};
 use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
@@ -2687,27 +2687,27 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 })
                 .collect();
             let tree = list.tree;
-            let mut masks_around_held_runs = Vec::new();
+            let mut effect_is_around_held_run = vec![false; tree.effect_nodes.len()];
             for (chunk_index, held_offset_ranges) in &held_offset_ranges_by_chunk {
                 let runs = display_list.chunk(*chunk_index).runs();
                 for (run_index, _) in held_runs_with_first_held_offsets(runs, held_offset_ranges) {
                     let mut effect = runs[run_index.0 as usize].context.effect;
-                    while !effect.is_none() {
-                        let node = &tree.effect_nodes[effect.0 as usize];
-                        if matches!(node.data, EffectNodeData::Mask(_)) && !masks_around_held_runs.contains(&effect) {
-                            masks_around_held_runs.push(effect);
-                        }
-                        effect = node.parent;
+                    while !effect.is_none() && !effect_is_around_held_run[effect.0 as usize] {
+                        effect_is_around_held_run[effect.0 as usize] = true;
+                        effect = tree.effect_nodes[effect.0 as usize].parent;
                     }
                 }
             }
             for &(mask_effect, declaration_position) in &list.mask_effect_and_position_of_declarations {
+                // A declaration can name any effect node.
+                let mask_is_around_held_run = effect_is_around_held_run.get(mask_effect.0 as usize) == Some(&true)
+                    && matches!(tree.effect_nodes[mask_effect.0 as usize].data, EffectNodeData::Mask(_));
                 let declaration_is_held = held_offset_ranges_by_chunk
                     .binary_search_by_key(&declaration_position.chunk_index, |(chunk_index, _)| *chunk_index)
                     .is_ok_and(|position| {
                         offset_is_held(&held_offset_ranges_by_chunk[position].1, declaration_position.offset)
                     });
-                if !masks_around_held_runs.contains(&mask_effect) || declaration_is_held {
+                if !mask_is_around_held_run || declaration_is_held {
                     continue;
                 }
                 let table = display_list.chunk(declaration_position.chunk_index).record_table();
@@ -2856,7 +2856,25 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         };
 
         if !list.mask_effect_and_position_of_declarations.is_empty() && !bound_band.runs_replayed_whole.is_empty() {
+            let mut declaration_positions_by_mask: HashMap<EffectNodeIndex, Vec<ListPosition>> = HashMap::new();
+            for &(mask_effect, declaration_position) in &list.mask_effect_and_position_of_declarations {
+                declaration_positions_by_mask
+                    .entry(mask_effect)
+                    .or_default()
+                    .push(declaration_position);
+            }
+            let nearest_declared_mask_by_effect_index = nearest_effects_at_or_above_where(tree, |effect, node| {
+                matches!(node.data, EffectNodeData::Mask(_)) && declaration_positions_by_mask.contains_key(&effect)
+            });
+            let nearest_declared_mask_at_or_above = |effect: EffectNodeIndex| {
+                if effect.is_none() {
+                    EffectNodeIndex::NONE
+                } else {
+                    nearest_declared_mask_by_effect_index[effect.0 as usize]
+                }
+            };
             let mut mask_declarations_of_runs = Vec::new();
+            let mut mask_declarations_found = HashSet::new();
             for &(chunk_index, run_index) in bound_band.runs_replayed_whole.keys() {
                 let whole_run_item = TileReplayItem::PlacedRecordRange {
                     chunk_index,
@@ -2864,31 +2882,28 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         .whole_run_range_index,
                 };
                 let mut mask_declarations = Vec::new();
-                let mut effect = display_list.chunk(chunk_index).runs()[run_index.0 as usize]
-                    .context
-                    .effect;
-                while !effect.is_none() {
-                    let node = &tree.effect_nodes[effect.0 as usize];
-                    if matches!(node.data, EffectNodeData::Mask(_)) {
-                        for &(mask_effect, declaration_position) in &list.mask_effect_and_position_of_declarations {
-                            if mask_effect != effect {
-                                continue;
-                            }
-                            let table = display_list.chunk(declaration_position.chunk_index).record_table();
-                            let record_index = table
-                                .record_indices_between_offsets(
-                                    declaration_position.offset,
-                                    declaration_position.offset + 1,
-                                )
-                                .start;
-                            let mask_declaration =
-                                self.item_replaying_record(&bound_band, declaration_position.chunk_index, record_index);
-                            if mask_declaration != whole_run_item && !mask_declarations.contains(&mask_declaration) {
-                                mask_declarations.push(mask_declaration);
-                            }
+                mask_declarations_found.clear();
+                let mut mask = nearest_declared_mask_at_or_above(
+                    display_list.chunk(chunk_index).runs()[run_index.0 as usize]
+                        .context
+                        .effect,
+                );
+                while !mask.is_none() {
+                    for &declaration_position in &declaration_positions_by_mask[&mask] {
+                        let table = display_list.chunk(declaration_position.chunk_index).record_table();
+                        let record_index = table
+                            .record_indices_between_offsets(
+                                declaration_position.offset,
+                                declaration_position.offset + 1,
+                            )
+                            .start;
+                        let mask_declaration =
+                            self.item_replaying_record(&bound_band, declaration_position.chunk_index, record_index);
+                        if mask_declaration != whole_run_item && mask_declarations_found.insert(mask_declaration) {
+                            mask_declarations.push(mask_declaration);
                         }
                     }
-                    effect = node.parent;
+                    mask = nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
                 }
                 mask_declarations_of_runs.push(((chunk_index, run_index), mask_declarations));
             }
