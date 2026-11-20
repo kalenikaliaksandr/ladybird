@@ -27,9 +27,10 @@ use libcompositing_rust::display_list::commands::{
 };
 use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
-    BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, NodeNamesFromIndices,
-    PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind, RasterSpaceIndex,
-    SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
+    BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayeringObstacles,
+    NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind,
+    RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia,
+    backdrop_filter_read_reach,
 };
 use libcompositing_rust::display_list::placement::{RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets};
 use libcompositing_rust::display_list::reach::Reach;
@@ -52,7 +53,7 @@ use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntR
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hasher;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 const TILE_RASTER_SCRATCH_SURFACE_RELEASE_DELAY: Duration = Duration::from_milliseconds(3000);
 const TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK: Duration = Duration::from_milliseconds(3000);
@@ -650,12 +651,22 @@ impl StackOfFrames {
     }
 }
 
+/// What of a list and a tree keeps the tiles of a stack of one layer from replaying only the records that reach them,
+/// worked out once for both.
+struct LayeringObstaclesOfListAndTree {
+    // Keeps the address of the list from being taken by another list.
+    display_list: Weak<DisplayList>,
+    tree_copy_number: u64,
+    obstacles: LayeringObstacles,
+}
+
 /// The layers of the frames of a context under their identities, the pool of their tiles, and what of them the window
 /// server shows.
 #[derive(Default)]
 pub struct ContextLayers {
     /// The stack the latest frame was drawn with.
     stack_of_frames: Option<StackOfFrames>,
+    layering_obstacles_of_frames_not_drawn_as_planned: Option<LayeringObstaclesOfListAndTree>,
     /// Where the window server can show the media of the stack, as the latest frame worked it out.
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
@@ -698,13 +709,48 @@ impl ContextLayers {
         }
     }
 
+    /// The stack of one layer that replays the whole list, for a frame that is not drawn as a plan was made for, with
+    /// what of the list and the tree keeps its tiles from replaying only the records that reach them, as a plan of one
+    /// layer has.
+    fn one_layer_stack_of_frame(
+        &mut self,
+        display_list: &Rc<DisplayList>,
+        tree: &VisualContextTree,
+        viewport_rect: IntRect,
+    ) -> LayerStack {
+        let obstacles = match &self.layering_obstacles_of_frames_not_drawn_as_planned {
+            Some(of_list_and_tree)
+                if of_list_and_tree.tree_copy_number == tree.copy.number()
+                    && std::ptr::eq(of_list_and_tree.display_list.as_ptr(), Rc::as_ptr(display_list)) =>
+            {
+                of_list_and_tree.obstacles
+            }
+            _ => {
+                let obstacles = LayeringObstacles::of(display_list.storage(), tree);
+                self.layering_obstacles_of_frames_not_drawn_as_planned = Some(LayeringObstaclesOfListAndTree {
+                    display_list: Rc::downgrade(display_list),
+                    tree_copy_number: tree.copy.number(),
+                    obstacles,
+                });
+                obstacles
+            }
+        };
+        let mut stack = LayerStack::single_layer(
+            viewport_rect,
+            display_list.storage().whole_span(),
+            Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+        );
+        stack.layering_obstacles = obstacles;
+        stack
+    }
+
     /// Takes the stack a frame draws with: the plan WebContent sent, or for a frame that is not drawn as a plan was
     /// made for, one layer that replays the whole list. Keeps what frames kept of the stack where the frame before drew
     /// with the same plan.
     fn take_stack_of_frame(
         &mut self,
         layer_plan: Option<&ReceivedLayerPlan>,
-        one_layer: impl FnOnce() -> LayerStack,
+        one_layer: impl FnOnce(&mut Self) -> LayerStack,
         viewport_to_raster_transform: FloatMatrix4x4,
     ) -> Rc<LayerStack> {
         let latest_plan = self
@@ -717,7 +763,10 @@ impl ContextLayers {
             return layer_plan.stack.clone();
         }
         self.work_counts_of_this_frame.took_plan_into_use = layer_plan.is_some();
-        let stack = layer_plan.map_or_else(|| Rc::new(one_layer()), |layer_plan| layer_plan.stack.clone());
+        let stack = match layer_plan {
+            Some(layer_plan) => layer_plan.stack.clone(),
+            None => Rc::new(one_layer(self)),
+        };
         self.stack_of_frames = Some(StackOfFrames::new(
             layer_plan.cloned(),
             stack.clone(),
@@ -1481,13 +1530,8 @@ impl ContextPresenting {
         let layer_plan = frame.frame_inputs.layer_plan.as_ref().filter(|layer_plan| {
             raster_transform == FloatMatrix4x4::identity() && layer_plan.viewport_rect == viewport_rect
         });
-        let one_layer = || {
-            LayerStack::single_layer(
-                viewport_rect,
-                storage.whole_span(),
-                Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
-            )
-        };
+        let one_layer =
+            |layers: &mut ContextLayers| layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect);
         let stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
         let stack = stack.as_ref();
         self.layers.window_server_placements_of_media =
@@ -2930,9 +2974,12 @@ impl ContextPresenting {
 mod tests {
     use super::*;
     use libcompositing_rust::display_list::builder::DisplayListBuilder;
+    use libcompositing_rust::display_list::commands::{
+        ContextRef, EffectNodeIndex, FillRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
+    };
     use libcompositing_rust::display_list::storage::DisplayListStorage;
-    use libcompositing_rust::visual_context::{TransformData, TransformDataRole};
-    use libgfx_rust::{AffineTransform, FloatRect};
+    use libcompositing_rust::visual_context::{SpatialData, TransformData, TransformDataRole};
+    use libgfx_rust::{AffineTransform, CompositingAndBlendingOperator, FloatRect};
     use std::sync::Arc;
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
@@ -3131,7 +3178,7 @@ mod tests {
         one_layer: LayerStack,
     ) -> (bool, bool) {
         layers.work_counts_of_this_frame = FrameWorkCounts::default();
-        layers.take_stack_of_frame(layer_plan, || one_layer, FloatMatrix4x4::identity());
+        layers.take_stack_of_frame(layer_plan, |_| one_layer, FloatMatrix4x4::identity());
         let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         let keeps_band_tile_keys = matches!(
             stack_of_frames.band_tile_keys_of_latest_frame,
@@ -3188,7 +3235,7 @@ mod tests {
         let identity = FloatMatrix4x4::identity();
         let resized_viewport = IntRect::new(0, 0, 400, 300);
         let mut layers = ContextLayers::default();
-        layers.take_stack_of_frame(None, || one_layer_of(&display_list, VIEWPORT), identity);
+        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
         let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         let geometry = stack_of_frames.geometries_of_spaces(&tree, &[]).remove(0);
         stack_of_frames.band_tile_keys_of_latest_frame = BandTileKeysOfLatestFrame::OfSameStack(vec![
@@ -3197,7 +3244,7 @@ mod tests {
             Some(band_tile_keys_of(identities(2, 2))),
         ]);
 
-        layers.take_stack_of_frame(None, || one_layer_of(&display_list, resized_viewport), identity);
+        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), identity);
         let resized = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         assert!(Rc::ptr_eq(&resized.geometries_of_spaces(&tree, &[])[0], &geometry));
         let BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_other_stack) = std::mem::replace(
@@ -3211,7 +3258,7 @@ mod tests {
             [Some((1, 1)), None, Some((2, 2))]
         );
 
-        layers.take_stack_of_frame(None, || one_layer_of(&display_list, resized_viewport), scaled_twice());
+        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), scaled_twice());
         let scaled = layers.stack_of_frames.as_ref().expect("the frame took a stack");
         assert!(scaled.geometry_by_space.iter().all(Option::is_none));
     }
@@ -3299,5 +3346,153 @@ mod tests {
             );
             assert!(draws_of_held_tiles_reaching_into(&held_tiles, &tile_pool, &layer, VIEWPORT).is_empty());
         }
+    }
+
+    struct NoLiveContent;
+
+    impl LiveContentVersions for NoLiveContent {
+        fn canvas_content_generation(&self, _: CanvasId) -> u64 {
+            0
+        }
+        fn video_frame_id(&self, _: VideoSinkHandle) -> Option<u64> {
+            None
+        }
+        fn image_frame_pixel_generation(&self, _: ImageFrameResourceId) -> Option<u64> {
+            None
+        }
+        fn nested_context_frame_generation(&self, _: CompositorContextId) -> Option<u64> {
+            None
+        }
+    }
+
+    // A red plane in front of a blue plane that covers the viewport, though the red plane comes first in the list, as
+    // `transform-style: preserve-3d` and `translateZ()` make them.
+    fn planes_sorted_by_depth() -> (Arc<VisualContextTree>, Rc<DisplayList>) {
+        let mut tree = (*tree_of_viewport()).clone();
+        let plane = |tree: &mut VisualContextTree,
+                     parent: SpatialNodeIndex,
+                     sorting_context_root: Option<SpatialNodeIndex>,
+                     matrix: FloatMatrix4x4| {
+            tree.append_spatial(
+                SpatialData::Transform(TransformData {
+                    matrix,
+                    origin: FloatPoint::default(),
+                    sorting_context_root_index: sorting_context_root,
+                    flattens_inherited_transform: false,
+                    role: TransformDataRole::CssTransform,
+                    synthetic_plane: false,
+                    establishes_sorting_context: sorting_context_root.is_none(),
+                    bounds: VIEWPORT.to_float(),
+                }),
+                parent,
+            )
+        };
+        let context_root = plane(&mut tree, VISUAL_VIEWPORT_NODE_INDEX, None, FloatMatrix4x4::identity());
+        let mut moved_forward = FloatMatrix4x4::identity();
+        moved_forward.elements[2][3] = 10.0;
+        let red_plane = plane(&mut tree, context_root, Some(context_root), moved_forward);
+        let blue_plane = plane(&mut tree, context_root, Some(context_root), FloatMatrix4x4::identity());
+        let tree = Arc::new(tree);
+        let mut builder = DisplayListBuilder::new();
+        for (spatial, color) in [
+            (red_plane, Color::from_rgb(255, 0, 0)),
+            (blue_plane, Color::from_rgb(0, 0, 255)),
+        ] {
+            builder.append(
+                &FillRect {
+                    rect: VIEWPORT,
+                    color,
+                    compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
+                    background_color_animation_effect: EffectNodeIndex::NONE,
+                },
+                &[],
+                ContextRef {
+                    spatial,
+                    ..ContextRef::default()
+                },
+            );
+        }
+        let display_list = Rc::new(DisplayList::new(
+            DisplayListStorage::recorded(&builder.finish(), tree.clone()),
+            1,
+            tree.structural_epoch,
+            None,
+            None,
+            Default::default(),
+        ));
+        (tree, display_list)
+    }
+
+    // A frame is not drawn as planned at a pinch, at a resize, or under the raster transform of a nested context.
+    #[test]
+    fn the_tiles_of_a_frame_not_drawn_as_planned_show_planes_sorted_by_depth() {
+        let (tree, display_list) = planes_sorted_by_depth();
+        assert!(tree.may_sort_planes_by_depth());
+        let mut layers = ContextLayers::default();
+        let stack = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT);
+        let list_keying = TileKeyingOfList::new(
+            display_list.storage(),
+            &tree,
+            &stack,
+            FrameStateReadByReplay {
+                scrollbars: &[],
+                time_ns: 0,
+                live_content: &NoLiveContent,
+            },
+        );
+        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
+        let geometry = RasterSpaceGeometry::new(
+            &tree,
+            &spaces,
+            RasterSpaceIndex::VIEWPORT,
+            &[],
+            FloatMatrix4x4::identity(),
+        );
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let white = Color::from_rgb(255, 255, 255);
+        let mut band_tile_keys = BandTileKeys::default();
+        raster_space.bind_band(&mut band_tile_keys, &stack, BandIndex(0));
+        raster_space.key_shown_tiles(
+            &mut band_tile_keys,
+            &stack,
+            BandIndex(0),
+            |_| LayerRasterSettings {
+                raster_space_identity: 0,
+                clear_color: white,
+                root_group_color: Color::TRANSPARENT,
+                viewport_to_raster_transform: FloatMatrix4x4::identity(),
+                allows_lcd_text: false,
+            },
+            VIEWPORT,
+            VIEWPORT,
+            None,
+        );
+        // Walked in list order from the opaque clear color, the blue fill would cover what the red plane draws.
+        let tile = band_tile_keys
+            .tile(TileCoord::new(0, 0), stack.base_layer)
+            .expect("the base layer holds a tile at every shown cell");
+        assert_eq!(
+            raster_space.coverage_of_tile(&band_tile_keys, tile, tile.coord.cell_rect(), white),
+            TileCoverage::Unknown
+        );
+        assert!(band_tile_keys.replays_whole_list);
+
+        // The list and the tree are looked at once for the frames that draw them.
+        let obstacles_of_list_and_tree = stack.layering_obstacles;
+        layers
+            .layering_obstacles_of_frames_not_drawn_as_planned
+            .as_mut()
+            .expect("the obstacles of the list and the tree are kept")
+            .obstacles
+            .mask_declared_under_effects_its_mask_is_not_under = true;
+        let stack_of_next_frame = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT);
+        assert!(
+            stack_of_next_frame
+                .layering_obstacles
+                .mask_declared_under_effects_its_mask_is_not_under
+        );
+        let another_tree = Arc::new((*tree).clone());
+        let stack_of_another_tree = layers.one_layer_stack_of_frame(&display_list, &another_tree, VIEWPORT);
+        assert_eq!(stack_of_another_tree.layering_obstacles, obstacles_of_list_and_tree);
     }
 }
