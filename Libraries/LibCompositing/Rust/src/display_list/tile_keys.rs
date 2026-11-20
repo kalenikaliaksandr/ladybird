@@ -22,9 +22,13 @@ use super::commands::{
     SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
+pub use super::effect_geometry::composited_filter_read_reach_in_device_pixels;
 use super::effect_geometry::{
     FiltersInsideInnermostCompositedEffects, nearest_effects_at_or_above_where, nearest_spreading_effects,
     outermost_effects_with_filters, spreading_filter_of,
+};
+pub(crate) use super::effect_geometry::{
+    LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, filter_read_reach_in_device_pixels,
 };
 use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack, backdrop_filter_read_reach};
 use super::nested_records::{
@@ -60,7 +64,6 @@ pub type ContentHash = u128;
 
 const LOW_HALF_SEED: u64 = 0x243f_6a88_85a3_08d3;
 const HIGH_HALF_SEED: u64 = 0x1319_8a2e_0370_7344;
-pub(crate) const LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS: f32 = 2048.0;
 // The farthest past its cell that a tile is rastered, in device pixels. A tile whose backdrop filters read farther takes
 // how far as not known, which keeps the rects that rastering inflates by it within the limits of an `IntRect`.
 const LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS: i32 = 4 * LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32;
@@ -1411,36 +1414,6 @@ pub(crate) fn backdrop_filter_reads_nothing_past_mirrored_edge(filter: &[u8]) ->
     let probe = FloatRect::new(0.0, 0.0, 1.0, 1.0);
     let reads_past_each_pixel = crate::filter_bytes::changed_output_bounds(filter, probe) != Some(probe);
     !reads_past_each_pixel || libgfx_rust::filter::Filter::serialized_has_mirroring_blur(filter)
-}
-
-pub(crate) fn filter_read_reach_in_device_pixels(filter: &[u8], effect_to_device: &FloatMatrix4x4) -> Option<i32> {
-    if !effect_to_device.is_2d_affine() {
-        return None;
-    }
-    let probe = FloatRect::new(0.0, 0.0, 1.0, 1.0);
-    let changed_output_bounds_of_probe = crate::filter_bytes::changed_output_bounds(filter, probe)?;
-    let reach_in_effect_space = [
-        probe.x - changed_output_bounds_of_probe.x,
-        changed_output_bounds_of_probe.right() - probe.right(),
-        probe.y - changed_output_bounds_of_probe.y,
-        changed_output_bounds_of_probe.bottom() - probe.bottom(),
-    ]
-    .into_iter()
-    .fold(0.0f32, f32::max);
-    let affine = effect_to_device.extract_2d_affine();
-    let largest_stretch = affine.a().abs() + affine.b().abs() + affine.c().abs() + affine.d().abs();
-    let reach_in_device_pixels =
-        (reach_in_effect_space * largest_stretch).ceil() + ANTIALIASING_MARGIN_IN_DEVICE_PIXELS as f32;
-    (reach_in_device_pixels.is_finite() && reach_in_device_pixels <= LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS)
-        .then_some(reach_in_device_pixels as i32)
-}
-
-/// How far past each pixel the filter of an effect the compositor composites reads what is composited inside it, in
-/// device pixels. Placing a list composites no filter that reads farther than is followed, so that limit stands in only
-/// while a transform the compositor animates scales a filter past what placing saw.
-pub fn composited_filter_read_reach_in_device_pixels(filter: &[u8], effect_to_device: &FloatMatrix4x4) -> i32 {
-    filter_read_reach_in_device_pixels(filter, effect_to_device)
-        .unwrap_or(LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32)
 }
 
 impl<'a> TileKeyingOfRasterSpace<'a> {

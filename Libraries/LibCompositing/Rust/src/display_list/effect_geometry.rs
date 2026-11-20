@@ -13,8 +13,8 @@
 
 use crate::display_list::animated_transform_spaces::easing_stays_within_unit_interval;
 use crate::display_list::commands::{DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::placement::ANTIALIASING_MARGIN_IN_DEVICE_PIXELS;
 use crate::display_list::reach::Reach;
-use crate::display_list::tile_keys::filter_read_reach_in_device_pixels;
 use crate::filter_bytes::{self, filter_functions_graph};
 use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_animation::VisualAnimationValue;
@@ -26,6 +26,38 @@ use std::collections::HashMap;
 /// Where content lies in an effect's space. It reaches anywhere through a filter that paints everywhere or through a
 /// space that does not map onto the effect's as a two-dimensional transform.
 pub type Extent = Reach<FloatRect>;
+
+pub(crate) const LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS: f32 = 2048.0;
+
+pub(crate) fn filter_read_reach_in_device_pixels(filter: &[u8], effect_to_device: &FloatMatrix4x4) -> Option<i32> {
+    if !effect_to_device.is_2d_affine() {
+        return None;
+    }
+    let probe = FloatRect::new(0.0, 0.0, 1.0, 1.0);
+    let changed_output_bounds_of_probe = filter_bytes::changed_output_bounds(filter, probe)?;
+    let reach_in_effect_space = [
+        probe.x - changed_output_bounds_of_probe.x,
+        changed_output_bounds_of_probe.right() - probe.right(),
+        probe.y - changed_output_bounds_of_probe.y,
+        changed_output_bounds_of_probe.bottom() - probe.bottom(),
+    ]
+    .into_iter()
+    .fold(0.0f32, f32::max);
+    let affine = effect_to_device.extract_2d_affine();
+    let largest_stretch = affine.a().abs() + affine.b().abs() + affine.c().abs() + affine.d().abs();
+    let reach_in_device_pixels =
+        (reach_in_effect_space * largest_stretch).ceil() + ANTIALIASING_MARGIN_IN_DEVICE_PIXELS as f32;
+    (reach_in_device_pixels.is_finite() && reach_in_device_pixels <= LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS)
+        .then_some(reach_in_device_pixels as i32)
+}
+
+/// How far past each pixel the filter of an effect the compositor composites reads what is composited inside it, in
+/// device pixels. Placing a list composites no filter that reads farther than is followed, so that limit stands in only
+/// while a transform the compositor animates scales a filter past what placing saw.
+pub fn composited_filter_read_reach_in_device_pixels(filter: &[u8], effect_to_device: &FloatMatrix4x4) -> i32 {
+    filter_read_reach_in_device_pixels(filter, effect_to_device)
+        .unwrap_or(LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32)
+}
 
 fn extent_mapped_between_spaces(
     extent: Extent,
