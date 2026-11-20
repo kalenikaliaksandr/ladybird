@@ -353,7 +353,6 @@ pub struct TileKeyingOfList<'a> {
 /// geometry of a space, and with it the binding of its bands, across samples, as where nothing moves within the space.
 struct SampledValuesTilesDraw {
     hash: ContentHash,
-    background_colors_are_sampled: bool,
     /// Per effect, whether tiles draw a sampled opacity or filter where they draw content of the effect: that of the
     /// effect or of an effect around it, up to the first one the compositor composites. Empty where tiles draw none.
     effect_reads_sampled_value_by_effect_index: Vec<bool>,
@@ -362,14 +361,12 @@ struct SampledValuesTilesDraw {
 impl SampledValuesTilesDraw {
     fn of(tree: &VisualContextTree, innermost_composited_effect_by_effect_index: &[EffectNodeIndex]) -> Self {
         let mut hasher = ContentHasher::new();
-        let mut background_colors_are_sampled = false;
         let mut effect_value_is_sampled_by_effect_index: Vec<bool> = Vec::new();
         for animation in tree.visual_animations() {
             for &node_index in &animation.node_indices {
                 let effect = EffectNodeIndex(node_index);
                 match animation.target_kind {
                     FfiVisualAnimationTargetKind::BackgroundColor => {
-                        background_colors_are_sampled = true;
                         let sampled = tree.sampled_background_color(effect);
                         hasher.write_u32(node_index);
                         hasher.write_u32(sampled.map_or(u32::MAX, |color| color.0));
@@ -415,13 +412,8 @@ impl SampledValuesTilesDraw {
         }
         Self {
             hash: hasher.finish(),
-            background_colors_are_sampled,
             effect_reads_sampled_value_by_effect_index,
         }
-    }
-
-    fn tiles_can_draw_sampled_values(&self) -> bool {
-        self.background_colors_are_sampled || !self.effect_reads_sampled_value_by_effect_index.is_empty()
     }
 
     fn effect_reads_sampled_value(&self, effect: EffectNodeIndex) -> bool {
@@ -696,6 +688,18 @@ impl BackdropReadsOfBand {
             .filter(|&margin| margin <= LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS)
     }
 
+    /// The frame where the blurs of some backdrop read of the band mirror at its edge, in any cell.
+    fn frame_edge_blurs_mirror_at(&self, frame: Option<IntRect>) -> Option<IntRect> {
+        frame.filter(|frame| {
+            if !self.are_followed_one_by_one() {
+                return self.region_reach_of_every_read != Reach::Nothing;
+            }
+            self.reads_in_paint_order
+                .iter()
+                .any(|backdrop_read| backdrop_read.blur_mirrors_at_edge_of_frame(*frame))
+        })
+    }
+
     fn frame_edge_blurs_of_cell_mirror_at(&self, cell: IntRect, frame: Option<IntRect>) -> Option<IntRect> {
         frame.filter(|frame| {
             if !self.are_followed_one_by_one() {
@@ -846,7 +850,6 @@ struct PlacedRecordRange {
     end_offset: u32,
     reach: Reach<IntRect>,
     content_hash_without_frame_state: ContentHash,
-    reads_frame_state: bool,
     context: ContextRef,
     is_spread_by_no_filter: bool,
     device_aligned_fill: Option<DeviceAlignedFill>,
@@ -932,10 +935,6 @@ pub struct KeyedTile {
     /// The part of the tile's cell that what it holds can reach.
     pub content_bounds: IntRect,
     replay_items_in_paint_order: Vec<TileReplayItem>,
-    raster_settings_hash: ContentHash,
-    reads_frame_state: bool,
-    reads_sampled_values: bool,
-    frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
 }
 
 /// A chunk that the spans of a band hold runs of. The spans hold whole runs.
@@ -1033,7 +1032,7 @@ impl BandBoundToListAndGeometry {
 
 /// What the tiles of the layers of one band hold, kept from frame to frame while the band is bound to one list and one
 /// geometry: the tiles keyed so far, binned against the list, the geometry and the band of the stack they are bound to.
-/// A tile is keyed again only where the frame state it reads or the raster settings of its layer changed.
+/// Every tile is keyed again where a value of the frame that some tile of the band can read changed.
 #[derive(Default)]
 pub struct BandTileKeys {
     cells: BTreeMap<TileCoord, Vec<KeyedTile>>,
@@ -1042,11 +1041,19 @@ pub struct BandTileKeys {
     /// these looks for no cell to key.
     cells_looked_at: CellRange,
     bound_band: Option<BandBoundToListAndGeometry>,
-    // The frame state and the sampled values the tiles were keyed with, such as a sampled background color or the space
-    // of an inline clip, depend on the bound tree and geometry, so binding again forgets them.
-    frame_state_hash: Option<ContentHash>,
-    sampled_values_hash: Option<ContentHash>,
+    values_of_frame_tiles_were_keyed_with: Option<ValuesOfFrameThatTilesOfBandRead>,
     pub replays_whole_list: bool,
+}
+
+/// What the tiles of a band read of a frame besides the records they replay. A frame keys every tile of the band again
+/// where any of these differs from the frame before.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ValuesOfFrameThatTilesOfBandRead {
+    frame_state_hash: ContentHash,
+    sampled_values_hash: ContentHash,
+    tree_copy_number: u64,
+    raster_settings_hash_of_layers_of_band: ContentHash,
+    frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
 }
 
 /// What keying the shown tiles of a band did.
@@ -1869,10 +1876,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             reach,
             content_hash_without_frame_state: self
                 .content_hash_of_records_without_frame_state(chunk, record_indices.clone()),
-            reads_frame_state: table
-                .records_in(record_indices.clone())
-                .iter()
-                .any(|record| record.frame_state_read_flags != 0),
             context,
             is_spread_by_no_filter: !is_spread_by_filters,
             device_aligned_fill: is_one_record
@@ -2050,8 +2053,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         &self,
         bound_band: &BandBoundToListAndGeometry,
         item: TileReplayItem,
-        includes_frame_state: bool,
-        includes_sampled_values: bool,
         near_area: Option<&mut ContentHashesNearArea>,
     ) -> ContentHash {
         let display_list = self.list.display_list;
@@ -2067,11 +2068,10 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         self.content_hash_of_placed_range_near_area(chunk, range, near_area)
                     }
                     // The range can be placed under the values of an earlier sample.
-                    _ if includes_sampled_values
-                        && self
-                            .list
-                            .sampled_values_tiles_draw
-                            .effect_reads_sampled_value(range.context.effect) =>
+                    _ if self
+                        .list
+                        .sampled_values_tiles_draw
+                        .effect_reads_sampled_value(range.context.effect) =>
                     {
                         self.content_hash_of_records_without_frame_state(
                             chunk,
@@ -2096,12 +2096,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 )
             }
         };
-        let frame_state_hash = if includes_frame_state {
-            self.frame_state_hash_of_records(chunk, record_indices)
-        } else {
-            None
-        };
-        match frame_state_hash {
+        match self.frame_state_hash_of_records(chunk, record_indices) {
             None => content_hash_without_frame_state,
             Some(frame_state_hash) => {
                 let mut hasher = ContentHasher::new();
@@ -2156,46 +2151,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             self.list
                 .run_groups
                 .run_is_sorted_by_depth(first_run_of_chunk + record.run_index.0 as usize)
-        })
-    }
-
-    fn item_reads_frame_state(&self, bound_band: &BandBoundToListAndGeometry, item: TileReplayItem) -> bool {
-        if let TileReplayItem::PlacedRecordRange {
-            chunk_index,
-            range_index,
-        } = item
-        {
-            return bound_band
-                .placed_record_range(chunk_index, range_index)
-                .reads_frame_state;
-        }
-        self.records_of_item(bound_band, item)
-            .iter()
-            .any(|record| record.frame_state_read_flags != 0)
-    }
-
-    fn note_what_replay_items_of_tile_read(&self, bound_band: &BandBoundToListAndGeometry, tile: &mut KeyedTile) {
-        tile.reads_frame_state = tile
-            .replay_items_in_paint_order
-            .iter()
-            .any(|&item| self.item_reads_frame_state(bound_band, item));
-        tile.reads_sampled_values = tile
-            .replay_items_in_paint_order
-            .iter()
-            .any(|&item| self.item_reads_sampled_values(bound_band, item));
-    }
-
-    /// Whether the item draws a value that the compositor's animations take at the frame's sample: a sampled background
-    /// color, or the sampled opacity or filter of an effect that tiles draw.
-    fn item_reads_sampled_values(&self, bound_band: &BandBoundToListAndGeometry, item: TileReplayItem) -> bool {
-        let sampled_values = &self.list.sampled_values_tiles_draw;
-        if !sampled_values.tiles_can_draw_sampled_values() {
-            return false;
-        }
-        let runs = self.list.display_list.chunk(item.chunk_index()).runs();
-        self.records_of_item(bound_band, item).iter().any(|record| {
-            record.frame_state_read_flags & FRAME_STATE_SAMPLED_BACKGROUND_COLOR != 0
-                || sampled_values.effect_reads_sampled_value(runs[record.run_index.0 as usize].context.effect)
         })
     }
 
@@ -2393,25 +2348,21 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         &self,
         bound_band: &BandBoundToListAndGeometry,
         tile: &KeyedTile,
+        raster_settings_hash: ContentHash,
+        frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
         mut near_area: Option<&mut ContentHashesNearArea>,
     ) -> ContentHash {
         let mut hasher = ContentHasher::new();
-        hasher.write_content_hash(tile.raster_settings_hash);
+        hasher.write_content_hash(raster_settings_hash);
         hasher.write_i32(tile.coord.column);
         hasher.write_i32(tile.coord.row);
         hasher.write_bool(self.list.replays_every_record_into_every_tile);
-        match tile.frame_edge_backdrop_blurs_mirror_at {
+        match frame_edge_backdrop_blurs_mirror_at {
             Some(frame) => hasher.write_int_rect(frame),
             None => hasher.write_u32(0),
         }
         for &item in &tile.replay_items_in_paint_order {
-            hasher.write_content_hash(self.content_hash_of_replay_item(
-                bound_band,
-                item,
-                tile.reads_frame_state,
-                tile.reads_sampled_values,
-                near_area.as_deref_mut(),
-            ));
+            hasher.write_content_hash(self.content_hash_of_replay_item(bound_band, item, near_area.as_deref_mut()));
             // Depth-sorted planes replay in an order their sorting context decides.
             if self.list.tree_sorts_planes_by_depth
                 && let Some(root) = self.root_of_context_sorting_item_by_depth(bound_band, item)
@@ -2807,17 +2758,16 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         band_tile_keys.replays_whole_list = self.list.one_layer_list_cannot_tell_which_records_show_in_tile;
         band_tile_keys.cells.clear();
         band_tile_keys.cells_looked_at = CellRange::NONE;
-        band_tile_keys.frame_state_hash = None;
-        band_tile_keys.sampled_values_hash = None;
+        band_tile_keys.values_of_frame_tiles_were_keyed_with = None;
     }
 
     /// Keys the tiles of the layers of `band_index` within `shown_rect` that are not keyed yet: each replay item of the
     /// band that reaches a tile goes into the layer of the band its paint position falls in there, and the base layer,
-    /// if it is one of the band's, holds every tile. Tiles keyed before are keyed again only where the frame state
-    /// their replay items read, the values of the compositor's animations they draw, the raster settings of their
-    /// layer, or the edge of `frame` that their backdrop blurs mirror at changed, and those outside `kept_rect` are
-    /// forgotten. `frame` is where the frame is in the band's
-    /// space, where that is not the frame's own. The band is bound to the list and the geometry of the frame.
+    /// if it is one of the band's, holds every tile. Every tile keyed before is keyed again where the frame state of the
+    /// list, the values of the compositor's animations, the tree, the raster settings of a layer of the band, or the
+    /// edge of `frame` that its backdrop blurs mirror at changed, and those outside `kept_rect` are forgotten. `frame`
+    /// is where the frame is in the band's space, where that is not the frame's own. The band is bound to the list and
+    /// the geometry of the frame.
     ///
     /// Only the cells where the band can hold something are keyed, at most `MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME` of
     /// them, so the work and the tiles of a frame have a bound whatever rect of the space the frame shows.
@@ -2854,30 +2804,40 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         );
 
         let mut counts = TileKeyingCounts::default();
-        let frame_state_changed =
-            band_tile_keys.frame_state_hash.replace(list.frame_state_hash) != Some(list.frame_state_hash);
-        let sampled_values_changed = band_tile_keys
-            .sampled_values_hash
-            .replace(list.sampled_values_tiles_draw.hash)
-            != Some(list.sampled_values_tiles_draw.hash);
-        for (coord, tiles) in &mut band_tile_keys.cells {
-            let frame_edge_backdrop_blurs_mirror_at = bound_band
-                .backdrop_reads
-                .frame_edge_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
-            // The tiles of a cell are keyed together, with one raster margin.
-            let mut near_area = tiles
-                .first()
-                .and_then(|tile| ContentHashesNearArea::of_cell(*coord, tile.raster_margin_in_device_pixels));
-            for tile in tiles {
-                let raster_settings_hash = raster_settings_hash_by_layer[tile.layer_index.0];
-                if (frame_state_changed && tile.reads_frame_state)
-                    || (sampled_values_changed && tile.reads_sampled_values)
-                    || tile.raster_settings_hash != raster_settings_hash
-                    || tile.frame_edge_backdrop_blurs_mirror_at != frame_edge_backdrop_blurs_mirror_at
-                {
-                    tile.raster_settings_hash = raster_settings_hash;
-                    tile.frame_edge_backdrop_blurs_mirror_at = frame_edge_backdrop_blurs_mirror_at;
-                    tile.content_hash = self.content_hash_of_tile(bound_band, tile, near_area.as_mut());
+        let mut raster_settings_hasher = ContentHasher::new();
+        for layer_index in
+            std::iter::once(band.layer_below_all_cuts).chain(band.cuts.iter().map(|cut| cut.layer_above_cut))
+        {
+            raster_settings_hasher.write_content_hash(raster_settings_hash_by_layer[layer_index.0]);
+        }
+        let values_of_frame = ValuesOfFrameThatTilesOfBandRead {
+            frame_state_hash: list.frame_state_hash,
+            sampled_values_hash: list.sampled_values_tiles_draw.hash,
+            tree_copy_number: list.tree.copy.number(),
+            raster_settings_hash_of_layers_of_band: raster_settings_hasher.finish(),
+            frame_edge_backdrop_blurs_mirror_at: bound_band.backdrop_reads.frame_edge_blurs_mirror_at(frame),
+        };
+        if band_tile_keys
+            .values_of_frame_tiles_were_keyed_with
+            .replace(values_of_frame)
+            != Some(values_of_frame)
+        {
+            for (coord, tiles) in &mut band_tile_keys.cells {
+                let frame_edge_backdrop_blurs_mirror_at = bound_band
+                    .backdrop_reads
+                    .frame_edge_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
+                // The tiles of a cell are keyed together, with one raster margin.
+                let mut near_area = tiles
+                    .first()
+                    .and_then(|tile| ContentHashesNearArea::of_cell(*coord, tile.raster_margin_in_device_pixels));
+                for tile in tiles {
+                    tile.content_hash = self.content_hash_of_tile(
+                        bound_band,
+                        tile,
+                        raster_settings_hash_by_layer[tile.layer_index.0],
+                        frame_edge_backdrop_blurs_mirror_at,
+                        near_area.as_mut(),
+                    );
                     counts.tiles_keyed += 1;
                 }
             }
@@ -3011,13 +2971,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     cuts: cuts.clone(),
                     content_bounds,
                     replay_items_in_paint_order,
-                    raster_settings_hash: raster_settings_hash_by_layer[layer_index.0],
-                    reads_frame_state: false,
-                    reads_sampled_values: false,
-                    frame_edge_backdrop_blurs_mirror_at,
                 };
-                self.note_what_replay_items_of_tile_read(bound_band, &mut tile);
-                tile.content_hash = self.content_hash_of_tile(bound_band, &tile, near_area.as_mut());
+                tile.content_hash = self.content_hash_of_tile(
+                    bound_band,
+                    &tile,
+                    raster_settings_hash_by_layer[layer_index.0],
+                    frame_edge_backdrop_blurs_mirror_at,
+                    near_area.as_mut(),
+                );
                 tiles.push(tile);
                 counts.tiles_keyed += 1;
             }
@@ -3343,9 +3304,9 @@ mod tests {
         TileCoord::new(rect.x / TILE_SIZE_IN_DEVICE_PIXELS, rect.y / TILE_SIZE_IN_DEVICE_PIXELS)
     }
 
-    // The tiles of a band are keyed again for the values the compositor's animations take only where they draw one, and
-    // only when the sample changes it.
-    fn assert_only_the_cell_drawing_the_sampled_value_is_keyed_again(
+    // Each sample keys every tile of the band again, and only the tile that draws a value the sample changed gets a new
+    // hash.
+    fn assert_only_the_cell_drawing_the_sampled_value_gets_a_new_hash(
         display_list: &DisplayListStorage,
         stack: &LayerStack,
         band_index: BandIndex,
@@ -3372,8 +3333,8 @@ mod tests {
             cells_whose_hashes_differ(&turns[0].1, &turns[1].1),
             [cell_drawing_the_sampled_value]
         );
-        assert_eq!(turns[1].0.tiles_keyed, 1);
-        assert_eq!(turns[2].0, TileKeyingCounts::default());
+        assert_eq!(turns[1].0.tiles_keyed, turns[1].1.len());
+        assert_eq!(turns[2].0.tiles_keyed, turns[2].1.len());
         assert_eq!(turns[2].1, turns[1].1);
     }
 
@@ -3413,7 +3374,7 @@ mod tests {
         ])
         .unwrap();
         let stack = stack_of(&display_list, &tree.with_visual_animation_samples(0));
-        assert_only_the_cell_drawing_the_sampled_value_is_keyed_again(
+        assert_only_the_cell_drawing_the_sampled_value_gets_a_new_hash(
             &display_list,
             &stack,
             BandIndex(0),
@@ -3468,7 +3429,7 @@ mod tests {
                 })
                 .expect("a band holds the box"),
         );
-        assert_only_the_cell_drawing_the_sampled_value_is_keyed_again(
+        assert_only_the_cell_drawing_the_sampled_value_gets_a_new_hash(
             &display_list,
             &stack,
             band_of_box_without_layer,
