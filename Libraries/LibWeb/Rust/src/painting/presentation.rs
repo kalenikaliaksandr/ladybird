@@ -560,6 +560,7 @@ impl Presentation {
         let mut frame = state.build_frame(&self.seal, None, &tree, &self.scroll_state);
         frame.scroll_requests = std::mem::take(&mut self.seal.scroll_requests);
         state.note_presented(&mut self.seal, &self.scroll_state);
+        drop(state);
         presenting.post_frame(frame);
     }
 
@@ -594,6 +595,7 @@ impl Presentation {
         self.seal.published = Some(output.clone());
         frame.scroll_requests = std::mem::take(&mut self.seal.scroll_requests);
         state.note_presented(&mut self.seal, &self.scroll_state);
+        drop(state);
         presenting.post_frame(frame);
     }
 }
