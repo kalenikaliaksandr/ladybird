@@ -2307,20 +2307,24 @@ fn scroll_offsets_layer_plans_read(
 /// sample of the compositor's animations and wherever the compositor scrolls the nodes it scrolls. Where the window
 /// server can show the media of the stack is left to be worked out for each frame.
 pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
-    plan_layer_stack_at_anchors(inputs, &RasterSpaceAnchorsOfTree::of(inputs.tree))
+    let anchors_of_tree = RasterSpaceAnchorsOfTree::of(inputs.tree);
+    let scroll_offsets_read =
+        scroll_offsets_layer_plans_read(inputs.scroll_offsets, &anchors_of_tree.leaves_out_scroll_offset_of_node);
+    plan_layer_stack_at_anchors(
+        &LayerStackInputs {
+            scroll_offsets: &scroll_offsets_read,
+            ..*inputs
+        },
+        &anchors_of_tree,
+    )
 }
 
-// `anchors_of_tree` are those of `inputs.tree`.
+// `anchors_of_tree` are those of `inputs.tree`, and `inputs.scroll_offsets` hold zero for each node whose offset
+// `RasterSpaceAnchorsOfTree::leaves_out_scroll_offset_of_node` names.
 fn plan_layer_stack_at_anchors(
     inputs: &LayerStackInputs<'_>,
     anchors_of_tree: &RasterSpaceAnchorsOfTree,
 ) -> PlannedLayers {
-    let scroll_offsets_read =
-        scroll_offsets_layer_plans_read(inputs.scroll_offsets, &anchors_of_tree.leaves_out_scroll_offset_of_node);
-    let inputs = LayerStackInputs {
-        scroll_offsets: &scroll_offsets_read,
-        ..*inputs
-    };
     let (spaces, geometries) = spaces_with_geometries(
         inputs.tree,
         anchors_of_tree,
@@ -2329,8 +2333,8 @@ fn plan_layer_stack_at_anchors(
     );
     let spaces_of_stack = spaces.spaces().to_vec();
     let nesting_of_live_effects = NestingOfLiveEffects::of(inputs.tree);
-    let placement = place_list(&inputs, spaces, &geometries, &nesting_of_live_effects);
-    build_layer_stack(&inputs, placement, spaces_of_stack, &nesting_of_live_effects)
+    let placement = place_list(inputs, spaces, &geometries, &nesting_of_live_effects);
+    build_layer_stack(inputs, placement, spaces_of_stack, &nesting_of_live_effects)
 }
 
 /// What a plan of the layers of a list is made from, all of which WebContent publishes: the list, the tree, the viewport
