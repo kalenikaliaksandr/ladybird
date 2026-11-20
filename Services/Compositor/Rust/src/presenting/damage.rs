@@ -272,7 +272,9 @@ impl ContextPresenting {
             frame.frame_inputs,
             live_content,
         );
-        let mut layer_update = self.layer_update_for(env, frame, raster_rect, live_content);
+        let invalidates_every_tile = changes.repaints_everything;
+        let (layer_update, stale_rect) =
+            self.layer_update_for(env, frame, raster_rect, live_content, invalidates_every_tile);
         let live_media_changed = changes.canvas_or_video_changed;
 
         let scrolled_compositor_scrollbars = self.painted_frame.as_ref().map_or(IntRect::default(), |painted_frame| {
@@ -282,15 +284,6 @@ impl ContextPresenting {
         });
         let forced_damage_rect =
             self.raster_rect_of(forced_damage_rect.united(scrolled_compositor_scrollbars.intersected(viewport_rect)));
-        let invalidates_every_tile = changes.repaints_everything;
-        let stale_rect = self.prepare_frame_tile_state(
-            env,
-            frame,
-            live_content,
-            &mut layer_update,
-            raster_rect,
-            invalidates_every_tile,
-        );
         let damage_of_layers_moved_by_animated_transforms = self
             .painted_frame
             .is_some()

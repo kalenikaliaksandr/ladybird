@@ -476,34 +476,26 @@ struct TileShownInFrame {
     coverage: TileCoverage,
 }
 
-#[derive(Default)]
-pub struct FrameTileState {
-    viewport_rect: IntRect,
+/// What a frame paints of its layers: where it composites them, the tiles it shows of each, and the media and composited
+/// effects it draws.
+pub struct LayerUpdate {
+    /// From the base layer up, the layers that can hold something, and where the frame composites each.
+    compositing_of_layers: Vec<LayerCompositingInFrame>,
+    /// What each composited effect that reads past each of its pixels reads and draws as the frame places it.
+    read_reaches_of_composited_effects_in_frame: Vec<IntRect>,
+    content_hash_by_composited_node: HashMap<PlacementNodeIdentity, ContentHash>,
+    // Per layer of the stack.
     shown_tiles_by_layer: Vec<Vec<TileShownInFrame>>,
     media_replayed_by_layer: Vec<Option<MediaRecordsReplayedInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
     frame_allows_lcd_text: bool,
-    content_hash_by_composited_node: HashMap<PlacementNodeIdentity, ContentHash>,
-}
-
-impl FrameTileState {
-    fn shown_tiles_of_layer(&self, layer_index: LayerIndex) -> &[TileShownInFrame] {
-        &self.shown_tiles_by_layer[layer_index.0]
-    }
-}
-
-/// What a frame paints of its layers.
-pub struct LayerUpdate {
-    pub tile_state: Option<FrameTileState>,
-    pub composite_offsets: Vec<IntPoint>,
-    pub spaces_to_frame: Vec<SpaceToFrame>,
-    /// From the base layer up, the layers that can hold something, and where the frame composites each.
-    pub compositing_of_layers: Vec<LayerCompositingInFrame>,
-    /// What each composited effect that reads past each of its pixels reads and draws as the frame places it.
-    pub read_reaches_of_composited_effects_in_frame: Vec<IntRect>,
 }
 
 impl LayerUpdate {
+    fn shown_tiles_of_layer(&self, layer_index: LayerIndex) -> &[TileShownInFrame] {
+        &self.shown_tiles_by_layer[layer_index.0]
+    }
+
     pub fn shown_by_window_server(&self) -> bool {
         any_layer_shown_by_window_server(&self.compositing_of_layers)
     }
@@ -727,7 +719,11 @@ impl ContextLayers {
 
     /// Whether the frame, drawn with the plan of the stack it took, shows more pixels of tiles with surfaces than a
     /// frame may. Then later frames with the plan are drawn as one layer too.
-    fn plan_of_frame_shows_too_many_tiles(&mut self, tile_state: &FrameTileState) -> bool {
+    fn plan_of_frame_shows_too_many_tiles(
+        &mut self,
+        shown_tiles_by_layer: &[Vec<TileShownInFrame>],
+        viewport_rect: IntRect,
+    ) -> bool {
         let Some(layer_plan) = self
             .stack_of_frames
             .as_ref()
@@ -735,8 +731,8 @@ impl ContextLayers {
         else {
             return false;
         };
-        if tile_pixels_with_surfaces_shown(tile_state)
-            <= MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS * tile_pixels_one_layer_shows_at_most(tile_state.viewport_rect)
+        if tile_pixels_with_surfaces_shown(shown_tiles_by_layer)
+            <= MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS * tile_pixels_one_layer_shows_at_most(viewport_rect)
         {
             return false;
         }
@@ -817,21 +813,19 @@ impl ContextLayers {
     /// reads from then on.
     fn take_in_painted_frame(&mut self, layer_update: LayerUpdate) {
         if let Some(stack_of_frames) = &self.stack_of_frames {
-            if let Some(tile_state) = layer_update.tile_state {
-                for (layer, media_replayed) in stack_of_frames
-                    .stack
-                    .layers
-                    .iter()
-                    .zip(&tile_state.media_replayed_by_layer)
+            for (layer, media_replayed) in stack_of_frames
+                .stack
+                .layers
+                .iter()
+                .zip(&layer_update.media_replayed_by_layer)
+            {
+                if media_replayed.is_some()
+                    && let Some(cached_layer) = self.cached_layer_by_identity.get_mut(&layer.identity)
                 {
-                    if media_replayed.is_some()
-                        && let Some(cached_layer) = self.cached_layer_by_identity.get_mut(&layer.identity)
-                    {
-                        cached_layer.media_replayed_in_latest_frame = *media_replayed;
-                    }
+                    cached_layer.media_replayed_in_latest_frame = *media_replayed;
                 }
-                self.content_hash_by_composited_node_of_latest_frame = tile_state.content_hash_by_composited_node;
             }
+            self.content_hash_by_composited_node_of_latest_frame = layer_update.content_hash_by_composited_node;
             self.stack_of_painted_frame = Some(stack_of_frames.stack.clone());
         }
         self.compositing_of_latest_frame = layer_update.compositing_of_layers;
@@ -892,7 +886,10 @@ impl ContextLayers {
         }
     }
 
-    fn holder_count_by_content_hash(&self, tile_state: &FrameTileState) -> HashMap<ContentHash, usize> {
+    fn holder_count_by_content_hash(
+        &self,
+        shown_tiles_by_layer: &[Vec<TileShownInFrame>],
+    ) -> HashMap<ContentHash, usize> {
         let mut holder_count_by_content_hash: HashMap<ContentHash, usize> = HashMap::new();
         for content_hash in self
             .cached_layer_by_identity
@@ -901,7 +898,7 @@ impl ContextLayers {
         {
             *holder_count_by_content_hash.entry(*content_hash).or_default() += 1;
         }
-        for tile in tile_state.shown_tiles_by_layer.iter().flatten() {
+        for tile in shown_tiles_by_layer.iter().flatten() {
             *holder_count_by_content_hash.entry(tile.content_hash).or_default() += 1;
         }
         holder_count_by_content_hash
@@ -1055,9 +1052,8 @@ fn tile_pixels_one_layer_shows_at_most(viewport_rect: IntRect) -> u64 {
     most_cells_along(viewport_rect.width) * most_cells_along(viewport_rect.height) * tile_size * tile_size
 }
 
-fn tile_pixels_with_surfaces_shown(tile_state: &FrameTileState) -> u64 {
-    tile_state
-        .shown_tiles_by_layer
+fn tile_pixels_with_surfaces_shown(shown_tiles_by_layer: &[Vec<TileShownInFrame>]) -> u64 {
+    shown_tiles_by_layer
         .iter()
         .flatten()
         .filter(|tile| !matches!(tile.coverage, TileCoverage::OneColor(_)))
@@ -1223,7 +1219,7 @@ fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> boo
 // them may be hidden.
 fn hide_tiles_covered_by_opaque_tiles_above(
     stack_of_frames: &StackOfFrames,
-    tile_state: &mut FrameTileState,
+    shown_tiles_by_layer: &mut [Vec<TileShownInFrame>],
     compositing_of_layers: &[LayerCompositingInFrame],
     read_reaches_of_composited_effects_in_frame: &[IntRect],
     viewport_rect: IntRect,
@@ -1240,7 +1236,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
         if !matches!(layer.content, LayerContent::Painted { .. }) {
             continue;
         }
-        let shown = &mut tile_state.shown_tiles_by_layer[layer_index.0];
+        let shown = &mut shown_tiles_by_layer[layer_index.0];
         let every_backdrop_read_reach_is_known = shown.iter().all(|tile| tile.raster_margin_in_device_pixels.is_some());
         if !opaque_rects_in_frame_above.is_empty() && every_backdrop_read_reach_is_known {
             let tile_count_before = shown.len();
@@ -1416,10 +1412,6 @@ fn damage_of_layers_moved_by_animated_transforms(
     if compositing_of_latest_frame.len() != layer_update.compositing_of_layers.len() {
         return None;
     }
-    let composited_filter_read_reach_by_layer = layer_update
-        .tile_state
-        .as_ref()
-        .map(|tile_state| &tile_state.composited_filter_read_reach_by_layer);
     let mut damage = IntRect::default();
     for (latest, current) in compositing_of_latest_frame
         .iter()
@@ -1438,9 +1430,7 @@ fn damage_of_layers_moved_by_animated_transforms(
         if !moved_by_animated_transform {
             return None;
         }
-        let composited_filter_read_reach = composited_filter_read_reach_by_layer
-            .and_then(|reaches| reaches.get(current.layer_index.0).copied())
-            .unwrap_or(0);
+        let composited_filter_read_reach = layer_update.composited_filter_read_reach_by_layer[current.layer_index.0];
         let reach_in_layer_space = stack.layers[current.layer_index.0].reach;
         // A new list can shrink the reach of the layer, and the frame before showed every tile it held of the layer.
         let held_in_latest_frame = cached_layer_by_identity
@@ -1626,14 +1616,21 @@ fn compositing_of_layer(
 impl ContextPresenting {
     /// Works out the layers of the frame within `viewport_rect`, in the device pixels of the raster: those of the plan
     /// WebContent sent where the frame is drawn as the plan was made for, and one layer that replays the whole list
-    /// otherwise.
+    /// otherwise. A frame drawn with a plan that shows more tiles than a frame may is drawn as one layer instead.
+    ///
+    /// Keys the tiles the frame shows of each layer, and answers too the rect of the viewport that the tiles to raster
+    /// again, the tiles that go, and the media replayed anew cover. `invalidates_every_tile` makes every tile stale
+    /// whatever its content hash, as when the frame draws content that the list does not name. What a frame is made to
+    /// repaint otherwise leaves the tiles as they are: it is either drawn over the layers by the compositor, as its
+    /// scroll bars are, or told by the content hashes of the tiles that hold it, as a caret's blink is.
     pub(super) fn layer_update_for(
         &mut self,
         env: &PresentingEnvironment<'_>,
         frame: &FrameToPaint<'_>,
         viewport_rect: IntRect,
         live_content: &LiveContent,
-    ) -> LayerUpdate {
+        invalidates_every_tile: bool,
+    ) -> (LayerUpdate, IntRect) {
         let raster_transform = self.raster_transform();
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
@@ -1656,96 +1653,31 @@ impl ContextPresenting {
             layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect, why_list_is_one_layer)
         };
         let stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
-        let stack = stack.as_ref();
         self.layers.window_server_placements_of_media =
             stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect);
-        let composite_offsets = stack.composite_offsets(scroll_offsets);
-        let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets);
-        let shown_by_window_server_by_layer = if self.why_window_server_shows_no_media_of_this_context(env).is_none() {
-            stack.layers_the_window_server_shows(&composite_offsets, |layer_index| {
-                self.why_window_server_does_not_show_media_layer(
-                    env,
-                    layer_index,
-                    &stack.layers[layer_index.0],
-                    live_content,
-                )
-                .is_none()
-            })
-        } else {
-            vec![false; stack.layers.len()]
-        };
-        let compositing_of_layers: Vec<LayerCompositingInFrame> = (stack.base_layer.0..stack.layers.len())
-            .map(LayerIndex)
-            .filter(|&layer_index| layer_index == stack.base_layer || stack.layers[layer_index.0].may_hold_content)
-            .map(|layer_index| LayerCompositingInFrame {
-                shown_by_window_server: shown_by_window_server_by_layer[layer_index.0],
-                ..compositing_of_layer(stack, layer_index, &composite_offsets, &spaces_to_frame)
-            })
-            .collect();
-        LayerUpdate {
-            tile_state: None,
-            composite_offsets,
-            spaces_to_frame,
-            compositing_of_layers,
-            read_reaches_of_composited_effects_in_frame: Vec::new(),
-        }
-    }
-
-    /// Keys the tiles the frame shows of each layer, and answers the rect of the viewport that the tiles to raster
-    /// again, the tiles that go, and the media replayed anew cover. `invalidates_every_tile` makes every tile stale
-    /// whatever its content hash, as when the frame draws content that the list does not name. What a frame is made to
-    /// repaint otherwise leaves the tiles as they are: it is either drawn over the layers by the compositor, as its
-    /// scroll bars are, or told by the content hashes of the tiles that hold it, as a caret's blink is.
-    ///
-    /// A frame drawn with a plan that shows more tiles than a frame may is drawn as one layer instead, and `layer_update`
-    /// becomes that of one layer.
-    pub(super) fn prepare_frame_tile_state(
-        &mut self,
-        env: &PresentingEnvironment<'_>,
-        frame: &FrameToPaint<'_>,
-        live_content: &LiveContent,
-        layer_update: &mut LayerUpdate,
-        viewport_rect: IntRect,
-        invalidates_every_tile: bool,
-    ) -> IntRect {
-        if invalidates_every_tile {
-            self.layers
-                .invalidate_every_tile_and_media_replay(&layer_update.compositing_of_layers);
-        }
-        let stale_rect = self.prepare_tile_state_of_frame(env, frame, live_content, layer_update, viewport_rect);
-        let plan_shows_too_many_tiles = layer_update
-            .tile_state
-            .as_ref()
-            .is_some_and(|tile_state| self.layers.plan_of_frame_shows_too_many_tiles(tile_state));
-        if !plan_shows_too_many_tiles {
-            return stale_rect;
-        }
-        *layer_update = self.layer_update_for(env, frame, viewport_rect, live_content);
-        self.prepare_tile_state_of_frame(env, frame, live_content, layer_update, viewport_rect)
-    }
-
-    fn prepare_tile_state_of_frame(
-        &mut self,
-        env: &PresentingEnvironment<'_>,
-        frame: &FrameToPaint<'_>,
-        live_content: &LiveContent,
-        layer_update: &mut LayerUpdate,
-        viewport_rect: IntRect,
-    ) -> IntRect {
-        self.with_stack_of_frames(|this, stack_of_frames| {
-            let (stale_rect, band_tile_keys_by_band) = this.prepare_frame_tile_state_of_stack(
+        let (layer_update, stale_rect) = self.with_stack_of_frames(|this, stack_of_frames| {
+            let (layer_update, stale_rect, band_tile_keys_by_band) = this.layer_update_of_stack(
                 env,
                 frame,
-                live_content,
-                layer_update,
                 viewport_rect,
+                live_content,
+                invalidates_every_tile,
                 stack_of_frames,
             );
             // The frame paints its tiles from the stack, which keeps the tile keys where the frame is not painted.
             stack_of_frames.band_tile_keys_of_latest_frame =
                 BandTileKeysOfLatestFrame::OfSameStack(band_tile_keys_by_band);
-            stale_rect
-        })
+            (layer_update, stale_rect)
+        });
+        if self
+            .layers
+            .plan_of_frame_shows_too_many_tiles(&layer_update.shown_tiles_by_layer, viewport_rect)
+        {
+            // Frames draw the plan as one layer from now on. The budget does not hold a frame of one layer, so the frame
+            // is worked out once more at most.
+            return self.layer_update_for(env, frame, viewport_rect, live_content, invalidates_every_tile);
+        }
+        (layer_update, stale_rect)
     }
 
     /// Where a frame that composites its layers as the last painted one did, except through other transforms of spaces
@@ -1777,19 +1709,18 @@ impl ContextPresenting {
         result
     }
 
-    fn prepare_frame_tile_state_of_stack(
+    fn layer_update_of_stack(
         &mut self,
         env: &PresentingEnvironment<'_>,
         frame: &FrameToPaint<'_>,
-        live_content: &LiveContent,
-        layer_update: &mut LayerUpdate,
         viewport_rect: IntRect,
+        live_content: &LiveContent,
+        invalidates_every_tile: bool,
         stack_of_frames: &mut StackOfFrames,
-    ) -> (IntRect, Vec<Option<BandTileKeysOfFrame>>) {
+    ) -> (LayerUpdate, IntRect, Vec<Option<BandTileKeysOfFrame>>) {
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
-        let composite_offsets = &layer_update.composite_offsets;
         let raster_transform = self.raster_transform();
         let geometries = stack_of_frames.geometries_of_spaces(tree, scroll_offsets);
         let band_tile_keys_of_latest_frame = std::mem::replace(
@@ -1798,6 +1729,33 @@ impl ContextPresenting {
         );
         let stack_of_frames = &*stack_of_frames;
         let stack = stack_of_frames.stack.as_ref();
+        let composite_offsets = stack.composite_offsets(scroll_offsets);
+        let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets);
+        let shown_by_window_server_by_layer = if self.why_window_server_shows_no_media_of_this_context(env).is_none() {
+            stack.layers_the_window_server_shows(&composite_offsets, |layer_index| {
+                self.why_window_server_does_not_show_media_layer(
+                    env,
+                    layer_index,
+                    &stack.layers[layer_index.0],
+                    live_content,
+                )
+                .is_none()
+            })
+        } else {
+            vec![false; stack.layers.len()]
+        };
+        let compositing_of_layers: Vec<LayerCompositingInFrame> = (stack.base_layer.0..stack.layers.len())
+            .map(LayerIndex)
+            .filter(|&layer_index| layer_index == stack.base_layer || stack.layers[layer_index.0].may_hold_content)
+            .map(|layer_index| LayerCompositingInFrame {
+                shown_by_window_server: shown_by_window_server_by_layer[layer_index.0],
+                ..compositing_of_layer(stack, layer_index, &composite_offsets, &spaces_to_frame)
+            })
+            .collect();
+        if invalidates_every_tile {
+            self.layers
+                .invalidate_every_tile_and_media_replay(&compositing_of_layers);
+        }
         let scrollbars = frame.frame_inputs.scrollbars_shown_for_the_page();
         let live_content_versions = LiveContentVersionsOfFrame {
             live_content,
@@ -1839,14 +1797,8 @@ impl ContextPresenting {
             });
         band_tile_keys_by_band.resize_with(stack.bands.len(), || None);
         let composited_filter_read_reach_by_layer = composited_filter_read_reach_by_layer(stack, tree, &geometries);
-        let mut tile_state = FrameTileState {
-            viewport_rect,
-            shown_tiles_by_layer: (0..stack.layers.len()).map(|_| Vec::new()).collect(),
-            media_replayed_by_layer: vec![None; stack.layers.len()],
-            composited_filter_read_reach_by_layer,
-            frame_allows_lcd_text,
-            ..FrameTileState::default()
-        };
+        let mut shown_tiles_by_layer: Vec<Vec<TileShownInFrame>> =
+            (0..stack.layers.len()).map(|_| Vec::new()).collect();
         for (band_position, band) in stack.bands.iter().enumerate() {
             let band_index = BandIndex(band_position);
             let band_tile_keys_of_latest_frame = band_tile_keys_by_band[band_position].take();
@@ -1855,14 +1807,9 @@ impl ContextPresenting {
             }
             let raster_space_index = stack.nodes[band.placement_node_index.0].raster_space_index;
             let tile_keying = &tile_keying_by_raster_space[raster_space_index.0];
-            let compositing_of_layer_below_all_cuts = compositing_of_layer(
-                stack,
-                band.layer_below_all_cuts,
-                composite_offsets,
-                &layer_update.spaces_to_frame,
-            );
-            let composited_filter_read_reach =
-                tile_state.composited_filter_read_reach_by_layer[band.layer_below_all_cuts.0];
+            let compositing_of_layer_below_all_cuts =
+                compositing_of_layer(stack, band.layer_below_all_cuts, &composite_offsets, &spaces_to_frame);
+            let composited_filter_read_reach = composited_filter_read_reach_by_layer[band.layer_below_all_cuts.0];
             let shown_rect = compositing_of_layer_below_all_cuts
                 .rect_shown_in_layer_space(viewport_rect, composited_filter_read_reach);
             let mut band_tile_keys = band_tile_keys_of_latest_frame.unwrap_or_else(|| BandTileKeysOfFrame {
@@ -1936,7 +1883,7 @@ impl ContextPresenting {
                         clear_color_of_layer(stack, tile.layer_index, surface_clear_color),
                     ),
                 };
-                tile_state.shown_tiles_by_layer[tile.layer_index.0].push(TileShownInFrame {
+                shown_tiles_by_layer[tile.layer_index.0].push(TileShownInFrame {
                     coord: tile.coord,
                     content_hash: tile.content_hash,
                     part_of_cell_needed,
@@ -1957,24 +1904,24 @@ impl ContextPresenting {
             tree,
             &geometries,
             &tile_keying_by_raster_space,
-            composite_offsets,
-            &layer_update.spaces_to_frame,
+            &composite_offsets,
+            &spaces_to_frame,
             viewport_rect,
             &self.layers.content_hash_by_composited_node_of_latest_frame,
         );
         let mut stale_rect = composited_effects.stale_rect;
-        tile_state.content_hash_by_composited_node = composited_effects.content_hash_by_composited_node;
         self.layers
             .work_counts_of_this_frame
             .tiles_covered_by_opaque_tiles_above += hide_tiles_covered_by_opaque_tiles_above(
             stack_of_frames,
-            &mut tile_state,
-            &layer_update.compositing_of_layers,
+            &mut shown_tiles_by_layer,
+            &compositing_of_layers,
             &composited_effects.read_reaches_in_frame,
             viewport_rect,
             |identity| self.layer_overlay.hides_layer(identity),
         ) as u64;
-        for compositing in &layer_update.compositing_of_layers {
+        let mut media_replayed_by_layer = vec![None; stack.layers.len()];
+        for compositing in &compositing_of_layers {
             let layer_index = compositing.layer_index;
             let layer = &stack.layers[layer_index.0];
             let cached_layer = self.layers.cached_layer_by_identity.get(&layer.identity);
@@ -1992,21 +1939,28 @@ impl ContextPresenting {
                         media_replayed_in_latest_frame.map_or(IntRect::default(), |latest| latest.reach_in_frame),
                     );
                 }
-                tile_state.media_replayed_by_layer[layer_index.0] = Some(media_replayed);
+                media_replayed_by_layer[layer_index.0] = Some(media_replayed);
                 continue;
             }
             stale_rect = stale_rect.united(stale_rect_of_painted_layer(
                 cached_layer.unwrap_or(&CachedLayer::default()),
                 &self.layers.tile_pool,
-                tile_state.shown_tiles_of_layer(layer_index),
+                &shown_tiles_by_layer[layer_index.0],
                 compositing,
                 viewport_rect,
-                tile_state.composited_filter_read_reach_by_layer[layer_index.0],
+                composited_filter_read_reach_by_layer[layer_index.0],
             ));
         }
-        layer_update.tile_state = Some(tile_state);
-        layer_update.read_reaches_of_composited_effects_in_frame = composited_effects.read_reaches_in_frame;
-        (stale_rect, band_tile_keys_by_band)
+        let layer_update = LayerUpdate {
+            compositing_of_layers,
+            read_reaches_of_composited_effects_in_frame: composited_effects.read_reaches_in_frame,
+            content_hash_by_composited_node: composited_effects.content_hash_by_composited_node,
+            shown_tiles_by_layer,
+            media_replayed_by_layer,
+            composited_filter_read_reach_by_layer,
+            frame_allows_lcd_text,
+        };
+        (layer_update, stale_rect, band_tile_keys_by_band)
     }
 
     fn why_window_server_shows_no_media_of_this_context(
@@ -2237,11 +2191,9 @@ impl ContextPresenting {
         env.raster.start_raster_cache_frame(env.context_id);
         // A store can miss the damage of several frames, which joined can reach part of what a composited effect reads.
         damage_rect = layer_update.damage_grown_over_what_composited_effects_read(damage_rect);
-        let tile_state = layer_update
-            .tile_state
-            .as_ref()
-            .expect("a layered frame worked out its tiles before it was painted");
-        let holder_count_by_content_hash = self.layers.holder_count_by_content_hash(tile_state);
+        let holder_count_by_content_hash = self
+            .layers
+            .holder_count_by_content_hash(&layer_update.shown_tiles_by_layer);
         let mut tile_pool = std::mem::take(&mut self.layers.tile_pool);
         let mut rects_painted_straight = Vec::new();
         for compositing in &layer_update.compositing_of_layers {
@@ -2267,7 +2219,7 @@ impl ContextPresenting {
                 &mut cached_layer,
                 &mut tile_pool,
                 &holder_count_by_content_hash,
-                tile_state,
+                layer_update,
             ));
             self.layers
                 .cached_layer_by_identity
@@ -2375,18 +2327,12 @@ impl ContextPresenting {
             damage_rect,
             &stack_of_frames.stack,
             &layer_update.compositing_of_layers,
-            layer_update
-                .tile_state
-                .as_ref()
-                .map_or(&[][..], |tile_state| &tile_state.composited_filter_read_reach_by_layer),
+            &layer_update.composited_filter_read_reach_by_layer,
             false,
         );
         if !layer_update.shown_by_window_server() {
             let selection_painting_straight = ReplaySelection {
-                allows_lcd_text: layer_update
-                    .tile_state
-                    .as_ref()
-                    .is_some_and(|tile_state| tile_state.frame_allows_lcd_text),
+                allows_lcd_text: layer_update.frame_allows_lcd_text,
                 ..Default::default()
             };
             for &rect_painted_straight in rects_painted_straight {
@@ -2421,15 +2367,15 @@ impl ContextPresenting {
         cached_layer: &mut CachedLayer,
         tile_pool: &mut TilePool,
         holder_count_by_content_hash: &HashMap<ContentHash, usize>,
-        tile_state: &FrameTileState,
+        layer_update: &LayerUpdate,
     ) -> Vec<IntRect> {
         let stack = stack_of_frames.stack.as_ref();
         let layer_index = compositing.layer_index;
         let raster = env.raster;
-        let viewport_rect = tile_state.viewport_rect;
+        let viewport_rect = self.raster_rect();
         let raster_space_index = stack.space_of_layer(layer_index);
-        let shown = tile_state.shown_tiles_of_layer(layer_index);
-        let composited_filter_read_reach = tile_state.composited_filter_read_reach_by_layer[layer_index.0];
+        let shown = layer_update.shown_tiles_of_layer(layer_index);
+        let composited_filter_read_reach = layer_update.composited_filter_read_reach_by_layer[layer_index.0];
         let rect_shown_in_layer_space =
             compositing.rect_shown_in_layer_space(viewport_rect, composited_filter_read_reach);
         let kept_tile_rect = rect_of_kept_tiles(
@@ -2439,7 +2385,7 @@ impl ContextPresenting {
             composited_filter_read_reach,
         );
         let clear_color = clear_color_of_layer(stack, layer_index, frame.surface_clear_color());
-        let allows_lcd_text = layer_allows_lcd_text(stack_of_frames, layer_index, tile_state.frame_allows_lcd_text);
+        let allows_lcd_text = layer_allows_lcd_text(stack_of_frames, layer_index, layer_update.frame_allows_lcd_text);
         let painted_at = frame.frame_inputs.painted_at;
         let layer_overlay_records_rasters = self.layer_overlay.overlay().is_some();
         let mut record_raster_in_layer_overlay = |coord: TileCoord, cause: RasterCause, rect: IntRect| {
@@ -3628,13 +3574,7 @@ mod tests {
                 ..CachedLayer::default()
             },
         )]);
-        let layer_update = LayerUpdate {
-            tile_state: None,
-            composite_offsets: Vec::new(),
-            spaces_to_frame: Vec::new(),
-            compositing_of_layers: vec![current.clone()],
-            read_reaches_of_composited_effects_in_frame: Vec::new(),
-        };
+        let layer_update = layer_update_of(vec![current.clone()], Vec::new());
         let damage = damage_of_layers_moved_by_animated_transforms(
             &stack,
             std::slice::from_ref(&latest),
@@ -3648,14 +3588,24 @@ mod tests {
         assert!(damage.contains_rect(current.rect_in_frame(short_label, VIEWPORT)));
     }
 
-    fn layer_update_with_read_reaches(read_reaches_of_composited_effects_in_frame: Vec<IntRect>) -> LayerUpdate {
+    // The layer update of a frame that shows no tiles, of a stack whose layers it each composites.
+    fn layer_update_of(
+        compositing_of_layers: Vec<LayerCompositingInFrame>,
+        read_reaches_of_composited_effects_in_frame: Vec<IntRect>,
+    ) -> LayerUpdate {
         LayerUpdate {
-            tile_state: None,
-            composite_offsets: Vec::new(),
-            spaces_to_frame: Vec::new(),
-            compositing_of_layers: Vec::new(),
+            shown_tiles_by_layer: compositing_of_layers.iter().map(|_| Vec::new()).collect(),
+            media_replayed_by_layer: vec![None; compositing_of_layers.len()],
+            composited_filter_read_reach_by_layer: vec![0; compositing_of_layers.len()],
+            compositing_of_layers,
             read_reaches_of_composited_effects_in_frame,
+            content_hash_by_composited_node: HashMap::new(),
+            frame_allows_lcd_text: false,
         }
+    }
+
+    fn layer_update_with_read_reaches(read_reaches_of_composited_effects_in_frame: Vec<IntRect>) -> LayerUpdate {
+        layer_update_of(Vec::new(), read_reaches_of_composited_effects_in_frame)
     }
 
     // Composited effects whose reads overlap in a chain, listed from the far end of the chain, so that each pass over
@@ -3705,24 +3655,20 @@ mod tests {
         ));
     }
 
-    fn tile_state_showing(tiles: impl IntoIterator<Item = (IntRect, TileCoverage)>) -> FrameTileState {
-        FrameTileState {
-            viewport_rect: VIEWPORT,
-            shown_tiles_by_layer: vec![
-                tiles
-                    .into_iter()
-                    .map(|(part_of_cell_needed, coverage)| TileShownInFrame {
-                        coord: TileCoord::new(0, 0),
-                        content_hash: 1,
-                        part_of_cell_needed,
-                        cuts: BarrierCutsOfCell::BitPerCut(0),
-                        raster_margin_in_device_pixels: Some(0),
-                        coverage,
-                    })
-                    .collect(),
-            ],
-            ..FrameTileState::default()
-        }
+    fn one_layer_showing(tiles: impl IntoIterator<Item = (IntRect, TileCoverage)>) -> Vec<Vec<TileShownInFrame>> {
+        vec![
+            tiles
+                .into_iter()
+                .map(|(part_of_cell_needed, coverage)| TileShownInFrame {
+                    coord: TileCoord::new(0, 0),
+                    content_hash: 1,
+                    part_of_cell_needed,
+                    cuts: BarrierCutsOfCell::BitPerCut(0),
+                    raster_margin_in_device_pixels: Some(0),
+                    coverage,
+                })
+                .collect(),
+        ]
     }
 
     // A stack of many layers that each hold a translucent fill of the whole viewport.
@@ -3752,19 +3698,22 @@ mod tests {
             |_| unreachable!("a frame drawn with a plan takes its stack"),
             identity,
         );
-        let at_most = tile_state_showing(cells_of_tiles(cells_shown_most, TileCoverage::Unknown).chain(
-            cells_of_tiles(cells_shown_most, TileCoverage::OneColor(Color::from_rgb(0, 128, 0))),
-        ));
-        assert!(!layers.plan_of_frame_shows_too_many_tiles(&at_most));
+        let at_most = one_layer_showing(
+            cells_of_tiles(cells_shown_most, TileCoverage::Unknown).chain(cells_of_tiles(
+                cells_shown_most,
+                TileCoverage::OneColor(Color::from_rgb(0, 128, 0)),
+            )),
+        );
+        assert!(!layers.plan_of_frame_shows_too_many_tiles(&at_most, VIEWPORT));
         assert!(!layers.plan_shows_too_many_tiles(&plan));
-        let past_most = tile_state_showing(cells_of_tiles(cells_shown_most + 1, TileCoverage::Opaque));
-        assert!(layers.plan_of_frame_shows_too_many_tiles(&past_most));
+        let past_most = one_layer_showing(cells_of_tiles(cells_shown_most + 1, TileCoverage::Opaque));
+        assert!(layers.plan_of_frame_shows_too_many_tiles(&past_most, VIEWPORT));
         assert!(layers.plan_shows_too_many_tiles(&plan));
         assert!(!layers.plan_shows_too_many_tiles(&plan_received_again));
 
         // A frame of one layer is drawn as one layer whatever it shows.
         layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
-        assert!(!layers.plan_of_frame_shows_too_many_tiles(&past_most));
+        assert!(!layers.plan_of_frame_shows_too_many_tiles(&past_most, VIEWPORT));
     }
 
     // An iframe smaller than a cell shows a whole cell of each layer whose space it scrolls.
@@ -3810,13 +3759,7 @@ mod tests {
             &[IntPoint::default()],
             &[SpaceToFrame::Offset(IntPoint::default())],
         )];
-        layers.take_in_painted_frame(LayerUpdate {
-            tile_state: None,
-            composite_offsets: vec![IntPoint::default()],
-            spaces_to_frame: vec![SpaceToFrame::Offset(IntPoint::default())],
-            compositing_of_layers: compositing_of_painted_frame.clone(),
-            read_reaches_of_composited_effects_in_frame: Vec::new(),
-        });
+        layers.take_in_painted_frame(layer_update_of(compositing_of_painted_frame.clone(), Vec::new()));
 
         let plan_of_next_list = ReceivedLayerPlan {
             viewport_rect: VIEWPORT,
