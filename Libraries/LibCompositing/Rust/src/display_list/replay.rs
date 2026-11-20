@@ -20,7 +20,7 @@ use crate::display_list::effect_geometry::{
     EffectGeometry, Extent, compute_effect_geometry, nearest_effects_at_or_above_where,
 };
 use crate::display_list::nested_records::{replays_nested_records_where_it_plays, span_bytes};
-use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
+use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListSpan};
 use crate::host::{
     CompositedContextDraw, IsolatedGroup, PresentedScrollbar, ResolvedFillRect, ResolvedFillRectWithRoundedCorners,
     SurfaceDraw, TileRaster, VectorImagePlacement, VectorImageReplay,
@@ -1354,9 +1354,9 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
     fn execute_record_span(&mut self, span: ListSpan) {
         let display_list = self.display_list;
         for (chunk_index, begin_offset, end_offset) in display_list.parts_of_span(span) {
-            let runs = display_list.chunk(chunk_index).runs();
-            let first_run_index_in_chunk = runs.partition_point(|run| run.offset + run.size <= begin_offset);
-            for (run_index_in_chunk, run) in runs.iter().enumerate().skip(first_run_index_in_chunk) {
+            let chunk = display_list.chunk(chunk_index);
+            let first_run_index_in_chunk = chunk.index_of_first_run_ending_after(begin_offset);
+            for (run_index_in_chunk, run) in chunk.runs().iter().enumerate().skip(first_run_index_in_chunk) {
                 if run.offset >= end_offset {
                     break;
                 }
@@ -1408,13 +1408,7 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
     }
 
     fn execute_selected_records_of_run(&mut self, run_index: usize) {
-        let display_list = self.display_list;
-        let (chunk_index, run_index_in_chunk) = display_list.chunk_of_run(run_index);
-        let run = display_list.chunk(chunk_index).runs()[run_index_in_chunk];
-        let run_span = ListSpan {
-            begin: ListPosition::new(chunk_index, run.offset),
-            end: ListPosition::new(chunk_index, run.offset + run.size),
-        };
+        let run_span = self.display_list.span_of_run(run_index);
         let Some(record_spans) = self.selection.record_spans else {
             self.execute_record_span(run_span);
             return;
@@ -1438,9 +1432,11 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
             display_list
                 .parts_of_span(*span)
                 .any(|(chunk_index, begin_offset, end_offset)| {
-                    let runs = display_list.chunk(chunk_index).runs();
-                    let first_run_index_in_chunk = runs.partition_point(|run| run.offset + run.size <= begin_offset);
-                    runs.iter()
+                    let chunk = display_list.chunk(chunk_index);
+                    let first_run_index_in_chunk = chunk.index_of_first_run_ending_after(begin_offset);
+                    chunk
+                        .runs()
+                        .iter()
                         .enumerate()
                         .skip(first_run_index_in_chunk)
                         .take_while(|(_, run)| run.offset < end_offset)
