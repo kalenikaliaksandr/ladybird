@@ -65,22 +65,32 @@ impl PlannedLayers {
             })
     }
 
-    /// What the dump says of each backdrop filter or blend mode that reads only the layer it goes into.
+    /// What the dump says of each backdrop filter or blend mode that finds all it reads in the layer it goes into, and
+    /// reads it there rather than the compositor compositing it, in paint order.
     pub fn lines_of_effects_reading_only_own_layer<'a>(
         &'a self,
         node_namer: &'a dyn VisualContextNodeNamer,
     ) -> impl Iterator<Item = String> + 'a {
-        self.notes.effects_reading_only_own_layer.iter().map(|effect| {
-            format!(
-                "{} is not composited: it reads only its own layer",
-                node_namer.name_of_effect_node(*effect)
-            )
-        })
+        let composited_effects = &self.stack.composited_effects;
+        self.placement
+            .backdrop_readers_in_paint_order
+            .iter()
+            .filter(|reader| {
+                composited_effects
+                    .iter()
+                    .all(|composited| composited.effect != **reader)
+            })
+            .map(|effect| {
+                format!(
+                    "{} is not composited: it reads only its own layer",
+                    node_namer.name_of_effect_node(*effect)
+                )
+            })
     }
 
     /// What the dump says of each canvas, video or nested context that was not given a layer, and why.
     pub fn lines_of_media_without_layers(&self) -> impl Iterator<Item = String> + '_ {
-        self.notes
+        self.placement
             .media_without_layers
             .iter()
             .map(|(content, why_no_layer)| format!("no layer for {}: {why_no_layer}", media_name(*content)))
@@ -89,7 +99,11 @@ impl PlannedLayers {
     /// The lines the overlay of layers shows of the stack past its layers, which WebContent sends with the plan: those
     /// of the effects the compositor composites, of the canvases, videos and nested contexts without layers, and of the
     /// effects that read only their own layer, with nodes named by their indices, as many and as long as a plan holds.
+    /// A stack of one layer that replays the whole list has none.
     pub fn note_lines_for_layers_overlay(&self) -> Vec<String> {
+        if self.stack.replays_whole_list() {
+            return Vec::new();
+        }
         wire::note_lines_a_plan_holds(
             self.lines_of_composited_effects(&NodeNamesFromIndices)
                 .chain(self.lines_of_media_without_layers())

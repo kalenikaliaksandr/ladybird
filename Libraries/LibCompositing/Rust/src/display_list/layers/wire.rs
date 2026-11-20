@@ -2411,7 +2411,6 @@ mod tests {
         let presentation = stack.window_server_presentation_of_media(list, frame_tree, &scroll_offsets, VIEWPORT);
         let planned_with_stack = PlannedLayers {
             stack: stack.clone(),
-            notes: planned.notes.clone(),
             placement: planned.placement.clone(),
         };
         planned_with_stack.layer_lines(&presentation, &NodeNamesFromIndices, |layer| {

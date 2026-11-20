@@ -156,23 +156,11 @@ impl std::fmt::Display for WhyEffectIsComposited {
     }
 }
 
-/// What the dump and the overlay of layers tell of a stack past what a frame and its composited effects read of it. A
-/// stack of one layer that replays the whole list has no notes.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NotesOfStack {
-    pub media_without_layers: Vec<(LiveContent, WhyMediaHasNoLayer)>,
-    /// The backdrop filters and blend modes that find all they read in the layer they go into, and read it there
-    /// rather than the compositor compositing them, in paint order.
-    pub effects_reading_only_own_layer: Vec<EffectNodeIndex>,
-}
-
-/// A plan of the layers of a list: the stack the compositor composites frames from, the notes the dump and the overlay
-/// of layers tell of it, and where the parts of the list are placed among the spaces of the stack, which only the dump,
-/// the overlay of layers and the tests read.
+/// A plan of the layers of a list: the stack the compositor composites frames from, and where the parts of the list
+/// are placed among the spaces of the stack, which only the dump, the overlay of layers and the tests read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlannedLayers {
     pub stack: LayerStack,
-    pub notes: NotesOfStack,
     pub placement: ListPlacement,
 }
 
@@ -1936,24 +1924,6 @@ fn why_nodes_go_as_one_layer(
     why_compositor_cannot_composite_effect_of_nodes(placement, nodes)
 }
 
-fn notes_of_stack(placement: &ListPlacement, stack: &LayerStack) -> NotesOfStack {
-    let effects_reading_only_own_layer = placement
-        .backdrop_readers_in_paint_order
-        .iter()
-        .copied()
-        .filter(|reader| {
-            stack
-                .composited_effects
-                .iter()
-                .all(|composited| composited.effect != *reader)
-        })
-        .collect();
-    NotesOfStack {
-        media_without_layers: placement.media_without_layers.clone(),
-        effects_reading_only_own_layer,
-    }
-}
-
 /// Works out the layers of a list from where `place_list` placed its parts among `spaces`, whose extents are not filled
 /// in.
 ///
@@ -1993,11 +1963,7 @@ fn build_layer_stack(
         })
     });
     match stack_of_plan {
-        Ok(stack) => PlannedLayers {
-            notes: notes_of_stack(&placement, &stack),
-            stack,
-            placement,
-        },
+        Ok(stack) => PlannedLayers { stack, placement },
         Err(why_list_is_one_layer) => one_layer(inputs, why_list_is_one_layer, layering_obstacles, placement),
     }
 }
@@ -2015,7 +1981,6 @@ fn one_layer(
             Some(why_list_is_one_layer),
             layering_obstacles,
         ),
-        notes: NotesOfStack::default(),
         placement,
     }
 }
@@ -3154,13 +3119,13 @@ mod tests {
                 space_names(&planned.stack),
                 ["viewport", &format!("animated@s{} in viewport", element.spatial.0)]
             );
-            assert!(planned.notes.media_without_layers.is_empty());
+            assert!(planned.placement.media_without_layers.is_empty());
         }
         let (tree, list, _) = page_with_animated_element(Animated::RotationOutOfPlane, UnderAnimatedNode::Canvas);
         let planned = layers_planned_alike_for_every_sample(&list, &tree);
         assert_eq!(space_names(&planned.stack), ["viewport"]);
         assert_eq!(
-            planned.notes.media_without_layers,
+            planned.placement.media_without_layers,
             [(
                 LiveContent::Canvas(CanvasId(1)),
                 WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine
