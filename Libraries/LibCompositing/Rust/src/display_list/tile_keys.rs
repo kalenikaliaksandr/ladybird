@@ -58,6 +58,9 @@ pub type ContentHash = u128;
 const LOW_HALF_SEED: u64 = 0x243f_6a88_85a3_08d3;
 const HIGH_HALF_SEED: u64 = 0x1319_8a2e_0370_7344;
 const LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS: f32 = 2048.0;
+// The farthest past its cell that a tile is rastered, in device pixels. A tile whose backdrop filters read farther takes
+// how far as not known, which keeps the rects that rastering inflates by it within the limits of an `IntRect`.
+const LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS: i32 = 4 * LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32;
 
 struct ContentHasher {
     low: FoldHasher<'static>,
@@ -1177,6 +1180,23 @@ impl BandTileKeys {
 /// shows many more cells of it. This bounds the work and the tiles of the band in such a frame: it keys only the cells
 /// nearest to the middle of the shown rect, and shows nothing in the others.
 pub const MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME: usize = 4096;
+
+/// How far past `cell` its tiles are rastered, in device pixels: as far as the backdrop filters whose regions touch the
+/// cell read and spread what they read, or none where that is not known or is farther than
+/// `LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS`.
+fn raster_margin_of_cell(backdrop_reads: &[BackdropReadInLayer], cell: IntRect) -> Option<i32> {
+    backdrop_reads
+        .iter()
+        .filter(|backdrop_read| backdrop_read.region_reach.touches(cell))
+        .try_fold(0i32, |margin, backdrop_read| {
+            Some(
+                margin
+                    .saturating_add(backdrop_read.read_reach_in_device_pixels?)
+                    .saturating_add(backdrop_read.spread_past_region_in_device_pixels),
+            )
+        })
+        .filter(|&margin| margin <= LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS)
+}
 
 /// The cells of `shown_rect` that a band keys in a frame: those where it can hold something and holds no tiles yet.
 /// The band can hold the base layer and items replayed into every tile at every cell, and the records of a held chunk
@@ -3092,17 +3112,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 bin.push((base_layer, Vec::new()));
             }
             let cell = coord.cell_rect();
-            let raster_margin_in_device_pixels = bound_band
-                .backdrop_reads
-                .iter()
-                .filter(|backdrop_read| backdrop_read.region_reach.touches(cell))
-                .try_fold(0i32, |margin, backdrop_read| {
-                    Some(
-                        margin
-                            .saturating_add(backdrop_read.read_reach_in_device_pixels?)
-                            .saturating_add(backdrop_read.spread_past_region_in_device_pixels),
-                    )
-                });
+            let raster_margin_in_device_pixels = raster_margin_of_cell(&bound_band.backdrop_reads, cell);
             let cuts = band.cuts_of_cell(cell);
             let frame_edge_backdrop_blurs_mirror_at =
                 bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(cell, frame);
@@ -3897,6 +3907,42 @@ mod tests {
                 }),
             }),
         )
+    }
+
+    fn backdrop_read_of_viewport(read_reach: i32, spread_past_region: i32) -> BackdropReadInLayer {
+        BackdropReadInLayer {
+            first_record_position: ListPosition::default(),
+            region_reach: Reach::Within(VIEWPORT),
+            backdrop_read_reach: Reach::Within(VIEWPORT),
+            read_reach_in_device_pixels: Some(read_reach),
+            spread_past_region_in_device_pixels: spread_past_region,
+            mirroring_blur_region: None,
+        }
+    }
+
+    // A backdrop filter in a tree from another process can spread what it reads about as far as the extent of a space.
+    #[test]
+    fn a_tile_whose_backdrop_filters_read_farther_than_the_largest_raster_margin_has_no_margin_known() {
+        let cell = TileCoord::new(0, 0).cell_rect();
+        let largest = LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS;
+        let at_largest = [
+            backdrop_read_of_viewport(2000, largest - 2100),
+            backdrop_read_of_viewport(100, 0),
+        ];
+        assert_eq!(raster_margin_of_cell(&at_largest, cell), Some(largest));
+        let past_largest = [
+            backdrop_read_of_viewport(2000, largest - 2100),
+            backdrop_read_of_viewport(101, 0),
+        ];
+        assert_eq!(raster_margin_of_cell(&past_largest, cell), None);
+        let spread_as_far_as_the_extent: Vec<BackdropReadInLayer> =
+            (0..5).map(|_| backdrop_read_of_viewport(2051, 1 << 29)).collect();
+        assert_eq!(raster_margin_of_cell(&spread_as_far_as_the_extent, cell), None);
+        let elsewhere = BackdropReadInLayer {
+            region_reach: Reach::Within(TileCoord::new(4, 4).cell_rect()),
+            ..backdrop_read_of_viewport(2051, 1 << 29)
+        };
+        assert_eq!(raster_margin_of_cell(&[elsewhere], cell), Some(0));
     }
 
     // The region of a backdrop filter in a tree from another process can lie past the extent of any space.
