@@ -289,6 +289,13 @@ impl LayerCompositingInFrame {
             composited_filter_read_reach,
         )
     }
+
+    /// The layer composited, in the stack the frame worked out its compositing with.
+    fn layer_in<'a>(&self, stack: &'a LayerStack) -> &'a StackLayer {
+        let layer = &stack.layers[self.layer_index.0];
+        debug_assert!(layer.identity == self.identity);
+        layer
+    }
 }
 
 fn any_layer_shown_by_window_server(compositing_of_layers: &[LayerCompositingInFrame]) -> bool {
@@ -535,21 +542,6 @@ struct CachedRasterSpaceGeometry {
     geometry: Rc<RasterSpaceGeometry>,
 }
 
-/// A stack that a frame composites its layers by.
-#[derive(Clone)]
-struct CompositedStack {
-    stack: Rc<LayerStack>,
-}
-
-impl CompositedStack {
-    /// The layer a frame composited, which the frame worked out with this stack.
-    fn layer_composited_as(&self, compositing: &LayerCompositingInFrame) -> (LayerIndex, &StackLayer) {
-        let layer = &self.stack.layers[compositing.layer_index.0];
-        debug_assert!(layer.identity == compositing.identity);
-        (compositing.layer_index, layer)
-    }
-}
-
 /// The stack that frames draw with, and what they keep of it from one frame to the next while they draw with the same
 /// plan, whose trees hold the same nodes and differ only in their values.
 struct StackOfFrames {
@@ -600,12 +592,6 @@ impl StackOfFrames {
             geometry_by_space,
             band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_latest_frame),
             names_of_layers_for_overlay: OnceCell::new(),
-        }
-    }
-
-    fn composited_stack(&self) -> CompositedStack {
-        CompositedStack {
-            stack: self.stack.clone(),
         }
     }
 
@@ -700,7 +686,7 @@ pub struct ContextLayers {
     stack_of_frames: Option<StackOfFrames>,
     /// The stack the latest painted frame was drawn with, which a snapshot of the frame on screen and what the window
     /// server shows above it are composited with until another frame is painted.
-    stack_of_painted_frame: Option<CompositedStack>,
+    stack_of_painted_frame: Option<Rc<LayerStack>>,
     layering_obstacles_of_frames_not_drawn_as_planned: Option<LayeringObstaclesOfListAndTree>,
     /// Where the window server can show the media of the stack, as the latest frame worked it out.
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
@@ -857,7 +843,7 @@ impl ContextLayers {
                 }
                 self.content_hash_by_composited_node_of_latest_frame = tile_state.content_hash_by_composited_node;
             }
-            self.stack_of_painted_frame = Some(stack_of_frames.composited_stack());
+            self.stack_of_painted_frame = Some(stack_of_frames.stack.clone());
         }
         self.compositing_of_latest_frame = layer_update.compositing_of_layers;
     }
@@ -2415,7 +2401,7 @@ impl ContextPresenting {
             surface,
             frame,
             damage_rect,
-            &stack_of_frames.composited_stack(),
+            &stack_of_frames.stack,
             &layer_update.compositing_of_layers,
             layer_update
                 .tile_state
@@ -2774,7 +2760,7 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
     ) {
-        let Some(composited_stack) = &self.layers.stack_of_painted_frame else {
+        let Some(stack) = &self.layers.stack_of_painted_frame else {
             return;
         };
         self.composite_layers_above_base_of_stack(
@@ -2782,7 +2768,7 @@ impl ContextPresenting {
             surface,
             frame,
             damage_rect,
-            composited_stack,
+            stack,
             &self.layers.compositing_of_latest_frame,
             &[],
             true,
@@ -2796,12 +2782,11 @@ impl ContextPresenting {
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
-        composited_stack: &CompositedStack,
+        stack: &LayerStack,
         compositing_of_layers: &[LayerCompositingInFrame],
         composited_filter_read_reach_by_layer: &[i32],
         composites_layers_the_window_server_shows: bool,
     ) {
-        let stack = &composited_stack.stack;
         if compositing_of_layers
             .iter()
             .skip(1)
@@ -2820,7 +2805,8 @@ impl ContextPresenting {
                 .filter(|compositing| compositing.shown_by_window_server == composites_layers_the_window_server_shows)
                 .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
             {
-                let (layer_index, layer) = composited_stack.layer_composited_as(compositing);
+                let layer_index = compositing.layer_index;
+                let layer = compositing.layer_in(stack);
                 let damage_grown_by_filter_reads = inflated(
                     damage_rect,
                     composited_filter_read_reach_by_layer
@@ -3028,7 +3014,7 @@ impl ContextPresenting {
     pub(super) fn sublayers_shown_by_window_server(&self, live_content: &LiveContent) -> Vec<FfiSublayer> {
         let layers = &self.layers;
         let mut sublayers = Vec::new();
-        let Some(composited_stack) = layers
+        let Some(stack) = layers
             .stack_of_painted_frame
             .as_ref()
             .filter(|_| layers.window_server_shows_media())
@@ -3042,7 +3028,8 @@ impl ContextPresenting {
             .filter(|compositing| compositing.shown_by_window_server)
             .filter(|compositing| !self.layer_overlay.hides_layer(&compositing.identity))
         {
-            let (layer_index, layer) = composited_stack.layer_composited_as(compositing);
+            let layer_index = compositing.layer_index;
+            let layer = compositing.layer_in(stack);
             if let LayerContent::Media { content, .. } = &layer.content {
                 let Some(Ok(placement)) = layers.window_server_placements_of_media.of_layer(layer_index) else {
                     continue;
@@ -3879,7 +3866,7 @@ mod tests {
             .stack_of_painted_frame
             .as_ref()
             .expect("the frame on screen was drawn with a stack");
-        assert!(Rc::ptr_eq(&stack_of_frame_on_screen.stack, &painted_stack));
+        assert!(Rc::ptr_eq(stack_of_frame_on_screen, &painted_stack));
         assert!(layers.compositing_of_latest_frame == compositing_of_painted_frame);
     }
 }
