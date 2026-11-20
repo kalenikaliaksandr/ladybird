@@ -14,6 +14,7 @@
 #include <QDialog>
 
 class QLabel;
+class QPlainTextEdit;
 class QTimer;
 class QTreeWidget;
 
@@ -41,7 +42,7 @@ private:
     Source m_source;
     Optional<Compositing::CompositorLayersDescription> m_shown_description;
     QTreeWidget* m_layer_tree { nullptr };
-    QLabel* m_notes { nullptr };
+    QPlainTextEdit* m_notes { nullptr };
     QLabel* m_summary_of_last_frame { nullptr };
     QLabel* m_tile_highlight_legend { nullptr };
     QTimer* m_refresh_timer { nullptr };

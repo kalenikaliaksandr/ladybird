@@ -10,7 +10,9 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QSignalBlocker>
+#include <QTextDocument>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -27,6 +29,7 @@ enum Column {
 constexpr int LayerIDRole = Qt::UserRole + 1;
 constexpr int REFRESH_INTERVAL_IN_MILLISECONDS = 150;
 constexpr int SWATCH_SIZE = 12;
+constexpr int MAXIMUM_VISIBLE_NOTE_LINE_COUNT = 8;
 
 QIcon swatch_of(u32 rgb)
 {
@@ -54,10 +57,12 @@ CompositorLayersWindow::CompositorLayersWindow(Source source)
     m_layer_tree->header()->setSectionResizeMode(Holds, QHeaderView::ResizeToContents);
     m_layer_tree->header()->setStretchLastSection(false);
 
-    // The notes and the summary show text from other processes. Do not read that text as markup.
-    m_notes = new QLabel(this);
-    m_notes->setTextFormat(Qt::PlainText);
-    m_notes->setWordWrap(true);
+    // The notes and the summary show text from other processes. Do not read that text as markup. A plan can hold many
+    // long notes, so they scroll within a few lines.
+    m_notes = new QPlainTextEdit(this);
+    m_notes->setReadOnly(true);
+    auto margins_of_notes = 2 * (m_notes->frameWidth() + static_cast<int>(m_notes->document()->documentMargin()));
+    m_notes->setMaximumHeight(m_notes->fontMetrics().lineSpacing() * MAXIMUM_VISIBLE_NOTE_LINE_COUNT + margins_of_notes);
     m_summary_of_last_frame = new QLabel(this);
     m_summary_of_last_frame->setTextFormat(Qt::PlainText);
     m_summary_of_last_frame->setWordWrap(true);
@@ -148,7 +153,7 @@ void CompositorLayersWindow::refresh()
     QStringList notes;
     for (auto const& note : description->notes)
         notes.append(qstring_from_ak_string(note));
-    m_notes->setText(notes.join('\n'));
+    m_notes->setPlainText(notes.join('\n'));
     m_notes->setVisible(!notes.isEmpty());
     m_summary_of_last_frame->setText(qstring_from_ak_string(description->summary_of_last_frame));
 
