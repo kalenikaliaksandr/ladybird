@@ -850,8 +850,10 @@ fn check_no_record_is_held_twice(plan: &LayeredPlan) -> Result<(), &'static str>
 }
 
 // What only the walk of the bands tells: the node of a band the walk enters at a cut of another band is in the node of
-// that band, and the first band is of a node in no other node; the cuts of a band are in paint order; and the
-// identities of layers, so of bands too, are unique.
+// that band, and the first band is of a node in no other node; the cuts of a band are in paint order; a band the walk
+// enters at a cut starts where its first span or its first cut is, whichever is painted first, as a plan opens a band for
+// the stretch of records it starts with, and that start is where the cut of the band is painted; and the identities of
+// layers, so of bands too, are unique.
 fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
     for band in &stack.bands {
         let node_of_band_around = band
@@ -866,6 +868,18 @@ fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
             .all(|pair| pair[0].barrier_first_record_position <= pair[1].barrier_first_record_position);
         if !cuts_are_in_paint_order {
             return Err("the cuts of a band are not in paint order");
+        }
+        let where_content_of_band_begins = [
+            band.record_spans.first().map(|span| span.begin),
+            band.cuts.first().map(|cut| cut.barrier_first_record_position),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        if band.parent_band_holding_this_band_as_barrier.is_some()
+            && where_content_of_band_begins != Some(band.first_record_position)
+        {
+            return Err("a band entered at a cut does not start where its content begins");
         }
     }
     if stack.index_of_layer_with_identity.len() != stack.layers.len() {
@@ -895,7 +909,8 @@ impl LayerStack {
     /// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them
     /// and no deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`;
     /// bands are of nodes of the stack, and each band but the first holds a span or a cut; bands start at runs of the
-    /// list, and spans are of whole runs, in paint order; each canvas, video or nested context with a layer is a run of
+    /// list, and spans are of whole runs, in paint order, and a band entered at a cut starts where its first span or its
+    /// first cut is; each canvas, video or nested context with a layer is a run of
     /// the list that draws it, numbered by how many drawings of the same content with layers are painted before it,
     /// and the stack holds no more of those than a plan makes; no span is empty and no record
     /// is in two spans; and the walk of the bands enters each band once. Once the stack is built, the node of a band
@@ -909,7 +924,7 @@ impl LayerStack {
     /// viewport's scroller, and never of a space whose anchor the compositor animates.
     ///
     /// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
-    /// which layers can hold content, whether every record is in a span, whether a band starts at its first record,
+    /// which layers can hold content, whether every record is in a span, whether the first band starts at its first record,
     /// whether composite clips are the clips content needs, which effects must be composited, which spaces hold content
     /// that moves within them, and where the window server could show media. The list and the tree pass their own
     /// checks first.
@@ -954,7 +969,7 @@ mod tests {
     };
     use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
     use crate::display_list::layers::{
-        BandIndex, LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS, LayerIndex,
+        BandIndex, CutsOfCell, LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS, LayerIndex,
         MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeNamesFromIndices, WindowServerPresentationOfMedia,
     };
     use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry};
@@ -2301,6 +2316,11 @@ mod tests {
                 plan.bands[0].placement_node_index = PlacementNodeIndex(1);
             }),
             (
+                "30: band entered at a cut that starts past where its content begins",
+                plain_page,
+                |plan| plan.bands[1].first_record_position = plan.bands[1].record_spans[0].end,
+            ),
+            (
                 "29: first drawing of a canvas numbered as if one came before it",
                 page_with_two_canvases,
                 |plan| *first_media_of(plan).1 = 1,
@@ -2333,6 +2353,32 @@ mod tests {
                 page.validated_plan(plan).is_err(),
                 "{need}: the mutated plan is rejected"
             );
+        }
+    }
+
+    // The cuts of a cell are worked out once for the cell, and a record finds its layer among them.
+    #[test]
+    fn the_cuts_of_a_cell_place_each_record_in_the_layer_the_band_places_it_in() {
+        let pages = every_page().into_iter().chain([
+            ("canvas drawn twice", page_drawing_one_canvas_twice()),
+            ("nine canvases", page_with_nine_canvases()),
+        ]);
+        for (name, page) in pages {
+            let stack = page.planned().stack;
+            let record_positions: Vec<ListPosition> = (0..page.list.run_count())
+                .map(|run_index| page.list.start_of_run(run_index))
+                .collect();
+            for band in &stack.bands {
+                for (column, row) in (-1..3).flat_map(|column| (-1..6).map(move |row| (column, row))) {
+                    let cell = crate::display_list::tiles::TileCoord::new(column, row).cell_rect();
+                    let cuts_of_cell = CutsOfCell::of(band, cell);
+                    for &position in &record_positions {
+                        let (layer, count_of_cuts_below) = cuts_of_cell.layer_of_record(position);
+                        assert_eq!(layer, band.layer_of_record_in_cell(position, cell), "{name}");
+                        assert_eq!(cuts_of_cell.layer_above_first_cuts(count_of_cuts_below), Some(layer));
+                    }
+                }
+            }
         }
     }
 

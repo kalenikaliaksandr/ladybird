@@ -352,43 +352,68 @@ impl PlacementNodeBand {
             .last()
             .map_or(self.layer_below_all_cuts, |cut| cut.layer_above_cut)
     }
+}
 
-    /// The layer of the band above the first `cut_count` of the barriers that cut the tile at `cell`, in paint order,
-    /// or none where fewer cut it.
-    pub fn layer_above_first_cuts_of_cell(&self, cell: IntRect, cut_count: usize) -> Option<LayerIndex> {
-        match cut_count {
-            0 => Some(self.layer_below_all_cuts),
-            cut_count => self
-                .cuts
-                .iter()
-                .filter(|cut| cut.cuts_cell(cell))
-                .nth(cut_count - 1)
-                .map(|cut| cut.layer_above_cut),
+/// The barriers of a band that cut the tile at one cell, in paint order, worked out once for the cell. A band of a
+/// received stack can have too many barriers to look through for each record of the cell.
+pub struct CutsOfCell<'a> {
+    band: &'a PlacementNodeBand,
+    cut_indices: Vec<u32>,
+}
+
+impl<'a> CutsOfCell<'a> {
+    pub fn of(band: &'a PlacementNodeBand, cell: IntRect) -> Self {
+        Self {
+            band,
+            cut_indices: (0..band.cuts.len() as u32)
+                .filter(|&cut_index| band.cuts[cut_index as usize].cuts_cell(cell))
+                .collect(),
         }
     }
 
-    /// How many of the barriers that cut the tile at `cell` are below `layer` of the band there, as
-    /// `layer_above_first_cuts_of_cell` counts them.
-    pub fn count_of_cuts_of_cell_below_layer(&self, cell: IntRect, layer: LayerIndex) -> usize {
-        self.cuts
+    /// The barriers that cut the tile, in paint order.
+    pub fn cuts(&self) -> impl Iterator<Item = &'a BarrierCut> + '_ {
+        let band = self.band;
+        self.cut_indices
             .iter()
-            .filter(|cut| cut.cuts_cell(cell))
-            .position(|cut| cut.layer_above_cut == layer)
-            .map_or(0, |position_among_cuts_of_cell| position_among_cuts_of_cell + 1)
+            .map(move |&cut_index| &band.cuts[cut_index as usize])
     }
 
-    /// Which barriers cut the tile at `cell`: tiles that answer alike place every record alike.
-    pub fn cuts_of_cell(&self, cell: IntRect) -> BarrierCutsOfCell {
-        let indices_of_cuts_of_cell = self
-            .cuts
-            .iter()
-            .enumerate()
-            .filter(|(_, cut)| cut.cuts_cell(cell))
-            .map(|(cut_index, _)| cut_index);
-        if self.cuts.len() <= u64::BITS as usize {
-            BarrierCutsOfCell::BitPerCut(indices_of_cuts_of_cell.fold(0, |bits, cut_index| bits | (1u64 << cut_index)))
+    /// The layer the band's record at `record_position` goes into within the tile: the one above the last barrier
+    /// painted before it that cuts the tile. Answers too how many of the barriers that cut the tile are below it.
+    pub fn layer_of_record(&self, record_position: ListPosition) -> (LayerIndex, usize) {
+        // The cuts of a band are in paint order.
+        let count_of_cuts_below = self.cut_indices.partition_point(|&cut_index| {
+            self.band.cuts[cut_index as usize].barrier_first_record_position <= record_position
+        });
+        let layer = match count_of_cuts_below {
+            0 => self.band.layer_below_all_cuts,
+            count => self.band.cuts[self.cut_indices[count - 1] as usize].layer_above_cut,
+        };
+        (layer, count_of_cuts_below)
+    }
+
+    /// The layer of the band above the first `cut_count` of the barriers that cut the tile, or none where fewer cut it.
+    pub fn layer_above_first_cuts(&self, cut_count: usize) -> Option<LayerIndex> {
+        match cut_count {
+            0 => Some(self.band.layer_below_all_cuts),
+            cut_count => self
+                .cut_indices
+                .get(cut_count - 1)
+                .map(|&cut_index| self.band.cuts[cut_index as usize].layer_above_cut),
+        }
+    }
+
+    /// Which barriers cut the tile: tiles that answer alike place every record alike.
+    pub fn barrier_cuts(&self) -> BarrierCutsOfCell {
+        if self.band.cuts.len() <= u64::BITS as usize {
+            BarrierCutsOfCell::BitPerCut(
+                self.cut_indices
+                    .iter()
+                    .fold(0, |bits, &cut_index| bits | (1u64 << cut_index)),
+            )
         } else {
-            BarrierCutsOfCell::CutIndices(indices_of_cuts_of_cell.map(|cut_index| cut_index as u32).collect())
+            BarrierCutsOfCell::CutIndices(self.cut_indices.as_slice().into())
         }
     }
 }
