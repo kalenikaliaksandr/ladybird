@@ -1090,14 +1090,6 @@ impl LayerStack {
             .any(CompositeClip::is_rounded)
     }
 
-    /// The effects the compositor composites, which rasters of their content leave out.
-    pub fn effects_the_compositor_composites(&self) -> Vec<EffectNodeIndex> {
-        self.composited_effects
-            .iter()
-            .map(|composited| composited.effect)
-            .collect()
-    }
-
     /// The innermost band the layer is in whose node the compositor composites inside its effect, if any.
     pub fn innermost_composited_band_around_layer(&self, layer_index: LayerIndex) -> Option<BandIndex> {
         self.innermost_composited_band_at_or_around_band[self.layers[layer_index.0].band_index.0]

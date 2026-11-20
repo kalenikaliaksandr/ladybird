@@ -462,8 +462,8 @@ impl<'a> TileKeyingOfList<'a> {
         let layering_obstacles = stack.layering_obstacles;
         let run_groups = display_list.run_groups(tree);
         let mut is_composited_by_effect_index = vec![false; tree.effect_nodes.len()];
-        for effect in stack.effects_the_compositor_composites() {
-            is_composited_by_effect_index[effect.0 as usize] = true;
+        for composited in &stack.composited_effects {
+            is_composited_by_effect_index[composited.effect.0 as usize] = true;
         }
         let innermost_composited_effect_by_effect_index =
             nearest_effects_at_or_above_where(tree, |effect, _| is_composited_by_effect_index[effect.0 as usize]);
@@ -3733,9 +3733,13 @@ mod tests {
         let display_list = DisplayListStorage::of_chunks(chunks).unwrap();
         let stack = stack_of(&display_list, &tree.with_visual_animation_samples(0));
         let effect_without_layer = faded[MAXIMUM_ANIMATED_NODES_WITH_LAYERS].effect;
-        let composited_effects = stack.effects_the_compositor_composites();
-        assert_eq!(composited_effects.len(), MAXIMUM_ANIMATED_NODES_WITH_LAYERS);
-        assert!(!composited_effects.contains(&effect_without_layer));
+        assert_eq!(stack.composited_effects.len(), MAXIMUM_ANIMATED_NODES_WITH_LAYERS);
+        assert!(
+            stack
+                .composited_effects
+                .iter()
+                .all(|composited| composited.effect != effect_without_layer)
+        );
         let position_of_box_without_layer = ListPosition::new(ChunkIndexInList(faded.len() as u32), 0);
         let band_of_box_without_layer = BandIndex(
             stack
