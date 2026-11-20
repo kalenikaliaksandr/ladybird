@@ -165,6 +165,7 @@ impl ContentHasher {
         self.write_u64(name.id.0[0]);
         self.write_u64(name.id.0[1]);
         self.write_u32(name.occurrence);
+        self.write_u64(name.copy_number);
     }
 
     fn finish(&self) -> ContentHash {
@@ -4476,6 +4477,83 @@ mod tests {
             );
             assert!(!spans_of_masked_box.iter().any(|span| span.contains(first_box_position)));
         }
+    }
+
+    // An id is a hash that another process can make two chunks share. A cell keeps what it replays of a mask declaration
+    // whose chunk its band does not hold by the name of that chunk and the bytes of the declaration, wherever the
+    // declaration is in the chunk.
+    #[test]
+    fn a_cell_is_keyed_again_where_a_chunk_of_its_name_holds_other_bytes() {
+        use crate::visual_context::{MaskData, MaskLayerOrigin};
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let masked = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Mask(MaskData {
+                rect: IntRect::new(0, 0, 100, 100),
+                kind: libgfx_rust::MaskKind::Alpha,
+                origin: MaskLayerOrigin::CssMaskLayers,
+                masks_backdrop: false,
+            }),
+        );
+        let isolated = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Effects(EffectsData {
+                isolation: true,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: None,
+            }),
+        );
+        let chunk_declaring_mask_content = |after_box: bool| {
+            let mut builder = DisplayListBuilder::new();
+            if after_box {
+                builder.append(&fill(IntRect::new(700, 300, 50, 50), GREEN), &[], isolated);
+            }
+            let declaration = builder.begin_group::<DeclareMaskContent>(Vec::new());
+            builder.append(&fill(IntRect::new(600, 0, 50, 50), RED), &[], root);
+            let content = builder.group_content_span(&declaration);
+            builder.finish_group(
+                declaration,
+                &DeclareMaskContent {
+                    rect: IntRect::new(600, 0, 100, 100),
+                    effect: masked.effect,
+                    content,
+                },
+                root,
+            );
+            ListChunk::copied(builder.bytes(), builder.command_runs(), 0)
+        };
+        let declaration_after_box = Arc::new(chunk_declaring_mask_content(true));
+        let mut declaration_alone_under_same_id = chunk_declaring_mask_content(false);
+        declaration_alone_under_same_id.id = declaration_after_box.id;
+        let masked_box = chunk_of(fill(IntRect::new(10, 10, 80, 80), BLUE), masked);
+        let first_list = DisplayListStorage::of_chunks(vec![declaration_after_box, masked_box.clone()]).unwrap();
+        let second_list =
+            DisplayListStorage::of_chunks(vec![Arc::new(declaration_alone_under_same_id), masked_box]).unwrap();
+        let mut masked_box_alone = LayerStack::single_layer(VIEWPORT, first_list.whole_span(), None);
+        masked_box_alone.bands[0].record_spans = vec![span_from_run_to_end_of_list(&first_list, 1, 0)];
+
+        let cell_of_masked_box = TileCoord::new(0, 0);
+        let mut band_tile_keys = BandTileKeys::default();
+        let frames = [
+            (&*first_list, &tree, &masked_box_alone),
+            (&*second_list, &tree, &masked_box_alone),
+        ];
+        key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
+        let mut band_tile_keys_of_second_list = BandTileKeys::default();
+        key_band_in_frames_in_turn(
+            &mut band_tile_keys_of_second_list,
+            &frames[1..],
+            RasterSpaceIndex::VIEWPORT,
+            BandIndex(0),
+        );
+        assert_eq!(
+            band_tile_keys.record_spans_of_tiles(band_tile_keys.tile(cell_of_masked_box, LayerIndex(0))),
+            band_tile_keys_of_second_list
+                .record_spans_of_tiles(band_tile_keys_of_second_list.tile(cell_of_masked_box, LayerIndex(0)))
+        );
     }
 
     // A plan of one layer for a list in a 3D sorting context replays every record into every tile, and a frame drawn

@@ -96,12 +96,15 @@ impl ListSpan {
     }
 }
 
-/// Names a chunk of a list in a way that outlives the list: by its id, and by how many chunks before it in the list
-/// have that id, which tells apart the chunks of one id that a list names more than once.
+/// Names a chunk of a list in a way that outlives the list: by its id, by how many chunks before it in the list have
+/// that id, which tells apart the chunks of one id that a list names more than once, and by the copy of its bytes the
+/// list holds. An id is a hash that another process can make two chunks share, so what is kept by the name of a chunk
+/// holds only for the bytes it was kept for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkName {
     pub id: ChunkId,
     pub occurrence: u32,
+    pub copy_number: u64,
 }
 
 enum RecordsAndRuns {
@@ -118,6 +121,8 @@ enum RecordsAndRuns {
 /// shares it, and what is known of the chunk alone is worked out once, for all of them.
 pub struct ListChunk {
     pub id: ChunkId,
+    /// A number no other chunk this process holds has had, which tells two chunks of one id apart.
+    copy_number: u64,
     records_and_runs: RecordsAndRuns,
     records_reaching_outside_run_context: OnceLock<Vec<TopLevelRecordReachingOutsideRunContext>>,
     summary: OnceLock<DisplayListSummary>,
@@ -129,6 +134,7 @@ impl ListChunk {
     fn new(id: ChunkId, records_and_runs: RecordsAndRuns) -> Self {
         Self {
             id,
+            copy_number: crate::visual_context::allocate_structural_epoch(),
             records_and_runs,
             records_reaching_outside_run_context: OnceLock::new(),
             summary: OnceLock::new(),
@@ -335,6 +341,7 @@ impl DisplayListStorage {
                         let name = ChunkName {
                             id: chunk.id,
                             occurrence: *occurrence,
+                            copy_number: chunk.copy_number,
                         };
                         *occurrence += 1;
                         name
