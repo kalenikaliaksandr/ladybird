@@ -12,6 +12,7 @@ mod damage;
 mod layer_overlay;
 mod layers;
 pub mod pacing;
+mod tiles;
 
 use crate::frame_inputs::FrameInputs;
 use crate::host::{ContextTimer, Host, PendingFrame};
@@ -148,6 +149,20 @@ fn bounded_composited_raster_scale(mut scale: FloatSize, viewport_size: IntSize)
 
 fn rect_of_size(size: IntSize) -> IntRect {
     IntRect::new(0, 0, size.width, size.height)
+}
+
+fn size_of(rect: IntRect) -> IntSize {
+    IntSize {
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn inflated(rect: IntRect, margin: i32) -> IntRect {
+    if rect.is_empty() || margin == 0 {
+        return rect;
+    }
+    rect.inflated_edges(margin, margin, margin, margin)
 }
 
 pub struct ContextPresenting {
