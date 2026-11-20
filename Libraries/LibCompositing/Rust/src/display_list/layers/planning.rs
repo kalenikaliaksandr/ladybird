@@ -297,18 +297,11 @@ pub struct ListPlacement {
     pub placed_media: Vec<PlacedMedia>,
     pub media_without_layers: Vec<(LiveContent, WhyMediaHasNoLayer)>,
     pub animations_without_layers: Vec<(AnimatedNode, WhyAnimationHasNoLayer)>,
-    /// Per raster space whose anchor the compositor animates and that holds content, where that content can show in
-    /// the raster coordinates of the space it is in wherever the animation takes it.
-    pub swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
     /// In paint order, each after the one around it.
     pub placed_effects: Vec<PlacedEffect>,
     /// The nodes that read the backdrop of a backdrop filter or a blend mode, in paint order.
     pub backdrop_readers_in_paint_order: Vec<EffectNodeIndex>,
     pub why_compositor_cannot_composite_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>>,
-    /// Per raster space, whether records its tiles hold move within it as nodes that move on their own, or that the
-    /// compositor scrolls without the space following them, do. Canvases, videos and nested contexts with layers of
-    /// their own hold none of those records.
-    pub tiles_hold_content_moving_within_space_by_space_index: Vec<bool>,
 }
 
 fn one_composite_clip_per_space_sorted_by_space(clips: &[CompositeClip]) -> Vec<CompositeClip> {
@@ -446,13 +439,15 @@ fn backdrop_filter_reads_nothing_past_mirrored_edge(filter: &[u8]) -> bool {
     !reads_past_each_pixel || libgfx_rust::filter::Filter::serialized_has_mirroring_blur(filter)
 }
 
-/// Where each part of the list is placed among `spaces`, given the geometry of each of them.
+/// Where each part of the list is placed among `spaces`, given the geometry of each of them, with what the stack holds
+/// per space of them: `LayerStack::swept_reach_in_parent_space_by_space_index` and
+/// `LayerStack::tiles_hold_content_moving_within_space_by_space_index`.
 fn place_list(
     inputs: &LayerStackInputs<'_>,
     spaces: RasterSpacesForPlacing,
     geometries: &[RasterSpaceGeometryForPlacing],
     nesting_of_live_effects: &NestingOfLiveEffects<'_>,
-) -> ListPlacement {
+) -> (ListPlacement, Vec<Option<IntRect>>, Vec<bool>) {
     let tree = inputs.tree;
     let list = inputs.list;
     let effect_clips = list.effect_clip_plan(tree);
@@ -1110,18 +1105,21 @@ fn place_list(
         }
     }
 
-    ListPlacement {
+    let placement = ListPlacement {
         run_groups: placed_run_groups,
         record_stretches,
         placed_media,
         media_without_layers,
         animations_without_layers,
-        swept_reach_in_parent_space_by_space_index,
         placed_effects,
         backdrop_readers_in_paint_order,
         why_compositor_cannot_composite_by_effect_index,
+    };
+    (
+        placement,
+        swept_reach_in_parent_space_by_space_index,
         tiles_hold_content_moving_within_space_by_space_index,
-    }
+    )
 }
 
 /// Where content of `space`, whose anchor the compositor animates, can show in the raster coordinates of the space it
@@ -1389,7 +1387,10 @@ impl StackBeingBuilt<'_> {
     // animation takes it, and a node of a sticky box only where its content, with the nodes of the spaces in it, can
     // show wherever the box is held. Nodes come after the nodes they are in, so a walk from the last node sees the final
     // reach of each node before the node it is in.
-    fn limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move(&mut self) {
+    fn limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move(
+        &mut self,
+        swept_reach_in_parent_space_by_space_index: &[Option<IntRect>],
+    ) {
         let (placement, spaces) = (self.placement, self.spaces);
         let mut content_reach_by_node_index = vec![Reach::Nothing; self.nodes.len()];
         for stretch in &placement.record_stretches {
@@ -1402,10 +1403,7 @@ impl StackBeingBuilt<'_> {
             if node.composited_effect.is_some() {
                 continue;
             }
-            if let Some(Some(swept_reach)) = placement
-                .swept_reach_in_parent_space_by_space_index
-                .get(node.raster_space_index.0)
-            {
+            if let Some(Some(swept_reach)) = swept_reach_in_parent_space_by_space_index.get(node.raster_space_index.0) {
                 node.reach_in_parent_node = node.reach_in_parent_node.limited_to(*swept_reach);
             }
             let raster_space = &spaces[node.raster_space_index.0];
@@ -1814,6 +1812,8 @@ impl StackBeingBuilt<'_> {
 fn assemble_plan(
     inputs: &LayerStackInputs<'_>,
     placement: &ListPlacement,
+    swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
+    tiles_hold_content_moving_within_space_by_space_index: Vec<bool>,
     spaces: &[RasterSpace],
     layering_obstacles: &LayeringObstacles,
 ) -> Result<LayeredPlan, WhyListIsOneLayer> {
@@ -1835,7 +1835,9 @@ fn assemble_plan(
             stack_being_built.find_or_add_node(run_group.raster_space_index, run_group.composite_clips.clone())
         })
         .collect();
-    stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move();
+    stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move(
+        &swept_reach_in_parent_space_by_space_index,
+    );
     stack_being_built.cut_into_bands()?;
     if layering_obstacles.sorts_planes_by_depth
         && contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
@@ -1852,10 +1854,8 @@ fn assemble_plan(
     let plan = LayeredPlan {
         nodes: stack_being_built.nodes,
         bands,
-        tiles_hold_content_moving_within_space_by_space_index: placement
-            .tiles_hold_content_moving_within_space_by_space_index
-            .clone(),
-        swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
+        tiles_hold_content_moving_within_space_by_space_index,
+        swept_reach_in_parent_space_by_space_index,
     };
     if plan_holds_more_than_compositor_decodes(&plan) {
         return Err(WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes);
@@ -1899,11 +1899,21 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
 fn build_layer_stack(
     inputs: &LayerStackInputs<'_>,
     placement: ListPlacement,
+    swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
+    tiles_hold_content_moving_within_space_by_space_index: Vec<bool>,
     spaces: Vec<RasterSpace>,
     layering_obstacles: LayeringObstacles,
     nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> PlannedLayers {
-    let stack_of_plan = assemble_plan(inputs, &placement, &spaces, &layering_obstacles).and_then(|plan| {
+    let stack_of_plan = assemble_plan(
+        inputs,
+        &placement,
+        swept_reach_in_parent_space_by_space_index,
+        tiles_hold_content_moving_within_space_by_space_index,
+        &spaces,
+        &layering_obstacles,
+    )
+    .and_then(|plan| {
         LayerStack::of_plan_passing_checks(
             plan,
             spaces,
@@ -2004,10 +2014,13 @@ fn plan_layer_stack_at_anchors(
         inputs.viewport_rect,
     );
     let spaces_of_stack = spaces.spaces().to_vec();
-    let placement = place_list(inputs, spaces, &geometries, &nesting_of_live_effects);
+    let (placement, swept_reach_in_parent_space_by_space_index, tiles_hold_content_moving_within_space_by_space_index) =
+        place_list(inputs, spaces, &geometries, &nesting_of_live_effects);
     build_layer_stack(
         inputs,
         placement,
+        swept_reach_in_parent_space_by_space_index,
+        tiles_hold_content_moving_within_space_by_space_index,
         spaces_of_stack,
         layering_obstacles,
         &nesting_of_live_effects,
