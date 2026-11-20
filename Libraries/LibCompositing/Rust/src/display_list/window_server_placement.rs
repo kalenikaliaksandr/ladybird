@@ -53,6 +53,7 @@ pub enum WhyWindowServerCannotShowMedia {
     ClippedByPath,
     ClippedByExcludingClip,
     ClippedInRotatedOrSkewedSpace,
+    ClippedInSpaceTreeDoesNotHave,
     RoundedCornersOfDifferingRadii,
     MoreThanOneRoundedClip,
 }
@@ -63,6 +64,9 @@ impl std::fmt::Display for WhyWindowServerCannotShowMedia {
             WhyWindowServerCannotShowMedia::ClippedByPath => "clipped by a path",
             WhyWindowServerCannotShowMedia::ClippedByExcludingClip => "clipped by an excluding clip",
             WhyWindowServerCannotShowMedia::ClippedInRotatedOrSkewedSpace => "clipped in a rotated or skewed space",
+            WhyWindowServerCannotShowMedia::ClippedInSpaceTreeDoesNotHave => {
+                "clipped in a space the tree does not have"
+            }
             WhyWindowServerCannotShowMedia::RoundedCornersOfDifferingRadii => "rounded corners of differing radii",
             WhyWindowServerCannotShowMedia::MoreThanOneRoundedClip => "more than one rounded clip",
         })
@@ -218,7 +222,9 @@ impl ClipsInViewport {
         if mode == ClipMode::Difference {
             return Err(WhyWindowServerCannotShowMedia::ClippedByExcludingClip);
         }
-        let matrix = world.draw_matrix(space);
+        let matrix = world
+            .draw_matrix_if_known(space)
+            .ok_or(WhyWindowServerCannotShowMedia::ClippedInSpaceTreeDoesNotHave)?;
         let elements = &matrix.elements;
         if !matrix.is_2d_affine() || elements[0][1] != 0.0 || elements[1][0] != 0.0 {
             return Err(WhyWindowServerCannotShowMedia::ClippedInRotatedOrSkewedSpace);
@@ -364,4 +370,38 @@ pub fn window_server_placement(
         rounded_clip,
         scaling_mode,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display_list::builder::{DisplayListBuilder, PendingInlineClip};
+    use crate::display_list::storage::DisplayListStorage;
+    use crate::display_list::test_fixtures::{VIEWPORT, canvas, tree_with_root_isolation_effect};
+    use libgfx_rust::FloatMatrix4x4;
+
+    // A list from another process can give an inline clip any space.
+    #[test]
+    fn a_canvas_clipped_in_a_space_the_tree_does_not_have_is_not_shown_by_the_window_server() {
+        let (tree, root) = tree_with_root_isolation_effect(1.0);
+        let mut builder = DisplayListBuilder::new();
+        builder.append_with_inline_clips(
+            &canvas(IntRect::new(10, 10, 100, 100), 1),
+            &[],
+            root,
+            &[
+                PendingInlineClip::intersecting_float_rect(FloatRect::new(0.0, 0.0, 50.0, 50.0))
+                    .in_space(SpatialNodeIndex(0xFFFF_FFF0)),
+            ],
+        );
+        let list = DisplayListStorage::of_builder(&builder);
+        let canvas_position = list.whole_span().begin;
+        let run = &list.chunk(canvas_position.chunk_index).runs()[0];
+        let (header, payload) = list.record_at(canvas_position);
+        let world = WorldTransforms::new(&tree, &[], Some(FloatMatrix4x4::identity()));
+        assert_eq!(
+            window_server_placement(&tree, &world, VIEWPORT, run, &header, payload),
+            Err(WhyWindowServerCannotShowMedia::ClippedInSpaceTreeDoesNotHave)
+        );
+    }
 }
