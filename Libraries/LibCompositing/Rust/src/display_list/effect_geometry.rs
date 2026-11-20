@@ -241,7 +241,9 @@ pub fn outermost_effects_with_filters(tree: &VisualContextTree, counts_animated_
 
 /// Per effect, the effects at and above it that a raster of content inside the innermost composited effect at or above
 /// it draws the filters of: the nearest of them whose filter spreads its content, and, where any does, the outermost
-/// of them that holds a filter or a backdrop filter, whose output clip bounds how far they spread it.
+/// of them that holds a filter or a backdrop filter, whose output clip bounds how far they spread it. A tree without
+/// composited effects or filters that spread needs none of it.
+#[derive(Default)]
 pub struct FiltersInsideInnermostCompositedEffects {
     nearest_spreading_effect_by_effect_index: Vec<EffectNodeIndex>,
     outermost_effect_with_filter_if_spread_by_effect_index: Vec<EffectNodeIndex>,

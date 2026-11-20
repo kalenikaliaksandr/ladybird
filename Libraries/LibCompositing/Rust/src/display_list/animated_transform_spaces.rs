@@ -151,8 +151,8 @@ pub fn animated_transform_anchors(tree: &VisualContextTree) -> Vec<SpatialNodeIn
     if !is_animated_by_spatial_index.contains(&true) {
         return Vec::new();
     }
-    let mut chain_below_viewport_holds_animated_node = ValuesFoldedDownSpatialChains::<bool>::new(tree);
-    let mut matrices_from_root_to_node_spaces = ValuesFoldedDownSpatialChains::<FloatMatrix4x4>::new(tree);
+    let mut chain_below_viewport_holds_animated_node = ValuesFoldedDownSpatialChains::<bool>::new();
+    let mut matrices_from_root_to_node_spaces = ValuesFoldedDownSpatialChains::<FloatMatrix4x4>::new();
     let matrix_from_root_to_viewport_node_space = tree
         .local_transform(VISUAL_VIEWPORT_NODE_INDEX, &[])
         .applied_to(FloatMatrix4x4::identity());

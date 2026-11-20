@@ -481,6 +481,8 @@ impl<'a> TileKeyingOfList<'a> {
                 innermost_composited_effect_by_effect_index[node.parent.0 as usize]
             };
         });
+        let nearest_spreading_effects = nearest_spreading_effects(tree);
+        let content_is_spread_by_filters = nearest_spreading_effects.iter().any(|effect| !effect.is_none());
         let one_layer_list_cannot_tell_which_records_show_in_tile =
             stack.replays_whole_list() && layering_obstacles.sorts_planes_by_depth;
         Self {
@@ -489,12 +491,19 @@ impl<'a> TileKeyingOfList<'a> {
             effect_clips: display_list.effect_clip_plan(tree),
             tree,
             frame_state,
-            nearest_spreading_effects: nearest_spreading_effects(tree),
-            outermost_effects_with_filters: outermost_effects_with_filters(tree, false),
-            filters_inside_composited_effects: FiltersInsideInnermostCompositedEffects::of(
-                tree,
-                &innermost_composited_effect_by_effect_index,
-            ),
+            outermost_effects_with_filters: if content_is_spread_by_filters {
+                outermost_effects_with_filters(tree, false)
+            } else {
+                Vec::new()
+            },
+            filters_inside_composited_effects: if content_is_spread_by_filters
+                && is_composited_by_effect_index.contains(&true)
+            {
+                FiltersInsideInnermostCompositedEffects::of(tree, &innermost_composited_effect_by_effect_index)
+            } else {
+                FiltersInsideInnermostCompositedEffects::default()
+            },
+            nearest_spreading_effects,
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
                 || one_layer_list_cannot_tell_which_records_show_in_tile,
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,

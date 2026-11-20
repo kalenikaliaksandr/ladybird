@@ -589,21 +589,28 @@ fn why_media_has_no_layer(
     None
 }
 
-// Per effect node, whether it is or holds a node that `marked_by_effect_index` marks.
-fn effects_at_or_around_marked_effects(tree: &VisualContextTree, mut marked_by_effect_index: Vec<bool>) -> Vec<bool> {
+// Marks in each of `marks_by_effect_index` every effect node that holds a node marked there, in one walk of the tree.
+fn mark_effects_around_marked_effects<const MARK_KIND_COUNT: usize>(
+    tree: &VisualContextTree,
+    marks_by_effect_index: &mut [Vec<bool>; MARK_KIND_COUNT],
+) {
     let mut live_effects_parents_first = Vec::with_capacity(tree.effect_nodes.len());
     tree.visit_effect_nodes_parents_first(|index| live_effects_parents_first.push(index));
     for &index in live_effects_parents_first.iter().rev() {
         let parent = tree.effect_nodes[index].parent;
-        if marked_by_effect_index[index] && !parent.is_none() {
-            marked_by_effect_index[parent.0 as usize] = true;
+        if parent.is_none() {
+            continue;
+        }
+        for marked_by_effect_index in marks_by_effect_index.iter_mut() {
+            if marked_by_effect_index[index] {
+                marked_by_effect_index[parent.0 as usize] = true;
+            }
         }
     }
-    marked_by_effect_index
 }
 
-// Per effect node, whether it is or holds the effect of a run that `marks_run` marks.
-fn effects_at_or_around_marked_runs(
+// Marks the effect of each run that `marks_run` marks.
+fn effects_of_marked_runs(
     list: &DisplayListStorage,
     tree: &VisualContextTree,
     marks_run: impl Fn(usize) -> bool,
@@ -614,7 +621,15 @@ fn effects_at_or_around_marked_runs(
             marked_by_effect_index[run.context.effect.0 as usize] = true;
         }
     }
-    effects_at_or_around_marked_effects(tree, marked_by_effect_index)
+    marked_by_effect_index
+}
+
+// Per effect node, whether it is or holds the effect of a run sorted by depth, of a record that blends with what is
+// below it, or an effect that reads what is below it.
+struct WhatEffectsHold {
+    run_sorted_by_depth_by_effect_index: Vec<bool>,
+    records_blending_with_what_is_below_them_by_effect_index: Vec<bool>,
+    effect_reading_what_is_below_it_by_effect_index: Vec<bool>,
 }
 
 // Why each effect is composited whatever its layers hold, and the effects that are, in the order they became so.
@@ -714,29 +729,32 @@ fn place_list(
         })
         .collect();
     // The walk up from an effect stops at the root isolation effect, which holds no reason.
-    let mut why_compositor_cannot_composite_effect_or_effect_around_by_effect_index: Vec<
-        Option<WhyCompositorCannotCompositeEffect>,
-    > = vec![None; tree.effect_nodes.len()];
-    tree.visit_effect_nodes_parents_first(|index| {
-        if tree.root_isolation_effect == Some(EffectNodeIndex(index as u32)) {
-            return;
-        }
-        let parent = tree.effect_nodes[index].parent;
-        why_compositor_cannot_composite_effect_or_effect_around_by_effect_index[index] =
-            why_compositor_cannot_composite_by_effect_index[index].or_else(|| {
-                why_compositor_cannot_composite_effect_or_effect_around_by_effect_index
-                    .get(parent.0 as usize)
-                    .copied()
-                    .flatten()
-            });
-    });
+    let why_compositor_cannot_composite_effect_or_effect_around_by_effect_index = std::cell::OnceCell::new();
     let why_compositor_cannot_composite_effect_or_effects_around = |effect: EffectNodeIndex| {
         why_compositor_cannot_composite_effect_or_effect_around_by_effect_index
+            .get_or_init(|| {
+                let mut why_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>> =
+                    vec![None; tree.effect_nodes.len()];
+                tree.visit_effect_nodes_parents_first(|index| {
+                    if tree.root_isolation_effect == Some(EffectNodeIndex(index as u32)) {
+                        return;
+                    }
+                    let parent = tree.effect_nodes[index].parent;
+                    why_by_effect_index[index] = why_compositor_cannot_composite_by_effect_index[index]
+                        .or_else(|| why_by_effect_index.get(parent.0 as usize).copied().flatten());
+                });
+                why_by_effect_index
+            })
             .get(effect.0 as usize)
             .copied()
             .flatten()
     };
-    let outermost_effects_with_filters_at_some_sample = outermost_effects_with_filters(tree, true);
+    let content_is_spread_by_filters = nearest_spreading_effects.iter().any(|effect| !effect.is_none());
+    let outermost_effects_with_filters_at_some_sample = if content_is_spread_by_filters {
+        outermost_effects_with_filters(tree, true)
+    } else {
+        Vec::new()
+    };
     let filters_and_clips = FiltersAndClipsOfList {
         tree,
         nearest_spreading_effects: &nearest_spreading_effects,
@@ -867,8 +885,11 @@ fn place_list(
             let paints_within_root_group = match tree.root_isolation_effect {
                 None => true,
                 Some(root_isolation_effect) => (first_run_index..=last_run_index).any(|run_index| {
-                    nesting_of_live_effects
-                        .is_or_is_inside(list.run(run_index as usize).context.effect, root_isolation_effect)
+                    let mut effect = list.run(run_index as usize).context.effect;
+                    while !effect.is_none() && effect != root_isolation_effect {
+                        effect = tree.effect_nodes[effect.0 as usize].parent;
+                    }
+                    effect == root_isolation_effect
                 }),
             };
             PlacedRunGroup {
@@ -1009,10 +1030,16 @@ fn place_list(
         };
     let mut animated_nodes_with_layers_count = 0;
 
-    let mut space_holds_placed_content_by_space_index = vec![false; spaces.len()];
-    for run_group in &placed_run_groups {
-        space_holds_placed_content_by_space_index[run_group.raster_space_index.0] = true;
-    }
+    let space_holds_placed_content_by_space_index = std::cell::OnceCell::new();
+    let space_holds_placed_content = |space: RasterSpaceIndex| {
+        space_holds_placed_content_by_space_index.get_or_init(|| {
+            let mut holds_by_space_index = vec![false; spaces.len()];
+            for run_group in &placed_run_groups {
+                holds_by_space_index[run_group.raster_space_index.0] = true;
+            }
+            holds_by_space_index
+        })[space.0]
+    };
     for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
         let effect = EffectNodeIndex(index as u32);
         let Some(space) = tables.animated_space_holding_every_run_of_effect(effect) else {
@@ -1020,7 +1047,7 @@ fn place_list(
         };
         let applies_over_animated_transform = swept_reach_in_parent_space_by_space_index[space.0].is_some()
             && !tables.moves_with(effect_node.spatial, space)
-            && space_holds_placed_content_by_space_index[space.0];
+            && space_holds_placed_content(space);
         if !applies_over_animated_transform || !tree.effect_pushes_layer_at_replay(effect) {
             continue;
         }
@@ -1035,22 +1062,38 @@ fn place_list(
         );
     }
 
-    let effect_holds_run_sorted_by_depth_by_effect_index =
-        effects_at_or_around_marked_runs(list, tree, |run_index| run_groups.run_is_sorted_by_depth(run_index));
-    let mut runs_holding_records_blending_with_what_is_below_them = vec![false; list.run_count()];
-    for record in &list.summary().destination_blending_records {
-        runs_holding_records_blending_with_what_is_below_them[record.run_index as usize] = true;
-    }
-    let effect_holds_records_blending_with_what_is_below_them_by_effect_index =
-        effects_at_or_around_marked_runs(list, tree, |run_index| {
-            runs_holding_records_blending_with_what_is_below_them[run_index]
-        });
-    let mut effect_reads_what_is_below_it_by_effect_index = vec![false; tree.effect_nodes.len()];
-    for &effect in &effects_in_paint_order_with_outer_before_inner {
-        effect_reads_what_is_below_it_by_effect_index[effect.0 as usize] = effect_reads_what_is_below_it(effect);
-    }
-    let effect_holds_effect_reading_what_is_below_it_by_effect_index =
-        effects_at_or_around_marked_effects(tree, effect_reads_what_is_below_it_by_effect_index);
+    let what_effects_hold_once_worked_out = std::cell::OnceCell::new();
+    let what_effects_hold = || {
+        what_effects_hold_once_worked_out.get_or_init(|| {
+            let mut runs_holding_records_blending_with_what_is_below_them = vec![false; list.run_count()];
+            for record in &list.summary().destination_blending_records {
+                runs_holding_records_blending_with_what_is_below_them[record.run_index as usize] = true;
+            }
+            let mut effect_reads_what_is_below_it_by_effect_index = vec![false; tree.effect_nodes.len()];
+            for &effect in &effects_in_paint_order_with_outer_before_inner {
+                effect_reads_what_is_below_it_by_effect_index[effect.0 as usize] =
+                    effect_reads_what_is_below_it(effect);
+            }
+            let mut marks = [
+                effects_of_marked_runs(list, tree, |run_index| run_groups.run_is_sorted_by_depth(run_index)),
+                effects_of_marked_runs(list, tree, |run_index| {
+                    runs_holding_records_blending_with_what_is_below_them[run_index]
+                }),
+                effect_reads_what_is_below_it_by_effect_index,
+            ];
+            mark_effects_around_marked_effects(tree, &mut marks);
+            let [
+                run_sorted_by_depth_by_effect_index,
+                records_blending_with_what_is_below_them_by_effect_index,
+                effect_reading_what_is_below_it_by_effect_index,
+            ] = marks;
+            WhatEffectsHold {
+                run_sorted_by_depth_by_effect_index,
+                records_blending_with_what_is_below_them_by_effect_index,
+                effect_reading_what_is_below_it_by_effect_index,
+            }
+        })
+    };
     let mut animated_effects_in_paint_order = effects_whose_opacity_or_filter_the_compositor_animates(tree);
     animated_effects_in_paint_order.sort_by_key(|(effect, _)| first_run_index_by_effect_index[effect.0 as usize]);
     for (effect, filter_is_animated) in animated_effects_in_paint_order {
@@ -1070,13 +1113,14 @@ fn place_list(
             if let Some(why) = why_compositor_cannot_composite_effect_or_effects_around(effect) {
                 return Some(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
             }
-            if effect_holds_run_sorted_by_depth_by_effect_index[effect.0 as usize] {
+            let what_effects_hold = what_effects_hold();
+            if what_effects_hold.run_sorted_by_depth_by_effect_index[effect.0 as usize] {
                 return Some(WhyAnimationHasNoLayer::SortedByDepthInA3DSortingContext);
             }
-            if effect_holds_records_blending_with_what_is_below_them_by_effect_index[effect.0 as usize] {
+            if what_effects_hold.records_blending_with_what_is_below_them_by_effect_index[effect.0 as usize] {
                 return Some(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
             }
-            if effect_holds_effect_reading_what_is_below_it_by_effect_index[effect.0 as usize] {
+            if what_effects_hold.effect_reading_what_is_below_it_by_effect_index[effect.0 as usize] {
                 return Some(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
             }
             if canvas_or_video_painted_before_can_show_under(
@@ -1114,7 +1158,8 @@ fn place_list(
 
     let mut backdrop_read_reach_by_effect_index = vec![Reach::Nothing; tree.effect_nodes.len()];
     let mut backdrop_readers_in_paint_order = Vec::new();
-    let mut reads_root_group_by_effect_index = vec![false; tree.effect_nodes.len()];
+    // Empty until an effect reads the root group.
+    let mut reads_root_group_by_effect_index: Vec<bool> = Vec::new();
     for &effect in &effects_in_paint_order_with_outer_before_inner {
         let Some(backdrop_reader) = backdrop_reader_by_effect_index[effect.0 as usize] else {
             continue;
@@ -1210,6 +1255,7 @@ fn place_list(
         };
         backdrop_readers_in_paint_order.push(effect);
         if backdrop_root.is_none() {
+            reads_root_group_by_effect_index.resize(tree.effect_nodes.len(), false);
             reads_root_group_by_effect_index[effect.0 as usize] = true;
         }
         let Some(why_composited) = why_composited else {
@@ -1236,7 +1282,10 @@ fn place_list(
         innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] = innermost_placed_effect_around;
         let why_composited_regardless_of_layer_content =
             why_composited_regardless_of_layer_content.why_by_effect_index[effect.0 as usize];
-        let reads_root_group = reads_root_group_by_effect_index[effect.0 as usize];
+        let reads_root_group = reads_root_group_by_effect_index
+            .get(effect.0 as usize)
+            .copied()
+            .unwrap_or(false);
         if why_composited_regardless_of_layer_content.is_none() && !reads_root_group {
             continue;
         }
@@ -1847,23 +1896,25 @@ impl StackBeingBuilt<'_> {
                     !blending_records_find_all_they_read_in_own_layer;
             }
             let path_from_root_to_node_of_stretch = self.path_from_root_to(node_of_stretch);
-            node_is_on_path_of_stretch.resize(self.nodes.len(), false);
-            for node_on_path in &path_from_root_to_node_of_stretch {
-                node_is_on_path_of_stretch[node_on_path.0] = true;
-            }
             // A replay of the list composites an effect anew wherever content outside it is painted, so the bands of
             // its node end there.
             composited_nodes_whose_bands_may_be_open.retain(|node| open_band_by_node_index[node.0].is_some());
-            for index in 0..composited_nodes_whose_bands_may_be_open.len() {
-                let composited_node_index = composited_nodes_whose_bands_may_be_open[index];
-                if open_band_by_node_index[composited_node_index.0].is_some()
-                    && !node_is_on_path_of_stretch[composited_node_index.0]
-                {
-                    self.close_bands_of_node_and_nodes_inside(composited_node_index, &mut open_band_by_node_index);
+            if !composited_nodes_whose_bands_may_be_open.is_empty() {
+                node_is_on_path_of_stretch.resize(self.nodes.len(), false);
+                for node_on_path in &path_from_root_to_node_of_stretch {
+                    node_is_on_path_of_stretch[node_on_path.0] = true;
                 }
-            }
-            for node_on_path in &path_from_root_to_node_of_stretch {
-                node_is_on_path_of_stretch[node_on_path.0] = false;
+                for index in 0..composited_nodes_whose_bands_may_be_open.len() {
+                    let composited_node_index = composited_nodes_whose_bands_may_be_open[index];
+                    if open_band_by_node_index[composited_node_index.0].is_some()
+                        && !node_is_on_path_of_stretch[composited_node_index.0]
+                    {
+                        self.close_bands_of_node_and_nodes_inside(composited_node_index, &mut open_band_by_node_index);
+                    }
+                }
+                for node_on_path in &path_from_root_to_node_of_stretch {
+                    node_is_on_path_of_stretch[node_on_path.0] = false;
+                }
             }
             for depth in 0..path_from_root_to_node_of_stretch.len() {
                 let node_on_path = path_from_root_to_node_of_stretch[depth];
@@ -2111,10 +2162,11 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     }
     let tree = inputs.tree;
     let run_groups = inputs.list.run_groups(tree);
-    let effect_holds_run_sorted_by_depth_by_effect_index =
-        effects_at_or_around_marked_runs(inputs.list, tree, |run_index| {
-            run_groups.run_is_sorted_by_depth(run_index)
-        });
+    let mut marks = [effects_of_marked_runs(inputs.list, tree, |run_index| {
+        run_groups.run_is_sorted_by_depth(run_index)
+    })];
+    mark_effects_around_marked_effects(tree, &mut marks);
+    let [effect_holds_run_sorted_by_depth_by_effect_index] = marks;
     placement
         .backdrop_readers_in_paint_order
         .iter()
