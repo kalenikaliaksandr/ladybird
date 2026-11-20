@@ -17,10 +17,9 @@
 
 use super::wire::plan_holds_more_than_compositor_decodes;
 use super::{
-    BackdropReader, BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan,
-    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NestingOfLiveEffects,
-    NodeOfPlan, PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer,
-    backdrop_reader_by_reading_effect_index, media_name,
+    BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
+    MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeOfPlan, PlacementNodeIndex,
+    WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, media_name,
 };
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
@@ -36,6 +35,7 @@ use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
 use crate::display_list::tiles::CellRange;
+use crate::visual_context::queries::{BackdropReader, NestingOfLiveEffects, backdrop_reader_by_reading_effect_index};
 use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{FloatPoint, FloatRect, IntRect};
 use std::hash::Hash;

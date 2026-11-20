@@ -10,9 +10,8 @@
 
 use super::{
     BandOfPlan, BarrierOfPlan, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CutOfPlan, LayerContent, LayerIdentity, LayerStack,
-    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS,
-    NestingOfLiveEffects, NodeOfPlan, PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect,
-    WhyListIsOneLayer, anchors_of_layer_plans,
+    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeOfPlan,
+    PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
 };
 use crate::display_list::commands::{
     CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VideoSinkHandle,
@@ -25,6 +24,7 @@ use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPos
 use crate::display_list::summary::{LiveContent, live_content_of};
 use crate::display_list::tape::DisplayListCommandRun;
 use crate::visual_context::VisualContextTree;
+use crate::visual_context::queries::NestingOfLiveEffects;
 use libgfx_rust::IntRect;
 use libipc_rust::wire::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
 use std::collections::HashSet;

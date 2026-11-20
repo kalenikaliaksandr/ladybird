@@ -566,6 +566,124 @@ impl VisualContextTree {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct BackdropReader {
+    pub(crate) effect_with_backdrop_filter: Option<EffectNodeIndex>,
+}
+
+// Per effect node, whether it reads what is below it, and if it reads for a backdrop filter, the effect of the filter.
+pub(crate) fn backdrop_reader_by_reading_effect_index(tree: &VisualContextTree) -> Vec<Option<BackdropReader>> {
+    let mut backdrop_reader_by_reading_effect_index = vec![None; tree.effect_nodes.len()];
+    let mut node_reading_backdrop_by_effect_index = None;
+    for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
+        let EffectNodeData::Effects(effects) = &effect_node.data else {
+            continue;
+        };
+        let effect = EffectNodeIndex(index as u32);
+        if effects.backdrop_filter.is_some() {
+            let reading_effect = node_reading_backdrop_by_effect_index
+                .get_or_insert_with(|| tree.nodes_reading_the_backdrops_of_effects())[index];
+            backdrop_reader_by_reading_effect_index[reading_effect.0 as usize] = Some(BackdropReader {
+                effect_with_backdrop_filter: Some(effect),
+            });
+        } else if effects.blend_mode != CompositingAndBlendingOperator::Normal {
+            backdrop_reader_by_reading_effect_index[index] = Some(BackdropReader {
+                effect_with_backdrop_filter: None,
+            });
+        }
+    }
+    backdrop_reader_by_reading_effect_index
+}
+
+/// Whether one live effect node of a tree is inside another, without a walk up the tree for each question. Decoding a
+/// tree checks the parents of its live nodes only, so a node that is not live is in no effect and holds none. The
+/// table is worked out at the first question.
+pub(crate) struct NestingOfLiveEffects<'a> {
+    tree: &'a VisualContextTree,
+    // Where a walk of the live nodes enters each node and how many nodes it walks from there until it leaves it, or
+    // zero nodes for a node the walk does not enter.
+    walk_step_and_node_count_by_effect_index: std::cell::OnceCell<Vec<(u32, u32)>>,
+}
+
+impl<'a> NestingOfLiveEffects<'a> {
+    pub(crate) fn of(tree: &'a VisualContextTree) -> Self {
+        Self {
+            tree,
+            walk_step_and_node_count_by_effect_index: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn walk_step_and_node_count_of(&self, effect: EffectNodeIndex) -> Option<(u32, u32)> {
+        self.walk_step_and_node_count_by_effect_index
+            .get_or_init(|| walk_steps_and_node_counts_of_live_effects(self.tree))
+            .get(effect.0 as usize)
+            .copied()
+            .filter(|&(_, node_count)| node_count != 0)
+    }
+
+    pub(crate) fn is_or_is_inside(&self, effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
+        match (
+            self.walk_step_and_node_count_of(effect),
+            self.walk_step_and_node_count_of(ancestor),
+        ) {
+            (Some((effect_step, _)), Some((ancestor_step, ancestor_node_count))) => {
+                ancestor_step <= effect_step && effect_step - ancestor_step < ancestor_node_count
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_strictly_inside(&self, effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
+        effect != ancestor && self.is_or_is_inside(effect, ancestor)
+    }
+}
+
+// A node goes into the walk after its parent, so a parent that a broken tree visits later is taken as no parent.
+fn walk_steps_and_node_counts_of_live_effects(tree: &VisualContextTree) -> Vec<(u32, u32)> {
+    let effect_count = tree.effect_nodes.len();
+    let mut live_effects_parents_first: Vec<u32> = Vec::with_capacity(effect_count);
+    tree.visit_effect_nodes_parents_first(|index| live_effects_parents_first.push(index as u32));
+    let mut visit_position_by_effect_index = vec![u32::MAX; effect_count];
+    for (position, &index) in live_effects_parents_first.iter().enumerate() {
+        visit_position_by_effect_index[index as usize] = position as u32;
+    }
+    let walked_parent_by_effect_index: Vec<Option<u32>> = (0..effect_count)
+        .map(|index| {
+            let parent = tree.effect_nodes[index].parent;
+            (!parent.is_none()
+                && visit_position_by_effect_index
+                    .get(parent.0 as usize)
+                    .is_some_and(|&parent_position| parent_position < visit_position_by_effect_index[index]))
+            .then_some(parent.0)
+        })
+        .collect();
+    let mut walk_step_and_node_count_by_effect_index = vec![(0u32, 0u32); effect_count];
+    for &index in live_effects_parents_first.iter().rev() {
+        let index = index as usize;
+        walk_step_and_node_count_by_effect_index[index].1 += 1;
+        if let Some(parent) = walked_parent_by_effect_index[index] {
+            walk_step_and_node_count_by_effect_index[parent as usize].1 +=
+                walk_step_and_node_count_by_effect_index[index].1;
+        }
+    }
+    // The walk enters each child of a node right after the nodes inside the children before it.
+    let mut next_step_inside_by_effect_index = visit_position_by_effect_index;
+    let mut next_step_of_root = 0u32;
+    for &index in &live_effects_parents_first {
+        let index = index as usize;
+        let next_step = match walked_parent_by_effect_index[index] {
+            Some(parent) => &mut next_step_inside_by_effect_index[parent as usize],
+            None => &mut next_step_of_root,
+        };
+        let step = *next_step;
+        let node_count = walk_step_and_node_count_by_effect_index[index].1;
+        *next_step += node_count;
+        walk_step_and_node_count_by_effect_index[index].0 = step;
+        next_step_inside_by_effect_index[index] = step + 1;
+    }
+    walk_step_and_node_count_by_effect_index
+}
+
 impl VisualContextTree {
     pub fn visual_animation_target_is_valid(
         &self,
