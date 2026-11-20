@@ -741,10 +741,7 @@ fn place_list(
         };
         match why_no_layer {
             None => {
-                let record_span = ListSpan {
-                    begin: list.start_of_run(run_index as usize),
-                    end: list.end_of_run(run_index as usize),
-                };
+                let record_span = list.span_of_run(run_index as usize);
                 debug_assert_eq!(
                     record_position, record_span.begin,
                     "a canvas, video or nested context is alone in its run"
@@ -1094,10 +1091,7 @@ fn place_list(
         if run_moves_within_space_by_run_index[run_index] {
             tiles_hold_content_moving_within_space_by_space_index[space_of_run(run_index).0] = true;
         }
-        let run_span = ListSpan {
-            begin: list.start_of_run(run_index),
-            end: list.end_of_run(run_index),
-        };
+        let run_span = list.span_of_run(run_index);
         let run_draws_nothing = list.run(run_index).ink_bounds.is_empty();
         let reach_of_run_in_stretch = match innermost_placed_effect {
             _ if run_draws_nothing => IntRect::default(),
@@ -3486,7 +3480,7 @@ mod tests {
             ]
         );
         let storage = DisplayListStorage::of_builder(&list.builder);
-        let layers_of_card = planned.layers_of_record(storage.start_of_run(3));
+        let layers_of_card = planned.layers_of_record(storage.span_of_run(3).begin);
         assert_eq!(
             layers_of_card.len(),
             1,

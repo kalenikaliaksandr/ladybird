@@ -23,6 +23,7 @@ use crate::display_list::placement::{
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
 use crate::display_list::summary::{LiveContent, live_content_of};
+use crate::display_list::tape::DisplayListCommandRun;
 use crate::visual_context::VisualContextTree;
 use libgfx_rust::IntRect;
 use libipc_rust::wire::{Decode, DecodeError, Decoder, Encode, EncodeError, Encoder};
@@ -497,22 +498,23 @@ fn reach_is_within_coordinate_limit(reach: Reach<IntRect>) -> bool {
     }
 }
 
+fn run_starting_at(list: &DisplayListStorage, position: ListPosition) -> Option<&DisplayListCommandRun> {
+    list.chunks()
+        .get(position.chunk_index.0 as usize)?
+        .run_starting_at(position.offset)
+}
+
 fn position_starts_run(list: &DisplayListStorage, position: ListPosition) -> bool {
-    let Some(chunk) = list.chunks().get(position.chunk_index.0 as usize) else {
-        return false;
-    };
-    let runs = chunk.runs();
-    let index = runs.partition_point(|run| run.offset < position.offset);
-    runs.get(index).is_some_and(|run| run.offset == position.offset)
+    run_starting_at(list, position).is_some()
 }
 
 fn position_ends_run(list: &DisplayListStorage, position: ListPosition) -> bool {
     let Some(chunk) = list.chunks().get(position.chunk_index.0 as usize) else {
         return false;
     };
-    let runs = chunk.runs();
-    let index = runs.partition_point(|run| run.offset.saturating_add(run.size) < position.offset);
-    runs.get(index)
+    let runs_ending_at_or_before_position = &chunk.runs()[..chunk.index_of_first_run_ending_after(position.offset)];
+    runs_ending_at_or_before_position
+        .last()
         .is_some_and(|run| run.offset.checked_add(run.size) == Some(position.offset))
 }
 
@@ -523,16 +525,16 @@ fn span_is_of_whole_runs(list: &DisplayListStorage, span: ListSpan) -> bool {
 // The span of a canvas, video or nested context with a layer is one run of the list, which starts with a record that
 // draws that content.
 fn span_is_run_drawing_content(list: &DisplayListStorage, span: ListSpan, content: LiveContent) -> bool {
-    if matches!(content, LiveContent::ImageFrame(_)) || !position_starts_run(list, span.begin) {
+    if matches!(content, LiveContent::ImageFrame(_)) {
         return false;
     }
-    let chunk = list.chunk(span.begin.chunk_index);
-    let runs = chunk.runs();
-    let run = runs[runs.partition_point(|run| run.offset < span.begin.offset)];
+    let Some(run) = run_starting_at(list, span.begin) else {
+        return false;
+    };
     if run.size == 0 || span.end != ListPosition::new(span.begin.chunk_index, run.offset.saturating_add(run.size)) {
         return false;
     }
-    let (header, payload) = chunk.record_at(run.offset);
+    let (header, payload) = list.record_at(span.begin);
     live_content_of(header.command_type, payload) == Some(content)
 }
 
@@ -2341,7 +2343,7 @@ mod tests {
         for (name, page) in pages {
             let stack = page.planned().stack;
             let record_positions: Vec<ListPosition> = (0..page.list.run_count())
-                .map(|run_index| page.list.start_of_run(run_index))
+                .map(|run_index| page.list.span_of_run(run_index).begin)
                 .collect();
             for band in &stack.bands {
                 for (column, row) in (-1..3).flat_map(|column| (-1..6).map(move |row| (column, row))) {
@@ -2439,7 +2441,7 @@ mod tests {
             |_| None,
         );
         for run_index in 0..list.run_count() {
-            planned_with_stack.layers_of_record(list.start_of_run(run_index));
+            planned_with_stack.layers_of_record(list.span_of_run(run_index).begin);
         }
         planned_with_stack.note_lines_for_layers_overlay();
         for layer_index in 0..stack.layers.len() {

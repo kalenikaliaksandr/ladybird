@@ -192,6 +192,19 @@ impl ListChunk {
         }
     }
 
+    pub fn run_starting_at(&self, offset: u32) -> Option<&DisplayListCommandRun> {
+        let runs = self.runs();
+        runs.get(runs.partition_point(|run| run.offset < offset))
+            .filter(|run| run.offset == offset)
+    }
+
+    /// The index of the first run whose records end past `offset`, which is the run that holds the record at `offset`
+    /// where a run holds it.
+    pub fn index_of_first_run_ending_after(&self, offset: u32) -> usize {
+        self.runs()
+            .partition_point(|run| run.offset.saturating_add(run.size) <= offset)
+    }
+
     pub fn records_reaching_outside_run_context(&self) -> &[TopLevelRecordReachingOutsideRunContext] {
         self.records_reaching_outside_run_context
             .get_or_init(|| top_level_records_reaching_outside_run_context(self.records(), self.runs()))
@@ -409,17 +422,14 @@ impl DisplayListStorage {
         &self.chunk(chunk_index).runs()[run_index_in_chunk]
     }
 
-    /// Where the first record of the run at `run_index` is.
-    pub fn start_of_run(&self, run_index: usize) -> ListPosition {
-        let (chunk_index, run_index_in_chunk) = self.chunk_of_run(run_index);
-        ListPosition::new(chunk_index, self.chunk(chunk_index).runs()[run_index_in_chunk].offset)
-    }
-
-    /// Where the records of the run at `run_index` end.
-    pub fn end_of_run(&self, run_index: usize) -> ListPosition {
+    /// The records of the run at `run_index`.
+    pub fn span_of_run(&self, run_index: usize) -> ListSpan {
         let (chunk_index, run_index_in_chunk) = self.chunk_of_run(run_index);
         let run = &self.chunk(chunk_index).runs()[run_index_in_chunk];
-        ListPosition::new(chunk_index, run.offset + run.size)
+        ListSpan {
+            begin: ListPosition::new(chunk_index, run.offset),
+            end: ListPosition::new(chunk_index, run.offset + run.size),
+        }
     }
 
     /// The span of every record of the list.
@@ -824,7 +834,7 @@ mod tests {
         assert_eq!(list.chunk_of_run(0), (ChunkIndexInList(0), 0));
         assert_eq!(list.chunk_of_run(3), (ChunkIndexInList(1), 1));
         assert_eq!(
-            list.start_of_run(3),
+            list.span_of_run(3).begin,
             ListPosition::new(ChunkIndexInList(1), second.runs[1].offset)
         );
         // What the list knows of its records is where they are in their chunks.

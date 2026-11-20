@@ -1320,9 +1320,9 @@ impl LayerStack {
                     return None;
                 }
                 let media_record_position = record_span.begin;
-                let runs_of_chunk = list.chunk(media_record_position.chunk_index).runs();
-                let run_holding_media = &runs_of_chunk
-                    [runs_of_chunk.partition_point(|run| run.offset + run.size <= media_record_position.offset)];
+                let chunk = list.chunk(media_record_position.chunk_index);
+                let run_holding_media =
+                    &chunk.runs()[chunk.index_of_first_run_ending_after(media_record_position.offset)];
                 let (header, payload) = list.record_at(media_record_position);
                 Some(crate::display_list::window_server_placement::window_server_placement(
                     tree,
