@@ -2079,11 +2079,14 @@ impl StackBeingBuilt<'_> {
     }
 }
 
-// The plan of the stack, and one note per composited node, in the order of the nodes.
-fn assemble_plan_unless_records_blend_with_other_layers(
+// The plan of the stack, and one note per composited node, in the order of the nodes, or why the list goes as one layer
+// after all, which the nodes tell before the bands are worked out.
+fn assemble_plan(
+    inputs: &LayerStackInputs<'_>,
     placement: &ListPlacement,
     spaces: &[RasterSpace],
-) -> Option<(LayeredPlan, Vec<NoteOfCompositedEffect>)> {
+    layering_obstacles: &LayeringObstacles,
+) -> Result<(LayeredPlan, Vec<NoteOfCompositedEffect>), WhyListIsOneLayer> {
     let mut stack_being_built = StackBeingBuilt {
         placement,
         spaces,
@@ -2107,7 +2110,10 @@ fn assemble_plan_unless_records_blend_with_other_layers(
     stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move();
     stack_being_built.cut_into_bands();
     if stack_being_built.records_blend_with_what_other_layers_hold_below_them {
-        return None;
+        return Err(WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem);
+    }
+    if let Some(why) = why_nodes_go_as_one_layer(inputs, layering_obstacles, placement, &stack_being_built.nodes) {
+        return Err(why);
     }
     let mut bands = Vec::with_capacity(stack_being_built.bands_being_built.len());
     stack_being_built.emit_band(BandBeingBuiltIndex(0), &mut bands);
@@ -2125,11 +2131,11 @@ fn assemble_plan_unless_records_blend_with_other_layers(
             .clone(),
         swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
     };
-    Some((plan, notes_of_composited_effects))
+    Ok((plan, notes_of_composited_effects))
 }
 
-fn effects_composited_in_plan(plan: &LayeredPlan) -> impl Iterator<Item = EffectNodeIndex> + '_ {
-    plan.nodes.iter().filter_map(|node| node.composited_effect)
+fn effects_composited_in(nodes: &[NodeOfPlan]) -> impl Iterator<Item = EffectNodeIndex> + '_ {
+    nodes.iter().filter_map(|node| node.composited_effect)
 }
 
 // A 3D sorting context that sorts its planes by depth is placed whole into the tiles of one band, which replay it
@@ -2138,7 +2144,7 @@ fn effects_composited_in_plan(plan: &LayeredPlan) -> impl Iterator<Item = Effect
 fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     inputs: &LayerStackInputs<'_>,
     placement: &ListPlacement,
-    plan: &LayeredPlan,
+    nodes: &[NodeOfPlan],
 ) -> bool {
     let tree = inputs.tree;
     let run_groups = inputs.list.run_groups(tree);
@@ -2151,7 +2157,7 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
         .backdrop_readers_in_paint_order
         .iter()
         .copied()
-        .chain(effects_composited_in_plan(plan))
+        .chain(effects_composited_in(nodes))
         .any(|effect| effect_holds_run_sorted_by_depth_by_effect_index[effect.0 as usize])
 }
 
@@ -2159,35 +2165,35 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
 // over and around where that is drawn, as the barriers inside it cut its tiles there, and reads no farther past each
 // pixel than tiles are followed past the frame. Media and animations get no layer inside any other filter;
 // an effect that reads what is below its layer can still make one composited.
-fn why_compositor_cannot_composite_effect_of_plan(
+fn why_compositor_cannot_composite_effect_of_nodes(
     placement: &ListPlacement,
-    plan: &LayeredPlan,
+    nodes: &[NodeOfPlan],
 ) -> Option<WhyListIsOneLayer> {
-    effects_composited_in_plan(plan).find_map(|composited_effect| {
+    effects_composited_in(nodes).find_map(|composited_effect| {
         placement.why_compositor_cannot_composite_by_effect_index[composited_effect.0 as usize]
             .map(WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited)
     })
 }
 
-fn why_plan_goes_as_one_layer(
+fn why_nodes_go_as_one_layer(
     inputs: &LayerStackInputs<'_>,
     layering_obstacles: &LayeringObstacles,
     placement: &ListPlacement,
-    plan: &LayeredPlan,
+    nodes: &[NodeOfPlan],
 ) -> Option<WhyListIsOneLayer> {
     if composited_effects_nest_too_deep(
-        plan.nodes
+        nodes
             .iter()
             .map(|node| (node.parent_index, node.composited_effect.is_some())),
     ) {
         return Some(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
     }
     if layering_obstacles.sorts_planes_by_depth
-        && contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, placement, plan)
+        && contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, placement, nodes)
     {
         return Some(WhyListIsOneLayer::SortingContext3D);
     }
-    why_compositor_cannot_composite_effect_of_plan(placement, plan)
+    why_compositor_cannot_composite_effect_of_nodes(placement, nodes)
 }
 
 fn notes_of_stack(
@@ -2231,42 +2237,36 @@ fn build_layer_stack(
     layering_obstacles: LayeringObstacles,
     nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> PlannedLayers {
-    let why_list_is_one_layer = match assemble_plan_unless_records_blend_with_other_layers(&placement, &spaces) {
-        None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
-        Some((plan, notes_of_composited_effects)) => {
-            match why_plan_goes_as_one_layer(inputs, &layering_obstacles, &placement, &plan) {
-                Some(why) => why,
-                None => match LayerStack::of_plan_passing_checks(
-                    plan,
-                    spaces,
-                    inputs.list,
-                    inputs.tree,
-                    inputs.viewport_rect,
-                    layering_obstacles,
-                    nesting_of_live_effects,
-                ) {
-                    Ok(stack) => {
-                        return PlannedLayers {
-                            notes: notes_of_stack(&placement, &stack, notes_of_composited_effects),
-                            stack,
-                            placement,
-                        };
-                    }
-                    Err(why_plan_fails_checks) => {
-                        debug_assert!(
-                            false,
-                            "the compositor refuses a plan of layers the planner made: {why_plan_fails_checks}"
-                        );
-                        eprintln!(
-                            "WebContent: Sending one layer, as the compositor refuses the plan of layers: {why_plan_fails_checks}"
-                        );
-                        WhyListIsOneLayer::PlanFailsChecksOfCompositor
-                    }
-                },
-            }
-        }
-    };
-    one_layer(inputs, why_list_is_one_layer, layering_obstacles, placement)
+    let stack_of_plan = assemble_plan(inputs, &placement, &spaces, &layering_obstacles).and_then(|(plan, notes)| {
+        LayerStack::of_plan_passing_checks(
+            plan,
+            spaces,
+            inputs.list,
+            inputs.tree,
+            inputs.viewport_rect,
+            layering_obstacles,
+            nesting_of_live_effects,
+        )
+        .map(|stack| (stack, notes))
+        .map_err(|why_plan_fails_checks| {
+            debug_assert!(
+                false,
+                "the compositor refuses a plan of layers the planner made: {why_plan_fails_checks}"
+            );
+            eprintln!(
+                "WebContent: Sending one layer, as the compositor refuses the plan of layers: {why_plan_fails_checks}"
+            );
+            WhyListIsOneLayer::PlanFailsChecksOfCompositor
+        })
+    });
+    match stack_of_plan {
+        Ok((stack, notes_of_composited_effects)) => PlannedLayers {
+            notes: notes_of_stack(&placement, &stack, notes_of_composited_effects),
+            stack,
+            placement,
+        },
+        Err(why_list_is_one_layer) => one_layer(inputs, why_list_is_one_layer, layering_obstacles, placement),
+    }
 }
 
 fn one_layer(
