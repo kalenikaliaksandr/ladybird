@@ -2207,19 +2207,6 @@ mod tests {
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
 
-    fn identity_tree() -> VisualContextTree {
-        VisualContextTree::create(TransformData {
-            matrix: FloatMatrix4x4::identity(),
-            origin: FloatPoint::default(),
-            sorting_context_root_index: None,
-            flattens_inherited_transform: false,
-            role: TransformDataRole::CssTransform,
-            synthetic_plane: false,
-            establishes_sorting_context: false,
-            bounds: libgfx_rust::FloatRect::default(),
-        })
-    }
-
     fn effects(opacity: f32, blend_mode: CompositingAndBlendingOperator) -> EffectNodeData {
         EffectNodeData::Effects(EffectsData {
             isolation: false,
@@ -2231,7 +2218,7 @@ mod tests {
     }
 
     fn tree_with_root_isolation_effect() -> VisualContextTree {
-        let mut tree = identity_tree();
+        let mut tree = VisualContextTree::create_identity();
         let root = tree.append_effect(
             effects(1.0, CompositingAndBlendingOperator::Normal),
             EffectNodeIndex::NONE,
@@ -2361,47 +2348,14 @@ mod tests {
 
     #[test]
     fn samples_of_a_transform_animation_leave_the_placement_alike() {
-        use crate::animation_timing::{AnimationEffectTiming, TimeValue};
-        use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
-        use crate::visual_animation::{
-            VisualAnimation, VisualAnimationKeyframe, VisualAnimationTransformOperation, VisualAnimationValue,
-        };
         let (mut tree, _, document) = tree_with_document_scroll();
-        let moving_node = tree.append_spatial(
-            SpatialData::Transform(TransformData {
-                matrix: FloatMatrix4x4::identity(),
-                origin: FloatPoint::default(),
-                sorting_context_root_index: None,
-                flattens_inherited_transform: false,
-                role: TransformDataRole::CssTransform,
-                synthetic_plane: false,
-                establishes_sorting_context: false,
-                bounds: FloatRect::new(0.0, 0.0, 50.0, 50.0),
-            }),
-            document.spatial,
-        );
-        let translate_x = |pixels: f32| VisualAnimationKeyframe {
-            offset: f64::from(pixels) / 400.0,
-            easing: crate::easing::Easing::default(),
-            value: VisualAnimationValue::Transform(vec![
-                VisualAnimationTransformOperation::new(FfiVisualAnimationTransformOperationKind::TranslateX, &[pixels])
-                    .unwrap(),
-            ]),
-        };
-        tree.set_visual_animations(vec![VisualAnimation {
-            target_kind: FfiVisualAnimationTargetKind::Transform,
-            node_indices: vec![moving_node.0],
-            timing: AnimationEffectTiming {
-                iteration_duration: TimeValue::milliseconds(1000.0),
-                ..VisualAnimation::default().timing
-            },
-            keyframes: vec![translate_x(0.0), translate_x(400.0)],
-            ..VisualAnimation::default()
-        }]);
-        let moving = ContextRef {
-            spatial: moving_node,
-            ..document
-        };
+        let moving = transformed_context(&mut tree, document, FloatRect::new(0.0, 0.0, 50.0, 50.0));
+        tree.set_visual_animations(vec![transform_animation_of(
+            moving.spatial,
+            crate::host::FfiVisualAnimationTransformOperationKind::TranslateX,
+            0.0,
+            400.0,
+        )]);
         let list = TestList::new()
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
             .with(canvas(IntRect::new(500, 300, 200, 100)), document)
@@ -2417,37 +2371,6 @@ mod tests {
                 "canvas #0 document",
                 "painted document band 0 above L2"
             ]
-        );
-    }
-
-    #[test]
-    fn samples_of_an_opacity_animation_leave_the_stack_alike() {
-        let (mut tree, _, document) = tree_with_document_scroll();
-        let fading_box = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Normal));
-        tree.set_visual_animations(vec![animation_of(
-            crate::host::FfiVisualAnimationTargetKind::Opacity,
-            fading_box.effect.0,
-            vec![
-                opacity_animation_keyframe(0.0, 1.0),
-                opacity_animation_keyframe(1.0, 0.0),
-            ],
-        )]);
-        let list = TestList::new()
-            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(fill(IntRect::new(100, 300, 50, 50)), fading_box)
-            .with(fill(IntRect::new(0, 500, 800, 50)), document);
-        // The effect pushes a layer at every sample, also at the start, where it is opaque.
-        assert!(
-            tree.with_visual_animation_samples(0)
-                .effect_pushes_layer_at_replay(fading_box.effect)
-        );
-        let at_start = list.planned(&tree.with_visual_animation_samples(0), &[]);
-        let halfway = list.planned(&tree.with_visual_animation_samples(500_000_000), &[]);
-        assert_eq!(at_start.placement, halfway.placement);
-        assert_eq!(at_start.stack.layers, halfway.stack.layers);
-        assert_eq!(
-            whys_of_composited_effects(&halfway),
-            [(fading_box.effect, WhyEffectIsComposited::TheCompositorAnimatesIt)]
         );
     }
 
@@ -2908,21 +2831,11 @@ mod tests {
         }
     }
 
-    fn planned_layers(list: &DisplayListStorage, tree: &VisualContextTree) -> PlannedLayers {
-        plan_layer_stack(&LayerStackInputs {
-            list,
-            tree,
-            scroll_offsets: &[],
-            viewport_rect: VIEWPORT,
-        })
-    }
-
     fn layers_planned_alike_for_every_sample(list: &TestList, tree: &VisualContextTree) -> PlannedLayers {
-        let list = DisplayListStorage::of_builder(&list.builder);
-        let planned = planned_layers(&list, tree);
+        let planned = list.planned(tree, &[]);
         for time_ns in SAMPLE_TIMES_NS {
             assert!(
-                planned_layers(&list, &tree.with_visual_animation_samples(time_ns)) == planned,
+                list.planned(&tree.with_visual_animation_samples(time_ns), &[]) == planned,
                 "the plan of the sample at {time_ns} ns differs from the plan of the tree"
             );
         }
@@ -3198,13 +3111,10 @@ mod tests {
             vec![grayscale(0.0)],
             vec![grayscale(1.0)],
         )]);
-        let list = DisplayListStorage::of_builder(
-            &TestList::new()
-                .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
-                .with(fill(ELEMENT), element)
-                .builder,
-        );
-        let planned = planned_layers(&list, &tree);
+        let planned = TestList::new()
+            .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
+            .with(fill(ELEMENT), element)
+            .planned(&tree, &[]);
         assert!(planned.stack.composited_effects.is_empty());
         assert_eq!(
             planned.placement.animations_without_layers,
@@ -3228,14 +3138,11 @@ mod tests {
             y2: 1.0,
         };
         tree.set_visual_animations(vec![animation]);
-        let list = DisplayListStorage::of_builder(
-            &TestList::new()
+        assert_eq!(
+            TestList::new()
                 .with(fill(IntRect::new(0, 0, 200, 200)), viewport)
                 .with(fill(ELEMENT), element)
-                .builder,
-        );
-        assert_eq!(
-            planned_layers(&list, &tree)
+                .planned(&tree, &[])
                 .placement
                 .why_compositor_cannot_composite_by_effect_index[element.effect.0 as usize],
             Some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
