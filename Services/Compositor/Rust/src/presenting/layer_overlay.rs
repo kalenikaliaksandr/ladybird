@@ -5,9 +5,9 @@
  */
 
 //! The compositor layers overlay: over each frame, the layers the frame is composited from, the tiles each of them holds
-//! and how often each was rastered since the overlay was switched on, and the tiles rastered lately, highlighted by why
-//! they were and fading out. What it shows of a frame is worked out into a plain model first, which is both drawn and
-//! described to the compositor layers window.
+//! and how often each was rastered while the layer kept it, and the tiles rastered lately, highlighted by why they were
+//! and fading out. What it shows of a frame is worked out into a plain model first, which is both drawn and described
+//! to the compositor layers window.
 
 use crate::overlays::{
     CompositorLayersOverlayState, OverlayLabel, OverlayLabelShaper, OverlayRecorder, OverlayRecords,
@@ -23,11 +23,15 @@ use libcompositing_rust::time::{Duration, MonotonicTime};
 use libgfx_rust::{Color, FloatPoint, IntPoint, IntRect, IntSize};
 use std::collections::{BTreeMap, HashMap, btree_map};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::rc::Rc;
 
 pub const RASTER_HIGHLIGHT_FADE_DURATION: Duration = Duration::from_milliseconds(500);
 const MAXIMUM_CACHED_LABEL_COUNT: usize = 4096;
 const LABEL_FONT_SIZE_IN_POINTS: f32 = 10.0;
 const SHORTEST_TIME_BETWEEN_PUBLISHED_DESCRIPTIONS: Duration = Duration::from_milliseconds(100);
+// The compositor layers window lists no more layers, and no longer names of them, than a person can read.
+const MAXIMUM_LISTED_LAYER_COUNT: usize = 256;
+const MAXIMUM_LISTED_LAYER_NAME_LENGTH: usize = 1024;
 const BYTES_PER_PIXEL: u64 = 4;
 const RASTER_HIGHLIGHT_ALPHA_BEFORE_FADING: u8 = 115;
 const ONE_COLOR_TILE_TINT_ALPHA: u8 = 40;
@@ -117,7 +121,7 @@ pub struct FrameWorkCounts {
 pub struct LayerOfFrame {
     pub identity: LayerIdentity,
     /// What the display list dump calls the layer.
-    pub name: String,
+    pub name: Rc<str>,
     /// From the raster coordinates of the layer's space into those of the frame.
     pub space_to_frame: SpaceToFrame,
     /// In the raster coordinates of the frame.
@@ -181,7 +185,8 @@ pub struct ModelTile {
     /// None where the layer holds no tile at the cell, as where a tile was painted straight into the frame.
     pub held_part_of_cell: Option<IntRect>,
     pub is_one_color: bool,
-    pub raster_count_since_overlay_switched_on: u32,
+    /// How often the tile was rastered while the layer kept it.
+    pub raster_count: u32,
     pub last_raster: Option<LastRaster>,
 }
 
@@ -201,7 +206,7 @@ pub enum ModelLayerContent {
 pub struct ModelLayer {
     /// Names the layer in the descriptions the compositor publishes, for as long as its identity stays.
     pub id: u64,
-    pub name: String,
+    pub name: Rc<str>,
     pub color: Color,
     /// Whether the frames leave the layer out.
     pub hidden: bool,
@@ -303,14 +308,22 @@ impl LayerOverlayModel {
         if let Some(why) = &self.why_list_is_one_layer {
             notes.push(format!("single layer: {why}"));
         }
+        let unlisted_layer_count = self.layers.len().saturating_sub(MAXIMUM_LISTED_LAYER_COUNT);
+        if unlisted_layer_count != 0 {
+            notes.push(format!(
+                "not listed: {} above these",
+                count_with_noun(unlisted_layer_count as u64, "layer", "layers")
+            ));
+        }
         notes.extend(self.notes_of_layer_stack.iter().cloned());
         CompositorLayersDescription {
             layers: self
                 .layers
                 .iter()
+                .take(MAXIMUM_LISTED_LAYER_COUNT)
                 .map(|layer| CompositorLayerDescription {
                     id: layer.id,
-                    name: layer.name.clone().into(),
+                    name: layer.name[..layer.name.floor_char_boundary(MAXIMUM_LISTED_LAYER_NAME_LENGTH)].into(),
                     details: Self::details_of_layer(layer).into(),
                     rgb_of_outline: rgb_of_color(layer.color),
                     hidden: layer.hidden,
@@ -330,15 +343,12 @@ impl LayerOverlayModel {
 }
 
 fn tile_label_text(tile: &ModelTile) -> String {
-    format!(
-        "{},{} x{}",
-        tile.coord.column, tile.coord.row, tile.raster_count_since_overlay_switched_on
-    )
+    format!("{},{} x{}", tile.coord.column, tile.coord.row, tile.raster_count)
 }
 
 fn layer_label_text(layer: &ModelLayer) -> String {
     match &layer.content {
-        ModelLayerContent::Painted { .. } => layer.name.clone(),
+        ModelLayerContent::Painted { .. } => layer.name.to_string(),
         ModelLayerContent::Media { presentation, .. } => format!("{}: {presentation}", layer.name),
     }
 }
@@ -386,7 +396,7 @@ fn color_of_hsl(hue_in_degrees: f32, saturation: f32, lightness: f32) -> Color {
 
 #[derive(Clone, Copy, Debug)]
 struct RasterHistoryOfTile {
-    raster_count_since_overlay_switched_on: u32,
+    raster_count: u32,
     last_cause: RasterCause,
     last_rect_in_layer_space: IntRect,
     last_rastered_at: MonotonicTime,
@@ -436,7 +446,8 @@ pub struct LayerOverlayFrame {
 }
 
 /// What the overlay keeps while it is switched on: how often each tile was rastered, and why last, and what the
-/// compositor layers window was told last.
+/// compositor layers window was told last. A layer keeps the raster history of a tile while the layer holds the tile or
+/// the tile is highlighted. A frame that does neither drops that history, and the count starts again from zero.
 #[derive(Default)]
 pub struct LayerOverlay {
     state_from_ui: CompositorLayersOverlayState,
@@ -464,13 +475,13 @@ impl LayerOverlay {
             .or_default()
             .entry(coord)
             .or_insert(RasterHistoryOfTile {
-                raster_count_since_overlay_switched_on: 0,
+                raster_count: 0,
                 last_cause: cause,
                 last_rect_in_layer_space: rect_in_layer_space,
                 last_rastered_at: painted_at,
             });
         if cause != RasterCause::PaintedStraightIntoTheFrame {
-            history.raster_count_since_overlay_switched_on += 1;
+            history.raster_count += 1;
         }
         history.last_cause = cause;
         history.last_rect_in_layer_space = rect_in_layer_space;
@@ -488,8 +499,6 @@ impl LayerOverlay {
         device_pixel_ratio: f64,
         shaper: &dyn OverlayLabelShaper,
     ) -> &LayerOverlayFrame {
-        self.raster_history_of_tiles_by_layer
-            .retain(|identity, _| frame.layers.iter().any(|layer| layer.identity == *identity));
         let model = self.model_of_frame(frame);
         let records = self.record_drawing_of_model(&model, device_pixel_ratio, shaper);
         self.latest_frame.insert(LayerOverlayFrame { model, records })
@@ -528,9 +537,14 @@ impl LayerOverlay {
         highlights_fade_until.max(self.unpublished_description_waits_until)
     }
 
-    pub fn model_of_frame(&self, frame: FrameOfLayerOverlay) -> LayerOverlayModel {
+    /// Works out the overlay of a frame, and keeps the raster history of only the tiles that the layers of the frame
+    /// hold or that are highlighted.
+    pub fn model_of_frame(&mut self, frame: FrameOfLayerOverlay) -> LayerOverlayModel {
         let painted_at = frame.painted_at;
         let mut highlights_fade_until: Option<MonotonicTime> = None;
+        // The history that the layers of the frame do not take is of layers that left the stack, and is dropped.
+        let mut raster_history_of_tiles_by_layer = std::mem::take(&mut self.raster_history_of_tiles_by_layer);
+        let mut kept_raster_history_of_tiles_by_layer = HashMap::with_capacity(frame.layers.len());
         let layers = frame
             .layers
             .into_iter()
@@ -555,14 +569,16 @@ impl LayerOverlay {
                                         coord: tile.coord,
                                         held_part_of_cell: Some(tile.held_part_of_cell),
                                         is_one_color: tile.is_one_color,
-                                        raster_count_since_overlay_switched_on: 0,
+                                        raster_count: 0,
                                         last_raster: None,
                                     },
                                 )
                             })
                             .collect();
-                        let raster_history_of_tiles = self.raster_history_of_tiles_by_layer.get(&layer.identity);
-                        for (&coord, history) in raster_history_of_tiles.into_iter().flatten() {
+                        let mut raster_history_of_tiles = raster_history_of_tiles_by_layer
+                            .remove(&layer.identity)
+                            .unwrap_or_default();
+                        raster_history_of_tiles.retain(|&coord, history| {
                             let last_raster = LastRaster {
                                 cause: history.last_cause,
                                 rect_in_layer_space: history.last_rect_in_layer_space,
@@ -581,15 +597,18 @@ impl LayerOverlay {
                                         coord,
                                         held_part_of_cell: None,
                                         is_one_color: false,
-                                        raster_count_since_overlay_switched_on: 0,
+                                        raster_count: 0,
                                         last_raster: None,
                                     })
                                 }
-                                btree_map::Entry::Vacant(_) => continue,
+                                btree_map::Entry::Vacant(_) => return false,
                             };
-                            tile.raster_count_since_overlay_switched_on =
-                                history.raster_count_since_overlay_switched_on;
+                            tile.raster_count = history.raster_count;
                             tile.last_raster = Some(last_raster);
+                            true
+                        });
+                        if !raster_history_of_tiles.is_empty() {
+                            kept_raster_history_of_tiles_by_layer.insert(layer.identity, raster_history_of_tiles);
                         }
                         ModelLayerContent::Painted {
                             tiles: tiles.into_values().collect(),
@@ -611,6 +630,7 @@ impl LayerOverlay {
                 }
             })
             .collect();
+        self.raster_history_of_tiles_by_layer = kept_raster_history_of_tiles_by_layer;
         LayerOverlayModel {
             viewport_rect: frame.viewport_rect,
             layers,
@@ -945,5 +965,169 @@ impl LayerOverlaySwitch {
         self.overlay
             .as_ref()
             .is_some_and(|overlay| overlay.hides_layer(identity))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libcompositing_rust::display_list::layers::PlacementNodeIdentity;
+
+    fn painted_layer_identity(node: u64) -> LayerIdentity {
+        LayerIdentity::Painted {
+            node: PlacementNodeIdentity(node),
+            band_ordinal_in_node: 0,
+            above_barrier: None,
+        }
+    }
+
+    fn painted_layer_holding(identity: LayerIdentity, held_coords: &[TileCoord]) -> LayerOfFrame {
+        LayerOfFrame {
+            identity,
+            name: "painted layer".into(),
+            space_to_frame: SpaceToFrame::Offset(IntPoint::default()),
+            composite_clip: None,
+            content: LayerOfFrameContent::Painted {
+                held_tiles: held_coords
+                    .iter()
+                    .map(|&coord| HeldTile {
+                        coord,
+                        held_part_of_cell: coord.cell_rect(),
+                        is_one_color: false,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn frame_painted_at(painted_at: MonotonicTime, layers: Vec<LayerOfFrame>) -> FrameOfLayerOverlay {
+        FrameOfLayerOverlay {
+            viewport_rect: IntRect::new(0, 0, 800, 600),
+            painted_at,
+            layers,
+            why_list_is_one_layer: None,
+            notes_of_layer_stack: Vec::new(),
+            work_counts: FrameWorkCounts::default(),
+        }
+    }
+
+    fn coords_with_raster_history(overlay: &LayerOverlay, identity: &LayerIdentity) -> Vec<TileCoord> {
+        overlay
+            .raster_history_of_tiles_by_layer
+            .get(identity)
+            .map_or_else(Vec::new, |history| history.keys().copied().collect())
+    }
+
+    // Per tile of the first layer: where it is, whether the layer holds it, and how often it was rastered.
+    fn tiles_of_first_layer(model: &LayerOverlayModel) -> Vec<(TileCoord, bool, u32)> {
+        let ModelLayerContent::Painted { tiles, .. } = &model.layers[0].content else {
+            panic!("the first layer is painted");
+        };
+        tiles
+            .iter()
+            .map(|tile| (tile.coord, tile.held_part_of_cell.is_some(), tile.raster_count))
+            .collect()
+    }
+
+    #[test]
+    fn raster_history_is_kept_only_for_tiles_held_or_highlighted() {
+        let layer = painted_layer_identity(1);
+        let held = TileCoord::new(0, 0);
+        let let_go = TileCoord::new(1, 0);
+        let rastered_at = MonotonicTime::from_nanoseconds(1_000_000_000);
+        let mut overlay = LayerOverlay::default();
+        for coord in [held, let_go] {
+            overlay.record_raster(layer, coord, RasterCause::NewlyShown, coord.cell_rect(), rastered_at);
+        }
+
+        // A tile the layer no longer holds shows while its highlight fades.
+        let while_fading = overlay.model_of_frame(frame_painted_at(
+            rastered_at + Duration::from_milliseconds(100),
+            vec![painted_layer_holding(layer, &[held])],
+        ));
+        assert_eq!(
+            tiles_of_first_layer(&while_fading),
+            [(held, true, 1), (let_go, false, 1)]
+        );
+        assert_eq!(
+            while_fading.highlights_fade_until,
+            Some(rastered_at + RASTER_HIGHLIGHT_FADE_DURATION)
+        );
+        assert_eq!(coords_with_raster_history(&overlay, &layer), [held, let_go]);
+
+        // Once the highlight faded, only the tile the layer holds keeps its history.
+        let after_fading = overlay.model_of_frame(frame_painted_at(
+            rastered_at + RASTER_HIGHLIGHT_FADE_DURATION,
+            vec![painted_layer_holding(layer, &[held])],
+        ));
+        assert_eq!(tiles_of_first_layer(&after_fading), [(held, true, 1)]);
+        assert_eq!(after_fading.highlights_fade_until, None);
+        assert_eq!(coords_with_raster_history(&overlay, &layer), [held]);
+
+        // A tile the layer holds again after it let the tile go counts its rasters from zero.
+        let held_again = overlay.model_of_frame(frame_painted_at(
+            rastered_at + RASTER_HIGHLIGHT_FADE_DURATION,
+            vec![painted_layer_holding(layer, &[held, let_go])],
+        ));
+        assert_eq!(tiles_of_first_layer(&held_again), [(held, true, 1), (let_go, true, 0)]);
+
+        // A layer that left the stack keeps no history.
+        overlay.model_of_frame(frame_painted_at(
+            rastered_at + RASTER_HIGHLIGHT_FADE_DURATION,
+            vec![painted_layer_holding(painted_layer_identity(2), &[held])],
+        ));
+        assert!(overlay.raster_history_of_tiles_by_layer.is_empty());
+    }
+
+    #[test]
+    fn the_layers_window_is_told_of_no_more_layers_than_a_person_can_read() {
+        let long_name = format!("a{}", "é".repeat(MAXIMUM_LISTED_LAYER_NAME_LENGTH));
+        let model_with_layer_count = |layer_count: usize| LayerOverlayModel {
+            viewport_rect: IntRect::new(0, 0, 800, 600),
+            layers: (0..layer_count)
+                .map(|index| ModelLayer {
+                    id: index as u64,
+                    name: long_name.as_str().into(),
+                    color: Color::from_rgb(0, 0, 0),
+                    hidden: false,
+                    space_to_frame: SpaceToFrame::Offset(IntPoint::default()),
+                    composite_clip: None,
+                    content: ModelLayerContent::Media {
+                        reach: IntRect::new(0, 0, 10, 10),
+                        presentation: MediaPresentation::ShownByWindowServer,
+                    },
+                })
+                .collect(),
+            why_list_is_one_layer: None,
+            notes_of_layer_stack: vec!["a note of the plan".into()],
+            work_counts_of_frame: FrameWorkCounts::default(),
+            highlights_fade_until: None,
+        };
+        let notes_of = |description: &CompositorLayersDescription| -> Vec<String> {
+            description
+                .notes
+                .iter()
+                .map(|note| note.as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let all_listed = model_with_layer_count(MAXIMUM_LISTED_LAYER_COUNT).description_for_layers_window();
+        assert_eq!(all_listed.layers.len(), MAXIMUM_LISTED_LAYER_COUNT);
+        assert_eq!(notes_of(&all_listed), ["a note of the plan"]);
+
+        let some_unlisted = model_with_layer_count(MAXIMUM_LISTED_LAYER_COUNT + 3).description_for_layers_window();
+        assert_eq!(some_unlisted.layers.len(), MAXIMUM_LISTED_LAYER_COUNT);
+        assert_eq!(
+            some_unlisted.layers.last().map(|layer| layer.id),
+            Some(MAXIMUM_LISTED_LAYER_COUNT as u64 - 1)
+        );
+        assert_eq!(
+            notes_of(&some_unlisted),
+            ["not listed: 3 layers above these", "a note of the plan"]
+        );
+        assert!(some_unlisted.layers.iter().all(|layer| {
+            let name = layer.name.as_str().unwrap();
+            name.len() == MAXIMUM_LISTED_LAYER_NAME_LENGTH - 1 && long_name.starts_with(name)
+        }));
     }
 }

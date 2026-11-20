@@ -7,7 +7,6 @@
 #include <UI/Qt/CompositorLayersWindow.h>
 #include <UI/Qt/StringUtils.h>
 
-#include <QCloseEvent>
 #include <QHeaderView>
 #include <QLabel>
 #include <QPixmap>
@@ -55,9 +54,12 @@ CompositorLayersWindow::CompositorLayersWindow(Source source)
     m_layer_tree->header()->setSectionResizeMode(Holds, QHeaderView::ResizeToContents);
     m_layer_tree->header()->setStretchLastSection(false);
 
+    // The notes and the summary show text from other processes. Do not read that text as markup.
     m_notes = new QLabel(this);
+    m_notes->setTextFormat(Qt::PlainText);
     m_notes->setWordWrap(true);
     m_summary_of_last_frame = new QLabel(this);
+    m_summary_of_last_frame->setTextFormat(Qt::PlainText);
     m_summary_of_last_frame->setWordWrap(true);
     m_tile_highlight_legend = new QLabel(this);
     m_tile_highlight_legend->setTextFormat(Qt::RichText);
@@ -94,9 +96,11 @@ void CompositorLayersWindow::hideEvent(QHideEvent* event)
     QDialog::hideEvent(event);
 }
 
-void CompositorLayersWindow::closeEvent(QCloseEvent* event)
+// All ways to close the dialog call done(): the Escape key and the close button of the window call reject(), which
+// calls done().
+void CompositorLayersWindow::done(int result)
 {
-    QDialog::closeEvent(event);
+    QDialog::done(result);
     if (on_close)
         on_close();
 }

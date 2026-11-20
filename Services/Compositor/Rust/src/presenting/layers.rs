@@ -49,6 +49,7 @@ use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
 use libcompositing_rust::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, IntSize, ScalingMode};
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hasher;
 use std::rc::Rc;
@@ -529,6 +530,8 @@ struct StackOfFrames {
     raster_spaces: Option<RasterSpaces>,
     geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
     band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame,
+    /// Per layer, what the layers overlay calls it, worked out by the first frame that draws the overlay.
+    names_of_layers_for_overlay: OnceCell<Vec<Rc<str>>>,
 }
 
 impl StackOfFrames {
@@ -567,6 +570,7 @@ impl StackOfFrames {
             raster_spaces: None,
             geometry_by_space,
             band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_latest_frame),
+            names_of_layers_for_overlay: OnceCell::new(),
         }
     }
 
@@ -1932,6 +1936,11 @@ impl ContextPresenting {
             return;
         }
         let stack = &stack_of_frames.stack;
+        let names_of_layers = stack_of_frames.names_of_layers_for_overlay.get_or_init(|| {
+            (0..stack.layers.len())
+                .map(|index| Rc::from(stack.name_of_layer(LayerIndex(index), &NodeNamesFromIndices)))
+                .collect()
+        });
         let why_context_shows_no_media = self.why_window_server_shows_no_media_of_this_context(env);
         let layers = compositing_of_layers
             .iter()
@@ -1982,7 +1991,7 @@ impl ContextPresenting {
                 };
                 LayerOfFrame {
                     identity: compositing.identity,
-                    name: stack.name_of_layer(layer_index, &NodeNamesFromIndices),
+                    name: names_of_layers[layer_index.0].clone(),
                     space_to_frame: compositing.space_to_frame,
                     composite_clip: compositing.composite_clip,
                     content,

@@ -489,6 +489,7 @@ pub struct LayerStack {
     /// the raster coordinates of the space it is in wherever the animation takes it.
     pub swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
     index_of_layer_with_identity: HashMap<LayerIdentity, LayerIndex>,
+    index_of_node_with_identity: HashMap<PlacementNodeIdentity, PlacementNodeIndex>,
     has_layer_at_or_above_base_by_band_index: Vec<bool>,
 }
 
@@ -549,6 +550,16 @@ fn index_of_layer_with_identity(layers: &[StackLayer]) -> HashMap<LayerIdentity,
         index_by_identity
             .entry(layer.identity)
             .or_insert(LayerIndex(layer_index));
+    }
+    index_by_identity
+}
+
+fn index_of_node_with_identity(nodes: &[PlacementNode]) -> HashMap<PlacementNodeIdentity, PlacementNodeIndex> {
+    let mut index_by_identity = HashMap::with_capacity(nodes.len());
+    for (node_index, node) in nodes.iter().enumerate() {
+        index_by_identity
+            .entry(node.identity)
+            .or_insert(PlacementNodeIndex(node_index));
     }
     index_by_identity
 }
@@ -737,6 +748,7 @@ impl LayerStack {
             tiles_hold_content_moving_within_space_by_space_index: vec![true],
             swept_reach_in_parent_space_by_space_index: vec![None],
             index_of_layer_with_identity: HashMap::new(),
+            index_of_node_with_identity: HashMap::new(),
             has_layer_at_or_above_base_by_band_index: Vec::new(),
         }
         .with_lookups()
@@ -745,6 +757,7 @@ impl LayerStack {
     // The lookups that the methods read, built from what the stack holds. Every index the stack holds must be in range.
     fn with_lookups(mut self) -> Self {
         self.index_of_layer_with_identity = index_of_layer_with_identity(&self.layers);
+        self.index_of_node_with_identity = index_of_node_with_identity(&self.nodes);
         self.has_layer_at_or_above_base_by_band_index =
             which_bands_have_layer_at_or_above_base(&self.layers, self.bands.len(), self.base_layer);
         self
@@ -904,6 +917,7 @@ impl LayerStack {
                 .tiles_hold_content_moving_within_space_by_space_index,
             swept_reach_in_parent_space_by_space_index: plan.swept_reach_in_parent_space_by_space_index,
             index_of_layer_with_identity: HashMap::new(),
+            index_of_node_with_identity: HashMap::new(),
             has_layer_at_or_above_base_by_band_index: Vec::new(),
         }
         .with_lookups()
@@ -1299,14 +1313,13 @@ impl LayerStack {
                 node,
                 band_ordinal_in_node,
             } => {
-                let nested_node_index = self
-                    .nodes
-                    .iter()
-                    .position(|candidate| candidate.identity == *node)
+                let &nested_node_index = self
+                    .index_of_node_with_identity
+                    .get(node)
                     .expect("a band barrier names a node of the stack");
                 format!(
                     "band {band_ordinal_in_node} of {}",
-                    self.name_of_node(PlacementNodeIndex(nested_node_index), node_namer)
+                    self.name_of_node(nested_node_index, node_namer)
                 )
             }
         }

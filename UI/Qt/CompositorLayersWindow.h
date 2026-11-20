@@ -35,7 +35,7 @@ public:
 private:
     virtual void showEvent(QShowEvent*) override;
     virtual void hideEvent(QHideEvent*) override;
-    virtual void closeEvent(QCloseEvent*) override;
+    virtual void done(int result) override;
     void refresh();
 
     Source m_source;
