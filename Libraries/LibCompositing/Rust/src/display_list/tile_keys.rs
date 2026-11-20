@@ -571,59 +571,122 @@ impl BackdropReadInLayer {
     }
 }
 
-impl BandBoundToListAndGeometry {
-    fn frame_edge_backdrop_blurs_of_cell_mirror_at(&self, cell: IntRect, frame: Option<IntRect>) -> Option<IntRect> {
+// The most backdrop reads that a band follows one by one, and the most passes over them that follow the reach of
+// content through reads that read one another. Past either, content that a backdrop read can reach reaches the regions
+// of every backdrop read of the band, and the cells those regions touch take what their tiles read as not known.
+const MAXIMUM_BACKDROP_READS_A_BAND_FOLLOWS_ONE_BY_ONE: usize = 64;
+const MAXIMUM_PASSES_OVER_BACKDROP_READS: usize = 8;
+
+/// The backdrop reads of the layers of a band, in the paint order of their first records.
+struct BackdropReadsOfBand {
+    reads_in_paint_order: Vec<BackdropReadInLayer>,
+    region_reach_of_every_read: Reach<IntRect>,
+}
+
+impl BackdropReadsOfBand {
+    fn new(reads_in_paint_order: Vec<BackdropReadInLayer>) -> Self {
+        debug_assert!(
+            reads_in_paint_order
+                .windows(2)
+                .all(|pair| pair[0].first_record_position <= pair[1].first_record_position)
+        );
+        let region_reach_of_every_read = reads_in_paint_order
+            .iter()
+            .fold(Reach::Nothing, |united, read| united.united(read.region_reach));
+        Self {
+            reads_in_paint_order,
+            region_reach_of_every_read,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.reads_in_paint_order.is_empty()
+    }
+
+    fn are_followed_one_by_one(&self) -> bool {
+        self.reads_in_paint_order.len() <= MAXIMUM_BACKDROP_READS_A_BAND_FOLLOWS_ONE_BY_ONE
+    }
+
+    // A tile that shows part of a backdrop filter's region must also hold what the filter reads past that part.
+    fn reach_extended_through_reads(&self, mut reach: Reach<IntRect>, paint_position: ListPosition) -> Reach<IntRect> {
+        let first_read_painted_after = self
+            .reads_in_paint_order
+            .partition_point(|read| read.first_record_position <= paint_position);
+        let reads_painted_after = &self.reads_in_paint_order[first_read_painted_after..];
+        if reads_painted_after.is_empty() {
+            return reach;
+        }
+        if !self.are_followed_one_by_one() {
+            return reach.united(self.region_reach_of_every_read);
+        }
+        let pass_count = self.reads_in_paint_order.len() + 1;
+        for _ in 0..pass_count.min(MAXIMUM_PASSES_OVER_BACKDROP_READS) {
+            let mut reach_grew = false;
+            for backdrop_read in reads_painted_after {
+                let Reach::Within(rect) = reach else {
+                    continue;
+                };
+                if !backdrop_read.backdrop_read_reach.touches(rect) {
+                    continue;
+                }
+                let reach_through_backdrop_read =
+                    match (backdrop_read.region_reach, backdrop_read.read_reach_in_device_pixels) {
+                        (Reach::Within(region), Some(read_reach_in_device_pixels)) => {
+                            let distance =
+                                read_reach_in_device_pixels + backdrop_read.spread_past_region_in_device_pixels;
+                            Reach::Within(
+                                rect.inflated_edges(distance, distance, distance, distance)
+                                    .intersected(region),
+                            )
+                        }
+                        (region_reach, _) => region_reach,
+                    };
+                let extended = reach.united(reach_through_backdrop_read);
+                if extended != reach {
+                    reach = extended;
+                    reach_grew = true;
+                }
+            }
+            if !reach_grew {
+                return reach;
+            }
+        }
+        if pass_count > MAXIMUM_PASSES_OVER_BACKDROP_READS {
+            return reach.united(self.region_reach_of_every_read);
+        }
+        reach
+    }
+
+    /// How far past `cell` its tiles are rastered, in device pixels: as far as the backdrop filters whose regions touch
+    /// the cell read and spread what they read, or none where that is not known or is farther than
+    /// `LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS`.
+    fn raster_margin_of_cell(&self, cell: IntRect) -> Option<i32> {
+        if !self.are_followed_one_by_one() {
+            return (!self.region_reach_of_every_read.touches(cell)).then_some(0);
+        }
+        self.reads_in_paint_order
+            .iter()
+            .filter(|backdrop_read| backdrop_read.region_reach.touches(cell))
+            .try_fold(0i32, |margin, backdrop_read| {
+                Some(
+                    margin
+                        .saturating_add(backdrop_read.read_reach_in_device_pixels?)
+                        .saturating_add(backdrop_read.spread_past_region_in_device_pixels),
+                )
+            })
+            .filter(|&margin| margin <= LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS)
+    }
+
+    fn frame_edge_blurs_of_cell_mirror_at(&self, cell: IntRect, frame: Option<IntRect>) -> Option<IntRect> {
         frame.filter(|frame| {
-            self.backdrop_reads.iter().any(|backdrop_read| {
+            if !self.are_followed_one_by_one() {
+                return self.region_reach_of_every_read.touches(cell);
+            }
+            self.reads_in_paint_order.iter().any(|backdrop_read| {
                 backdrop_read.region_reach.touches(cell) && backdrop_read.blur_mirrors_at_edge_of_frame(*frame)
             })
         })
     }
-}
-
-// A tile that shows part of a backdrop filter's region must also hold what the filter reads past that part.
-fn reach_extended_through_backdrop_reads(
-    mut reach: Reach<IntRect>,
-    paint_position: ListPosition,
-    backdrop_reads: &[BackdropReadInLayer],
-) -> Reach<IntRect> {
-    if backdrop_reads.is_empty() {
-        return reach;
-    }
-    for _ in 0..=backdrop_reads.len() {
-        let mut reach_grew = false;
-        for backdrop_read in backdrop_reads {
-            if paint_position >= backdrop_read.first_record_position {
-                continue;
-            }
-            let Reach::Within(rect) = reach else {
-                continue;
-            };
-            if !backdrop_read.backdrop_read_reach.touches(rect) {
-                continue;
-            }
-            let reach_through_backdrop_read =
-                match (backdrop_read.region_reach, backdrop_read.read_reach_in_device_pixels) {
-                    (Reach::Within(region), Some(read_reach_in_device_pixels)) => {
-                        let distance = read_reach_in_device_pixels + backdrop_read.spread_past_region_in_device_pixels;
-                        Reach::Within(
-                            rect.inflated_edges(distance, distance, distance, distance)
-                                .intersected(region),
-                        )
-                    }
-                    (region_reach, _) => region_reach,
-                };
-            let extended = reach.united(reach_through_backdrop_read);
-            if extended != reach {
-                reach = extended;
-                reach_grew = true;
-            }
-        }
-        if !reach_grew {
-            break;
-        }
-    }
-    reach
 }
 
 impl RoundedRect {
@@ -895,7 +958,7 @@ struct BandBoundToListAndGeometry {
     /// In the order of their chunks, as the spans of a band are in paint order.
     held_chunks: Vec<ChunkHeldByBand>,
     runs_replayed_whole: HashMap<(ChunkIndexInList, RunIndexInChunk), RunReplayedWholeWhereverRunGroupShows>,
-    backdrop_reads: Vec<BackdropReadInLayer>,
+    backdrop_reads: BackdropReadsOfBand,
     items_replayed_in_every_tile: Option<Vec<(ListPosition, TileReplayItem)>>,
     binning_inputs_hash_beyond_held_chunks: ContentHash,
 }
@@ -971,11 +1034,8 @@ impl BandBoundToListAndGeometry {
         {
             return run_replayed_whole.reach;
         }
-        reach_extended_through_backdrop_reads(
-            range.reach,
-            ListPosition::new(chunk_index, range.begin_offset),
-            &self.backdrop_reads,
-        )
+        self.backdrop_reads
+            .reach_extended_through_reads(range.reach, ListPosition::new(chunk_index, range.begin_offset))
     }
 
     fn span_of(&self, item: TileReplayItem) -> ListSpan {
@@ -1166,23 +1226,6 @@ fn runs_within_held_offset_ranges(
 fn offset_is_held(held_offset_ranges: &[(u32, u32)], offset: u32) -> bool {
     let index = held_offset_ranges.partition_point(|&(_, end)| end <= offset);
     held_offset_ranges.get(index).is_some_and(|&(begin, _)| begin <= offset)
-}
-
-/// How far past `cell` its tiles are rastered, in device pixels: as far as the backdrop filters whose regions touch the
-/// cell read and spread what they read, or none where that is not known or is farther than
-/// `LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS`.
-fn raster_margin_of_cell(backdrop_reads: &[BackdropReadInLayer], cell: IntRect) -> Option<i32> {
-    backdrop_reads
-        .iter()
-        .filter(|backdrop_read| backdrop_read.region_reach.touches(cell))
-        .try_fold(0i32, |margin, backdrop_read| {
-            Some(
-                margin
-                    .saturating_add(backdrop_read.read_reach_in_device_pixels?)
-                    .saturating_add(backdrop_read.spread_past_region_in_device_pixels),
-            )
-        })
-        .filter(|&margin| margin <= LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS)
 }
 
 /// The cells of `shown_rect` that a band keys in a frame: those where it can hold something and holds no tiles yet.
@@ -2591,7 +2634,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 chunk_names,
                 held_chunks: Vec::new(),
                 runs_replayed_whole: HashMap::new(),
-                backdrop_reads: Vec::new(),
+                backdrop_reads: BackdropReadsOfBand::new(Vec::new()),
                 items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
                 binning_inputs_hash_beyond_held_chunks: band_binning_inputs_hasher.finish(),
             };
@@ -2622,7 +2665,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .composited_effect
             .unwrap_or(EffectNodeIndex::NONE);
         let mut effect_was_visited = vec![false; tree.effect_nodes.len()];
-        let mut backdrop_reads = Vec::new();
+        let mut backdrop_reads_in_paint_order = Vec::new();
         for held_chunk in &held_chunks {
             let runs = display_list.chunk(held_chunk.chunk_index).runs();
             for &run_index in &held_chunk.held_run_indices {
@@ -2635,7 +2678,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     effect_was_visited[effect.0 as usize] = true;
                     let node = &tree.effect_nodes[effect.0 as usize];
                     if matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some()) {
-                        backdrop_reads.push(
+                        backdrop_reads_in_paint_order.push(
                             self.backdrop_read_in_layer(effect, ListPosition::new(held_chunk.chunk_index, run.offset)),
                         );
                     }
@@ -2643,7 +2686,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
         }
-        for backdrop_read in &backdrop_reads {
+        let backdrop_reads = BackdropReadsOfBand::new(backdrop_reads_in_paint_order);
+        for backdrop_read in &backdrop_reads.reads_in_paint_order {
             let position = backdrop_read.first_record_position;
             band_binning_inputs_hasher.write_chunk_name(chunk_names[position.chunk_index.0 as usize]);
             band_binning_inputs_hasher.write_u32(position.offset);
@@ -2695,11 +2739,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         runs_replayed_whole.insert(
                             (held_chunk.chunk_index, run_index),
                             RunReplayedWholeWhereverRunGroupShows {
-                                reach: reach_extended_through_backdrop_reads(
-                                    run_group_reach,
-                                    first_position,
-                                    &backdrop_reads,
-                                ),
+                                reach: backdrop_reads.reach_extended_through_reads(run_group_reach, first_position),
                                 mask_declarations_replayed_with_run: Vec::new(),
                             },
                         );
@@ -2818,10 +2858,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let first_held_offset = held_chunk.held_run_indices.first().map_or(0, |run_index| {
                     display_list.chunk(held_chunk.chunk_index).runs()[run_index.0 as usize].offset
                 });
-                reach_of_runs_replayed_whole.united(reach_extended_through_backdrop_reads(
+                reach_of_runs_replayed_whole.united(bound_band.backdrop_reads.reach_extended_through_reads(
                     reach_of_runs_binned_range_by_range,
                     ListPosition::new(held_chunk.chunk_index, first_held_offset),
-                    &bound_band.backdrop_reads,
                 ))
             };
             let chunk_binning_inputs_hash = chunk_binning_inputs_hasher.finish();
@@ -2865,7 +2904,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         chunk_index: held_chunk.chunk_index,
                         range_index,
                     },
-                    reach_extended_through_backdrop_reads(range.reach, paint_position, &bound_band.backdrop_reads),
+                    bound_band
+                        .backdrop_reads
+                        .reach_extended_through_reads(range.reach, paint_position),
                     &[],
                 );
             }
@@ -2988,8 +3029,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .replace(list.sampled_values_tiles_draw.hash)
             != Some(list.sampled_values_tiles_draw.hash);
         for (coord, cell) in &mut band_tile_keys.cells {
-            let frame_edge_backdrop_blurs_mirror_at =
-                bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
+            let frame_edge_backdrop_blurs_mirror_at = bound_band
+                .backdrop_reads
+                .frame_edge_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
             // The tiles of a cell are keyed together, with one raster margin.
             let mut near_area = cell
                 .tiles
@@ -3105,11 +3147,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 bin.push((base_layer, 0, Vec::new()));
             }
             let cell = coord.cell_rect();
-            let raster_margin_in_device_pixels = raster_margin_of_cell(&bound_band.backdrop_reads, cell);
+            let raster_margin_in_device_pixels = bound_band.backdrop_reads.raster_margin_of_cell(cell);
             let mut near_area = ContentHashesNearArea::of_cell(coord, raster_margin_in_device_pixels);
             let cuts = cuts_of_cell.barrier_cuts();
-            let frame_edge_backdrop_blurs_mirror_at =
-                bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(cell, frame);
+            let frame_edge_backdrop_blurs_mirror_at = bound_band
+                .backdrop_reads
+                .frame_edge_blurs_of_cell_mirror_at(cell, frame);
             let mut tiles = Vec::with_capacity(bin.len());
             for (layer_index, count_of_cell_cuts_below_layer, mut items_of_layer) in bin {
                 items_of_layer.sort_unstable_by_key(|(paint_position, item, _)| (*paint_position, *item));
@@ -3788,20 +3831,67 @@ mod tests {
             backdrop_read_of_viewport(2000, largest - 2100),
             backdrop_read_of_viewport(100, 0),
         ];
-        assert_eq!(raster_margin_of_cell(&at_largest, cell), Some(largest));
+        let raster_margin_of_cell =
+            |reads: Vec<BackdropReadInLayer>| BackdropReadsOfBand::new(reads).raster_margin_of_cell(cell);
+        assert_eq!(raster_margin_of_cell(at_largest.into()), Some(largest));
         let past_largest = [
             backdrop_read_of_viewport(2000, largest - 2100),
             backdrop_read_of_viewport(101, 0),
         ];
-        assert_eq!(raster_margin_of_cell(&past_largest, cell), None);
+        assert_eq!(raster_margin_of_cell(past_largest.into()), None);
         let spread_as_far_as_the_extent: Vec<BackdropReadInLayer> =
             (0..5).map(|_| backdrop_read_of_viewport(2051, 1 << 29)).collect();
-        assert_eq!(raster_margin_of_cell(&spread_as_far_as_the_extent, cell), None);
+        assert_eq!(raster_margin_of_cell(spread_as_far_as_the_extent), None);
         let elsewhere = BackdropReadInLayer {
             region_reach: Reach::Within(TileCoord::new(4, 4).cell_rect()),
             ..backdrop_read_of_viewport(2051, 1 << 29)
         };
-        assert_eq!(raster_margin_of_cell(&[elsewhere], cell), Some(0));
+        assert_eq!(raster_margin_of_cell(vec![elsewhere]), Some(0));
+    }
+
+    // A tree from another process can put any number of backdrop filters in one band.
+    #[test]
+    fn a_band_follows_backdrop_reads_one_by_one_up_to_a_bound_and_takes_their_regions_as_reached_past_it() {
+        let backdrop_reads = |count: usize| {
+            BackdropReadsOfBand::new(
+                (0..count as i32)
+                    .map(|index| {
+                        let region = IntRect::new(600 + index, 10, 1, 1);
+                        BackdropReadInLayer {
+                            first_record_position: ListPosition::new(ChunkIndexInList(0), 100 + index as u32),
+                            region_reach: Reach::Within(region),
+                            backdrop_read_reach: Reach::Within(region.inflated_edges(1, 1, 1, 1)),
+                            read_reach_in_device_pixels: Some(1),
+                            spread_past_region_in_device_pixels: 0,
+                            mirroring_blur_region: None,
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        let content_reach = Reach::Within(IntRect::new(0, 0, 10, 10));
+        let painted_before_every_read = ListPosition::new(ChunkIndexInList(0), 0);
+        let cell_of_regions = TileCoord::new(1, 0).cell_rect();
+        let cell_of_content = TileCoord::new(0, 0).cell_rect();
+
+        let followed = backdrop_reads(MAXIMUM_BACKDROP_READS_A_BAND_FOLLOWS_ONE_BY_ONE);
+        assert_eq!(
+            followed.reach_extended_through_reads(content_reach, painted_before_every_read),
+            content_reach
+        );
+        assert_eq!(
+            followed.raster_margin_of_cell(cell_of_regions),
+            Some(MAXIMUM_BACKDROP_READS_A_BAND_FOLLOWS_ONE_BY_ONE as i32)
+        );
+        assert_eq!(followed.raster_margin_of_cell(cell_of_content), Some(0));
+
+        let past_bound = backdrop_reads(MAXIMUM_BACKDROP_READS_A_BAND_FOLLOWS_ONE_BY_ONE + 1);
+        assert_eq!(
+            past_bound.reach_extended_through_reads(content_reach, painted_before_every_read),
+            content_reach.united(past_bound.region_reach_of_every_read)
+        );
+        assert_eq!(past_bound.raster_margin_of_cell(cell_of_regions), None);
+        assert_eq!(past_bound.raster_margin_of_cell(cell_of_content), Some(0));
     }
 
     // The region of a backdrop filter in a tree from another process can lie past the extent of any space.
