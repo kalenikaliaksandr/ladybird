@@ -12,6 +12,7 @@ use super::{
     BandOfPlan, BarrierOfPlan, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CutOfPlan, LayerContent, LayerIdentity, LayerStack,
     LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex,
     StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
+    composited_effects_nest_too_deep,
 };
 use crate::display_list::commands::{
     CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VideoSinkHandle,
@@ -340,6 +341,7 @@ impl Encode for WhyListIsOneLayer {
             WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem => 5,
             WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(_) => 6,
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => 7,
+            WhyListIsOneLayer::CompositedEffectsNestTooDeep => 8,
         };
         encoder.encode(&kind)?;
         if let WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why) = self {
@@ -362,6 +364,7 @@ impl Decode for WhyListIsOneLayer {
             5 => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
             6 => WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(decoder.decode()?),
             7 => WhyListIsOneLayer::FrameIsNotDrawnAsPlanned,
+            8 => WhyListIsOneLayer::CompositedEffectsNestTooDeep,
             _ => return Err(DecodeError::InvalidValue("WhyListIsOneLayer")),
         })
     }
@@ -710,6 +713,19 @@ fn check_nodes(
     Ok(())
 }
 
+// A frame composites a layer inside each composited effect around it, and the planner gives a list one layer where they
+// nest deeper.
+fn check_nesting_of_composited_effects(nodes: &[NodeOfPlan]) -> Result<(), &'static str> {
+    if composited_effects_nest_too_deep(
+        nodes
+            .iter()
+            .map(|node| (node.parent_index, node.composited_effect.is_some())),
+    ) {
+        return Err("composited effects nest deeper than a plan nests them");
+    }
+    Ok(())
+}
+
 // A frame enters the effects of the nodes around a layer outermost first, each from the one around it.
 fn check_composited_effects_nest_as_in_tree(
     nodes: &[NodeOfPlan],
@@ -876,7 +892,8 @@ impl LayerStack {
     /// space, and only spaces whose anchor the compositor animates have a swept reach; nodes are after the nodes they
     /// are in, with composite clips one per space; a node that is not composited is in the node of the space its space
     /// is in, or in no node if it is in the viewport's space, and a composited node is in a node of its own space;
-    /// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them;
+    /// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them
+    /// and no deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`;
     /// bands are of nodes of the stack, and each band but the first holds a span or a cut; bands start at runs of the
     /// list, and spans are of whole runs, in paint order; each canvas, video or nested context with a layer is a run of
     /// the list that draws it, numbered by how many drawings of the same content with layers are painted before it,
@@ -886,8 +903,8 @@ impl LayerStack {
     /// and the identities of layers, and so of bands, are unique.
     ///
     /// So a stack holds no more spans than the list holds runs, no more cuts than bands and media layers, and no more
-    /// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus the effects of
-    /// the tree nest. The layers inside a band are next to each other, so a frame that composites the layers in order
+    /// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus
+    /// `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. The layers inside a band are next to each other, so a frame that composites the layers in order
     /// enters each composited band once. The base layer is of a node of the viewport's space, or of the space of the
     /// viewport's scroller, and never of a space whose anchor the compositor animates.
     ///
@@ -917,6 +934,7 @@ impl LayerStack {
         check_rects_and_coordinates(&plan)?;
         check_values_per_space(&plan, &spaces)?;
         check_nodes(&plan.nodes, &spaces, list, tree)?;
+        check_nesting_of_composited_effects(&plan.nodes)?;
         check_composited_effects_nest_as_in_tree(&plan.nodes, tree)?;
         check_bands(&plan, list)?;
         check_no_record_is_held_twice(&plan)?;
@@ -935,7 +953,10 @@ mod tests {
         VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
-    use crate::display_list::layers::{BandIndex, LayerIndex, NodeNamesFromIndices, WindowServerPresentationOfMedia};
+    use crate::display_list::layers::{
+        BandIndex, LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS, LayerIndex,
+        MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeNamesFromIndices, WindowServerPresentationOfMedia,
+    };
     use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry};
     use crate::display_list::storage::ListChunk;
     use crate::display_list::tile_keys::{
@@ -1482,19 +1503,19 @@ mod tests {
         }
     }
 
-    // More translucent groups nested in each other than 1024, around a canvas, so that the compositor composites each.
-    const NESTED_GROUP_COUNT_OF_DEEP_PAGE: usize = 1100;
-
-    fn page_with_canvas_in_deeply_nested_groups() -> Page {
+    // Translucent groups nested in each other, with a canvas in the group `canvas_depth` deep, so that the compositor
+    // composites the groups around it, and a fill in the innermost group.
+    fn page_with_canvas_in_nested_groups(group_count: usize, canvas_depth: usize) -> Page {
         let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
         let document = contexts[0];
-        let mut group = document;
-        for _ in 0..NESTED_GROUP_COUNT_OF_DEEP_PAGE {
-            group = tree.append_effect_node_under(group, effects(0.5));
+        let mut groups = vec![document];
+        for _ in 0..group_count {
+            groups.push(tree.append_effect_node_under(groups[groups.len() - 1], effects(0.5)));
         }
         let list = ListOfOneChunk::default()
             .with(fill(IntRect::new(0, 0, 800, 2600)), document)
-            .with(canvas(IntRect::new(100, 100, 200, 100), 1), group)
+            .with(canvas(IntRect::new(100, 100, 200, 100), 1), groups[canvas_depth])
+            .with(fill(IntRect::new(150, 150, 200, 100)), groups[group_count])
             .with(fill(IntRect::new(0, 500, 800, 50)), document);
         Page {
             tree,
@@ -1699,22 +1720,73 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_with_nodes_nested_deeper_than_1024_round_trips() {
-        let page = page_with_canvas_in_deeply_nested_groups();
-        let planned = page.planned();
+    fn composited_effects_nest_in_a_plan_as_deep_as_the_limit() {
+        let deepest = MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS;
+        let page_at_limit = page_with_canvas_in_nested_groups(deepest, deepest);
+        let planned = page_at_limit.planned();
         let stack = &planned.stack;
-        let depth_of_deepest_node = (0..stack.nodes.len())
-            .map(|node_index| {
-                std::iter::successors(Some(PlacementNodeIndex(node_index)), |&index| {
-                    stack.nodes[index.0].parent_index
-                })
-                .count()
-            })
-            .max()
-            .unwrap_or(0);
-        assert!(depth_of_deepest_node > NESTED_GROUP_COUNT_OF_DEEP_PAGE);
+        assert_eq!(stack.why_list_is_one_layer, None);
+        let (canvas_layer_index, _) = stack
+            .layers
+            .iter()
+            .enumerate()
+            .find(|(_, layer)| matches!(layer.content, LayerContent::Media { .. }))
+            .expect("the canvas has a layer");
+        assert_eq!(
+            stack
+                .composited_bands_around_layer(LayerIndex(canvas_layer_index))
+                .len(),
+            deepest
+        );
         let sent = plan_sent_of(&planned);
-        assert_eq!(decoded_and_validated_plan(&page, &encoded(&sent)), Ok(sent));
+        assert_eq!(decoded_and_validated_plan(&page_at_limit, &encoded(&sent)), Ok(sent));
+
+        let page_past_limit = page_with_canvas_in_nested_groups(deepest + 1, deepest + 1);
+        assert_eq!(
+            page_past_limit.planned().stack.why_list_is_one_layer,
+            Some(WhyListIsOneLayer::CompositedEffectsNestTooDeep)
+        );
+
+        // The innermost group holds only a fill, so it is not composited, until a plan says it is.
+        let page_with_group_past_limit = page_with_canvas_in_nested_groups(deepest + 1, deepest);
+        let mut plan = page_with_group_past_limit.planned_plan();
+        assert!(page_with_group_past_limit.validated_plan(plan.clone()).is_ok());
+        let innermost_group = EffectNodeIndex(page_with_group_past_limit.tree.effect_nodes.len() as u32 - 1);
+        let group_around = EffectNodeIndex(innermost_group.0 - 1);
+        let node_of_group_around = plan
+            .nodes
+            .iter()
+            .position(|node| node.composited_effect == Some(group_around))
+            .expect("the group around the canvas is composited");
+        plan.nodes.push(NodeOfPlan {
+            composited_effect: Some(innermost_group),
+            parent_index: Some(PlacementNodeIndex(node_of_group_around)),
+            reach_in_parent_node: Reach::Nothing,
+            ..plan.nodes[node_of_group_around].clone()
+        });
+        assert_eq!(
+            page_with_group_past_limit.validated_plan(plan),
+            Err("composited effects nest deeper than a plan nests them")
+        );
+    }
+
+    #[test]
+    fn the_read_reaches_of_the_composited_filters_around_a_layer_add_up_to_at_most_the_largest_sum() {
+        let stack = page_with_nested_composited_effects().planned().stack;
+        let read_reach_of_one_filter = 5000;
+        let read_reach_by_layer =
+            stack.summed_read_reach_of_composited_filters_by_layer(|_, _| read_reach_of_one_filter);
+        let largest = LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS;
+        assert!(read_reach_of_one_filter < largest && 2 * read_reach_of_one_filter > largest);
+        let expected: Vec<i32> = (0..stack.layers.len())
+            .map(|layer_index| {
+                let nesting = stack.composited_bands_around_layer(LayerIndex(layer_index)).len() as i32;
+                (nesting * read_reach_of_one_filter).min(largest)
+            })
+            .collect();
+        assert_eq!(read_reach_by_layer, expected);
+        assert!(read_reach_by_layer.contains(&read_reach_of_one_filter));
+        assert!(read_reach_by_layer.contains(&largest));
     }
 
     #[test]
@@ -1807,6 +1879,7 @@ mod tests {
             WhyListIsOneLayer::RootIsolationEffectIsNotPlainGroup,
             WhyListIsOneLayer::MaskDeclaredUnderEffectsItsMaskIsNotUnder,
             WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
+            WhyListIsOneLayer::CompositedEffectsNestTooDeep,
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned,
         ] {
             round_trip(why);

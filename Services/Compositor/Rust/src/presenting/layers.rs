@@ -28,9 +28,8 @@ use libcompositing_rust::display_list::commands::{
 use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
     BandIndex, BarrierCutsOfCell, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayeringObstacles,
-    NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, PlacementNodeIndex, RasterSpaceAnchorKind,
-    RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia,
-    backdrop_filter_read_reach,
+    NodeNamesFromIndices, PlacementNodeBand, PlacementNodeIdentity, RasterSpaceAnchorKind, RasterSpaceIndex,
+    SpaceToFrame, StackLayer, WhyListIsOneLayer, WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
 };
 use libcompositing_rust::display_list::placement::{RasterSpaceGeometry, RasterSpaces, raster_scroll_offsets};
 use libcompositing_rust::display_list::reach::Reach;
@@ -519,19 +518,13 @@ struct CachedRasterSpaceGeometry {
     geometry: Rc<RasterSpaceGeometry>,
 }
 
-/// A stack, with what compositing its layers reads of it.
+/// A stack that a frame composites its layers by.
 #[derive(Clone)]
 struct CompositedStack {
     stack: Rc<LayerStack>,
-    /// Per layer, the bands it is in, outermost first, whose nodes the compositor composites inside their effects.
-    composited_bands_around_layer: Rc<[Vec<BandIndex>]>,
 }
 
 impl CompositedStack {
-    fn composited_bands_around_layer(&self, layer_index: LayerIndex) -> &[BandIndex] {
-        &self.composited_bands_around_layer[layer_index.0]
-    }
-
     /// The layer a frame composited, which a frame worked out after it can hold elsewhere in another stack.
     fn layer_composited_as(&self, compositing: &LayerCompositingInFrame) -> Option<(LayerIndex, &StackLayer)> {
         match self.stack.layers.get(compositing.layer_index.0) {
@@ -550,8 +543,6 @@ struct StackOfFrames {
     layer_plan: Option<ReceivedLayerPlan>,
     stack: Rc<LayerStack>,
     viewport_to_raster_transform: FloatMatrix4x4,
-    /// Per layer, the bands it is in, outermost first, whose nodes the compositor composites inside their effects.
-    composited_bands_around_layer: Rc<[Vec<BandIndex>]>,
     raster_spaces: Option<RasterSpaces>,
     geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
     band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame,
@@ -587,9 +578,6 @@ impl StackOfFrames {
         }
         Self {
             layer_plan,
-            composited_bands_around_layer: (0..stack.layers.len())
-                .map(|layer_index| stack.composited_bands_around_layer(LayerIndex(layer_index)))
-                .collect(),
             stack,
             viewport_to_raster_transform,
             raster_spaces: None,
@@ -599,14 +587,9 @@ impl StackOfFrames {
         }
     }
 
-    fn composited_bands_around_layer(&self, layer_index: LayerIndex) -> &[BandIndex] {
-        &self.composited_bands_around_layer[layer_index.0]
-    }
-
     fn composited_stack(&self) -> CompositedStack {
         CompositedStack {
             stack: self.stack.clone(),
-            composited_bands_around_layer: self.composited_bands_around_layer.clone(),
         }
     }
 
@@ -1036,44 +1019,21 @@ fn inflated(rect: IntRect, margin: i32) -> IntRect {
 }
 
 fn composited_filter_read_reach_by_layer(
-    stack_of_frames: &StackOfFrames,
+    stack: &LayerStack,
     tree: &VisualContextTree,
     geometries: &[Rc<RasterSpaceGeometry>],
 ) -> Vec<i32> {
-    let stack = &stack_of_frames.stack;
-    if stack.composited_effects.is_empty() {
-        return vec![0; stack.layers.len()];
-    }
-    let mut filter_read_reach_by_composited_node: HashMap<PlacementNodeIndex, i32> = HashMap::new();
-    stack_of_frames
-        .composited_bands_around_layer
-        .iter()
-        .map(|composited_bands_around_layer| {
-            composited_bands_around_layer
-                .iter()
-                .map(|band_index| {
-                    let node_index = stack.bands[band_index.0].placement_node_index;
-                    *filter_read_reach_by_composited_node
-                        .entry(node_index)
-                        .or_insert_with(|| {
-                            let node = &stack.nodes[node_index.0];
-                            let effect = node
-                                .composited_effect
-                                .expect("a composited band is of a composited node");
-                            let effect_node = &tree.effect_nodes[effect.0 as usize];
-                            spreading_filter_of(effect_node).map_or(0, |filter| {
-                                composited_filter_read_reach_in_device_pixels(
-                                    filter,
-                                    &geometries[node.raster_space_index.0]
-                                        .world
-                                        .draw_matrix(effect_node.spatial),
-                                )
-                            })
-                        })
-                })
-                .fold(0, i32::saturating_add)
+    stack.summed_read_reach_of_composited_filters_by_layer(|node_index, effect| {
+        let effect_node = &tree.effect_nodes[effect.0 as usize];
+        spreading_filter_of(effect_node).map_or(0, |filter| {
+            composited_filter_read_reach_in_device_pixels(
+                filter,
+                &geometries[stack.nodes[node_index.0].raster_space_index.0]
+                    .world
+                    .draw_matrix(effect_node.spatial),
+            )
         })
-        .collect()
+    })
 }
 
 fn raster_cause_of(
@@ -1263,7 +1223,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
             hidden_tile_count += tile_count_before - shown.tiles.len();
         }
         let frame_holds_layer = !compositing.shown_by_window_server;
-        let is_inside_composited_effects = !stack_of_frames.composited_bands_around_layer(layer_index).is_empty();
+        let is_inside_composited_effects = stack_of_frames.stack.layer_is_inside_composited_effects(layer_index);
         let covers_layers_below = frame_holds_layer
             && !is_inside_composited_effects
             && compositing.rounded_composite_clips.is_empty()
@@ -1338,7 +1298,7 @@ fn layer_allows_lcd_text(
 ) -> bool {
     frame_allows_lcd_text
         && layer_index == stack_of_frames.stack.base_layer
-        && stack_of_frames.composited_bands_around_layer(layer_index).is_empty()
+        && !stack_of_frames.stack.layer_is_inside_composited_effects(layer_index)
 }
 
 fn clear_color_of_layer(stack: &LayerStack, layer_index: LayerIndex, surface_clear_color: Color) -> Color {
@@ -1816,8 +1776,7 @@ impl ContextPresenting {
                     .collect()
             });
         band_tile_keys_by_band.resize_with(stack.bands.len(), || None);
-        let composited_filter_read_reach_by_layer =
-            composited_filter_read_reach_by_layer(stack_of_frames, tree, &geometries);
+        let composited_filter_read_reach_by_layer = composited_filter_read_reach_by_layer(stack, tree, &geometries);
         let mut tile_state = FrameTileState {
             viewport_rect,
             shown_tiles_by_layer: (0..stack.layers.len()).map(|_| None).collect(),
@@ -2120,7 +2079,7 @@ impl ContextPresenting {
                                 })
                                 .unwrap_or(if some_tiles_were_painted_straight {
                                     WhyMediaIsReplayed::TilesWerePaintedStraightIntoTheFrame
-                                } else if !stack_of_frames.composited_bands_around_layer(layer_index).is_empty() {
+                                } else if stack.layer_is_inside_composited_effects(layer_index) {
                                     WhyMediaIsReplayed::InsideAnEffectTheCompositorComposites
                                 } else {
                                     WhyMediaIsReplayed::UnderALayerTheFrameHolds
@@ -2755,6 +2714,7 @@ impl ContextPresenting {
         let tile_pool = &self.layers.tile_pool;
         composite_inside_effects_of_frame(env, surface, frame, |compositing_session| {
             let mut entered_composited_bands: Vec<BandIndex> = Vec::new();
+            let mut composited_bands_around_layer: Vec<BandIndex> = Vec::new();
             for compositing in compositing_of_layers
                 .iter()
                 .skip(1)
@@ -2771,10 +2731,12 @@ impl ContextPresenting {
                         .copied()
                         .unwrap_or(0),
                 );
-                let composited_bands_around_layer = composited_stack.composited_bands_around_layer(layer_index);
+                composited_bands_around_layer.clear();
+                composited_bands_around_layer.extend(stack.composited_bands_around_layer_innermost_first(layer_index));
+                composited_bands_around_layer.reverse();
                 let count_of_bands_still_entered = entered_composited_bands
                     .iter()
-                    .zip(composited_bands_around_layer)
+                    .zip(&composited_bands_around_layer)
                     .take_while(|(entered, around_layer)| entered == around_layer)
                     .count();
                 while entered_composited_bands.len() > count_of_bands_still_entered {

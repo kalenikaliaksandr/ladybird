@@ -47,6 +47,16 @@ const COORDINATE_LIMIT_IN_DEVICE_PIXELS: i32 = 2 * EXTENT_LIMIT_IN_DEVICE_PIXELS
 
 pub const MAXIMUM_MEDIA_LAYER_COUNT: usize = 8;
 
+/// The most composited effects that nest around a layer of a plan: the effects a frame composites the layer inside,
+/// each inside the next. Pages nest far fewer, as the compositor composites only an effect that it animates, or one
+/// around a layer of its own, such as of a scroller, a sticky box or a canvas.
+pub const MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS: usize = 32;
+
+/// The farthest that the filters of the effects a frame composites around a layer read past each pixel of it, summed, in
+/// device pixels. A frame keys the tiles of a layer that far past what it shows, and a larger sum is cut to this.
+pub const LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS: i32 =
+    4 * crate::display_list::tile_keys::LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32;
+
 pub(crate) fn media_name(content: LiveContent) -> &'static str {
     match content {
         LiveContent::Canvas(_) => "canvas",
@@ -142,6 +152,7 @@ pub enum WhyListIsOneLayer {
     MaskDeclaredUnderEffectsItsMaskIsNotUnder,
     RecordsBlendWithWhatOtherLayersHoldBelowThem,
     EffectTheCompositorCannotCompositeIsComposited(WhyCompositorCannotCompositeEffect),
+    CompositedEffectsNestTooDeep,
     /// The frame draws the list otherwise than a plan of its layers is made for, as through a raster transform or a
     /// visual viewport transform the plan does not know.
     FrameIsNotDrawnAsPlanned,
@@ -162,6 +173,12 @@ impl std::fmt::Display for WhyListIsOneLayer {
             }
             WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why) => {
                 return write!(formatter, "{why} is composited");
+            }
+            WhyListIsOneLayer::CompositedEffectsNestTooDeep => {
+                return write!(
+                    formatter,
+                    "composited effects nest deeper than {MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS}"
+                );
             }
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => "frame is not drawn as the plan was made for",
         })
@@ -501,6 +518,8 @@ pub struct LayerStack {
     index_of_layer_with_identity: HashMap<LayerIdentity, LayerIndex>,
     index_of_node_with_identity: HashMap<PlacementNodeIdentity, PlacementNodeIndex>,
     has_layer_at_or_above_base_by_band_index: Vec<bool>,
+    /// Per band, the innermost band at or around it whose node the compositor composites inside its effect.
+    innermost_composited_band_at_or_around_band: Vec<Option<BandIndex>>,
 }
 
 /// Where the window server can show each canvas and video layer of a stack under the values of one frame, or why it
@@ -552,6 +571,42 @@ fn which_bands_have_layer_at_or_above_base(
         }
     }
     has_layer_at_or_above_base_by_band_index
+}
+
+// A band comes after the band it is in.
+fn innermost_composited_band_at_or_around_each_band(
+    nodes: &[PlacementNode],
+    bands: &[PlacementNodeBand],
+) -> Vec<Option<BandIndex>> {
+    let mut innermost_composited_band_by_band_index: Vec<Option<BandIndex>> = Vec::with_capacity(bands.len());
+    for (band_index, band) in bands.iter().enumerate() {
+        let innermost_composited_band = if nodes[band.placement_node_index.0].composited_effect.is_some() {
+            Some(BandIndex(band_index))
+        } else {
+            band.parent_band_holding_this_band_as_barrier
+                .and_then(|band_around| innermost_composited_band_by_band_index.get(band_around.0).copied())
+                .flatten()
+        };
+        innermost_composited_band_by_band_index.push(innermost_composited_band);
+    }
+    innermost_composited_band_by_band_index
+}
+
+/// Whether the composited effects of `nodes`, given as the node each is in and whether it is composited, nest deeper
+/// than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. Each node comes after the node it is in.
+fn composited_effects_nest_too_deep(nodes: impl Iterator<Item = (Option<PlacementNodeIndex>, bool)>) -> bool {
+    let mut nesting_by_node_index: Vec<usize> = Vec::new();
+    for (parent_index, is_composited) in nodes {
+        let nesting_around = parent_index
+            .and_then(|parent_index| nesting_by_node_index.get(parent_index.0).copied())
+            .unwrap_or(0);
+        let nesting = nesting_around + usize::from(is_composited);
+        if nesting > MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS {
+            return true;
+        }
+        nesting_by_node_index.push(nesting);
+    }
+    false
 }
 
 fn index_of_layer_with_identity(layers: &[StackLayer]) -> HashMap<LayerIdentity, LayerIndex> {
@@ -760,6 +815,7 @@ impl LayerStack {
             index_of_layer_with_identity: HashMap::new(),
             index_of_node_with_identity: HashMap::new(),
             has_layer_at_or_above_base_by_band_index: Vec::new(),
+            innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
     }
@@ -770,6 +826,8 @@ impl LayerStack {
         self.index_of_node_with_identity = index_of_node_with_identity(&self.nodes);
         self.has_layer_at_or_above_base_by_band_index =
             which_bands_have_layer_at_or_above_base(&self.layers, self.bands.len(), self.base_layer);
+        self.innermost_composited_band_at_or_around_band =
+            innermost_composited_band_at_or_around_each_band(&self.nodes, &self.bands);
         self
     }
 
@@ -929,8 +987,18 @@ impl LayerStack {
             index_of_layer_with_identity: HashMap::new(),
             index_of_node_with_identity: HashMap::new(),
             has_layer_at_or_above_base_by_band_index: Vec::new(),
+            innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
+    }
+
+    /// Whether the composited effects of the stack nest deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`.
+    pub fn nests_composited_effects_too_deep(&self) -> bool {
+        composited_effects_nest_too_deep(
+            self.nodes
+                .iter()
+                .map(|node| (node.parent_index, node.composited_effect.is_some())),
+        )
     }
 
     pub fn replays_whole_list(&self) -> bool {
@@ -1098,19 +1166,76 @@ impl LayerStack {
             .collect()
     }
 
+    /// The innermost band the layer is in whose node the compositor composites inside its effect, if any.
+    pub fn innermost_composited_band_around_layer(&self, layer_index: LayerIndex) -> Option<BandIndex> {
+        self.innermost_composited_band_at_or_around_band[self.layers[layer_index.0].band_index.0]
+    }
+
+    /// The next band out from `composited_band` whose node the compositor composites inside its effect, if any.
+    pub fn composited_band_around(&self, composited_band: BandIndex) -> Option<BandIndex> {
+        self.bands[composited_band.0]
+            .parent_band_holding_this_band_as_barrier
+            .and_then(|band_around| self.innermost_composited_band_at_or_around_band[band_around.0])
+    }
+
+    pub fn layer_is_inside_composited_effects(&self, layer_index: LayerIndex) -> bool {
+        self.innermost_composited_band_around_layer(layer_index).is_some()
+    }
+
+    /// The bands the layer is in, innermost first, whose nodes the compositor composites inside their effects. A plan
+    /// nests no more of them than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`.
+    pub fn composited_bands_around_layer_innermost_first(
+        &self,
+        layer_index: LayerIndex,
+    ) -> impl Iterator<Item = BandIndex> + '_ {
+        std::iter::successors(
+            self.innermost_composited_band_around_layer(layer_index),
+            |&band_index| self.composited_band_around(band_index),
+        )
+    }
+
     /// The bands the layer is in, outermost first, whose nodes the compositor composites inside their effects.
     pub fn composited_bands_around_layer(&self, layer_index: LayerIndex) -> Vec<BandIndex> {
-        let mut composited_bands = Vec::new();
-        let mut band_on_way_out = Some(self.layers[layer_index.0].band_index);
-        while let Some(band_index) = band_on_way_out {
-            let band = &self.bands[band_index.0];
-            if self.nodes[band.placement_node_index.0].composited_effect.is_some() {
-                composited_bands.push(band_index);
-            }
-            band_on_way_out = band.parent_band_holding_this_band_as_barrier;
-        }
+        let mut composited_bands: Vec<BandIndex> = self
+            .composited_bands_around_layer_innermost_first(layer_index)
+            .collect();
         composited_bands.reverse();
         composited_bands
+    }
+
+    /// Per layer, how far the filters of the effects the compositor composites around it read past each of its pixels,
+    /// summed and cut to `LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS`, where
+    /// `read_reach_of_composited_node` tells it of one composited node and its effect.
+    pub fn summed_read_reach_of_composited_filters_by_layer(
+        &self,
+        mut read_reach_of_composited_node: impl FnMut(PlacementNodeIndex, EffectNodeIndex) -> i32,
+    ) -> Vec<i32> {
+        if self.composited_effects.is_empty() {
+            return vec![0; self.layers.len()];
+        }
+        let mut read_reach_by_composited_node: HashMap<PlacementNodeIndex, i32> = HashMap::new();
+        let mut summed_read_reach_by_band_index: Vec<i32> = Vec::with_capacity(self.bands.len());
+        for band in &self.bands {
+            let summed_around = band
+                .parent_band_holding_this_band_as_barrier
+                .and_then(|band_around| summed_read_reach_by_band_index.get(band_around.0).copied())
+                .unwrap_or(0);
+            let node_index = band.placement_node_index;
+            let read_reach_of_node = self.nodes[node_index.0].composited_effect.map_or(0, |effect| {
+                *read_reach_by_composited_node
+                    .entry(node_index)
+                    .or_insert_with(|| read_reach_of_composited_node(node_index, effect))
+            });
+            summed_read_reach_by_band_index.push(
+                summed_around
+                    .saturating_add(read_reach_of_node)
+                    .min(LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS),
+            );
+        }
+        self.layers
+            .iter()
+            .map(|layer| summed_read_reach_by_band_index[layer.band_index.0])
+            .collect()
     }
 
     // A layer of a space whose anchor the compositor animates is taken to be anywhere the animation can take it, so
@@ -1122,9 +1247,9 @@ impl LayerStack {
             .get(node.raster_space_index.0)
             .copied()
             .flatten();
-        let reach_in_raster_space = match self.composited_bands_around_layer(layer_index).first() {
+        let reach_in_raster_space = match self.composited_bands_around_layer_innermost_first(layer_index).last() {
             _ if let Some(swept_reach) = swept_reach_of_animated_space => swept_reach,
-            Some(&outermost_composited_band) => {
+            Some(outermost_composited_band) => {
                 let outermost_composited_node =
                     &self.nodes[self.bands[outermost_composited_band.0].placement_node_index.0];
                 match outermost_composited_node.reach_in_parent_node {
@@ -1167,7 +1292,7 @@ impl LayerStack {
             .collect();
         let is_media = |layer: LayerIndex| matches!(self.layers[layer.0].content, LayerContent::Media { .. });
         let frame_must_hold = |layer: LayerIndex| {
-            !self.composited_bands_around_layer(layer).is_empty()
+            self.layer_is_inside_composited_effects(layer)
                 || self.layer_is_composited_within_rounded_clips(layer)
                 || self.layer_is_in_animated_space(layer)
                 || (is_media(layer) && !window_server_can_show(layer))

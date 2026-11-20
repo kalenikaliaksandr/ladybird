@@ -57,7 +57,7 @@ pub type ContentHash = u128;
 
 const LOW_HALF_SEED: u64 = 0x243f_6a88_85a3_08d3;
 const HIGH_HALF_SEED: u64 = 0x1319_8a2e_0370_7344;
-const LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS: f32 = 2048.0;
+pub(crate) const LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS: f32 = 2048.0;
 // The farthest past its cell that a tile is rastered, in device pixels. A tile whose backdrop filters read farther takes
 // how far as not known, which keeps the rects that rastering inflates by it within the limits of an `IntRect`.
 const LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS: i32 = 4 * LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32;

@@ -2093,6 +2093,9 @@ fn build_layer_stack(
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
         Some(why) => why,
         None => match assemble_stack_unless_records_blend_with_other_layers(inputs.tree, &placement, spaces) {
+            Some((stack, _)) if stack.nests_composited_effects_too_deep() => {
+                WhyListIsOneLayer::CompositedEffectsNestTooDeep
+            }
             Some((stack, _))
                 if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
                     inputs, &placement, &stack,
