@@ -2144,13 +2144,13 @@ impl InputsOfLayerPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_list::commands::{CanvasId, ContextRef, VISUAL_VIEWPORT_NODE_INDEX};
+    use crate::display_list::commands::{CanvasId, ContextRef};
     use crate::display_list::layers::{
         LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
     };
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, VIEWPORT, animation_of, canvas, effects, fill, frosted_glass, opacity_animation_of,
-        spinning, transform, transform_animation_of, tree_with_root_isolation_effect,
+        spinning, transform, transform_animation_of, tree_with_document_scroll, tree_with_root_isolation_effect,
     };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::node_slot_id::NodeSlotId;
@@ -2192,36 +2192,6 @@ mod tests {
                 }
             })
             .collect()
-    }
-
-    fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
-        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
-        let document_scroll_node = tree.append_spatial(
-            SpatialData::Scroll(ScrollData {
-                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
-                owner_paintable: NodeSlotId::INVALID,
-            }),
-            VISUAL_VIEWPORT_NODE_INDEX,
-        );
-        assert!(
-            tree.set_compositor_scroll_table(CompositorScrollTable {
-                nodes: vec![CompositorScrollNodeRecord {
-                    scroll_node_index: document_scroll_node,
-                    parent_scroll_node_index: VISUAL_VIEWPORT_NODE_INDEX,
-                    scrollport_rect: VIEWPORT,
-                    max_scroll_offset: FloatPoint { x: 0.0, y: 2000.0 },
-                    is_viewport: true,
-                    ..CompositorScrollNodeRecord::default()
-                }]
-                .into(),
-                ..CompositorScrollTable::default()
-            })
-        );
-        let document = ContextRef {
-            spatial: document_scroll_node,
-            ..viewport
-        };
-        (tree, viewport, document)
     }
 
     #[test]

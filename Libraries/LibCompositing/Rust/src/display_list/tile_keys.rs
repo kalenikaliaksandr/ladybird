@@ -1259,10 +1259,11 @@ fn coords_to_key(
     {
         vec![shown_cells]
     } else {
+        let area_of_shown_cells = shown_cells.rect();
         bound_band
             .held_chunks
             .iter()
-            .map(|held_chunk| CellRange::touched_by(held_chunk.reach_of_held_records.part_of(shown_rect)))
+            .map(|held_chunk| CellRange::touched_by(held_chunk.reach_of_held_records.part_of(area_of_shown_cells)))
             .filter(|range| !range.is_empty())
             .collect()
     };
@@ -3269,7 +3270,8 @@ mod tests {
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, animation_of, chunk_of, effects, fill, frosted_glass,
-        opacity_animation_of, raster_settings_hash_by_layer, transform_animation_of, tree_with_root_isolation_effect,
+        opacity_animation_of, raster_settings_hash_by_layer, transform_animation_of, tree_with_document_scroll,
+        tree_with_root_isolation_effect,
     };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
@@ -4000,6 +4002,51 @@ mod tests {
         assert!(keyed_at_tiny_scale.cells.keys().copied().eq(cells_of_tiles));
         // A frame that shows the same rect again looks for no cell to key.
         assert_eq!(counts[1], TileKeyingCounts::default());
+    }
+
+    // A scroll within the rows and columns of cells that a frame showed shows no new cell, so the band must have keyed
+    // every cell of those that it holds something in, also where its content lies outside the pixels that frame showed.
+    #[test]
+    fn a_band_keys_content_in_a_shown_cell_outside_the_shown_pixels_before_a_scroll_shows_it() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let faded = tree.append_effect_node_under(document, effects(1.0, CompositingAndBlendingOperator::Normal));
+        tree.set_visual_animations(vec![opacity_animation_of(faded.effect, 1.0, 0.2)]);
+        let box_below_viewport = IntRect::new(100, 700, 100, 200);
+        let display_list = DisplayListStorage::of_chunks(vec![
+            chunk_of(fill(IntRect::new(0, 0, 800, 2600), GREEN), document),
+            chunk_of(fill(box_below_viewport, BLUE), faded),
+        ])
+        .unwrap();
+        let tree = tree.with_visual_animation_samples(0);
+        let stack = stack_of(&display_list, &tree);
+        let position_of_box = ListPosition::new(ChunkIndexInList(1), 0);
+        let band_of_box = BandIndex(
+            stack
+                .bands
+                .iter()
+                .position(|band| band.record_spans.iter().any(|span| span.contains(position_of_box)))
+                .expect("a band holds the box"),
+        );
+        assert_ne!(stack.bands[band_of_box.0].layer_below_all_cuts, stack.base_layer);
+        let scrolled_by_200 = VIEWPORT.translated(0, 200);
+        assert_eq!(CellRange::touched_by(scrolled_by_200), CellRange::touched_by(VIEWPORT));
+        assert!(VIEWPORT.intersected(box_below_viewport).is_empty());
+
+        let document_space = stack.nodes[stack.bands[band_of_box.0].placement_node_index.0].raster_space_index;
+        assert_ne!(document_space, RasterSpaceIndex::VIEWPORT);
+        let (band_tile_keys, _) = band_tile_keys_after_frames_showing(
+            (&display_list, &tree, &stack),
+            document_space,
+            band_of_box,
+            &[VIEWPORT, scrolled_by_200],
+        );
+        assert_eq!(
+            tiles_within(&band_tile_keys, scrolled_by_200.intersected(box_below_viewport))
+                .iter()
+                .map(|(coord, _, _)| *coord)
+                .collect::<Vec<_>>(),
+            [cell_of(box_below_viewport)]
+        );
     }
 
     #[test]

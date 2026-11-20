@@ -16,11 +16,14 @@ use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, pla
 use crate::display_list::storage::{DisplayListStorage, ListChunk};
 use crate::display_list::tile_keys::{ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions};
 use crate::host::{FfiVisualAnimationTargetKind, FfiVisualAnimationTransformOperationKind};
+use crate::node_slot_id::NodeSlotId;
 use crate::visual_animation::{
     VisualAnimation, VisualAnimationKeyframe, VisualAnimationTransformOperation, VisualAnimationValue,
 };
+use crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
 use crate::visual_context::{
-    BackdropFilterData, EffectNodeData, EffectsData, TransformData, TransformDataRole, VisualContextTree,
+    BackdropFilterData, CompositorScrollNodeRecord, CompositorScrollTable, EffectNodeData, EffectsData, ScrollData,
+    SpatialData, TransformData, TransformDataRole, VisualContextTree,
 };
 use libgfx_rust::{
     Color, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect, ScalingMode,
@@ -105,6 +108,38 @@ pub fn tree_with_root_isolation_effect(root_opacity: f32) -> (VisualContextTree,
         ..ContextRef::default()
     };
     (tree, viewport)
+}
+
+/// A tree whose document scrolls by up to 2000 px down the viewport, with the contexts of the viewport and of the
+/// document.
+pub fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
+    let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
+    let document_scroll_node = tree.append_spatial(
+        SpatialData::Scroll(ScrollData {
+            state_slot: NO_SCROLL_STATE_SLOT,
+            owner_paintable: NodeSlotId::INVALID,
+        }),
+        VISUAL_VIEWPORT_NODE_INDEX,
+    );
+    assert!(
+        tree.set_compositor_scroll_table(CompositorScrollTable {
+            nodes: vec![CompositorScrollNodeRecord {
+                scroll_node_index: document_scroll_node,
+                parent_scroll_node_index: VISUAL_VIEWPORT_NODE_INDEX,
+                scrollport_rect: VIEWPORT,
+                max_scroll_offset: FloatPoint { x: 0.0, y: 2000.0 },
+                is_viewport: true,
+                ..CompositorScrollNodeRecord::default()
+            }]
+            .into(),
+            ..CompositorScrollTable::default()
+        })
+    );
+    let document = ContextRef {
+        spatial: document_scroll_node,
+        ..viewport
+    };
+    (tree, viewport, document)
 }
 
 pub fn fill(rect: IntRect, color: Color) -> FillRect {
