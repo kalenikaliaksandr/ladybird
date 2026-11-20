@@ -1904,8 +1904,7 @@ impl StackBeingBuilt<'_> {
                 for node_on_path in &path_from_root_to_node_of_stretch {
                     node_is_on_path_of_stretch[node_on_path.0] = true;
                 }
-                for index in 0..composited_nodes_whose_bands_may_be_open.len() {
-                    let composited_node_index = composited_nodes_whose_bands_may_be_open[index];
+                for &composited_node_index in &composited_nodes_whose_bands_may_be_open {
                     if open_band_by_node_index[composited_node_index.0].is_some()
                         && !node_is_on_path_of_stretch[composited_node_index.0]
                     {
