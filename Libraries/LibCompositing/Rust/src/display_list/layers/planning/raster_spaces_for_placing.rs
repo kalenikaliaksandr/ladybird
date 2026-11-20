@@ -21,6 +21,7 @@ use crate::display_list::placement::{
 };
 use crate::display_list::reach::Reach;
 use crate::host::FfiVisualAnimationTargetKind;
+use crate::visual_context::queries::TreeCullingScratch;
 use crate::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
 
@@ -237,13 +238,17 @@ impl RasterSpaceGeometryForPlacing {
         space: RasterSpaceIndex,
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
+        spatial_dependency_order: &[u32],
+        culling: &TreeCullingScratch,
     ) -> Self {
-        let raster = RasterSpaceGeometry::new(
+        let raster = RasterSpaceGeometry::new_with_what_every_space_of_tree_shares(
             tree,
             &spaces.raster_spaces,
             space,
             scroll_offsets,
             FloatMatrix4x4::identity(),
+            spatial_dependency_order,
+            culling.clone(),
         );
         let mut clip_chain_bounds_fixed_in_space_by_clip: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
         tree.visit_clip_nodes_parents_first(|index| {
@@ -299,9 +304,20 @@ pub(super) fn spaces_with_geometries(
     viewport_rect: IntRect,
 ) -> (RasterSpacesForPlacing, Vec<RasterSpaceGeometryForPlacing>) {
     let spaces = RasterSpacesForPlacing::at_anchors(tree, anchors_of_tree, viewport_rect);
+    let spatial_dependency_order = tree.spatial_dependency_order();
+    let mut culling = TreeCullingScratch::default();
+    tree.fill_culling_scratch(&mut culling);
     let geometries: Vec<RasterSpaceGeometryForPlacing> = (0..spaces.spaces().len())
         .map(|space| {
-            RasterSpaceGeometryForPlacing::new(tree, &spaces, RasterSpaceIndex(space), scroll_offsets, viewport_rect)
+            RasterSpaceGeometryForPlacing::new(
+                tree,
+                &spaces,
+                RasterSpaceIndex(space),
+                scroll_offsets,
+                viewport_rect,
+                &spatial_dependency_order,
+                &culling,
+            )
         })
         .collect();
     (spaces, geometries)

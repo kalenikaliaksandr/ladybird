@@ -797,16 +797,39 @@ impl RasterSpaceGeometry {
         scroll_offsets: &[FloatPoint],
         viewport_to_raster_transform: FloatMatrix4x4,
     ) -> Self {
+        let mut culling = TreeCullingScratch::default();
+        tree.fill_culling_scratch(&mut culling);
+        Self::new_with_what_every_space_of_tree_shares(
+            tree,
+            spaces,
+            space,
+            scroll_offsets,
+            viewport_to_raster_transform,
+            &tree.spatial_dependency_order(),
+            culling,
+        )
+    }
+
+    /// As `new`, given the spatial dependency order and the culling of `tree`, which are the same for every space.
+    pub fn new_with_what_every_space_of_tree_shares(
+        tree: &VisualContextTree,
+        spaces: &RasterSpaces,
+        space: RasterSpaceIndex,
+        scroll_offsets: &[FloatPoint],
+        viewport_to_raster_transform: FloatMatrix4x4,
+        spatial_dependency_order: &[u32],
+        culling: TreeCullingScratch,
+    ) -> Self {
         debug_assert!(viewport_to_raster_transform == FloatMatrix4x4::identity() || spaces.len() == 1);
         let raster_scroll_offsets = raster_scroll_offsets(spaces.spaces(), space, scroll_offsets);
-        let world = WorldTransforms::with_raster_root(
+        let mut world = WorldTransforms::default();
+        world.fill(
             tree,
+            spatial_dependency_order,
             &raster_scroll_offsets,
             Some(viewport_to_raster_transform),
             spaces.spaces()[space.0].raster_root(),
         );
-        let mut culling = TreeCullingScratch::default();
-        tree.fill_culling_scratch(&mut culling);
         let clips_left_to_composite = if space == RasterSpaceIndex::VIEWPORT {
             Vec::new()
         } else {

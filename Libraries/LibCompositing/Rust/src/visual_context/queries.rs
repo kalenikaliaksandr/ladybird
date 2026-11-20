@@ -69,7 +69,7 @@ struct SpatialChainWalk {
 
 /// Whether nothing painted under a node can show, plus the clip depths the replay needs to place effects on a context's
 /// clip chain. Depth counts the absent clip as 0, so a node's depth is the length of its root path.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TreeCullingScratch {
     pub clip_depths: Vec<u32>,
     clip_has_empty_effective_clip: Vec<bool>,
