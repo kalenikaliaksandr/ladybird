@@ -749,21 +749,27 @@ impl RasterSpaces {
 
     /// The given spaces, which a tree offers, and the deepest of them each spatial node of the tree moves with.
     pub fn of_spaces(tree: &VisualContextTree, spaces: Vec<RasterSpace>) -> Self {
+        let mut first_space_anchored_at_spatial_node: Vec<Option<RasterSpaceIndex>> =
+            vec![None; tree.spatial_nodes.len()];
+        for (space_index, space) in spaces.iter().enumerate().skip(1) {
+            if let Some(first_space) = first_space_anchored_at_spatial_node.get_mut(space.anchor.0 as usize) {
+                first_space.get_or_insert(RasterSpaceIndex(space_index));
+            }
+        }
         let mut deepest_space_of_spatial_node = vec![RasterSpaceIndex::VIEWPORT; tree.spatial_nodes.len()];
         tree.visit_spatial_nodes_parents_first(|index| {
             if index == VISUAL_VIEWPORT_NODE_INDEX.0 as usize {
                 return;
             }
             let node = &tree.spatial_nodes[index];
-            deepest_space_of_spatial_node[index] = if let Some(index_after_viewport) =
-                spaces.iter().skip(1).position(|space| space.anchor.0 as usize == index)
-            {
-                RasterSpaceIndex(index_after_viewport + 1)
-            } else if matches!(node.data, SpatialData::AnchorScrollShift(_)) {
-                RasterSpaceIndex::VIEWPORT
-            } else {
-                deepest_space_of_spatial_node[node.parent.0 as usize]
-            };
+            deepest_space_of_spatial_node[index] =
+                if let Some(space_anchored_at_node) = first_space_anchored_at_spatial_node[index] {
+                    space_anchored_at_node
+                } else if matches!(node.data, SpatialData::AnchorScrollShift(_)) {
+                    RasterSpaceIndex::VIEWPORT
+                } else {
+                    deepest_space_of_spatial_node[node.parent.0 as usize]
+                };
         });
         Self {
             clips_left_to_composite_by_space: vec![std::cell::OnceCell::new(); spaces.len()],

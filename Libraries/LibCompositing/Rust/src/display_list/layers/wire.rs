@@ -917,7 +917,8 @@ mod tests {
     use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
     use crate::display_list::layers::{
         BandIndex, CutsOfCell, LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS, LayerIndex,
-        MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeNamesFromIndices, WindowServerPresentationOfMedia,
+        MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeNamesFromIndices, PlacementNodeBand,
+        WindowServerPresentationOfMedia,
     };
     use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry, WhatEverySpaceOfTreeShares};
     use crate::display_list::test_fixtures::{
@@ -2210,6 +2211,17 @@ mod tests {
         }
     }
 
+    // The layer the band's record at `record_position` goes into within the tile at `cell`: the one above the last barrier
+    // painted before it that cuts the tile.
+    fn layer_of_record_in_cell(band: &PlacementNodeBand, record_position: ListPosition, cell: IntRect) -> LayerIndex {
+        band.cuts
+            .iter()
+            .take_while(|cut| cut.barrier_first_record_position <= record_position)
+            .filter(|cut| cut.cuts_cell(cell))
+            .last()
+            .map_or(band.layer_below_all_cuts, |cut| cut.layer_above_cut)
+    }
+
     // The cuts of a cell are worked out once for the cell, and a record finds its layer among them.
     #[test]
     fn the_cuts_of_a_cell_place_each_record_in_the_layer_the_band_places_it_in() {
@@ -2228,7 +2240,7 @@ mod tests {
                     let cuts_of_cell = CutsOfCell::of(band, cell);
                     for &position in &record_positions {
                         let (layer, _) = cuts_of_cell.layer_of_record(position);
-                        assert_eq!(layer, band.layer_of_record_in_cell(position, cell), "{name}");
+                        assert_eq!(layer, layer_of_record_in_cell(band, position, cell), "{name}");
                     }
                 }
             }

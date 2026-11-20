@@ -2259,7 +2259,7 @@ mod tests {
     use super::*;
     use crate::display_list::commands::{CanvasId, ContextRef};
     use crate::display_list::layers::{
-        LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
+        CutsOfCell, LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
     };
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, VIEWPORT, animation_of, canvas, effects, fill, frosted_glass, opacity_animation_of,
@@ -3320,7 +3320,11 @@ mod tests {
             .expect("a band holds the card");
         let layers_of_card_by_cell: Vec<LayerIndex> = CellRange::touched_by(card)
             .coords()
-            .map(|coord| band_of_card.layer_of_record_in_cell(card_position, coord.cell_rect()))
+            .map(|coord| {
+                CutsOfCell::of(band_of_card, coord.cell_rect())
+                    .layer_of_record(card_position)
+                    .0
+            })
             .collect();
         assert!(
             layers_of_card_by_cell.windows(2).all(|pair| pair[0] == pair[1]),

@@ -33,7 +33,6 @@ use crate::display_list::summary::LiveContent;
 use crate::display_list::window_server_placement::{WhyWindowServerCannotShowMedia, WindowServerPlacement};
 use crate::visual_context::{EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index};
 use libgfx_rust::{AffineTransform, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect};
-use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::rc::Rc;
 
@@ -290,19 +289,6 @@ pub struct PlacementNodeBand {
     /// In paint order.
     pub cuts: Vec<BarrierCut>,
     pub layer_below_all_cuts: LayerIndex,
-}
-
-impl PlacementNodeBand {
-    /// The layer the band's record at `record_position` goes into within the tile at `cell`: the one above the last
-    /// barrier painted before it that cuts the tile.
-    pub fn layer_of_record_in_cell(&self, record_position: ListPosition, cell: IntRect) -> LayerIndex {
-        self.cuts
-            .iter()
-            .take_while(|cut| cut.barrier_first_record_position <= record_position)
-            .filter(|cut| cut.cuts_cell(cell))
-            .last()
-            .map_or(self.layer_below_all_cuts, |cut| cut.layer_above_cut)
-    }
 }
 
 /// The barriers of a band that cut the tile at one cell, in paint order, worked out once for the cell. A band of a
@@ -1045,12 +1031,12 @@ impl LayerStack {
     }
 
     /// The innermost band the layer is in whose node the compositor composites inside its effect, if any.
-    pub fn innermost_composited_band_around_layer(&self, layer_index: LayerIndex) -> Option<BandIndex> {
+    fn innermost_composited_band_around_layer(&self, layer_index: LayerIndex) -> Option<BandIndex> {
         self.innermost_composited_band_at_or_around_band[self.layers[layer_index.0].band_index.0]
     }
 
     /// The next band out from `composited_band` whose node the compositor composites inside its effect, if any.
-    pub fn composited_band_around(&self, composited_band: BandIndex) -> Option<BandIndex> {
+    fn composited_band_around(&self, composited_band: BandIndex) -> Option<BandIndex> {
         self.bands[composited_band.0]
             .parent_band_holding_this_band_as_barrier
             .and_then(|band_around| self.innermost_composited_band_at_or_around_band[band_around.0])
@@ -1082,7 +1068,7 @@ impl LayerStack {
         if self.composited_effects.is_empty() {
             return vec![0; self.layers.len()];
         }
-        let mut read_reach_by_composited_node: HashMap<PlacementNodeIndex, i32> = HashMap::new();
+        let mut read_reach_by_composited_node_index: Vec<Option<i32>> = vec![None; self.nodes.len()];
         let mut summed_read_reach_by_band_index: Vec<i32> = Vec::with_capacity(self.bands.len());
         for band in &self.bands {
             let summed_around = band
@@ -1091,9 +1077,8 @@ impl LayerStack {
                 .unwrap_or(0);
             let node_index = band.placement_node_index;
             let read_reach_of_node = self.nodes[node_index.0].composited_effect.map_or(0, |effect| {
-                *read_reach_by_composited_node
-                    .entry(node_index)
-                    .or_insert_with(|| read_reach_of_composited_node(node_index, effect))
+                *read_reach_by_composited_node_index[node_index.0]
+                    .get_or_insert_with(|| read_reach_of_composited_node(node_index, effect))
             });
             summed_read_reach_by_band_index.push(
                 summed_around
