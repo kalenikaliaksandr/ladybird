@@ -250,7 +250,7 @@ pub struct LayerCompositingInFrame {
     identity: LayerIdentity,
     space_to_frame: SpaceToFrame,
     composite_clip: Option<IntRect>,
-    rounded_composite_clips: Rc<[(IntRect, CornerRadii)]>,
+    rounded_composite_clips: Vec<(IntRect, CornerRadii)>,
     shown_by_window_server: bool,
 }
 
@@ -1615,12 +1615,10 @@ fn compositing_of_layer(
         identity: stack.layers[layer_index.0].identity,
         space_to_frame: spaces_to_frame[stack.space_of_layer(layer_index).0],
         composite_clip: stack.composite_clip_of_layer_in_viewport(layer_index, composite_offsets),
-        rounded_composite_clips: stack
-            .rounded_composite_clips_of_node_in_viewport(
-                stack.layers[layer_index.0].placement_node_index,
-                composite_offsets,
-            )
-            .into(),
+        rounded_composite_clips: stack.rounded_composite_clips_of_node_in_viewport(
+            stack.layers[layer_index.0].placement_node_index,
+            composite_offsets,
+        ),
         shown_by_window_server: false,
     }
 }
@@ -3339,7 +3337,7 @@ mod tests {
             },
             space_to_frame: SpaceToFrame::Transform(transform),
             composite_clip: None,
-            rounded_composite_clips: Rc::new([]),
+            rounded_composite_clips: Vec::new(),
             shown_by_window_server: false,
         }
     }
@@ -3578,7 +3576,7 @@ mod tests {
             identity: stack.layers[0].identity,
             space_to_frame: SpaceToFrame::Transform(AffineTransform::new(1.0, 0.0, 0.0, 1.0, 100.0, y)),
             composite_clip: None,
-            rounded_composite_clips: Rc::new([]),
+            rounded_composite_clips: Vec::new(),
             shown_by_window_server: false,
         };
         let (latest, current) = (composited_at(100.0), composited_at(200.0));
