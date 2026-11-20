@@ -14,16 +14,16 @@ use crate::display_list::effect_geometry::filter_may_spread_at_some_sample;
 use crate::display_list::layers::anchors_of_layer_plans;
 use crate::display_list::placement::{
     FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex, RasterSpaces,
-    antialiased_reach_in_device_pixels, chain_bounds_of_clip, compositor_scroll_record_of,
+    WhatEverySpaceOfTreeShares, antialiased_reach_in_device_pixels, chain_bounds_of_clip, compositor_scroll_record_of,
     enclosing_int_rect_within_extent_limit, extent_limit_rect, intersect_bounds, is_finite_rect,
     space_is_ancestor_or_self, spatial_nodes_that_move_on_their_own_relative_to_spaces_at,
     spatial_nodes_whose_scroll_offset_placement_leaves_out_of_nodes_moving, translation_if_only_translates,
 };
 use crate::display_list::reach::Reach;
 use crate::host::FfiVisualAnimationTargetKind;
-use crate::visual_context::queries::TreeCullingScratch;
 use crate::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
+use std::rc::Rc;
 
 const ANCHOR_TRANSLATION_ROUNDING_OVERSHOOT_IN_DEVICE_PIXELS: i32 = 1;
 
@@ -231,8 +231,7 @@ impl RasterSpaceGeometryForPlacing {
         space: RasterSpaceIndex,
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
-        spatial_dependency_order: &[u32],
-        culling: &TreeCullingScratch,
+        what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
     ) -> Self {
         let raster = RasterSpaceGeometry::new_with_what_every_space_of_tree_shares(
             tree,
@@ -240,8 +239,7 @@ impl RasterSpaceGeometryForPlacing {
             space,
             scroll_offsets,
             FloatMatrix4x4::identity(),
-            spatial_dependency_order,
-            culling.clone(),
+            what_every_space_of_tree_shares,
         );
         let mut clip_chain_bounds_fixed_in_space_by_clip: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
         tree.visit_clip_nodes_parents_first(|index| {
@@ -297,9 +295,7 @@ pub(super) fn spaces_with_geometries(
     viewport_rect: IntRect,
 ) -> (RasterSpacesForPlacing, Vec<RasterSpaceGeometryForPlacing>) {
     let spaces = RasterSpacesForPlacing::at_anchors(tree, anchors_of_tree, viewport_rect);
-    let spatial_dependency_order = tree.spatial_dependency_order();
-    let mut culling = TreeCullingScratch::default();
-    tree.fill_culling_scratch(&mut culling);
+    let what_every_space_of_tree_shares = WhatEverySpaceOfTreeShares::of(tree);
     let geometries: Vec<RasterSpaceGeometryForPlacing> = (0..spaces.spaces().len())
         .map(|space| {
             RasterSpaceGeometryForPlacing::new(
@@ -308,8 +304,7 @@ pub(super) fn spaces_with_geometries(
                 RasterSpaceIndex(space),
                 scroll_offsets,
                 viewport_rect,
-                &spatial_dependency_order,
-                &culling,
+                &what_every_space_of_tree_shares,
             )
         })
         .collect();

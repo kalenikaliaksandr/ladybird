@@ -32,6 +32,7 @@ use crate::visual_context::{
 use libgfx_rust::{CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntPoint, IntRect, enclosing_int_rect};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
+use std::rc::Rc;
 
 /// The index of a raster space among the spaces of a placement, each after the space it is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -904,13 +905,30 @@ pub(crate) fn antialiased_reach_in_device_pixels(bounds: Option<FloatRect>) -> R
     Reach::Within(enclosing_int_rect(bounds).inflated_edges(margin, margin, margin, margin))
 }
 
+/// What the geometries of every space of a tree share: the order its spatial nodes are filled in, and what it culls.
+pub struct WhatEverySpaceOfTreeShares {
+    spatial_dependency_order: Vec<u32>,
+    culling: TreeCullingScratch,
+}
+
+impl WhatEverySpaceOfTreeShares {
+    pub fn of(tree: &VisualContextTree) -> Rc<Self> {
+        let mut culling = TreeCullingScratch::default();
+        tree.fill_culling_scratch(&mut culling);
+        Rc::new(Self {
+            spatial_dependency_order: tree.spatial_dependency_order(),
+            culling,
+        })
+    }
+}
+
 /// Where the content of one raster space lands in the space's raster coordinates under the scroll offsets of a frame:
 /// the transforms of the tree's spatial nodes with the anchors of the space's chain at their origin, what the tree
 /// culls, and the bounds of its clip chains.
 pub struct RasterSpaceGeometry {
     pub raster_scroll_offsets: Vec<FloatPoint>,
     pub world: WorldTransforms,
-    pub culling: TreeCullingScratch,
+    what_every_space_of_tree_shares: Rc<WhatEverySpaceOfTreeShares>,
     /// Empty for the viewport's space, which applies every clip.
     pub clips_left_to_composite: Vec<bool>,
     rastered_affine_clip_chain_bounds_by_clip: Vec<Option<FloatRect>>,
@@ -927,35 +945,31 @@ impl RasterSpaceGeometry {
         scroll_offsets: &[FloatPoint],
         viewport_to_raster_transform: FloatMatrix4x4,
     ) -> Self {
-        let mut culling = TreeCullingScratch::default();
-        tree.fill_culling_scratch(&mut culling);
         Self::new_with_what_every_space_of_tree_shares(
             tree,
             spaces,
             space,
             scroll_offsets,
             viewport_to_raster_transform,
-            &tree.spatial_dependency_order(),
-            culling,
+            &WhatEverySpaceOfTreeShares::of(tree),
         )
     }
 
-    /// As `new`, given the spatial dependency order and the culling of `tree`, which are the same for every space.
+    /// As `new`, given what the geometries of every space of `tree` share.
     pub fn new_with_what_every_space_of_tree_shares(
         tree: &VisualContextTree,
         spaces: &RasterSpaces,
         space: RasterSpaceIndex,
         scroll_offsets: &[FloatPoint],
         viewport_to_raster_transform: FloatMatrix4x4,
-        spatial_dependency_order: &[u32],
-        culling: TreeCullingScratch,
+        what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
     ) -> Self {
         debug_assert!(viewport_to_raster_transform == FloatMatrix4x4::identity() || spaces.len() == 1);
         let raster_scroll_offsets = raster_scroll_offsets(spaces.spaces(), space, scroll_offsets);
         let mut world = WorldTransforms::default();
         world.fill(
             tree,
-            spatial_dependency_order,
+            &what_every_space_of_tree_shares.spatial_dependency_order,
             &raster_scroll_offsets,
             Some(viewport_to_raster_transform),
             spaces.spaces()[space.0].raster_root(),
@@ -988,7 +1002,7 @@ impl RasterSpaceGeometry {
         Self {
             raster_scroll_offsets,
             world,
-            culling,
+            what_every_space_of_tree_shares: what_every_space_of_tree_shares.clone(),
             clips_left_to_composite,
             rastered_affine_clip_chain_bounds_by_clip,
             rastered_affine_own_clip_bounds_by_clip,
@@ -1002,6 +1016,15 @@ impl RasterSpaceGeometry {
             .unwrap_or(false)
     }
 
+    fn shows_nothing_of(&self, drawn_within: FloatRect, context: ContextRef) -> bool {
+        drawn_within.is_empty()
+            || self
+                .what_every_space_of_tree_shares
+                .culling
+                .context_culls_everything(context)
+            || self.world.backface_culled[context.spatial.0 as usize]
+    }
+
     /// Where content of `context` can show in the space's raster coordinates, antialiased: drawn within `drawn_within`
     /// as the frame places it, spread by the filters it is drawn through, within the clips that rasters of the space
     /// apply. Placing a list asks this of the ink of its runs, and keying tiles of the records in them, so what a
@@ -1012,11 +1035,7 @@ impl RasterSpaceGeometry {
         drawn_within: FloatRect,
         context: ContextRef,
     ) -> Reach<IntRect> {
-        let clip_bounding_filter_spread = list.clip_bounding_filter_spread(context);
-        if drawn_within.is_empty()
-            || self.culling.context_culls_everything(context)
-            || self.world.backface_culled[context.spatial.0 as usize]
-        {
+        if self.shows_nothing_of(drawn_within, context) {
             return Reach::Nothing;
         }
         let (space_of_extent, extent) = changed_extent_through_filters(
@@ -1033,7 +1052,7 @@ impl RasterSpaceGeometry {
         antialiased_reach_in_device_pixels(intersect_bounds(
             bounds,
             chain_bounds_of_clip(
-                clip_bounding_filter_spread,
+                list.clip_bounding_filter_spread(context),
                 &self.rastered_affine_clip_chain_bounds_by_clip,
             ),
         ))
@@ -1056,10 +1075,7 @@ impl RasterSpaceGeometry {
         read_reach_of_filters_left_out: Option<i32>,
         bounds_of_rastered_clips: impl FnOnce(ClipNodeIndex, ClipNodeIndex) -> Option<FloatRect>,
     ) -> Reach<IntRect> {
-        if drawn_within.is_empty()
-            || self.culling.context_culls_everything(context)
-            || self.world.backface_culled[context.spatial.0 as usize]
-        {
+        if self.shows_nothing_of(drawn_within, context) {
             return Reach::Nothing;
         }
         let (space_of_extent, extent) = changed_extent_through_filters_inside(
