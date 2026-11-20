@@ -379,13 +379,9 @@ pub enum BarrierCutsOfCell {
 pub enum LayerContent {
     /// The records of a band that the layer holds in some of its tiles.
     Painted,
-    /// A canvas, video or nested context, replayed or shown by the window server.
-    Media {
-        content: LiveContent,
-        record_span: ListSpan,
-        /// In the raster coordinates of the node's space.
-        reach: IntRect,
-    },
+    /// A canvas, video or nested context, replayed or shown by the window server, whose content the identity of the
+    /// layer names.
+    Media { record_span: ListSpan },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -853,11 +849,7 @@ impl LayerStack {
                         identity: LayerIdentity::Media { content, ordinal },
                         placement_node_index: bands[band_index.0].placement_node_index,
                         band_index,
-                        content: LayerContent::Media {
-                            content,
-                            record_span,
-                            reach,
-                        },
+                        content: LayerContent::Media { record_span },
                         may_hold_content: true,
                         reach,
                     });
@@ -1302,7 +1294,7 @@ impl LayerStack {
         let window_server_may_show_content =
             |content: &LiveContent| !matches!(content, LiveContent::CompositedContext(_));
         let has_media_the_window_server_may_show = self.layers.iter().any(|layer| {
-            matches!(&layer.content, LayerContent::Media { content, .. } if window_server_may_show_content(content))
+            matches!(&layer.identity, LayerIdentity::Media { content, .. } if window_server_may_show_content(content))
         });
         if !has_media_the_window_server_may_show {
             return WindowServerPlacementsOfMedia::default();
@@ -1312,9 +1304,8 @@ impl LayerStack {
             .layers
             .iter()
             .map(|layer| {
-                let LayerContent::Media {
-                    content, record_span, ..
-                } = &layer.content
+                let (LayerContent::Media { record_span }, LayerIdentity::Media { content, .. }) =
+                    (&layer.content, &layer.identity)
                 else {
                     return None;
                 };

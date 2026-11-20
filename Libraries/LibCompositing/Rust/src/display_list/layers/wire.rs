@@ -428,13 +428,9 @@ impl Encode for LayerStack {
             for cut in &band.cuts {
                 match &self.layers[cut.layer_above_cut.0 - 1] {
                     StackLayer {
-                        identity: LayerIdentity::Media { ordinal, .. },
-                        content:
-                            LayerContent::Media {
-                                content,
-                                record_span,
-                                reach,
-                            },
+                        identity: LayerIdentity::Media { content, ordinal },
+                        content: LayerContent::Media { record_span },
+                        reach,
                         ..
                     } => {
                         encoder.encode(&BARRIER_KIND_MEDIA)?;

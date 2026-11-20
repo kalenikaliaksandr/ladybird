@@ -1440,12 +1440,12 @@ impl ContextPresenting {
         for compositing in &compositing_of_layers {
             let layer_index = compositing.layer_index;
             let layer = &stack.layers[layer_index.0];
-            if let LayerContent::Media { record_span, reach, .. } = &layer.content {
+            if let LayerContent::Media { record_span } = &layer.content {
                 let raster_space_index = stack.space_of_layer(layer_index);
                 let media_replayed = MediaRecordsReplayedInFrame {
                     content_hash: tile_keying_by_raster_space[raster_space_index.0]
                         .content_hash_of_records_within(*record_span),
-                    reach_in_frame: compositing.rect_in_frame(*reach, viewport_rect),
+                    reach_in_frame: compositing.rect_in_frame(layer.reach, viewport_rect),
                 };
                 let media_replayed_in_latest_frame =
                     painted.and_then(|painted| painted.media_replayed_by_identity.get(&layer.identity).copied());
@@ -1508,7 +1508,7 @@ impl ContextPresenting {
         layer: &StackLayer,
         live_content: &LiveContent,
     ) -> Option<WhyMediaIsReplayed> {
-        let LayerContent::Media { content, .. } = &layer.content else {
+        let LayerIdentity::Media { content, .. } = &layer.identity else {
             return None;
         };
         let placement = match window_server_placements_of_media.of_layer(layer_index) {
@@ -1586,8 +1586,8 @@ impl ContextPresenting {
                     LayerContent::Painted => ModelLayerContent::Painted {
                         tiles: self.layers.tiles.model_tiles_of(&compositing.identity),
                     },
-                    LayerContent::Media { reach, .. } => ModelLayerContent::Media {
-                        reach: *reach,
+                    LayerContent::Media { .. } => ModelLayerContent::Media {
+                        reach: layer.reach,
                         presentation: if window_server_shows_layers && compositing.shown_by_window_server {
                             MediaPresentation::ShownByWindowServer
                         } else {
@@ -1982,9 +1982,9 @@ impl ContextPresenting {
                     compositing_session.enter_effect(effect);
                     entered_composited_bands.push(band_index);
                 }
-                if let LayerContent::Media { record_span, reach, .. } = &layer.content {
+                if let LayerContent::Media { record_span } = &layer.content {
                     if !compositing
-                        .rect_in_frame(*reach, damage_grown_by_filter_reads)
+                        .rect_in_frame(layer.reach, damage_grown_by_filter_reads)
                         .is_empty()
                     {
                         compositing_session.replay_records(*record_span);
@@ -2162,12 +2162,9 @@ impl ContextPresenting {
         {
             let layer_index = compositing.layer_index;
             let layer = compositing.layer_in(&painted.stack);
-            if let LayerContent::Media { content, .. } = &layer.content {
+            if let LayerIdentity::Media { content, ordinal } = layer.identity {
                 let Some(Ok(placement)) = painted.window_server_placements_of_media.of_layer(layer_index) else {
                     continue;
-                };
-                let LayerIdentity::Media { ordinal, .. } = layer.identity else {
-                    unreachable!("a media layer has a media identity");
                 };
                 let (kind, id, sublayer_identity_of_media, has_content) = match content {
                     LiveMedia::Canvas(id) => (
