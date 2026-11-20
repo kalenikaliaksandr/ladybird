@@ -23,7 +23,7 @@ use crate::raster_host::{
 use damage::{PaintedFrame, StoreDamage};
 use layer_overlay::LayerOverlaySwitch;
 use layers::ContextLayers;
-use libcompositing_rust::display_list::commands::{CompositorContextId, EffectNodeIndex};
+use libcompositing_rust::display_list::commands::CompositorContextId;
 use libcompositing_rust::display_list::replay::{
     CompositedContexts, CompositingInsideEffects, NoCompositedContexts, ReplayFrame, ReplaySelection,
     ResolvedCompositedContext, composite_inside_effects, replay_display_list,
@@ -32,11 +32,7 @@ use libcompositing_rust::host::FfiRasterPainter;
 use libcompositing_rust::ipc_types::Compositing_CompositorLayersDescription as CompositorLayersDescription;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
-use libcompositing_rust::visual_context::EffectNodeData;
-use libgfx_rust::{
-    Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, IntRect, IntSize,
-    enclosing_int_rect,
-};
+use libgfx_rust::{Color, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize, IntRect, IntSize, enclosing_int_rect};
 use pacing::PacedTickRequest;
 use std::rc::Rc;
 
@@ -924,11 +920,7 @@ impl ContextPresenting {
             && self.device_pixel_ratio.fract() == 0.0
             && display_list.storage().summary().destination_blending_records.is_empty()
             // A blend or backdrop filter that reads the root group needs its original isolation from the canvas fill.
-            && !tree.effect_nodes.iter().enumerate().any(|(index, node)| {
-                matches!(&node.data, EffectNodeData::Effects(effects)
-                    if effects.blend_mode != CompositingAndBlendingOperator::Normal || effects.backdrop_filter.is_some())
-                    && tree.effect_backdrop_is_root_group(EffectNodeIndex(index as u32))
-            })
+            && !tree.blend_mode_or_backdrop_filter_reads_root_group()
     }
 
     /// Paints what the compositor draws over the page: its scrollbars, and unless they are left out, the overlays of the

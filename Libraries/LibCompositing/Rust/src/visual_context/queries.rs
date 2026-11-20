@@ -510,23 +510,8 @@ impl VisualContextTree {
             .is_none_or(|layer| self.root_isolation_effect == Some(layer))
     }
 
-    /// The node whose layer reads the backdrop of an effect: the outermost of the masks of the effect's box that draw
-    /// its filtered backdrop, or the effect itself.
-    pub fn node_reading_the_backdrop_of(&self, effect: EffectNodeIndex) -> EffectNodeIndex {
-        let mut reader = effect;
-        loop {
-            let parent = self.effect_nodes[reader.0 as usize].parent;
-            if parent.is_none()
-                || !matches!(&self.effect_nodes[parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop)
-            {
-                return reader;
-            }
-            reader = parent;
-        }
-    }
-
-    /// What `node_reading_the_backdrop_of` gives for each live effect node, in one pass over the tree, or none for a
-    /// node that is not live.
+    /// Per live effect node, the node whose layer reads its backdrop: the outermost of the masks of the effect's box
+    /// that draw its filtered backdrop, or the effect itself. None for a node that is not live.
     pub fn nodes_reading_the_backdrops_of_effects(&self) -> Vec<EffectNodeIndex> {
         let mut reader_by_effect_index = vec![EffectNodeIndex::NONE; self.effect_nodes.len()];
         self.visit_effect_nodes_parents_first(|index| {
@@ -540,10 +525,33 @@ impl VisualContextTree {
         reader_by_effect_index
     }
 
-    /// The backdrop of an effect whose box's masks draw it is read where the outermost of those masks composites.
-    pub fn effect_backdrop_is_root_group(&self, effect: EffectNodeIndex) -> bool {
-        let reader = self.node_reading_the_backdrop_of(effect);
-        self.content_under_effect_composites_into_root_group(self.effect_nodes[reader.0 as usize].parent)
+    /// Whether a blend mode or a backdrop filter reads the root group. The backdrop of an effect whose box's masks draw
+    /// it is read where the outermost of those masks composites.
+    pub fn blend_mode_or_backdrop_filter_reads_root_group(&self) -> bool {
+        let reads_backdrop = |data: &EffectNodeData| {
+            matches!(data, EffectNodeData::Effects(effects)
+                if effects.blend_mode != CompositingAndBlendingOperator::Normal || effects.backdrop_filter.is_some())
+        };
+        if !self.effect_nodes.iter().any(|node| reads_backdrop(&node.data)) {
+            return false;
+        }
+        let reader_by_effect_index = self.nodes_reading_the_backdrops_of_effects();
+        let mut content_composites_into_root_group_by_effect_index = vec![true; self.effect_nodes.len()];
+        self.visit_effect_nodes_parents_first(|index| {
+            let effect = EffectNodeIndex(index as u32);
+            let parent = self.effect_nodes[index].parent;
+            content_composites_into_root_group_by_effect_index[index] = if self.effect_pushes_layer_at_replay(effect) {
+                self.root_isolation_effect == Some(effect)
+            } else {
+                parent.is_none() || content_composites_into_root_group_by_effect_index[parent.0 as usize]
+            };
+        });
+        self.effect_nodes.iter().enumerate().any(|(index, node)| {
+            let parent_of_reader = || self.effect_nodes[reader_by_effect_index[index].0 as usize].parent;
+            reads_backdrop(&node.data)
+                && (parent_of_reader().is_none()
+                    || content_composites_into_root_group_by_effect_index[parent_of_reader().0 as usize])
+        })
     }
 
     /// A blend mode or a backdrop filter reads what the canvas holds outside the effect's own layer.
@@ -750,6 +758,66 @@ mod tests {
             effect: EffectNodeIndex::NONE,
             ..ContextRef::default()
         }
+    }
+
+    // A backdrop is read where the outermost of the masks of its box that draw it composites, which is the root group
+    // where no layer but the root isolation layer is around that mask.
+    #[test]
+    fn a_blend_mode_or_backdrop_filter_reads_the_root_group_where_no_other_layer_is_around_where_it_reads() {
+        let effects = |opacity: f32, blend_mode, backdrop_filter: Option<crate::visual_context::BackdropFilterData>| {
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity,
+                blend_mode,
+                filter: None,
+                backdrop_filter,
+            })
+        };
+        let backdrop_filter = || {
+            Some(crate::visual_context::BackdropFilterData {
+                filter: std::sync::Arc::new(Vec::new()),
+                region: IntRect::new(0, 0, 10, 10),
+                corner_radii: CornerRadii::default(),
+            })
+        };
+        let mask_drawing_backdrop = || {
+            EffectNodeData::Mask(crate::visual_context::MaskData {
+                rect: IntRect::new(0, 0, 10, 10),
+                kind: crate::visual_context::MaskKind::Luminance,
+                origin: crate::visual_context::MaskLayerOrigin::CssMaskLayers,
+                masks_backdrop: true,
+            })
+        };
+        let append = |tree: &mut VisualContextTree, data: EffectNodeData, parent: EffectNodeIndex| {
+            tree.append_effect(data, parent, VISUAL_VIEWPORT_NODE_INDEX, ClipNodeIndex::NONE)
+        };
+        let normal = CompositingAndBlendingOperator::Normal;
+
+        let mut tree = identity_tree();
+        let plain_group = append(&mut tree, effects(1.0, normal, None), EffectNodeIndex::NONE);
+        assert!(!tree.blend_mode_or_backdrop_filter_reads_root_group());
+        append(
+            &mut tree,
+            effects(1.0, CompositingAndBlendingOperator::Multiply, None),
+            plain_group,
+        );
+        assert!(tree.blend_mode_or_backdrop_filter_reads_root_group());
+
+        let mut tree = identity_tree();
+        let root_isolation = append(&mut tree, effects(1.0, normal, None), EffectNodeIndex::NONE);
+        tree.root_isolation_effect = Some(root_isolation);
+        let translucent_group = append(&mut tree, effects(0.5, normal, None), root_isolation);
+        let mask_in_translucent_group = append(&mut tree, mask_drawing_backdrop(), translucent_group);
+        append(
+            &mut tree,
+            effects(1.0, normal, backdrop_filter()),
+            mask_in_translucent_group,
+        );
+        assert!(!tree.blend_mode_or_backdrop_filter_reads_root_group());
+        let outer_mask = append(&mut tree, mask_drawing_backdrop(), root_isolation);
+        let inner_mask = append(&mut tree, mask_drawing_backdrop(), outer_mask);
+        append(&mut tree, effects(1.0, normal, backdrop_filter()), inner_mask);
+        assert!(tree.blend_mode_or_backdrop_filter_reads_root_group());
     }
 
     #[test]
