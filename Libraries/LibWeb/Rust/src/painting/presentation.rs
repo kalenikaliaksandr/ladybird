@@ -632,15 +632,15 @@ pub(crate) struct SentDisplayListChunks {
     list_chunks: HashMap<ChunkId, Arc<ListChunk>>,
     /// The display list sent last, as the compositor replays it.
     held_list: Option<DisplayListSent>,
-    /// The plan of layers sent last with a display list, a visual context tree or a scroll state, or none where the
-    /// display list or the tree sent last went without one.
-    held_layer_plan: Option<LayerPlanSent>,
 }
 
 struct DisplayListSent {
     display_list_id: u64,
     recorded_structural_epoch: u64,
     list: Arc<DisplayListStorage>,
+    /// The plan of its layers sent last with it, a visual context tree or a scroll state, or none where it or the tree
+    /// sent last went without one.
+    layer_plan: Option<LayerPlanSent>,
 }
 
 /// A plan of layers sent to the compositor, and what it was made from.
@@ -703,10 +703,29 @@ impl SentDisplayListChunks {
         DisplayListStorage::of_chunks(chunks).ok()
     }
 
-    /// The plan of the layers of the display list `display_list_id` names under `inputs`: the plan sent last, where it
-    /// was made from inputs that plan alike, and a new one otherwise.
-    fn layer_plan_of(&self, display_list_id: u64, inputs: InputsOfLayerPlan) -> LayerPlanSent {
-        match &self.held_layer_plan {
+    fn held_layer_plan(&self) -> Option<&LayerPlanSent> {
+        self.held_list.as_ref()?.layer_plan.as_ref()
+    }
+
+    /// The plan of the layers of `list`, which `display_list_id` names, under the other inputs: the plan sent last, where
+    /// it was made from inputs that plan alike, and a new one otherwise.
+    fn layer_plan_of(
+        &self,
+        display_list_id: u64,
+        list: Arc<DisplayListStorage>,
+        visual_context_tree: Arc<VisualContextTree>,
+        scroll_state: &ScrollStateSnapshot,
+        viewport_rect: IntRect,
+    ) -> LayerPlanSent {
+        let held_plan = self.held_layer_plan();
+        let inputs = InputsOfLayerPlan::new_after(
+            held_plan.map(|held| &held.inputs),
+            list,
+            visual_context_tree,
+            scroll_state.device_offsets(),
+            viewport_rect,
+        );
+        match held_plan {
             Some(held) if held.inputs.plan_alike_as(&inputs) => LayerPlanSent {
                 plan: if held.plan.display_list_id == display_list_id {
                     held.plan.clone()
@@ -738,13 +757,10 @@ impl SentDisplayListChunks {
         }
         Some(self.layer_plan_of(
             held.display_list_id,
-            InputsOfLayerPlan::new_after(
-                self.held_layer_plan.as_ref().map(|held_plan| &held_plan.inputs),
-                held.list.clone(),
-                visual_context_tree.clone(),
-                scroll_state.device_offsets(),
-                viewport_rect,
-            ),
+            held.list.clone(),
+            visual_context_tree.clone(),
+            scroll_state,
+            viewport_rect,
         ))
     }
 
@@ -756,7 +772,7 @@ impl SentDisplayListChunks {
         scroll_state: &ScrollStateSnapshot,
         viewport_rect: Option<IntRect>,
     ) -> Option<LayerPlanSent> {
-        let held = self.held_layer_plan.as_ref()?;
+        let held = self.held_layer_plan()?;
         let inputs = held.inputs.with_scroll_offsets_and_viewport_rect(
             scroll_state.device_offsets(),
             viewport_rect.unwrap_or(held.inputs.viewport_rect()),
@@ -830,13 +846,10 @@ fn post_frame_through(
                     .map(|(list, viewport_rect)| {
                         sent.layer_plan_of(
                             display_list_id,
-                            InputsOfLayerPlan::new_after(
-                                sent.held_layer_plan.as_ref().map(|held_plan| &held_plan.inputs),
-                                list,
-                                update.visual_context_tree.clone(),
-                                update.scroll_state.device_offsets(),
-                                viewport_rect,
-                            ),
+                            list,
+                            update.visual_context_tree.clone(),
+                            &update.scroll_state,
+                            viewport_rect,
                         )
                     });
                 let message = UpdateDisplayList {
@@ -854,8 +867,8 @@ fn post_frame_through(
                     display_list_id,
                     recorded_structural_epoch,
                     list,
+                    layer_plan,
                 });
-                sent.held_layer_plan = layer_plan;
             }
             None => {
                 eprintln!(
@@ -882,7 +895,9 @@ fn post_frame_through(
         if !poster.post(message) {
             return false;
         }
-        sent.held_layer_plan = layer_plan;
+        if let Some(held) = sent.held_list.as_mut() {
+            held.layer_plan = layer_plan;
+        }
     }
     if let Some(update) = scroll_state_update {
         let layer_plan = sent.layer_plan_for_scroll_state(&update.scroll_state, viewport_rect_of_layer_plans);
@@ -895,8 +910,10 @@ fn post_frame_through(
         if !poster.post(message) {
             return false;
         }
-        if layer_plan.is_some() {
-            sent.held_layer_plan = layer_plan;
+        if let Some(layer_plan) = layer_plan
+            && let Some(held) = sent.held_list.as_mut()
+        {
+            held.layer_plan = Some(layer_plan);
         }
     }
     if !scroll_requests.is_empty()
