@@ -15,7 +15,7 @@ use crate::display_list::layers::anchors_of_layer_plans;
 use crate::display_list::placement::{
     FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex, RasterSpaces,
     WhatEverySpaceOfTreeShares, antialiased_reach_in_device_pixels, chain_bounds_of_clip, compositor_scroll_record_of,
-    enclosing_int_rect_within_extent_limit, extent_limit_rect, intersect_bounds, is_finite_rect,
+    enclosing_int_rect_within_extent_limit, extent_limit_rect, intersect_bounds, is_finite_rect, raster_scroll_offsets,
     space_is_ancestor_or_self, spatial_nodes_that_move_on_their_own_relative_to_spaces_at,
     spatial_nodes_whose_scroll_offset_placement_leaves_out_of_nodes_moving, translation_if_only_translates,
 };
@@ -233,15 +233,26 @@ impl RasterSpaceGeometryForPlacing {
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
         what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
+        world_of_viewport_space: Option<&Rc<WorldTransforms>>,
     ) -> Self {
-        let raster = RasterSpaceGeometry::new(
-            tree,
-            &spaces.raster_spaces,
-            space,
-            scroll_offsets,
-            FloatMatrix4x4::identity(),
-            what_every_space_of_tree_shares,
-        );
+        let raster = match world_of_viewport_space {
+            Some(world) if spaces.spaces()[space.0].raster_root().is_none() => RasterSpaceGeometry::with_world(
+                tree,
+                &spaces.raster_spaces,
+                space,
+                raster_scroll_offsets(spaces.spaces(), space, scroll_offsets),
+                world.clone(),
+                what_every_space_of_tree_shares,
+            ),
+            _ => RasterSpaceGeometry::new(
+                tree,
+                &spaces.raster_spaces,
+                space,
+                scroll_offsets,
+                FloatMatrix4x4::identity(),
+                what_every_space_of_tree_shares,
+            ),
+        };
         let mut clip_chain_bounds_fixed_in_space_by_clip: Vec<Option<FloatRect>> = vec![None; tree.clip_nodes.len()];
         tree.visit_clip_nodes_parents_first(|index| {
             let node = &tree.clip_nodes[index];
@@ -297,8 +308,20 @@ pub(super) fn spaces_with_geometries(
 ) -> (RasterSpacesForPlacing, Vec<RasterSpaceGeometryForPlacing>) {
     let spaces = RasterSpacesForPlacing::at_anchors(tree, anchors_of_tree, viewport_rect);
     let what_every_space_of_tree_shares = WhatEverySpaceOfTreeShares::of(tree);
-    let geometries: Vec<RasterSpaceGeometryForPlacing> = (0..spaces.spaces().len())
-        .map(|space| {
+    let geometry_of_viewport_space = RasterSpaceGeometryForPlacing::new(
+        tree,
+        &spaces,
+        RasterSpaceIndex::VIEWPORT,
+        scroll_offsets,
+        viewport_rect,
+        &what_every_space_of_tree_shares,
+        None,
+    );
+    // The scroll offsets a plan reads leave out that of every anchor, so every space whose anchor the compositor does
+    // not animate has the world transforms of the viewport's space.
+    let world_of_viewport_space = geometry_of_viewport_space.raster.world.clone();
+    let geometries: Vec<RasterSpaceGeometryForPlacing> = std::iter::once(geometry_of_viewport_space)
+        .chain((1..spaces.spaces().len()).map(|space| {
             RasterSpaceGeometryForPlacing::new(
                 tree,
                 &spaces,
@@ -306,8 +329,9 @@ pub(super) fn spaces_with_geometries(
                 scroll_offsets,
                 viewport_rect,
                 &what_every_space_of_tree_shares,
+                Some(&world_of_viewport_space),
             )
-        })
+        }))
         .collect();
     (spaces, geometries)
 }

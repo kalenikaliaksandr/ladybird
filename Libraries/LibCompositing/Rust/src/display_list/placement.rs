@@ -910,7 +910,7 @@ impl WhatEverySpaceOfTreeShares {
 /// culls, and the bounds of its clip chains.
 pub struct RasterSpaceGeometry {
     pub raster_scroll_offsets: Vec<FloatPoint>,
-    pub world: WorldTransforms,
+    pub world: Rc<WorldTransforms>,
     what_every_space_of_tree_shares: Rc<WhatEverySpaceOfTreeShares>,
     /// Empty for the viewport's space, which applies every clip.
     pub clips_left_to_composite: Vec<bool>,
@@ -939,6 +939,25 @@ impl RasterSpaceGeometry {
             Some(viewport_to_raster_transform),
             spaces.spaces()[space.0].raster_root(),
         );
+        Self::with_world(
+            tree,
+            spaces,
+            space,
+            raster_scroll_offsets,
+            Rc::new(world),
+            what_every_space_of_tree_shares,
+        )
+    }
+
+    /// As `new`, with the world transforms that `new` fills for the space under `raster_scroll_offsets`.
+    pub(crate) fn with_world(
+        tree: &VisualContextTree,
+        spaces: &RasterSpaces,
+        space: RasterSpaceIndex,
+        raster_scroll_offsets: Vec<FloatPoint>,
+        world: Rc<WorldTransforms>,
+        what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
+    ) -> Self {
         let clips_left_to_composite = if space == RasterSpaceIndex::VIEWPORT {
             Vec::new()
         } else {
