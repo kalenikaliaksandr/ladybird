@@ -950,7 +950,16 @@ struct ChunkHeldByBand {
 
 struct RunReplayedWholeWhereverRunGroupShows {
     reach: Reach<IntRect>,
-    mask_declarations_replayed_with_run: Vec<TileReplayItem>,
+    /// The innermost mask around the run with declared content, whose declarations, and those of the declared masks
+    /// around it, replay with the run, or `EffectNodeIndex::NONE`.
+    innermost_declared_mask_around: EffectNodeIndex,
+}
+
+/// A mask with declared content around a run that a band replays whole.
+struct DeclaredMaskAroundRunReplayedWhole {
+    /// The items that replay its declarations, each with where it is painted and how far it reaches.
+    declarations: Vec<(ListPosition, TileReplayItem, Reach<IntRect>)>,
+    next_declared_mask_around: EffectNodeIndex,
 }
 
 struct BandBoundToListAndGeometry {
@@ -958,6 +967,7 @@ struct BandBoundToListAndGeometry {
     /// In the order of their chunks, as the spans of a band are in paint order.
     held_chunks: Vec<ChunkHeldByBand>,
     runs_replayed_whole: HashMap<(ChunkIndexInList, RunIndexInChunk), RunReplayedWholeWhereverRunGroupShows>,
+    declared_masks_around_runs_replayed_whole: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole>,
     backdrop_reads: BackdropReadsOfBand,
     items_replayed_in_every_tile: Option<Vec<(ListPosition, TileReplayItem)>>,
     binning_inputs_hash_beyond_held_chunks: ContentHash,
@@ -2636,6 +2646,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 chunk_names,
                 held_chunks: Vec::new(),
                 runs_replayed_whole: HashMap::new(),
+                declared_masks_around_runs_replayed_whole: HashMap::new(),
                 backdrop_reads: BackdropReadsOfBand::new(Vec::new()),
                 items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
                 binning_inputs_hash_beyond_held_chunks: band_binning_inputs_hasher.finish(),
@@ -2742,7 +2753,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                             (held_chunk.chunk_index, run_index),
                             RunReplayedWholeWhereverRunGroupShows {
                                 reach: backdrop_reads.reach_extended_through_reads(run_group_reach, first_position),
-                                mask_declarations_replayed_with_run: Vec::new(),
+                                innermost_declared_mask_around: EffectNodeIndex::NONE,
                             },
                         );
                     }
@@ -2753,6 +2764,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             chunk_names,
             held_chunks,
             runs_replayed_whole,
+            declared_masks_around_runs_replayed_whole: HashMap::new(),
             backdrop_reads,
             items_replayed_in_every_tile: None,
             binning_inputs_hash_beyond_held_chunks: 0,
@@ -2777,22 +2789,35 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     nearest_declared_mask_by_effect_index[effect.0 as usize]
                 }
             };
-            let mut mask_declarations_of_runs = Vec::new();
-            let mut mask_declarations_found = HashSet::new();
-            for &(chunk_index, run_index) in bound_band.runs_replayed_whole.keys() {
-                let whole_run_item = TileReplayItem::PlacedRecordRange {
-                    chunk_index,
-                    range_index: bound_band.held_chunk(chunk_index).placement.ranges_of_each_run[run_index.0 as usize]
-                        .whole_run_range_index,
-                };
-                let mut mask_declarations = Vec::new();
-                mask_declarations_found.clear();
-                let mut mask = nearest_declared_mask_at_or_above(
+            // Each declared mask is looked at once, and every run inside it shares the chain of declared masks from it
+            // out.
+            let mut declared_masks: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole> = HashMap::new();
+            let mut chain_hash_by_declared_mask: HashMap<EffectNodeIndex, ContentHash> = HashMap::new();
+            let mut innermost_declared_masks_of_runs = Vec::new();
+            let mut declared_masks_not_looked_at = Vec::new();
+            let mut declared_items_of_mask = HashSet::new();
+            for &run in bound_band.runs_replayed_whole.keys() {
+                let (chunk_index, run_index) = run;
+                let innermost_declared_mask_around = nearest_declared_mask_at_or_above(
                     display_list.chunk(chunk_index).runs()[run_index.0 as usize]
                         .context
                         .effect,
                 );
-                while !mask.is_none() {
+                innermost_declared_masks_of_runs.push((run, innermost_declared_mask_around));
+                declared_masks_not_looked_at.clear();
+                let mut mask = innermost_declared_mask_around;
+                while !mask.is_none() && !declared_masks.contains_key(&mask) {
+                    declared_masks_not_looked_at.push(mask);
+                    mask = nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
+                }
+                // The masks are looked at from the outermost in, so that the chain hash of the mask around each one is
+                // known.
+                for &mask in declared_masks_not_looked_at.iter().rev() {
+                    let next_declared_mask_around =
+                        nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
+                    let mut declarations: Vec<(ListPosition, TileReplayItem, Reach<IntRect>)> = Vec::new();
+                    declared_items_of_mask.clear();
+                    let mut chain_hasher = ContentHasher::new();
                     for &declaration_position in &declaration_positions_by_mask[&mask] {
                         let table = display_list.chunk(declaration_position.chunk_index).record_table();
                         let record_index = table
@@ -2801,35 +2826,49 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                                 declaration_position.offset + 1,
                             )
                             .start;
-                        let mask_declaration =
+                        let item =
                             self.item_replaying_record(&bound_band, declaration_position.chunk_index, record_index);
-                        if mask_declaration != whole_run_item && mask_declarations_found.insert(mask_declaration) {
-                            mask_declarations.push(mask_declaration);
+                        if !declared_items_of_mask.insert(item) {
+                            continue;
                         }
+                        chain_hasher.write_chunk_name(bound_band.chunk_names[item.chunk_index().0 as usize]);
+                        chain_hasher.write_content_hash(self.content_hash_of_replay_item(
+                            &bound_band,
+                            item,
+                            false,
+                            false,
+                            None,
+                        ));
+                        declarations.push((bound_band.span_of(item).begin, item, bound_band.reach_of_item(item)));
                     }
-                    mask = nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
+                    chain_hasher.write_content_hash(
+                        chain_hash_by_declared_mask
+                            .get(&next_declared_mask_around)
+                            .copied()
+                            .unwrap_or(0),
+                    );
+                    chain_hash_by_declared_mask.insert(mask, chain_hasher.finish());
+                    declared_masks.insert(
+                        mask,
+                        DeclaredMaskAroundRunReplayedWhole {
+                            declarations,
+                            next_declared_mask_around,
+                        },
+                    );
                 }
-                mask_declarations_of_runs.push(((chunk_index, run_index), mask_declarations));
             }
-            mask_declarations_of_runs.sort_unstable_by_key(|(run, _)| *run);
-            for (run, mask_declarations) in mask_declarations_of_runs {
-                for &mask_declaration in &mask_declarations {
-                    band_binning_inputs_hasher
-                        .write_chunk_name(bound_band.chunk_names[mask_declaration.chunk_index().0 as usize]);
-                    band_binning_inputs_hasher.write_content_hash(self.content_hash_of_replay_item(
-                        &bound_band,
-                        mask_declaration,
-                        false,
-                        false,
-                        None,
-                    ));
+            innermost_declared_masks_of_runs.sort_unstable_by_key(|(run, _)| *run);
+            for (run, innermost_declared_mask_around) in innermost_declared_masks_of_runs {
+                if let Some(&chain_hash) = chain_hash_by_declared_mask.get(&innermost_declared_mask_around) {
+                    band_binning_inputs_hasher.write_content_hash(chain_hash);
                 }
                 bound_band
                     .runs_replayed_whole
                     .get_mut(&run)
-                    .expect("mask declarations are found for runs replayed whole")
-                    .mask_declarations_replayed_with_run = mask_declarations;
+                    .expect("declared masks are found for runs replayed whole")
+                    .innermost_declared_mask_around = innermost_declared_mask_around;
             }
+            bound_band.declared_masks_around_runs_replayed_whole = declared_masks;
         }
 
         for held_chunk_index in 0..bound_band.held_chunks.len() {
@@ -2878,7 +2917,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     fn for_each_held_item(
         bound_band: &BandBoundToListAndGeometry,
         held_chunk: &ChunkHeldByBand,
-        mut visit: impl FnMut(ListPosition, TileReplayItem, Reach<IntRect>, &[TileReplayItem]),
+        mut visit: impl FnMut(ListPosition, TileReplayItem, Reach<IntRect>, EffectNodeIndex),
     ) {
         for &run_index in &held_chunk.held_run_indices {
             let ranges_of_run = &held_chunk.placement.ranges_of_each_run[run_index.0 as usize];
@@ -2892,7 +2931,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         range_index: ranges_of_run.whole_run_range_index,
                     },
                     run_replayed_whole.reach,
-                    &run_replayed_whole.mask_declarations_replayed_with_run,
+                    run_replayed_whole.innermost_declared_mask_around,
                 );
                 continue;
             }
@@ -2909,7 +2948,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     bound_band
                         .backdrop_reads
                         .reach_extended_through_reads(range.reach, paint_position),
-                    &[],
+                    EffectNodeIndex::NONE,
                 );
             }
         }
@@ -3060,8 +3099,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let new_cells_area = new_coords
             .iter()
             .fold(IntRect::default(), |cells, coord| cells.united(coord.cell_rect()));
-        // Per layer that items go into in the cell, with how many of the cuts of the cell are below it, the items.
-        type ItemsOfLayerInCell = (LayerIndex, usize, Vec<(ListPosition, TileReplayItem, Reach<IntRect>)>);
+        // Per layer that items go into in the cell, with how many of the cuts of the cell are below it, the items, and the
+        // declared masks whose declarations those items hold.
+        type ItemsOfLayerInCell = (
+            LayerIndex,
+            usize,
+            Vec<(ListPosition, TileReplayItem, Reach<IntRect>)>,
+            HashSet<EffectNodeIndex>,
+        );
         struct BinOfCell<'a> {
             cuts: CutsOfCell<'a>,
             position_of_layer_by_count_of_cuts_below: Vec<Option<usize>>,
@@ -3085,7 +3130,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let mut add_to_bins = |paint_position: ListPosition,
                                item: TileReplayItem,
                                reach: Reach<IntRect>,
-                               mask_declarations_replayed_with_item: &[TileReplayItem]| {
+                               innermost_declared_mask_around_item: EffectNodeIndex| {
             let reach_in_new_cells = reach.part_of(new_cells_area);
             if reach_in_new_cells.is_empty() {
                 return;
@@ -3104,24 +3149,28 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let position_of_layer = match bin.position_of_layer_by_count_of_cuts_below[count_of_cuts_below] {
                     Some(position) => position,
                     None => {
-                        bin.items_by_layer.push((layer_index, count_of_cuts_below, Vec::new()));
+                        bin.items_by_layer
+                            .push((layer_index, count_of_cuts_below, Vec::new(), HashSet::new()));
                         let position = bin.items_by_layer.len() - 1;
                         bin.position_of_layer_by_count_of_cuts_below[count_of_cuts_below] = Some(position);
                         position
                     }
                 };
-                let items_of_layer = &mut bin.items_by_layer[position_of_layer].2;
+                let (_, _, items_of_layer, declared_masks_of_layer) = &mut bin.items_by_layer[position_of_layer];
                 items_of_layer.push((paint_position, item, reach));
-                for &mask_declaration in mask_declarations_replayed_with_item {
-                    let span = bound_band.span_of(mask_declaration);
-                    items_of_layer.push((span.begin, mask_declaration, bound_band.reach_of_item(mask_declaration)));
+                // Where the layer holds the declarations of a mask, it holds those of the masks around it too.
+                let mut mask = innermost_declared_mask_around_item;
+                while !mask.is_none() && declared_masks_of_layer.insert(mask) {
+                    let declared_mask = &bound_band.declared_masks_around_runs_replayed_whole[&mask];
+                    items_of_layer.extend_from_slice(&declared_mask.declarations);
+                    mask = declared_mask.next_declared_mask_around;
                 }
             });
         };
         match &bound_band.items_replayed_in_every_tile {
             Some(items_replayed_in_every_tile) => {
                 for &(paint_position, item) in items_replayed_in_every_tile {
-                    add_to_bins(paint_position, item, Reach::Anywhere, &[]);
+                    add_to_bins(paint_position, item, Reach::Anywhere, EffectNodeIndex::NONE);
                 }
             }
             None => {
@@ -3144,9 +3193,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             } = bin;
             // The base layer is the band's layer below all cuts.
             if let Some(base_layer) = base_layer
-                && !bin.iter().any(|(layer_index, _, _)| *layer_index == base_layer)
+                && !bin.iter().any(|(layer_index, _, _, _)| *layer_index == base_layer)
             {
-                bin.push((base_layer, 0, Vec::new()));
+                bin.push((base_layer, 0, Vec::new(), HashSet::new()));
             }
             let cell = coord.cell_rect();
             let raster_margin_in_device_pixels = bound_band.backdrop_reads.raster_margin_of_cell(cell);
@@ -3156,7 +3205,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 .backdrop_reads
                 .frame_edge_blurs_of_cell_mirror_at(cell, frame);
             let mut tiles = Vec::with_capacity(bin.len());
-            for (layer_index, count_of_cell_cuts_below_layer, mut items_of_layer) in bin {
+            for (layer_index, count_of_cell_cuts_below_layer, mut items_of_layer, _) in bin {
                 items_of_layer.sort_unstable_by_key(|(paint_position, item, _)| (*paint_position, *item));
                 items_of_layer.dedup_by_key(|(_, item, _)| *item);
                 let content_bounds =
