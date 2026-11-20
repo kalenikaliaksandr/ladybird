@@ -710,10 +710,11 @@ fn painted_layer_of_band(
 
 impl LayerStack {
     /// One layer that replays the whole list, which is always correct.
-    pub fn single_layer(
+    pub fn one_layer_replaying_whole_list(
         viewport_rect: IntRect,
         whole_list_span: ListSpan,
         why_list_is_one_layer: Option<WhyListIsOneLayer>,
+        layering_obstacles: LayeringObstacles,
     ) -> Self {
         let spaces = vec![RasterSpace::of_viewport(viewport_rect)];
         let root_node = PlacementNode {
@@ -752,13 +753,27 @@ impl LayerStack {
             composited_effects: Vec::new(),
             base_layer: LayerIndex(0),
             why_list_is_one_layer,
-            layering_obstacles: LayeringObstacles::default(),
+            layering_obstacles,
             tiles_hold_content_moving_within_space_by_space_index: vec![true],
             swept_reach_in_parent_space_by_space_index: vec![None],
             index_of_layer_with_identity: HashMap::new(),
             innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
+    }
+
+    #[cfg(test)]
+    pub fn single_layer(
+        viewport_rect: IntRect,
+        whole_list_span: ListSpan,
+        why_list_is_one_layer: Option<WhyListIsOneLayer>,
+    ) -> Self {
+        Self::one_layer_replaying_whole_list(
+            viewport_rect,
+            whole_list_span,
+            why_list_is_one_layer,
+            LayeringObstacles::default(),
+        )
     }
 
     // The lookups that the methods read, built from what the stack holds. Every index the stack holds must be in range.
@@ -1073,7 +1088,7 @@ impl LayerStack {
 
     /// Whether the layer is rastered in a space whose anchor the compositor animates, which the frame composites
     /// through the anchor's transform.
-    pub fn layer_is_in_animated_space(&self, layer_index: LayerIndex) -> bool {
+    fn layer_is_in_animated_space(&self, layer_index: LayerIndex) -> bool {
         matches!(
             self.spaces[self.space_of_layer(layer_index).0].anchor_kind,
             RasterSpaceAnchorKind::AnimatedTransform { .. }

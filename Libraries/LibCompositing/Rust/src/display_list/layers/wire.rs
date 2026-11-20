@@ -878,25 +878,27 @@ fn validated_stack(
     tree: &VisualContextTree,
     viewport_rect: IntRect,
 ) -> Result<LayerStack, &'static str> {
+    let nesting_of_live_effects = NestingOfLiveEffects::of(tree);
+    let layering_obstacles = LayeringObstacles::of_with_nesting_of_live_effects(list, tree, &nesting_of_live_effects);
     match stack {
         StackOnWire::OneLayer(why_list_is_one_layer) => {
             check_viewport_rect(viewport_rect)?;
-            let mut stack = LayerStack::single_layer(viewport_rect, list.whole_span(), Some(why_list_is_one_layer));
-            stack.layering_obstacles = LayeringObstacles::of(list, tree);
-            Ok(stack)
-        }
-        StackOnWire::Layered(plan) => {
-            let nesting_of_live_effects = NestingOfLiveEffects::of(tree);
-            LayerStack::of_plan_passing_checks(
-                plan,
-                RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
-                list,
-                tree,
+            Ok(LayerStack::one_layer_replaying_whole_list(
                 viewport_rect,
-                LayeringObstacles::of_with_nesting_of_live_effects(list, tree, &nesting_of_live_effects),
-                &nesting_of_live_effects,
-            )
+                list.whole_span(),
+                Some(why_list_is_one_layer),
+                layering_obstacles,
+            ))
         }
+        StackOnWire::Layered(plan) => LayerStack::of_plan_passing_checks(
+            plan,
+            RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
+            list,
+            tree,
+            viewport_rect,
+            layering_obstacles,
+            &nesting_of_live_effects,
+        ),
     }
 }
 
@@ -1694,10 +1696,11 @@ mod tests {
     #[test]
     fn a_stack_made_for_a_frame_not_drawn_as_planned_round_trips() {
         let page = page_with_two_canvases();
-        let stack = LayerStack::single_layer(
+        let stack = LayerStack::one_layer_replaying_whole_list(
             VIEWPORT,
             page.list.whole_span(),
             Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            LayeringObstacles::default(),
         );
         assert_eq!(page.validated(stack.clone()), Ok(stack));
     }
@@ -2621,10 +2624,11 @@ mod tests {
                     .expect("a dead node may have any parent"),
                 list: list_declaring_content_of_mask(effect_to_kill),
             };
-            let one_layer = LayerStack::single_layer(
+            let one_layer = LayerStack::one_layer_replaying_whole_list(
                 VIEWPORT,
                 page_with_dead_mask.list.whole_span(),
                 Some(WhyListIsOneLayer::EmptyViewport),
+                LayeringObstacles::default(),
             );
             for stack in [
                 page_with_dead_mask.validated(one_layer),

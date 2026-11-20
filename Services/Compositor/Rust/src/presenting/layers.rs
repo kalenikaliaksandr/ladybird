@@ -680,13 +680,12 @@ impl ContextLayers {
                 obstacles
             }
         };
-        let mut stack = LayerStack::single_layer(
+        LayerStack::one_layer_replaying_whole_list(
             viewport_rect,
             display_list.storage().whole_span(),
             Some(why_list_is_one_layer),
-        );
-        stack.layering_obstacles = obstacles;
-        stack
+            obstacles,
+        )
     }
 
     /// Takes the stack a frame draws with: the plan WebContent sent, or for a frame that is not drawn as a plan was
@@ -2404,7 +2403,12 @@ mod tests {
     }
 
     fn one_layer_of(display_list: &Rc<DisplayList>, viewport_rect: IntRect) -> LayerStack {
-        LayerStack::single_layer(viewport_rect, display_list.storage().whole_span(), None)
+        LayerStack::one_layer_replaying_whole_list(
+            viewport_rect,
+            display_list.storage().whole_span(),
+            None,
+            LayeringObstacles::default(),
+        )
     }
 
     fn scaled_twice() -> FloatMatrix4x4 {

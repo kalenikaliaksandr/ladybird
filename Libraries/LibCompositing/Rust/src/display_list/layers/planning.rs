@@ -2014,14 +2014,13 @@ fn one_layer(
     layering_obstacles: LayeringObstacles,
     placement: ListPlacement,
 ) -> PlannedLayers {
-    let mut stack = LayerStack::single_layer(
-        inputs.viewport_rect,
-        inputs.list.whole_span(),
-        Some(why_list_is_one_layer),
-    );
-    stack.layering_obstacles = layering_obstacles;
     PlannedLayers {
-        stack,
+        stack: LayerStack::one_layer_replaying_whole_list(
+            inputs.viewport_rect,
+            inputs.list.whole_span(),
+            Some(why_list_is_one_layer),
+            layering_obstacles,
+        ),
         notes: NotesOfStack::default(),
         placement,
     }
