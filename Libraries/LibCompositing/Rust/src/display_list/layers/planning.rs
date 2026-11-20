@@ -23,6 +23,7 @@ use super::{
     backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, media_name,
     wire,
 };
+use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
     KeyframeFiltersOfEffects, filter_may_spread_at_some_sample, nearest_effects_spreading_at_some_sample,
@@ -35,9 +36,7 @@ use crate::display_list::placement::{
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
-use crate::display_list::tiles::{
-    TILE_SIZE_IN_DEVICE_PIXELS, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching,
-};
+use crate::display_list::tiles::{TileCoord, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
 use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{CornerRadii, FloatPoint, IntRect};
 use std::collections::HashMap;
@@ -383,21 +382,6 @@ fn root_isolation_effect_is_plain_group(tree: &VisualContextTree) -> bool {
         }
         _ => false,
     }
-}
-
-// Empty where no transform animation of the tree leaves the plane.
-fn spatial_nodes_under_transform_animations_leaving_plane(tree: &VisualContextTree) -> Vec<bool> {
-    let roots: Vec<SpatialNodeIndex> = tree
-        .visual_animations()
-        .iter()
-        .filter(|animation| animation.target_kind == crate::host::FfiVisualAnimationTargetKind::Transform)
-        .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
-        .filter(|&node| tree.transform_animation_of_node_leaves_plane(node))
-        .collect();
-    if roots.is_empty() {
-        return Vec::new();
-    }
-    tree.spatial_nodes_in_subtrees_of(&roots)
 }
 
 /// Why a list cannot be layered at all.
@@ -930,7 +914,7 @@ fn place_list(
     let mut placed_media: Vec<PlacedMedia> = Vec::new();
     let mut media_without_layers = Vec::new();
     let spatial_node_is_under_transform_animation_leaving_plane =
-        spatial_nodes_under_transform_animations_leaving_plane(tree);
+        spatial_nodes_under_transform_animations(tree, |node| tree.transform_animation_of_node_leaves_plane(node));
     for live_content_record in &list.summary().live_content_records {
         let content = live_content_record.content;
         if matches!(content, LiveContent::ImageFrame(_)) {
@@ -999,12 +983,7 @@ fn place_list(
 
     let backdrop_reader_by_effect_index = backdrop_reader_by_reading_effect_index(tree);
     let effect_reads_what_is_below_it = |effect: EffectNodeIndex| {
-        backdrop_reader_by_effect_index[effect.0 as usize].is_some()
-            || match &tree.effect_nodes[effect.0 as usize].data {
-                EffectNodeData::Effects(effects) => effects.backdrop_filter.is_some(),
-                EffectNodeData::Mask(mask) => mask.masks_backdrop,
-                _ => false,
-            }
+        backdrop_reader_by_effect_index[effect.0 as usize].is_some() || effect_reads_below_it(tree, effect)
     };
     let canvas_or_video_painted_before_can_show_under =
         |first_run_index: usize, raster_space_index: RasterSpaceIndex, reach: IntRect| {
@@ -1393,7 +1372,7 @@ fn swept_reach_of_animated_space_in_parent_space(
             let composited_around_space = tables.animated_space_holding_every_run_of_effect(effect) == Some(space)
                 && !tables.moves_with(effect_node.spatial, space);
             if composited_around_space {
-                if crate::display_list::animated_transform_spaces::effect_reads_below_it(tree, effect) {
+                if effect_reads_below_it(tree, effect) {
                     return Err(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
                 }
                 if let Some(why) = why_compositor_cannot_composite_by_effect_index[effect.0 as usize] {
@@ -1525,12 +1504,10 @@ fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
     if rect.is_empty() {
         return rect;
     }
-    let tile_size = TILE_SIZE_IN_DEVICE_PIXELS;
-    let left = rect.x.div_euclid(tile_size) * tile_size;
-    let top = rect.y.div_euclid(tile_size) * tile_size;
-    let right = (rect.right() - 1).div_euclid(tile_size) * tile_size + tile_size;
-    let bottom = (rect.bottom() - 1).div_euclid(tile_size) * tile_size + tile_size;
-    IntRect::new(left, top, right - left, bottom - top)
+    let last_cell = TileCoord::of_pixel(rect.right() - 1, rect.bottom() - 1);
+    TileCoord::of_pixel(rect.x, rect.y)
+        .cell_rect()
+        .united(last_cell.cell_rect())
 }
 
 struct StackBeingBuilt<'a> {
@@ -2417,6 +2394,7 @@ mod tests {
         CanvasId, ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::{LayerIdentity, NodeNamesFromIndices, media_name};
+    use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
         CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, SpatialData, TransformData,

@@ -11,6 +11,7 @@
 use super::raster_spaces_for_placing::{
     RasterSpaceGeometryForPlacing, RasterSpacesForPlacing, rect_swept_over_translations,
 };
+use crate::display_list::animated_transform_spaces::spatial_nodes_under_transform_animations;
 use crate::display_list::chunks::ReachOutsideRunContext;
 use crate::display_list::commands::{ClipMode, ContextRef, DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::layers::backdrop_filter_read_reach;
@@ -20,7 +21,6 @@ use crate::display_list::placement::{
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage};
-use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::{ClipNodeData, EffectNodeData, VisualContextTree};
 use libgfx_rust::IntRect;
 use std::cell::RefCell;
@@ -80,24 +80,6 @@ pub(super) fn lowest_common_ancestor_space(
     candidate
 }
 
-// Empty where the tree has no transform animations.
-fn spatial_nodes_that_animation_samples_move_within_their_space(
-    tree: &VisualContextTree,
-    spaces: &[RasterSpace],
-) -> Vec<bool> {
-    let roots: Vec<SpatialNodeIndex> = tree
-        .visual_animations()
-        .iter()
-        .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Transform)
-        .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
-        .filter(|&node| spaces.iter().skip(1).all(|space| space.anchor != node))
-        .collect();
-    if roots.is_empty() {
-        return Vec::new();
-    }
-    tree.spatial_nodes_in_subtrees_of(&roots)
-}
-
 type CompositeClipsOfContextInSpace = Option<Rc<[CompositeClip]>>;
 
 /// Where content is placed among the spaces at a set of anchors: the spaces, the clips that can be left to apply when
@@ -132,8 +114,9 @@ impl PlacementTables {
         geometries: &[RasterSpaceGeometryForPlacing],
     ) -> Self {
         let spaces_len = spaces.spaces().len();
-        let spatial_node_moves_with_animation_samples =
-            spatial_nodes_that_animation_samples_move_within_their_space(tree, spaces.spaces());
+        let spatial_node_moves_with_animation_samples = spatial_nodes_under_transform_animations(tree, |node| {
+            spaces.spaces().iter().skip(1).all(|space| space.anchor != node)
+        });
         let composite_form_of_clips = tree
             .clip_nodes
             .iter()
