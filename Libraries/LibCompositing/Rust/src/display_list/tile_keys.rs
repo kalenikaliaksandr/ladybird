@@ -911,26 +911,14 @@ struct CellOfBandTiles {
     tiles: Vec<KeyedTile>,
 }
 
+/// A chunk that the spans of a band hold runs of. The spans hold whole runs.
 struct ChunkHeldByBand {
     chunk_index: ChunkIndexInList,
     placement: Arc<ChunkPlacedInRasterSpace>,
-    held_offset_ranges_in_paint_order: Vec<(u32, u32)>,
     held_run_indices: Vec<RunIndexInChunk>,
-    /// Per held run, where the first of its records the band holds is.
-    first_held_offset_by_held_run: Vec<u32>,
     reach_of_held_records: Reach<IntRect>,
     reach_past_listed_cells: Reach<IntRect>,
     binning_inputs_hash: ContentHash,
-}
-
-impl ChunkHeldByBand {
-    fn held_runs_with_first_held_positions(&self) -> impl Iterator<Item = (RunIndexInChunk, ListPosition)> + '_ {
-        let chunk_index = self.chunk_index;
-        self.held_run_indices
-            .iter()
-            .zip(&self.first_held_offset_by_held_run)
-            .map(move |(&run_index, &first_held_offset)| (run_index, ListPosition::new(chunk_index, first_held_offset)))
-    }
 }
 
 struct RunReplayedWholeWhereverRunGroupShows {
@@ -1197,21 +1185,22 @@ impl BandTileKeys {
 /// nearest to the middle of the shown rect, and shows nothing in the others.
 pub const MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME: usize = 4096;
 
-/// The runs of a chunk that `held_offset_ranges` hold records of, each with the offset of the first record held of it.
-/// Both are in order, so they are walked together.
-fn held_runs_with_first_held_offsets(
+/// The runs of a chunk that `held_offset_ranges`, which are in order and of whole runs, hold.
+fn runs_within_held_offset_ranges(
     runs: &[DisplayListCommandRun],
     held_offset_ranges: &[(u32, u32)],
-) -> Vec<(RunIndexInChunk, u32)> {
+) -> Vec<RunIndexInChunk> {
     let mut held_runs = Vec::new();
-    let mut held_offset_ranges = held_offset_ranges.iter().peekable();
-    for (run_index, run) in runs.iter().enumerate() {
-        while held_offset_ranges.next_if(|&&(_, end)| end <= run.offset).is_some() {}
-        if let Some(&&(begin, _)) = held_offset_ranges.peek()
-            && begin < run.offset + run.size
-        {
-            held_runs.push((RunIndexInChunk(run_index as u32), begin.max(run.offset)));
-        }
+    for &(begin, end) in held_offset_ranges {
+        let first_run_index = runs.partition_point(|run| run.offset < begin);
+        let end_run_index = runs.partition_point(|run| run.offset < end);
+        debug_assert!(
+            first_run_index < end_run_index
+                && runs[first_run_index].offset == begin
+                && runs[end_run_index - 1].offset + runs[end_run_index - 1].size == end,
+            "the checks of a plan take only bands whose spans are of whole runs"
+        );
+        held_runs.extend((first_run_index..end_run_index).map(|run_index| RunIndexInChunk(run_index as u32)));
     }
     held_runs
 }
@@ -2606,8 +2595,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             return record_alone;
         };
         let run_index = record.run_index;
-        let record_is_held = offset_is_held(&held_chunk.held_offset_ranges_in_paint_order, record.offset);
-        if !record_is_held || held_chunk.held_run_indices.binary_search(&run_index).is_err() {
+        if held_chunk.held_run_indices.binary_search(&run_index).is_err() {
             return record_alone;
         }
         let ranges_of_run = &held_chunk.placement.ranges_of_each_run[run_index.0 as usize];
@@ -2674,7 +2662,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             let mut effect_is_around_held_run = vec![false; tree.effect_nodes.len()];
             for (chunk_index, held_offset_ranges) in &held_offset_ranges_by_chunk {
                 let runs = display_list.chunk(*chunk_index).runs();
-                for (run_index, _) in held_runs_with_first_held_offsets(runs, held_offset_ranges) {
+                for run_index in runs_within_held_offset_ranges(runs, held_offset_ranges) {
                     let mut effect = runs[run_index.0 as usize].context.effect;
                     while !effect.is_none() && !effect_is_around_held_run[effect.0 as usize] {
                         effect_is_around_held_run[effect.0 as usize] = true;
@@ -2721,17 +2709,13 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 
         let mut held_chunks: Vec<ChunkHeldByBand> = Vec::with_capacity(held_offset_ranges_by_chunk.len());
         for (chunk_index, held_offset_ranges) in held_offset_ranges_by_chunk {
-            let (held_run_indices, first_held_offset_by_held_run): (Vec<RunIndexInChunk>, Vec<u32>) =
-                held_runs_with_first_held_offsets(display_list.chunk(chunk_index).runs(), &held_offset_ranges)
-                    .into_iter()
-                    .unzip();
+            let held_run_indices =
+                runs_within_held_offset_ranges(display_list.chunk(chunk_index).runs(), &held_offset_ranges);
             let placement = self.placement_of_runs_of_chunk(chunk_index, &held_run_indices);
             held_chunks.push(ChunkHeldByBand {
                 chunk_index,
                 placement,
-                held_offset_ranges_in_paint_order: held_offset_ranges,
                 held_run_indices,
-                first_held_offset_by_held_run,
                 reach_of_held_records: Reach::Nothing,
                 reach_past_listed_cells: Reach::Nothing,
                 binning_inputs_hash: 0,
@@ -2750,10 +2734,10 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let mut effect_was_visited = vec![false; tree.effect_nodes.len()];
         let mut backdrop_reads = Vec::new();
         for held_chunk in &held_chunks {
-            for (run_index, first_held_position) in held_chunk.held_runs_with_first_held_positions() {
-                let mut effect = display_list.chunk(held_chunk.chunk_index).runs()[run_index.0 as usize]
-                    .context
-                    .effect;
+            let runs = display_list.chunk(held_chunk.chunk_index).runs();
+            for &run_index in &held_chunk.held_run_indices {
+                let run = &runs[run_index.0 as usize];
+                let mut effect = run.context.effect;
                 while !effect.is_none()
                     && effect != effect_composited_around_band
                     && !effect_was_visited[effect.0 as usize]
@@ -2761,7 +2745,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     effect_was_visited[effect.0 as usize] = true;
                     let node = &tree.effect_nodes[effect.0 as usize];
                     if matches!(&node.data, EffectNodeData::Effects(effects) if effects.backdrop_filter.is_some()) {
-                        backdrop_reads.push(self.backdrop_read_in_layer(effect, first_held_position));
+                        backdrop_reads.push(
+                            self.backdrop_read_in_layer(effect, ListPosition::new(held_chunk.chunk_index, run.offset)),
+                        );
                     }
                     effect = node.parent;
                 }
@@ -2785,7 +2771,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             (Reach<IntRect>, ListPosition),
         > = BTreeMap::new();
         for held_chunk in &held_chunks {
-            for (run_index, position) in held_chunk.held_runs_with_first_held_positions() {
+            let runs = display_list.chunk(held_chunk.chunk_index).runs();
+            for &run_index in &held_chunk.held_run_indices {
+                let position = ListPosition::new(held_chunk.chunk_index, runs[run_index.0 as usize].offset);
                 let run_group_index = run_groups
                     .group_of_run(display_list.first_run_of_chunk(held_chunk.chunk_index) + run_index.0 as usize);
                 if !run_groups.group_is_under_mask(run_group_index)
@@ -2919,10 +2907,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             let mut chunk_binning_inputs_hasher = ContentHasher::new();
             chunk_binning_inputs_hasher.write_chunk_name(bound_band.chunk_names[held_chunk.chunk_index.0 as usize]);
             chunk_binning_inputs_hasher.write_content_hash(held_chunk.placement.placement_inputs_hash);
-            for &(begin, end) in &held_chunk.held_offset_ranges_in_paint_order {
-                chunk_binning_inputs_hasher.write_u32(begin);
-                chunk_binning_inputs_hasher.write_u32(end);
-            }
             for &run_index in &held_chunk.held_run_indices {
                 match bound_band.runs_replayed_whole.get(&(held_chunk.chunk_index, run_index)) {
                     Some(run_replayed_whole) => {
@@ -2941,15 +2925,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             let reach_past_listed_cells = if bound_band.backdrop_reads.is_empty() {
                 reach_of_runs_replayed_whole.united(held_chunk.placement.reach_past_listed_cells)
             } else {
+                let first_held_offset = held_chunk.held_run_indices.first().map_or(0, |run_index| {
+                    display_list.chunk(held_chunk.chunk_index).runs()[run_index.0 as usize].offset
+                });
                 reach_of_runs_replayed_whole.united(reach_extended_through_backdrop_reads(
                     reach_of_runs_binned_range_by_range,
-                    ListPosition::new(
-                        held_chunk.chunk_index,
-                        held_chunk
-                            .held_offset_ranges_in_paint_order
-                            .first()
-                            .map_or(0, |held_offset_range| held_offset_range.0),
-                    ),
+                    ListPosition::new(held_chunk.chunk_index, first_held_offset),
                     &bound_band.backdrop_reads,
                 ))
             };
@@ -2987,9 +2968,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
             for range_index in (first_binned_range_index.0..end_binned_range_index.0).map(PlacedRecordRangeIndex) {
                 let range = &held_chunk.placement.record_ranges[range_index.0 as usize];
-                if !offset_is_held(&held_chunk.held_offset_ranges_in_paint_order, range.begin_offset) {
-                    continue;
-                }
                 let paint_position = ListPosition::new(held_chunk.chunk_index, range.begin_offset);
                 visit(
                     paint_position,
@@ -4037,7 +4015,7 @@ mod tests {
     // A run that the held ranges skip, runs that a held range begins or ends inside, a run that holds no record, and a
     // held range over several runs.
     #[test]
-    fn held_runs_are_found_by_walking_runs_and_held_ranges_together() {
+    fn held_runs_are_found_by_binary_search_of_the_held_ranges() {
         let run = |offset: u32, size: u32| DisplayListCommandRun {
             offset,
             size,
@@ -4045,28 +4023,26 @@ mod tests {
         };
         let runs = [
             run(0, 16),
-            run(16, 0),
             run(16, 32),
             run(48, 16),
             run(64, 16),
             run(80, 16),
             run(96, 16),
         ];
-        let held_offset_ranges = [(8, 24), (40, 56), (80, 112)];
+        let held_offset_ranges = [(16, 48), (64, 112)];
         let overlap =
             |run: &DisplayListCommandRun, &(begin, end): &(u32, u32)| begin < run.offset + run.size && run.offset < end;
-        let held_runs_one_by_one: Vec<(RunIndexInChunk, u32)> = runs
+        let held_runs_one_by_one: Vec<RunIndexInChunk> = runs
             .iter()
             .enumerate()
-            .filter_map(|(run_index, run)| {
-                let &(begin, _) = held_offset_ranges.iter().find(|range| overlap(run, range))?;
-                Some((RunIndexInChunk(run_index as u32), begin.max(run.offset)))
-            })
+            .filter(|(_, run)| held_offset_ranges.iter().any(|range| overlap(run, range)))
+            .map(|(run_index, _)| RunIndexInChunk(run_index as u32))
             .collect();
         assert_eq!(
-            held_runs_with_first_held_offsets(&runs, &held_offset_ranges),
+            runs_within_held_offset_ranges(&runs, &held_offset_ranges),
             held_runs_one_by_one
         );
+        let held_offset_ranges = [(8, 24), (40, 56), (80, 112)];
         for offset in 0..120 {
             assert_eq!(
                 offset_is_held(&held_offset_ranges, offset),
