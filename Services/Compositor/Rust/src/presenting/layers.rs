@@ -316,6 +316,9 @@ struct StackOfFrames {
     viewport_to_raster_transform: FloatMatrix4x4,
     raster_spaces: Option<RasterSpaces>,
     geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
+    /// With the copy of the tree without the samples of the compositor's animations it was worked out of, as it reads
+    /// no sample.
+    what_every_space_of_tree_shares: Option<(u64, Rc<WhatEverySpaceOfTreeShares>)>,
     /// By band index, the tile keys of the bands as the latest frame drawn with the stack keyed its tiles, painted or not.
     band_tile_keys: Vec<Option<BandTileKeysOfFrame>>,
     /// What the layers overlay calls the layers whose names it shows, worked out by the first frame that shows each.
@@ -355,6 +358,7 @@ impl StackOfFrames {
             viewport_to_raster_transform,
             raster_spaces: None,
             geometry_by_space,
+            what_every_space_of_tree_shares: None,
             names_of_layers_for_overlay: RefCell::default(),
         }
     }
@@ -367,7 +371,6 @@ impl StackOfFrames {
     ) -> Vec<Rc<RasterSpaceGeometry>> {
         let stack = &self.stack;
         let mut geometries = Vec::with_capacity(stack.spaces.len());
-        let mut what_every_space_of_tree_shares: Option<Rc<WhatEverySpaceOfTreeShares>> = None;
         for (space_index, cached_geometry) in self.geometry_by_space.iter_mut().enumerate() {
             let raster_space_index = RasterSpaceIndex(space_index);
             // What reads the geometry of a space of a plan that holds nothing that moves within it reads no value the
@@ -402,8 +405,19 @@ impl StackOfFrames {
             let raster_spaces = self
                 .raster_spaces
                 .get_or_insert_with(|| RasterSpaces::of_spaces(tree, stack.spaces.clone()));
-            let what_every_space_of_tree_shares =
-                what_every_space_of_tree_shares.get_or_insert_with(|| WhatEverySpaceOfTreeShares::of(tree));
+            let tree_copy_without_animation_samples = tree.copy_without_animation_samples();
+            let what_every_space_of_tree_shares = match &self.what_every_space_of_tree_shares {
+                Some((tree_copy, shares)) if *tree_copy == tree_copy_without_animation_samples => shares,
+                _ => {
+                    &self
+                        .what_every_space_of_tree_shares
+                        .insert((
+                            tree_copy_without_animation_samples,
+                            WhatEverySpaceOfTreeShares::of(tree),
+                        ))
+                        .1
+                }
+            };
             let geometry = Rc::new(RasterSpaceGeometry::new(
                 tree,
                 raster_spaces,
