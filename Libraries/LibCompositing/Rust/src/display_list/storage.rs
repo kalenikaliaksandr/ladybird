@@ -19,7 +19,6 @@ use super::summary::{DisplayListSummary, IndexedRecord, summarize, summary_of_pi
 use super::tile_keys::{ChunkPlacedInRasterSpace, ContentHash, RecordTable};
 use super::validate::validate_tape;
 use crate::visual_context::VisualContextTree;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 // Room for the spaces a chunk shows in and those of a moment before, which a scroll that comes back needs again.
@@ -96,17 +95,6 @@ impl ListSpan {
     }
 }
 
-/// Names a chunk of a list in a way that outlives the list: by its id, by how many chunks before it in the list have
-/// that id, which tells apart the chunks of one id that a list names more than once, and by the copy of its bytes the
-/// list holds. An id is a hash that another process can make two chunks share, so what is kept by the name of a chunk
-/// holds only for the bytes it was kept for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ChunkName {
-    pub id: ChunkId,
-    pub occurrence: u32,
-    pub copy_number: u64,
-}
-
 enum RecordsAndRuns {
     Copied {
         records: AlignedBytes,
@@ -121,8 +109,6 @@ enum RecordsAndRuns {
 /// shares it, and what is known of the chunk alone is worked out once, for all of them.
 pub struct ListChunk {
     pub id: ChunkId,
-    /// A number no other chunk this process holds has had, which tells two chunks of one id apart.
-    copy_number: u64,
     records_and_runs: RecordsAndRuns,
     records_reaching_outside_run_context: OnceLock<Vec<TopLevelRecordReachingOutsideRunContext>>,
     summary: OnceLock<DisplayListSummary>,
@@ -134,7 +120,6 @@ impl ListChunk {
     fn new(id: ChunkId, records_and_runs: RecordsAndRuns) -> Self {
         Self {
             id,
-            copy_number: crate::visual_context::allocate_structural_epoch(),
             records_and_runs,
             records_reaching_outside_run_context: OnceLock::new(),
             summary: OnceLock::new(),
@@ -269,7 +254,6 @@ pub struct DisplayListStorage {
     // planes by depth.
     cached_run_groups: Mutex<Option<Arc<RunGroups>>>,
     summary: OnceLock<DisplayListSummary>,
-    chunk_names: OnceLock<Arc<[ChunkName]>>,
 }
 
 impl DisplayListStorage {
@@ -291,7 +275,6 @@ impl DisplayListStorage {
             effect_clip_plan: OnceLock::new(),
             cached_run_groups: Mutex::new(None),
             summary: OnceLock::new(),
-            chunk_names: OnceLock::new(),
         })
     }
 
@@ -342,30 +325,7 @@ impl DisplayListStorage {
         &self.chunks_in_paint_order[index.0 as usize]
     }
 
-    /// The name of each chunk of the list, by its place in the list.
-    pub fn chunk_names(&self) -> Arc<[ChunkName]> {
-        self.chunk_names
-            .get_or_init(|| {
-                let mut occurrences_so_far_by_id: HashMap<ChunkId, u32> = HashMap::new();
-                self.chunks_in_paint_order
-                    .iter()
-                    .map(|chunk| {
-                        let occurrence = occurrences_so_far_by_id.entry(chunk.id).or_default();
-                        let name = ChunkName {
-                            id: chunk.id,
-                            occurrence: *occurrence,
-                            copy_number: chunk.copy_number,
-                        };
-                        *occurrence += 1;
-                        name
-                    })
-                    .collect()
-            })
-            .clone()
-    }
-
-    /// Whether `other` holds the same chunks in the same order, which is when the chunk names of the two lists are the
-    /// same.
+    /// Whether `other` holds chunks of the same ids in the same order.
     pub fn holds_same_chunks_in_same_order_as(&self, other: &Self) -> bool {
         self.chunks_in_paint_order.len() == other.chunks_in_paint_order.len()
             && self

@@ -28,7 +28,7 @@ use libcompositing_rust::display_list::effect_geometry::{
 };
 use libcompositing_rust::display_list::layers::{
     BandIndex, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, NodeNamesFromIndices,
-    PlacementNodeBand, PlacementNodeIdentity, RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer,
+    PlacementNodeIdentity, RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer,
     WindowServerPlacementsOfMedia,
 };
 use libcompositing_rust::display_list::placement::{
@@ -36,7 +36,6 @@ use libcompositing_rust::display_list::placement::{
 };
 use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::{CompositeClipsOfRaster, ReplaySelection};
-use libcompositing_rust::display_list::storage::ChunkName;
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
 use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
@@ -46,14 +45,12 @@ use libcompositing_rust::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
 use libcompositing_rust::display_list::window_server_placement::{
     WhyWindowServerCannotShowMedia, WindowServerPlacement,
 };
-use libcompositing_rust::fast_hash::fast_hasher;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, ScalingMode};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::Hasher;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 const PRESENTABLE_SURFACE_POOL_OF_COMPOSITOR_OVERLAYS: u32 = u32::MAX;
@@ -238,148 +235,19 @@ fn any_layer_shown_by_window_server(compositing_of_layers: &[LayerCompositingInF
         .any(|compositing| compositing.shown_by_window_server)
 }
 
-/// What the tile keys of a band were bound with, besides the list the stack of frames keeps them for.
-struct BindingOfBandTileKeys {
-    geometry: Rc<RasterSpaceGeometry>,
-    band: PlacementNodeBand,
-    base_layer: LayerIndex,
-}
-
+/// The tile keys of a band of the stack of frames, and the geometry they were bound with besides the list of the stack.
 #[derive(Default)]
 struct BandTileKeysOfFrame {
-    identities: BandIdentities,
-    binding: Option<BindingOfBandTileKeys>,
+    geometry_bound_with: Option<Rc<RasterSpaceGeometry>>,
     tile_keys: BandTileKeys,
 }
 
 impl BandTileKeysOfFrame {
     fn bound_geometry(&self) -> &RasterSpaceGeometry {
-        &self
-            .binding
+        self.geometry_bound_with
             .as_ref()
             .expect("the tile keys of a band of a frame are bound")
-            .geometry
     }
-}
-
-// The first identity holds while bands of the node painted before this one come or go, the second while the records
-// the band starts with change.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct BandIdentities {
-    identity_by_first_record_position: u64,
-    identity_by_band_ordinal: u64,
-}
-
-impl BandIdentities {
-    fn of(stack: &LayerStack, band_index: BandIndex, chunk_names: &[ChunkName]) -> Self {
-        let band = &stack.bands[band_index.0];
-        let node_identity_hash = stack.nodes[band.placement_node_index.0].identity.0;
-        let first_record_position = band.first_record_position;
-        let mut first_record_position_hasher = fast_hasher();
-        first_record_position_hasher.write_u8(1);
-        first_record_position_hasher.write_u64(node_identity_hash);
-        if let Some(chunk_name) = chunk_names.get(first_record_position.chunk_index.0 as usize) {
-            first_record_position_hasher.write_u64(chunk_name.id.0[0]);
-            first_record_position_hasher.write_u64(chunk_name.id.0[1]);
-            first_record_position_hasher.write_u32(chunk_name.occurrence);
-        }
-        first_record_position_hasher.write_u32(first_record_position.offset);
-        let mut band_ordinal_hasher = fast_hasher();
-        band_ordinal_hasher.write_u8(2);
-        band_ordinal_hasher.write_u64(node_identity_hash);
-        band_ordinal_hasher.write_u32(band.band_ordinal_in_node);
-        Self {
-            identity_by_first_record_position: first_record_position_hasher.finish(),
-            identity_by_band_ordinal: band_ordinal_hasher.finish(),
-        }
-    }
-}
-
-const BAND_IDENTITY_KINDS_IN_MATCHING_ORDER: [fn(&BandIdentities) -> u64; 2] = [
-    |identities| identities.identity_by_first_record_position,
-    |identities| identities.identity_by_band_ordinal,
-];
-
-// Per identity kind, where the tile keys of the latest frame are that have each identity.
-struct PositionsOfBandTileKeysByIdentity([HashMap<u64, BTreeSet<usize>>; 2]);
-
-impl PositionsOfBandTileKeysByIdentity {
-    fn of(band_tile_keys: &[BandTileKeysOfFrame]) -> Self {
-        let mut positions = Self([HashMap::new(), HashMap::new()]);
-        for (position, band_tile_keys) in band_tile_keys.iter().enumerate() {
-            positions.insert(&band_tile_keys.identities, position);
-        }
-        positions
-    }
-
-    fn insert(&mut self, identities: &BandIdentities, position: usize) {
-        for (positions_by_identity, identity_of) in self.0.iter_mut().zip(BAND_IDENTITY_KINDS_IN_MATCHING_ORDER) {
-            positions_by_identity
-                .entry(identity_of(identities))
-                .or_default()
-                .insert(position);
-        }
-    }
-
-    fn remove(&mut self, identities: &BandIdentities, position: usize) {
-        for (positions_by_identity, identity_of) in self.0.iter_mut().zip(BAND_IDENTITY_KINDS_IN_MATCHING_ORDER) {
-            if let Some(positions) = positions_by_identity.get_mut(&identity_of(identities)) {
-                positions.remove(&position);
-            }
-        }
-    }
-
-    fn first_position(&self, identity_kind: usize, identity: u64) -> Option<usize> {
-        self.0[identity_kind].get(&identity)?.first().copied()
-    }
-}
-
-// Per identity kind in order, each band not matched yet takes the first of the latest frame's tile keys that has its
-// identity, which leaves the last of them in its place. A band's tile keys are found by their identity, as the bands of
-// a received stack are too many to compare each with each.
-fn reuse_tile_keys_of_matching_bands(
-    band_tile_keys_of_latest_frame: &mut Vec<BandTileKeysOfFrame>,
-    identities_of_bands: &[BandIdentities],
-) -> Vec<Option<BandTileKeysOfFrame>> {
-    let mut reused_by_band: Vec<Option<BandTileKeysOfFrame>> = identities_of_bands.iter().map(|_| None).collect();
-    let mut positions = PositionsOfBandTileKeysByIdentity::of(band_tile_keys_of_latest_frame);
-    for (identity_kind, identity_of) in BAND_IDENTITY_KINDS_IN_MATCHING_ORDER.into_iter().enumerate() {
-        for (reused, identities) in reused_by_band.iter_mut().zip(identities_of_bands) {
-            if reused.is_some() {
-                continue;
-            }
-            let Some(position) = positions.first_position(identity_kind, identity_of(identities)) else {
-                continue;
-            };
-            let last_position = band_tile_keys_of_latest_frame.len() - 1;
-            positions.remove(&band_tile_keys_of_latest_frame[position].identities, position);
-            if position != last_position {
-                let last_identities = band_tile_keys_of_latest_frame[last_position].identities;
-                positions.remove(&last_identities, last_position);
-                positions.insert(&last_identities, position);
-            }
-            *reused = Some(band_tile_keys_of_latest_frame.swap_remove(position));
-        }
-    }
-    reused_by_band
-}
-
-/// By band index, the tile keys each band of a stack takes from those of another stack: those found by the identities of
-/// the band, or new ones, with the identities of the band.
-fn band_tile_keys_taken_from_other_stack(
-    mut band_tile_keys_of_other_stack: Vec<BandTileKeysOfFrame>,
-    identities_of_bands: Vec<BandIdentities>,
-) -> Vec<Option<BandTileKeysOfFrame>> {
-    reuse_tile_keys_of_matching_bands(&mut band_tile_keys_of_other_stack, &identities_of_bands)
-        .into_iter()
-        .zip(identities_of_bands)
-        .map(|(taken, identities)| {
-            Some(BandTileKeysOfFrame {
-                identities,
-                ..taken.unwrap_or_default()
-            })
-        })
-        .collect()
 }
 
 /// What a frame paints of its layers: where it composites them, the tiles it shows of each, and the media and composited
@@ -450,50 +318,45 @@ struct StackOfFrames {
     geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
     /// By band index, the tile keys of the bands as the latest frame drawn with the stack keyed its tiles, painted or not.
     band_tile_keys: Vec<Option<BandTileKeysOfFrame>>,
-    /// The list the band tile keys are bound to: that of the latest frame that keyed them.
-    display_list_of_band_tile_keys: Option<Rc<DisplayList>>,
     /// What the layers overlay calls the layers whose names it shows, worked out by the first frame that shows each.
     names_of_layers_for_overlay: RefCell<HashMap<LayerIndex, Rc<str>>>,
 }
 
 impl StackOfFrames {
     /// Keeps the geometries of the spaces of the stack the latest frame drew with where the spaces are at the same
-    /// anchors under the same raster transform, as the geometry of a space does not depend on the viewport. Answers too
-    /// the tile keys of the bands of that stack.
+    /// anchors under the same raster transform, as the geometry of a space does not depend on the viewport. Every band
+    /// starts with no tile keys.
     fn new(
         layer_plan: Option<ReceivedLayerPlan>,
         stack: Rc<LayerStack>,
         viewport_to_raster_transform: FloatMatrix4x4,
         latest: Option<StackOfFrames>,
-    ) -> (Self, Vec<BandTileKeysOfFrame>) {
-        let mut geometry_by_space: Vec<_> = (0..stack.spaces.len()).map(|_| None).collect();
-        let mut band_tile_keys_of_latest_stack = Vec::new();
-        let mut display_list_of_band_tile_keys = None;
-        if let Some(latest) = latest {
-            if latest.viewport_to_raster_transform == viewport_to_raster_transform
-                && latest
-                    .stack
-                    .spaces
-                    .iter()
-                    .map(|space| space.anchor)
-                    .eq(stack.spaces.iter().map(|space| space.anchor))
+    ) -> Self {
+        let geometry_by_space = match latest {
+            Some(latest)
+                if latest.viewport_to_raster_transform == viewport_to_raster_transform
+                    && latest
+                        .stack
+                        .spaces
+                        .iter()
+                        .map(|space| space.anchor)
+                        .eq(stack.spaces.iter().map(|space| space.anchor)) =>
             {
-                geometry_by_space = latest.geometry_by_space;
+                latest.geometry_by_space
             }
-            band_tile_keys_of_latest_stack = latest.band_tile_keys.into_iter().flatten().collect();
-            display_list_of_band_tile_keys = latest.display_list_of_band_tile_keys;
-        }
-        let stack_of_frames = Self {
+            _ => (0..stack.spaces.len()).map(|_| None).collect(),
+        };
+        Self {
             layer_plan,
+            band_tile_keys: (0..stack.bands.len())
+                .map(|_| Some(BandTileKeysOfFrame::default()))
+                .collect(),
             stack,
             viewport_to_raster_transform,
             raster_spaces: None,
             geometry_by_space,
-            band_tile_keys: Vec::new(),
-            display_list_of_band_tile_keys,
             names_of_layers_for_overlay: RefCell::default(),
-        };
-        (stack_of_frames, band_tile_keys_of_latest_stack)
+        }
     }
 
     /// Per raster space, its geometry under the tree and the scroll offsets of the frame.
@@ -680,13 +543,13 @@ impl ContextLayers {
 
     /// Takes the stack a frame draws with: the plan WebContent sent, or for a frame that is not drawn as a plan was
     /// made for, one layer that replays the whole list. Keeps what frames kept of the stack where the frame before drew
-    /// with the same plan, and otherwise answers the tile keys of the bands of the stack the frame before drew with.
+    /// with the same plan, and answers whether the frame took another stack.
     fn take_stack_of_frame(
         &mut self,
         layer_plan: Option<&ReceivedLayerPlan>,
         one_layer: impl FnOnce(&mut Self) -> LayerStack,
         viewport_to_raster_transform: FloatMatrix4x4,
-    ) -> Option<Vec<BandTileKeysOfFrame>> {
+    ) -> bool {
         let latest_plan = self
             .stack_of_frames
             .as_ref()
@@ -694,20 +557,19 @@ impl ContextLayers {
         if let Some(layer_plan) = layer_plan
             && latest_plan.is_some_and(|latest_plan| Rc::ptr_eq(&latest_plan.stack, &layer_plan.stack))
         {
-            return None;
+            return false;
         }
         let stack = match layer_plan {
             Some(layer_plan) => layer_plan.stack.clone(),
             None => Rc::new(one_layer(self)),
         };
-        let (stack_of_frames, band_tile_keys_of_latest_stack) = StackOfFrames::new(
+        self.stack_of_frames = Some(StackOfFrames::new(
             layer_plan.cloned(),
             stack,
             viewport_to_raster_transform,
             self.stack_of_frames.take(),
-        );
-        self.stack_of_frames = Some(stack_of_frames);
-        Some(band_tile_keys_of_latest_stack)
+        ));
+        true
     }
 
     pub fn tile_raster_scratch_surface_release_timer_fired(&mut self) {
@@ -1094,10 +956,6 @@ fn unclipped_untransformed_surface_sublayer(
     }
 }
 
-fn lists_hold_same_chunks(cached_list: &Rc<DisplayList>, list: &Rc<DisplayList>) -> bool {
-    Rc::ptr_eq(cached_list, list) || cached_list.storage().chunk_names() == list.storage().chunk_names()
-}
-
 fn compositing_of_layer(
     stack: &LayerStack,
     layer_index: LayerIndex,
@@ -1154,8 +1012,8 @@ impl ContextPresenting {
         let one_layer = |layers: &mut ContextLayers| {
             layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect, why_list_is_one_layer)
         };
-        let band_tile_keys_of_other_stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
-        let took_plan_into_use = layer_plan.is_some() && band_tile_keys_of_other_stack.is_some();
+        let took_another_stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
+        let took_plan_into_use = layer_plan.is_some() && took_another_stack;
         let layer_update = self.with_stack_of_frames(|this, stack_of_frames| {
             this.layer_update_of_stack(
                 env,
@@ -1165,7 +1023,6 @@ impl ContextPresenting {
                 invalidates_every_tile,
                 frame_allows_lcd_text,
                 stack_of_frames,
-                band_tile_keys_of_other_stack,
             )
         });
         let Some((mut layer_update, stale_rect)) = layer_update else {
@@ -1222,7 +1079,6 @@ impl ContextPresenting {
         invalidates_every_tile: bool,
         frame_allows_lcd_text: bool,
         stack_of_frames: &mut StackOfFrames,
-        band_tile_keys_of_other_stack: Option<Vec<BandTileKeysOfFrame>>,
     ) -> Option<(LayerUpdate, IntRect)> {
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
@@ -1311,23 +1167,7 @@ impl ContextPresenting {
             })
             .collect();
 
-        let chunk_names = storage.chunk_names();
-        let list_holds_chunks_the_band_tile_keys_are_bound_to = stack_of_frames
-            .display_list_of_band_tile_keys
-            .as_ref()
-            .is_some_and(|list_of_band_tile_keys| lists_hold_same_chunks(list_of_band_tile_keys, frame.display_list));
-        // The tile keys that a frame drawn with the same stack left are bound to the list, the bands and the base layer
-        // of this frame, as frames drawn with one stack draw one list.
-        let band_tile_keys_are_of_same_stack = band_tile_keys_of_other_stack.is_none();
-        let mut band_tile_keys_by_band = match band_tile_keys_of_other_stack {
-            None => std::mem::take(&mut stack_of_frames.band_tile_keys),
-            Some(band_tile_keys_of_other_stack) => band_tile_keys_taken_from_other_stack(
-                band_tile_keys_of_other_stack,
-                (0..stack.bands.len())
-                    .map(|band_index| BandIdentities::of(stack, BandIndex(band_index), &chunk_names))
-                    .collect(),
-            ),
-        };
+        let mut band_tile_keys_by_band = std::mem::take(&mut stack_of_frames.band_tile_keys);
         let composited_filter_read_reach_by_layer = composited_filter_read_reach_by_layer(stack, tree, &geometries);
         let mut work_counts = FrameWorkCounts::default();
         let mut shown_tiles_by_layer: Vec<Vec<TileShownInFrame>> =
@@ -1352,20 +1192,15 @@ impl ContextPresenting {
                 .rect_shown_in_layer_space(viewport_rect, composited_filter_read_reach);
             let mut band_tile_keys =
                 band_tile_keys_of_latest_frame.expect("a band at or above the base layer keeps its tile keys");
-            let still_bound_to_same_list_and_geometry = band_tile_keys.binding.as_ref().is_some_and(|binding| {
-                Rc::ptr_eq(&binding.geometry, &geometries[raster_space_index.0])
-                    && (band_tile_keys_are_of_same_stack
-                        || (list_holds_chunks_the_band_tile_keys_are_bound_to
-                            && binding.band == *band
-                            && binding.base_layer == stack.base_layer))
-            });
-            if !still_bound_to_same_list_and_geometry {
+            // Frames drawn with one stack draw one list, so the tile keys of the band are bound to the list and the band
+            // of the frame.
+            let still_bound_to_same_geometry = band_tile_keys
+                .geometry_bound_with
+                .as_ref()
+                .is_some_and(|geometry| Rc::ptr_eq(geometry, &geometries[raster_space_index.0]));
+            if !still_bound_to_same_geometry {
                 tile_keying.bind_band(&mut band_tile_keys.tile_keys, stack, band_index);
-                band_tile_keys.binding = Some(BindingOfBandTileKeys {
-                    geometry: geometries[raster_space_index.0].clone(),
-                    band: band.clone(),
-                    base_layer: stack.base_layer,
-                });
+                band_tile_keys.geometry_bound_with = Some(geometries[raster_space_index.0].clone());
             }
             let keying_counts = tile_keying.key_shown_tiles(
                 &mut band_tile_keys.tile_keys,
@@ -1432,14 +1267,11 @@ impl ContextPresenting {
             }
             band_tile_keys_by_band[band_position] = Some(band_tile_keys);
             if frame_shows_too_many_tiles {
-                // The tile keys of the bands not keyed yet may be bound to another list.
-                band_tile_keys_by_band[band_position + 1..].fill_with(|| None);
                 break;
             }
         }
         // The frame paints its tiles from the stack, which keeps the tile keys where the frame is not painted.
         stack_of_frames.band_tile_keys = band_tile_keys_by_band;
-        stack_of_frames.display_list_of_band_tile_keys = Some(frame.display_list.clone());
         if frame_shows_too_many_tiles {
             return None;
         }
@@ -2283,142 +2115,6 @@ mod tests {
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
 
-    // How bands matched the tile keys of the latest frame when each was compared with each.
-    fn tile_keys_reused_by_comparing_every_band_with_every_band(
-        band_tile_keys_of_latest_frame: &mut Vec<BandTileKeysOfFrame>,
-        identities_of_bands: &[BandIdentities],
-    ) -> Vec<Option<BandTileKeysOfFrame>> {
-        let mut reused_by_band: Vec<Option<BandTileKeysOfFrame>> = identities_of_bands.iter().map(|_| None).collect();
-        for identity_of in BAND_IDENTITY_KINDS_IN_MATCHING_ORDER {
-            for (reused, identities) in reused_by_band.iter_mut().zip(identities_of_bands) {
-                if reused.is_some() {
-                    continue;
-                }
-                if let Some(index) = band_tile_keys_of_latest_frame
-                    .iter()
-                    .position(|band_tile_keys| identity_of(&band_tile_keys.identities) == identity_of(identities))
-                {
-                    *reused = Some(band_tile_keys_of_latest_frame.swap_remove(index));
-                }
-            }
-        }
-        reused_by_band
-    }
-
-    fn band_tile_keys_of(identities: BandIdentities) -> BandTileKeysOfFrame {
-        BandTileKeysOfFrame {
-            identities,
-            binding: None,
-            tile_keys: BandTileKeys::default(),
-        }
-    }
-
-    fn identities_of(band_tile_keys: &[Option<BandTileKeysOfFrame>]) -> Vec<Option<(u64, u64)>> {
-        band_tile_keys
-            .iter()
-            .map(|band_tile_keys| {
-                band_tile_keys.as_ref().map(|band_tile_keys| {
-                    (
-                        band_tile_keys.identities.identity_by_first_record_position,
-                        band_tile_keys.identities.identity_by_band_ordinal,
-                    )
-                })
-            })
-            .collect()
-    }
-
-    #[test]
-    fn bands_found_by_identity_match_as_bands_compared_each_with_each() {
-        // Few distinct identities of each kind, so that many bands share one.
-        let mut state = 0x9e37_79b9_7f4a_7c15u64;
-        let mut next = |range: u64| {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            (state >> 33) % range
-        };
-        for _ in 0..500 {
-            let latest_count = next(24) as usize;
-            let band_count = next(24) as usize;
-            let mut identities = |count: usize| -> Vec<BandIdentities> {
-                (0..count)
-                    .map(|_| BandIdentities {
-                        identity_by_first_record_position: next(6),
-                        identity_by_band_ordinal: next(4),
-                    })
-                    .collect()
-            };
-            let latest = identities(latest_count);
-            let bands = identities(band_count);
-            let mut latest_found_by_identity: Vec<BandTileKeysOfFrame> =
-                latest.iter().copied().map(band_tile_keys_of).collect();
-            let mut latest_compared_each_with_each: Vec<BandTileKeysOfFrame> =
-                latest.iter().copied().map(band_tile_keys_of).collect();
-            let found_by_identity = reuse_tile_keys_of_matching_bands(&mut latest_found_by_identity, &bands);
-            let compared_each_with_each =
-                tile_keys_reused_by_comparing_every_band_with_every_band(&mut latest_compared_each_with_each, &bands);
-            assert_eq!(
-                identities_of(&found_by_identity),
-                identities_of(&compared_each_with_each)
-            );
-            let left_over =
-                |left: Vec<BandTileKeysOfFrame>| identities_of(&left.into_iter().map(Some).collect::<Vec<_>>());
-            assert_eq!(
-                left_over(latest_found_by_identity),
-                left_over(latest_compared_each_with_each)
-            );
-        }
-    }
-
-    fn identities(identity_by_first_record_position: u64, identity_by_band_ordinal: u64) -> BandIdentities {
-        BandIdentities {
-            identity_by_first_record_position,
-            identity_by_band_ordinal,
-        }
-    }
-
-    #[test]
-    fn bands_drawn_with_another_stack_take_the_tile_keys_found_by_their_identities() {
-        // The first band starts with the records that the second band of the latest frame started with, the second is
-        // the band of the node that the first band of the latest frame was, and the third is new.
-        let latest = [identities(1, 10), identities(2, 20)];
-        let bands = [identities(2, 99), identities(98, 10), identities(97, 97)];
-        let band_taking_tile_keys_of_latest_band = [1, 0];
-        // A flag of the tile keys tells which tile keys of the latest frame a band takes.
-        for marked_latest_band in 0..latest.len() {
-            let band_tile_keys_of_latest_frame = latest
-                .iter()
-                .enumerate()
-                .map(|(latest_band, identities)| {
-                    let mut band_tile_keys = band_tile_keys_of(*identities);
-                    band_tile_keys.tile_keys.replays_whole_list = latest_band == marked_latest_band;
-                    band_tile_keys
-                })
-                .collect();
-            let taken = band_tile_keys_taken_from_other_stack(band_tile_keys_of_latest_frame, bands.to_vec());
-            assert_eq!(
-                identities_of(&taken),
-                bands
-                    .iter()
-                    .map(|identities| Some((
-                        identities.identity_by_first_record_position,
-                        identities.identity_by_band_ordinal
-                    )))
-                    .collect::<Vec<_>>()
-            );
-            let bands_taking_marked_tile_keys: Vec<usize> = taken
-                .iter()
-                .enumerate()
-                .filter(|(_, taken)| taken.as_ref().is_some_and(|taken| taken.tile_keys.replays_whole_list))
-                .map(|(band, _)| band)
-                .collect();
-            assert_eq!(
-                bands_taking_marked_tile_keys,
-                [band_taking_tile_keys_of_latest_band[marked_latest_band]]
-            );
-        }
-    }
-
     fn tree_of_viewport() -> Arc<VisualContextTree> {
         Arc::new(VisualContextTree::create(TransformData {
             matrix: FloatMatrix4x4::identity(),
@@ -2463,15 +2159,12 @@ mod tests {
         matrix
     }
 
-    // Answers whether the frame keeps what frames kept of the stack, as the band tile keys of the frame before.
     fn frame_keeps_what_frames_kept_of_the_stack(
         layers: &mut ContextLayers,
         layer_plan: Option<&ReceivedLayerPlan>,
         one_layer: LayerStack,
     ) -> bool {
-        layers
-            .take_stack_of_frame(layer_plan, |_| one_layer, FloatMatrix4x4::identity())
-            .is_none()
+        !layers.take_stack_of_frame(layer_plan, |_| one_layer, FloatMatrix4x4::identity())
     }
 
     #[test]
@@ -2510,22 +2203,10 @@ mod tests {
         layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
         let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         let geometry = stack_of_frames.geometries_of_spaces(&tree, &[]).remove(0);
-        stack_of_frames.band_tile_keys = vec![
-            Some(band_tile_keys_of(identities(1, 1))),
-            None,
-            Some(band_tile_keys_of(identities(2, 2))),
-        ];
 
-        let band_tile_keys_of_other_stack = layers
-            .take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), identity)
-            .expect("a frame drawn with another stack takes the band tile keys of the stack before");
+        assert!(layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), identity));
         let resized = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         assert!(Rc::ptr_eq(&resized.geometries_of_spaces(&tree, &[])[0], &geometry));
-        let band_tile_keys_of_other_stack: Vec<_> = band_tile_keys_of_other_stack.into_iter().map(Some).collect();
-        assert_eq!(
-            identities_of(&band_tile_keys_of_other_stack),
-            [Some((1, 1)), Some((2, 2))]
-        );
 
         layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), scaled_twice());
         let scaled = layers.stack_of_frames.as_ref().expect("the frame took a stack");
