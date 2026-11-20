@@ -18,9 +18,9 @@
 use super::wire::plan_holds_more_than_compositor_decodes;
 use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
-    MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex,
-    WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, backdrop_reader_by_reading_effect_index,
-    composited_effects_nest_too_deep, media_name,
+    MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NestingOfLiveEffects, NodeOfPlan,
+    PaintedLayerOfPlan, PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer,
+    backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, media_name,
 };
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
@@ -1299,12 +1299,19 @@ struct StackBeingBuilt<'a> {
     bands_being_built: Vec<BandBeingBuilt>,
     /// Per placed effect, once decided, the node the compositor composites it in, if it composites it.
     composited_node_once_decided_by_placed_effect: Vec<Option<Option<PlacementNodeIndex>>>,
+    composited_effects_around_node_by_node_index: Vec<usize>,
+    composited_effects_nest_too_deep: bool,
     records_blend_with_what_other_layers_hold_below_them: bool,
 }
 
 impl StackBeingBuilt<'_> {
     fn add_node(&mut self, node: NodeOfPlan) -> PlacementNodeIndex {
         let parent_index = node.parent_index;
+        let composited_effects_around_parent = parent_index.map_or(0, |parent_index| {
+            self.composited_effects_around_node_by_node_index[parent_index.0]
+        });
+        self.composited_effects_around_node_by_node_index
+            .push(composited_effects_around_parent + usize::from(node.composited_effect.is_some()));
         self.nodes.push(node);
         self.children_of_node.push(Vec::new());
         let node_index = PlacementNodeIndex(self.nodes.len() - 1);
@@ -1535,9 +1542,10 @@ impl StackBeingBuilt<'_> {
         node_index: PlacementNodeIndex,
         open_band_by_node_index: &mut [Option<BandBeingBuiltIndex>],
     ) {
-        open_band_by_node_index[node_index.0] = None;
-        for &child_index in &self.children_of_node[node_index.0] {
-            self.close_bands_of_node_and_nodes_inside(child_index, open_band_by_node_index);
+        let mut nodes_to_close = vec![node_index];
+        while let Some(node_index) = nodes_to_close.pop() {
+            open_band_by_node_index[node_index.0] = None;
+            nodes_to_close.extend_from_slice(&self.children_of_node[node_index.0]);
         }
     }
 
@@ -1582,6 +1590,12 @@ impl StackBeingBuilt<'_> {
                         node_index,
                         open_band_by_node_index[node_index.0],
                     ) {
+                        if self.composited_effects_around_node_by_node_index[node_index.0]
+                            >= MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS
+                        {
+                            self.composited_effects_nest_too_deep = true;
+                            return node_index;
+                        }
                         let draw_and_read_reach = self.draw_and_read_reach_of_placed_effect(placed_effect_index);
                         let composited_node_index =
                             self.add_composited_node_inside(node_index, placed_effect.effect, draw_and_read_reach);
@@ -1616,6 +1630,9 @@ impl StackBeingBuilt<'_> {
                 continue;
             }
             let node_of_stretch = self.node_of_stretch(stretch, &mut open_band_by_node_index);
+            if self.composited_effects_nest_too_deep {
+                return;
+            }
             let reach_read_by_blending_records =
                 placement.run_groups[stretch.run_group_index.0].reach_read_by_records_blending_with_root_group;
             if reach_read_by_blending_records != Reach::Nothing {
@@ -1828,6 +1845,8 @@ fn assemble_plan(
         children_of_node: Vec::new(),
         bands_being_built: Vec::new(),
         composited_node_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
+        composited_effects_around_node_by_node_index: Vec::new(),
+        composited_effects_nest_too_deep: false,
         records_blend_with_what_other_layers_hold_below_them: false,
     };
     stack_being_built.find_or_add_node(RasterSpaceIndex::VIEWPORT, Vec::new());
@@ -1840,6 +1859,9 @@ fn assemble_plan(
         .collect();
     stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move();
     stack_being_built.cut_into_bands();
+    if stack_being_built.composited_effects_nest_too_deep {
+        return Err(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
+    }
     if stack_being_built.records_blend_with_what_other_layers_hold_below_them {
         return Err(WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem);
     }

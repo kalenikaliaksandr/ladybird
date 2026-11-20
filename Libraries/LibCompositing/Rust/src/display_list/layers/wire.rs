@@ -1618,6 +1618,16 @@ mod tests {
         }
     }
 
+    // A page can nest composited effects deeper than a walk over the nodes of its plan can hold frames of on a stack.
+    #[test]
+    fn composited_effects_nested_far_past_the_limit_give_one_layer() {
+        let page = page_with_canvas_in_nested_groups(100_000, 100_000);
+        assert_eq!(
+            page.planned().stack.why_list_is_one_layer,
+            Some(WhyListIsOneLayer::CompositedEffectsNestTooDeep)
+        );
+    }
+
     #[test]
     fn composited_effects_nest_in_a_plan_as_deep_as_the_limit() {
         let deepest = MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS;
