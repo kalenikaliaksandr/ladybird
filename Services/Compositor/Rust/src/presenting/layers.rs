@@ -1348,6 +1348,69 @@ fn stale_rect_of_painted_layer(
     stale_rect
 }
 
+/// Where a frame that composites its layers as the frame before did, except through other transforms of spaces whose
+/// anchors the compositor animates, needs painting: where those layers were in the frame before, as the tiles that frame
+/// held of them and their reach tell, and where they are now. None for a frame that composites anything else
+/// differently. `stack` is the stack of the frame.
+fn damage_of_layers_moved_by_animated_transforms(
+    stack: &LayerStack,
+    compositing_of_latest_frame: &[LayerCompositingInFrame],
+    cached_layer_by_identity: &HashMap<LayerIdentity, CachedLayer>,
+    tile_pool: &TilePool,
+    layer_update: &LayerUpdate,
+    viewport_rect: IntRect,
+) -> Option<IntRect> {
+    if compositing_of_latest_frame.len() != layer_update.compositing_of_layers.len() {
+        return None;
+    }
+    let composited_filter_read_reach_by_layer = layer_update
+        .tile_state
+        .as_ref()
+        .map(|tile_state| &tile_state.composited_filter_read_reach_by_layer);
+    let mut damage = IntRect::default();
+    for (latest, current) in compositing_of_latest_frame
+        .iter()
+        .zip(&layer_update.compositing_of_layers)
+    {
+        if latest == current {
+            continue;
+        }
+        let moved_by_animated_transform = matches!(
+            (latest.space_to_frame, current.space_to_frame),
+            (SpaceToFrame::Transform(_), SpaceToFrame::Transform(_))
+        ) && LayerCompositingInFrame {
+            space_to_frame: current.space_to_frame,
+            ..latest.clone()
+        } == *current;
+        if !moved_by_animated_transform {
+            return None;
+        }
+        let composited_filter_read_reach = composited_filter_read_reach_by_layer
+            .and_then(|reaches| reaches.get(current.layer_index.0).copied())
+            .unwrap_or(0);
+        let reach_in_layer_space = stack.layers[current.layer_index.0].reach;
+        // A new list can shrink the reach of the layer, and the frame before showed every tile it held of the layer.
+        let held_in_latest_frame = cached_layer_by_identity
+            .get(&latest.identity)
+            .map_or(IntRect::default(), |cached_layer| {
+                cached_layer.bounds_of_held_tiles(tile_pool)
+            });
+        damage = damage
+            .united(latest.rect_in_frame(
+                inflated(
+                    reach_in_layer_space.united(held_in_latest_frame),
+                    composited_filter_read_reach,
+                ),
+                viewport_rect,
+            ))
+            .united(current.rect_in_frame(
+                inflated(reach_in_layer_space, composited_filter_read_reach),
+                viewport_rect,
+            ));
+    }
+    Some(damage)
+}
+
 struct CompositedEffectsOfFrame {
     stale_rect: IntRect,
     read_reaches_in_frame: Vec<IntRect>,
@@ -1606,43 +1669,14 @@ impl ContextPresenting {
         layer_update: &LayerUpdate,
         viewport_rect: IntRect,
     ) -> Option<IntRect> {
-        let stack = &self.layers.stack_of_frames.as_ref()?.stack;
-        let compositing_of_latest_frame = &self.layers.compositing_of_latest_frame;
-        if compositing_of_latest_frame.len() != layer_update.compositing_of_layers.len() {
-            return None;
-        }
-        let composited_filter_read_reach_by_layer = layer_update
-            .tile_state
-            .as_ref()
-            .map(|tile_state| &tile_state.composited_filter_read_reach_by_layer);
-        let mut damage = IntRect::default();
-        for (latest, current) in compositing_of_latest_frame
-            .iter()
-            .zip(&layer_update.compositing_of_layers)
-        {
-            if latest == current {
-                continue;
-            }
-            let moved_by_animated_transform = matches!(
-                (latest.space_to_frame, current.space_to_frame),
-                (SpaceToFrame::Transform(_), SpaceToFrame::Transform(_))
-            ) && LayerCompositingInFrame {
-                space_to_frame: current.space_to_frame,
-                ..latest.clone()
-            } == *current;
-            if !moved_by_animated_transform {
-                return None;
-            }
-            let composited_filter_read_reach = composited_filter_read_reach_by_layer
-                .and_then(|reaches| reaches.get(current.layer_index.0).copied())
-                .unwrap_or(0);
-            let reach_in_layer_space =
-                inflated(stack.layers[current.layer_index.0].reach, composited_filter_read_reach);
-            damage = damage
-                .united(latest.rect_in_frame(reach_in_layer_space, viewport_rect))
-                .united(current.rect_in_frame(reach_in_layer_space, viewport_rect));
-        }
-        Some(damage)
+        damage_of_layers_moved_by_animated_transforms(
+            &self.layers.stack_of_frames.as_ref()?.stack,
+            &self.layers.compositing_of_latest_frame,
+            &self.layers.cached_layer_by_identity,
+            &self.layers.tile_pool,
+            layer_update,
+            viewport_rect,
+        )
     }
 
     fn with_stack_of_frames<R>(&mut self, work: impl FnOnce(&mut Self, &mut StackOfFrames) -> R) -> R {
@@ -3494,5 +3528,59 @@ mod tests {
         let another_tree = Arc::new((*tree).clone());
         let stack_of_another_tree = layers.one_layer_stack_of_frame(&display_list, &another_tree, VIEWPORT);
         assert_eq!(stack_of_another_tree.layering_obstacles, obstacles_of_list_and_tree);
+    }
+
+    // A spinner that the compositor rotates, whose label a new list makes shorter.
+    #[test]
+    fn a_layer_moved_by_an_animated_transform_damages_what_it_showed_in_the_frame_before() {
+        let tree = tree_of_viewport();
+        let display_list = empty_display_list(&tree);
+        let short_label = IntRect::new(0, 0, 100, 20);
+        let long_label = IntRect::new(0, 0, 300, 20);
+        // The one layer of the stack reaches as far as the short label.
+        let stack = one_layer_of(&display_list, short_label);
+        let composited_at = |y: f32| LayerCompositingInFrame {
+            layer_index: LayerIndex(0),
+            identity: stack.layers[0].identity,
+            space_to_frame: SpaceToFrame::Transform(AffineTransform::new(1.0, 0.0, 0.0, 1.0, 100.0, y)),
+            composite_clip: None,
+            rounded_composite_clips: Rc::new([]),
+            shown_by_window_server: false,
+        };
+        let (latest, current) = (composited_at(100.0), composited_at(200.0));
+        let tile_pool: TilePool = HashMap::from([(
+            1,
+            PooledTile {
+                pixels: TilePixels::OneColor(Color::from_rgb(0, 0, 0)),
+                held_part_of_cell: long_label,
+                holds_current_pixels: true,
+                last_held_at: MonotonicTime::default(),
+            },
+        )]);
+        let cached_layer_by_identity = HashMap::from([(
+            latest.identity,
+            CachedLayer {
+                held_tiles: BTreeMap::from([(TileCoord::new(0, 0), 1)]),
+                ..CachedLayer::default()
+            },
+        )]);
+        let layer_update = LayerUpdate {
+            tile_state: None,
+            composite_offsets: Vec::new(),
+            spaces_to_frame: Vec::new(),
+            compositing_of_layers: vec![current.clone()],
+            read_reaches_of_composited_effects_in_frame: Vec::new(),
+        };
+        let damage = damage_of_layers_moved_by_animated_transforms(
+            &stack,
+            std::slice::from_ref(&latest),
+            &cached_layer_by_identity,
+            &tile_pool,
+            &layer_update,
+            VIEWPORT,
+        )
+        .expect("only an animated transform moved the layer");
+        assert!(damage.contains_rect(latest.rect_in_frame(long_label, VIEWPORT)));
+        assert!(damage.contains_rect(current.rect_in_frame(short_label, VIEWPORT)));
     }
 }
