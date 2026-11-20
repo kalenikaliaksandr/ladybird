@@ -341,20 +341,14 @@ impl PlannedLayers {
             return Vec::new();
         };
         let band = &stack.bands[band_index];
-        let mut layers: Vec<LayerIndex> = if reaches_too_many_cells_to_follow_one_by_one(stretch.reach) {
-            std::iter::once(band.layer_below_all_cuts)
-                .chain(
-                    band.cuts
-                        .iter()
-                        .take_while(|cut| cut.barrier_first_record_position <= stretch.record_span.begin)
-                        .map(|cut| cut.layer_above_cut),
-                )
-                .collect()
-        } else {
-            tile_coords_touching(stretch.reach)
-                .map(|coord| band.layer_of_record_in_cell(stretch.record_span.begin, coord.cell_rect()))
-                .collect()
-        };
+        let mut layers = Vec::new();
+        for_each_layer_records_go_into(
+            &band.cuts,
+            band.layer_below_all_cuts,
+            stretch.record_span.begin,
+            stretch.reach,
+            |layer, _| layers.push(layer),
+        );
         layers.sort_unstable();
         layers.dedup();
         layers
@@ -1532,6 +1526,39 @@ enum BarrierBeingBuilt {
     },
 }
 
+// Calls `for_layer_and_part_of_reach` with each layer that records of a band at `record_position` go into, and the part
+// of `reach` they go into it in: per tile, the layer above the last of `cuts` painted before them that cuts the tile, or
+// where they reach too many tiles to follow one by one, each layer above a cut painted before them, in all of `reach`.
+fn for_each_layer_records_go_into(
+    cuts: &[BarrierCut],
+    layer_below_all_cuts: LayerIndex,
+    record_position: ListPosition,
+    reach: IntRect,
+    mut for_layer_and_part_of_reach: impl FnMut(LayerIndex, IntRect),
+) {
+    let count_of_cuts_painted_before = cuts
+        .iter()
+        .take_while(|cut| cut.barrier_first_record_position <= record_position)
+        .count();
+    let cuts_painted_before = &cuts[..count_of_cuts_painted_before];
+    if cuts_painted_before.is_empty() || reaches_too_many_cells_to_follow_one_by_one(reach) {
+        for_layer_and_part_of_reach(layer_below_all_cuts, reach);
+        for cut in cuts_painted_before {
+            for_layer_and_part_of_reach(cut.layer_above_cut, reach);
+        }
+        return;
+    }
+    for coord in tile_coords_touching(reach) {
+        let cell = coord.cell_rect();
+        let layer_in_cell = cuts_painted_before
+            .iter()
+            .rev()
+            .find(|cut| cut.cuts_cell(cell))
+            .map_or(layer_below_all_cuts, |cut| cut.layer_above_cut);
+        for_layer_and_part_of_reach(layer_in_cell, reach.intersected(cell));
+    }
+}
+
 fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
     if rect.is_empty() {
         return rect;
@@ -2037,31 +2064,16 @@ impl StackBeingBuilt<'_> {
         for &stretch_index in &own_record_stretch_indices {
             let stretch = &placement.record_stretches[stretch_index.0];
             let stretch_span = stretch.record_span;
-            let mut mark_layer_may_hold_content_within = |layer: LayerIndex, reach: IntRect| {
-                painted_layers[layer.0].may_hold_content = true;
-                painted_layers[layer.0].reach = painted_layers[layer.0].reach.united(reach);
-            };
-            let cuts_painted_before_stretch = cuts
-                .iter()
-                .take_while(|cut| cut.barrier_first_record_position <= stretch_span.begin);
-            if cuts_painted_before_stretch.clone().next().is_none() {
-                mark_layer_may_hold_content_within(LayerIndex(0), stretch.reach);
-            } else if reaches_too_many_cells_to_follow_one_by_one(stretch.reach) {
-                mark_layer_may_hold_content_within(LayerIndex(0), stretch.reach);
-                for cut in cuts_painted_before_stretch {
-                    mark_layer_may_hold_content_within(cut.layer_above_cut, stretch.reach);
-                }
-            } else {
-                for coord in tile_coords_touching(stretch.reach) {
-                    let cell = coord.cell_rect();
-                    let layer_of_record_in_cell = cuts_painted_before_stretch
-                        .clone()
-                        .filter(|cut| cut.cuts_cell(cell))
-                        .last()
-                        .map_or(LayerIndex(0), |cut| cut.layer_above_cut);
-                    mark_layer_may_hold_content_within(layer_of_record_in_cell, stretch.reach.intersected(cell));
-                }
-            }
+            for_each_layer_records_go_into(
+                &cuts,
+                LayerIndex(0),
+                stretch_span.begin,
+                stretch.reach,
+                |layer, part_of_reach| {
+                    painted_layers[layer.0].may_hold_content = true;
+                    painted_layers[layer.0].reach = painted_layers[layer.0].reach.united(part_of_reach);
+                },
+            );
             match record_spans.last_mut() {
                 Some(last) if last.end == stretch_span.begin => last.end = stretch_span.end,
                 _ => record_spans.push(stretch_span),
