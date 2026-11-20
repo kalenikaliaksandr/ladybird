@@ -17,11 +17,11 @@
 
 use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerContent, LayerIndex, LayerStack, LayeredPlan,
-    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeNamesFromIndices, NodeOfPlan, PaintedLayerOfPlan,
-    PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited,
-    WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, backdrop_filter_read_reach,
-    backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, effect_is_or_is_inside, media_name,
-    wire,
+    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeNamesFromIndices, NodeOfPlan,
+    PaintedLayerOfPlan, PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect,
+    WhyEffectIsComposited, WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia,
+    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep,
+    effect_is_or_is_inside, media_name, wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
@@ -597,6 +597,7 @@ fn place_list(
     inputs: &LayerStackInputs<'_>,
     spaces: RasterSpacesForPlacing,
     geometries: &[RasterSpaceGeometryForPlacing],
+    nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> ListPlacement {
     let tree = inputs.tree;
     let list = inputs.list;
@@ -1249,7 +1250,7 @@ fn place_list(
     }
 
     ListPlacement {
-        layering_obstacles: LayeringObstacles::of(list, tree),
+        layering_obstacles: LayeringObstacles::of_with_nesting_of_live_effects(list, tree, nesting_of_live_effects),
         spaces: spaces.to_vec(),
         run_groups: placed_run_groups,
         record_stretches,
@@ -2118,6 +2119,7 @@ fn build_layer_stack(
     inputs: &LayerStackInputs<'_>,
     placement: ListPlacement,
     spaces: Vec<RasterSpace>,
+    nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> PlannedLayers {
     let layering_obstacles = placement.layering_obstacles;
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
@@ -2133,6 +2135,7 @@ fn build_layer_stack(
                     inputs.tree,
                     inputs.viewport_rect,
                     layering_obstacles,
+                    nesting_of_live_effects,
                 ) {
                     Ok(stack) => {
                         return PlannedLayers {
@@ -2215,8 +2218,9 @@ fn plan_layer_stack_at_anchors(
         inputs.viewport_rect,
     );
     let spaces_of_stack = spaces.spaces().to_vec();
-    let placement = place_list(&inputs, spaces, &geometries);
-    build_layer_stack(&inputs, placement, spaces_of_stack)
+    let nesting_of_live_effects = NestingOfLiveEffects::of(inputs.tree);
+    let placement = place_list(&inputs, spaces, &geometries, &nesting_of_live_effects);
+    build_layer_stack(&inputs, placement, spaces_of_stack, &nesting_of_live_effects)
 }
 
 /// What a plan of the layers of a list is made from, all of which WebContent publishes: the list, the tree, the viewport

@@ -10,8 +10,8 @@
 
 use super::{
     BandOfPlan, BarrierOfPlan, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CutOfPlan, LayerContent, LayerIdentity, LayerStack,
-    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex,
-    StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
+    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan,
+    PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
     composited_effects_nest_too_deep,
 };
 use crate::display_list::commands::{
@@ -545,62 +545,6 @@ fn span_is_run_drawing_content(list: &DisplayListStorage, span: ListSpan, conten
     live_content_of(header.command_type, payload) == Some(content)
 }
 
-// Where a walk of the effect tree enters and leaves each effect node, so that one effect is inside another exactly where
-// the walk enters and leaves it between where it enters and leaves the other. None for a node the walk does not reach.
-fn walk_steps_of_effect_nodes(tree: &VisualContextTree) -> Vec<Option<(usize, usize)>> {
-    let effect_count = tree.effect_nodes.len();
-    let mut children_by_effect_index: Vec<Vec<usize>> = vec![Vec::new(); effect_count];
-    let mut roots = Vec::new();
-    for (index, node) in tree.effect_nodes.iter().enumerate() {
-        if node.parent.is_none() {
-            roots.push(index);
-        } else if let Some(children) = children_by_effect_index.get_mut(node.parent.0 as usize) {
-            children.push(index);
-        }
-    }
-    let mut steps_by_effect_index: Vec<Option<(usize, usize)>> = vec![None; effect_count];
-    let mut step = 0;
-    let mut walk: Vec<(usize, usize)> = Vec::new();
-    for root in roots {
-        walk.push((root, 0));
-        steps_by_effect_index[root] = Some((step, step));
-        step += 1;
-        while let Some((effect, next_child_position)) = walk.last_mut() {
-            let effect = *effect;
-            match children_by_effect_index[effect].get(*next_child_position) {
-                Some(&child) => {
-                    *next_child_position += 1;
-                    steps_by_effect_index[child] = Some((step, step));
-                    step += 1;
-                    walk.push((child, 0));
-                }
-                None => {
-                    if let Some((_, left_at)) = &mut steps_by_effect_index[effect] {
-                        *left_at = step;
-                    }
-                    step += 1;
-                    walk.pop();
-                }
-            }
-        }
-    }
-    steps_by_effect_index
-}
-
-fn effect_is_strictly_inside(
-    walk_steps_by_effect_index: &[Option<(usize, usize)>],
-    inner: EffectNodeIndex,
-    outer: EffectNodeIndex,
-) -> bool {
-    let steps_of = |effect: EffectNodeIndex| walk_steps_by_effect_index.get(effect.0 as usize).copied().flatten();
-    match (steps_of(inner), steps_of(outer)) {
-        (Some((inner_entered_at, inner_left_at)), Some((outer_entered_at, outer_left_at))) => {
-            outer_entered_at < inner_entered_at && inner_left_at < outer_left_at
-        }
-        _ => false,
-    }
-}
-
 fn check_viewport_rect(viewport_rect: IntRect) -> Result<(), &'static str> {
     if !rect_is_within_coordinate_limit(viewport_rect) {
         return Err("the viewport of the plan lies past the limit a plan keeps to");
@@ -740,12 +684,11 @@ fn check_nesting_of_composited_effects(nodes: &[NodeOfPlan]) -> Result<(), &'sta
 // A frame enters the effects of the nodes around a layer outermost first, each from the one around it.
 fn check_composited_effects_nest_as_in_tree(
     nodes: &[NodeOfPlan],
-    tree: &VisualContextTree,
+    nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> Result<(), &'static str> {
     if nodes.iter().all(|node| node.composited_effect.is_none()) {
         return Ok(());
     }
-    let walk_steps_by_effect_index = walk_steps_of_effect_nodes(tree);
     let mut innermost_effect_around_by_node_index: Vec<Option<EffectNodeIndex>> = Vec::with_capacity(nodes.len());
     for node in nodes {
         let innermost_effect_around = node.parent_index.and_then(|parent_index| {
@@ -754,7 +697,7 @@ fn check_composited_effects_nest_as_in_tree(
                 .or(innermost_effect_around_by_node_index[parent_index.0])
         });
         if let (Some(effect), Some(effect_around)) = (node.composited_effect, innermost_effect_around)
-            && !effect_is_strictly_inside(&walk_steps_by_effect_index, effect, effect_around)
+            && !nesting_of_live_effects.is_strictly_inside(effect, effect_around)
         {
             return Err("the composited effects around a node are not nested as the tree nests them");
         }
@@ -952,14 +895,18 @@ impl LayerStack {
                 stack.layering_obstacles = LayeringObstacles::of(list, tree);
                 Ok(stack)
             }
-            StackOnWire::Layered(plan) => LayerStack::of_plan_passing_checks(
-                plan,
-                RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
-                list,
-                tree,
-                viewport_rect,
-                LayeringObstacles::of(list, tree),
-            ),
+            StackOnWire::Layered(plan) => {
+                let nesting_of_live_effects = NestingOfLiveEffects::of(tree);
+                LayerStack::of_plan_passing_checks(
+                    plan,
+                    RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
+                    list,
+                    tree,
+                    viewport_rect,
+                    LayeringObstacles::of_with_nesting_of_live_effects(list, tree, &nesting_of_live_effects),
+                    &nesting_of_live_effects,
+                )
+            }
         }
     }
 
@@ -973,13 +920,14 @@ impl LayerStack {
         tree: &VisualContextTree,
         viewport_rect: IntRect,
         layering_obstacles: LayeringObstacles,
+        nesting_of_live_effects: &NestingOfLiveEffects<'_>,
     ) -> Result<LayerStack, &'static str> {
         check_viewport_rect(viewport_rect)?;
         check_rects_and_coordinates(&plan)?;
         check_values_per_space(&plan, &spaces)?;
         check_nodes(&plan.nodes, &spaces, list, tree)?;
         check_nesting_of_composited_effects(&plan.nodes)?;
-        check_composited_effects_nest_as_in_tree(&plan.nodes, tree)?;
+        check_composited_effects_nest_as_in_tree(&plan.nodes, nesting_of_live_effects)?;
         check_bands(&plan, list)?;
         check_no_record_is_held_twice(&plan)?;
         let stack = LayerStack::of_layered_plan(plan, spaces, tree, layering_obstacles);
@@ -998,7 +946,7 @@ mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{
-        ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, SpatialNodeIndex,
+        ClipNodeIndex, ContextRef, DeclareMaskContent, DisplayListCommand, DrawCanvas, FillRect, SpatialNodeIndex,
         VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::planning::{LayerStackInputs, PlannedLayers, plan_layer_stack};
@@ -2640,6 +2588,64 @@ mod tests {
             }
         }
         bytes
+    }
+
+    // Decoding a tree checks the parent of no dead node, and a mask declaration can name any node.
+    #[test]
+    fn a_mask_declared_for_a_dead_effect_node_lets_no_record_replay_alone_in_its_tiles() {
+        let (mut tree, _, contexts) = tree_with_document_scroller(&[]);
+        let document = contexts[0];
+        let effect_to_kill = tree.append_effect(
+            effects(0.5),
+            EffectNodeIndex::NONE,
+            VISUAL_VIEWPORT_NODE_INDEX,
+            ClipNodeIndex::NONE,
+        );
+        let list_declaring_content_of_mask = |mask_effect: EffectNodeIndex| {
+            let mut builder = DisplayListBuilder::new();
+            builder.append(&fill(IntRect::new(0, 0, 800, 2600)), &[], document);
+            builder.append(&canvas(IntRect::new(100, 100, 200, 100), 1), &[], document);
+            let declaration = builder.begin_group::<DeclareMaskContent>(Vec::new());
+            builder.append(&fill(IntRect::new(0, 0, 10, 10)), &[], document);
+            let content = builder.group_content_span(&declaration);
+            builder.finish_group(
+                declaration,
+                &DeclareMaskContent {
+                    rect: IntRect::new(0, 0, 10, 10),
+                    effect: mask_effect,
+                    content,
+                },
+                document,
+            );
+            DisplayListStorage::of_builder(&builder)
+        };
+        let page_with_live_mask = Page {
+            tree: tree.clone(),
+            list: list_declaring_content_of_mask(document.effect),
+        };
+        assert!(!page_with_live_mask.planned().stack.replays_whole_list());
+        for parent_of_dead_node in [effect_to_kill, EffectNodeIndex(1000)] {
+            let mut tree_with_dead_node = tree.clone();
+            tree_with_dead_node.effect_nodes[effect_to_kill.0 as usize].data = EffectNodeData::Dead;
+            tree_with_dead_node.effect_nodes[effect_to_kill.0 as usize].parent = parent_of_dead_node;
+            let page_with_dead_mask = Page {
+                tree: VisualContextTree::from_bytes(&tree_with_dead_node.to_bytes())
+                    .expect("a dead node may have any parent"),
+                list: list_declaring_content_of_mask(effect_to_kill),
+            };
+            let one_layer = LayerStack::single_layer(
+                VIEWPORT,
+                page_with_dead_mask.list.whole_span(),
+                Some(WhyListIsOneLayer::EmptyViewport),
+            );
+            for stack in [
+                page_with_dead_mask.validated(one_layer),
+                page_with_dead_mask.validated_plan(page_with_live_mask.planned_plan()),
+            ] {
+                let stack = stack.expect("the stack passes its checks");
+                assert!(stack.layering_obstacles.every_tile_replays_every_record());
+            }
+        }
     }
 
     #[test]

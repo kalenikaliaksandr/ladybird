@@ -1539,10 +1539,19 @@ pub struct LayeringObstacles {
 
 impl LayeringObstacles {
     pub fn of(list: &DisplayListStorage, tree: &VisualContextTree) -> Self {
+        Self::of_with_nesting_of_live_effects(list, tree, &NestingOfLiveEffects::of(tree))
+    }
+
+    pub(crate) fn of_with_nesting_of_live_effects(
+        list: &DisplayListStorage,
+        tree: &VisualContextTree,
+        nesting_of_live_effects: &NestingOfLiveEffects<'_>,
+    ) -> Self {
         Self {
             sorts_planes_by_depth: tree.may_sort_planes_by_depth(),
             mask_declared_under_effects_its_mask_is_not_under: !mask_declarations_are_on_effect_chains_of_their_masks(
-                list, tree,
+                list,
+                nesting_of_live_effects,
             ),
         }
     }
@@ -1563,17 +1572,108 @@ fn effect_is_or_is_inside(tree: &VisualContextTree, mut effect: EffectNodeIndex,
     false
 }
 
+/// Whether one live effect node of a tree is inside another, without a walk up the tree for each question. Decoding a
+/// tree checks the parents of its live nodes only, so a node that is not live is in no effect and holds none. The
+/// table is worked out at the first question.
+pub(crate) struct NestingOfLiveEffects<'a> {
+    tree: &'a VisualContextTree,
+    // Where a walk of the live nodes enters each node and how many nodes it walks from there until it leaves it, or
+    // zero nodes for a node the walk does not enter.
+    walk_step_and_node_count_by_effect_index: std::cell::OnceCell<Vec<(u32, u32)>>,
+}
+
+impl<'a> NestingOfLiveEffects<'a> {
+    pub(crate) fn of(tree: &'a VisualContextTree) -> Self {
+        Self {
+            tree,
+            walk_step_and_node_count_by_effect_index: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn walk_step_and_node_count_of(&self, effect: EffectNodeIndex) -> Option<(u32, u32)> {
+        self.walk_step_and_node_count_by_effect_index
+            .get_or_init(|| walk_steps_and_node_counts_of_live_effects(self.tree))
+            .get(effect.0 as usize)
+            .copied()
+            .filter(|&(_, node_count)| node_count != 0)
+    }
+
+    pub(crate) fn is_or_is_inside(&self, effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
+        match (
+            self.walk_step_and_node_count_of(effect),
+            self.walk_step_and_node_count_of(ancestor),
+        ) {
+            (Some((effect_step, _)), Some((ancestor_step, ancestor_node_count))) => {
+                ancestor_step <= effect_step && effect_step - ancestor_step < ancestor_node_count
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_strictly_inside(&self, effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
+        effect != ancestor && self.is_or_is_inside(effect, ancestor)
+    }
+}
+
+// A node goes into the walk after its parent, so a parent that a broken tree visits later is taken as no parent.
+fn walk_steps_and_node_counts_of_live_effects(tree: &VisualContextTree) -> Vec<(u32, u32)> {
+    let effect_count = tree.effect_nodes.len();
+    let mut live_effects_parents_first: Vec<u32> = Vec::with_capacity(effect_count);
+    tree.visit_effect_nodes_parents_first(|index| live_effects_parents_first.push(index as u32));
+    let mut visit_position_by_effect_index = vec![u32::MAX; effect_count];
+    for (position, &index) in live_effects_parents_first.iter().enumerate() {
+        visit_position_by_effect_index[index as usize] = position as u32;
+    }
+    let walked_parent_by_effect_index: Vec<Option<u32>> = (0..effect_count)
+        .map(|index| {
+            let parent = tree.effect_nodes[index].parent;
+            (!parent.is_none()
+                && visit_position_by_effect_index
+                    .get(parent.0 as usize)
+                    .is_some_and(|&parent_position| parent_position < visit_position_by_effect_index[index]))
+            .then_some(parent.0)
+        })
+        .collect();
+    let mut walk_step_and_node_count_by_effect_index = vec![(0u32, 0u32); effect_count];
+    for &index in live_effects_parents_first.iter().rev() {
+        let index = index as usize;
+        walk_step_and_node_count_by_effect_index[index].1 += 1;
+        if let Some(parent) = walked_parent_by_effect_index[index] {
+            walk_step_and_node_count_by_effect_index[parent as usize].1 +=
+                walk_step_and_node_count_by_effect_index[index].1;
+        }
+    }
+    // The walk enters each child of a node right after the nodes inside the children before it.
+    let mut next_step_inside_by_effect_index = visit_position_by_effect_index;
+    let mut next_step_of_root = 0u32;
+    for &index in &live_effects_parents_first {
+        let index = index as usize;
+        let next_step = match walked_parent_by_effect_index[index] {
+            Some(parent) => &mut next_step_inside_by_effect_index[parent as usize],
+            None => &mut next_step_of_root,
+        };
+        let step = *next_step;
+        let node_count = walk_step_and_node_count_by_effect_index[index].1;
+        *next_step += node_count;
+        walk_step_and_node_count_by_effect_index[index].0 = step;
+        next_step_inside_by_effect_index[index] = step + 1;
+    }
+    walk_step_and_node_count_by_effect_index
+}
+
 // A tile replays the declaration of a mask's content along with what the mask holds, and so opens the effects the
 // declaration is under there, which draw nothing only when they are the mask's own or those around it. A list from
-// another process can name a mask that the tree does not hold. No effect is inside such a mask.
-fn mask_declarations_are_on_effect_chains_of_their_masks(list: &DisplayListStorage, tree: &VisualContextTree) -> bool {
+// another process can name a mask that the tree does not hold as a live node. No effect is inside such a mask.
+fn mask_declarations_are_on_effect_chains_of_their_masks(
+    list: &DisplayListStorage,
+    nesting_of_live_effects: &NestingOfLiveEffects<'_>,
+) -> bool {
     list.summary().mask_declarations.iter().all(|declaration| {
         let mask_effect = declaration.mask_effect;
         let declaration_effect = list.run(declaration.record.run_index as usize).context.effect;
-        let tree_holds_mask_effect = (mask_effect.0 as usize) < tree.effect_nodes.len();
         declaration_effect.is_none()
-            || effect_is_or_is_inside(tree, declaration_effect, mask_effect)
-            || (tree_holds_mask_effect && effect_is_or_is_inside(tree, mask_effect, declaration_effect))
+            || nesting_of_live_effects.is_or_is_inside(declaration_effect, mask_effect)
+            || nesting_of_live_effects.is_or_is_inside(mask_effect, declaration_effect)
     })
 }
 
