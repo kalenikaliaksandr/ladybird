@@ -211,8 +211,24 @@ pub struct LayerOverlayModel {
     pub layers: Vec<ModelLayer>,
     pub why_list_is_one_layer: Option<String>,
     /// The layer stack's lines of composited effects, media without layers and effects reading only their own layer.
-    pub notes_of_layer_stack: Vec<String>,
+    pub notes_of_layer_stack: Rc<[String]>,
     pub work_counts_of_frame: FrameWorkCounts,
+}
+
+/// Per layer of a model, from the base layer up, given whether each is hidden, whether the layers window lists it or the
+/// overlay draws a label for it: only those show the layer's name.
+pub fn layers_whose_names_are_shown(hidden_by_layer: &[bool]) -> Vec<bool> {
+    let mut name_is_shown_by_layer: Vec<bool> = (0..hidden_by_layer.len())
+        .map(|position| position < MAXIMUM_LISTED_LAYER_COUNT)
+        .collect();
+    for position in (0..hidden_by_layer.len())
+        .rev()
+        .filter(|&position| !hidden_by_layer[position])
+        .take(MAXIMUM_LABELED_LAYER_COUNT)
+    {
+        name_is_shown_by_layer[position] = true;
+    }
+    name_is_shown_by_layer
 }
 
 /// The layers that a frame of the overlay draws labels for, from the top down, each with the tiles it labels: those it
@@ -983,12 +999,46 @@ mod tests {
         }
     }
 
+    // A plan from another process can have many more layers than the window lists and the overlay labels.
+    #[test]
+    fn only_the_layers_the_window_lists_and_the_overlay_labels_show_their_names() {
+        let layer_count = MAXIMUM_LISTED_LAYER_COUNT + MAXIMUM_LABELED_LAYER_COUNT + 100;
+        let topmost_hidden = layer_count - 10;
+        let hidden_by_layer: Vec<bool> = (0..layer_count).map(|position| position >= topmost_hidden).collect();
+        let shown = layers_whose_names_are_shown(&hidden_by_layer);
+        let labeled = topmost_hidden - MAXIMUM_LABELED_LAYER_COUNT..topmost_hidden;
+        assert!(
+            shown
+                .iter()
+                .enumerate()
+                .all(|(position, &shown)| shown
+                    == (position < MAXIMUM_LISTED_LAYER_COUNT || labeled.contains(&position)))
+        );
+        let model = model_of(
+            (0..layer_count)
+                .map(|position| ModelLayer {
+                    hidden: hidden_by_layer[position],
+                    ..painted_layer_holding(painted_layer_identity(position as u64), &[])
+                })
+                .collect(),
+        );
+        let (labeled_layers, _, _) = labels_of_model(&model);
+        assert!(labeled_layers.iter().all(|(layer, _)| {
+            let position = model
+                .layers
+                .iter()
+                .position(|other| other.identity == layer.identity)
+                .unwrap();
+            shown[position]
+        }));
+    }
+
     fn model_of(layers: Vec<ModelLayer>) -> LayerOverlayModel {
         LayerOverlayModel {
             viewport_rect: IntRect::new(0, 0, 800, 600),
             layers,
             why_list_is_one_layer: None,
-            notes_of_layer_stack: Vec::new(),
+            notes_of_layer_stack: Rc::default(),
             work_counts_of_frame: FrameWorkCounts::default(),
         }
     }
@@ -1125,7 +1175,7 @@ mod tests {
                 })
                 .collect(),
             why_list_is_one_layer: None,
-            notes_of_layer_stack: vec!["a note of the plan".into()],
+            notes_of_layer_stack: Rc::from(["a note of the plan".to_owned()]),
             work_counts_of_frame: FrameWorkCounts::default(),
         };
         let notes_of = |description: &CompositorLayersDescription| -> Vec<String> {

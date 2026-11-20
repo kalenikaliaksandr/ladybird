@@ -7,7 +7,9 @@
 //! The layers a frame is painted in, each cached as tiles from one frame and one list to the next, and what of them the
 //! window server shows above the frame by itself.
 
-use super::layer_overlay::{FrameWorkCounts, LayerOverlayModel, MediaPresentation, ModelLayer, ModelLayerContent};
+use super::layer_overlay::{
+    FrameWorkCounts, LayerOverlayModel, MediaPresentation, ModelLayer, ModelLayerContent, layers_whose_names_are_shown,
+};
 use super::tiles::{LayerTiles, LayerToRaster, TileDraw, TileShownInFrame, joined_rects_of_grid_given_row_by_row};
 use super::{
     ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform,
@@ -49,7 +51,7 @@ use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, ScalingMode};
 use std::borrow::Cow;
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hasher;
 use std::rc::{Rc, Weak};
@@ -450,8 +452,8 @@ struct StackOfFrames {
     band_tile_keys: Vec<Option<BandTileKeysOfFrame>>,
     /// The list the band tile keys are bound to: that of the latest frame that keyed them.
     display_list_of_band_tile_keys: Option<Rc<DisplayList>>,
-    /// Per layer, what the layers overlay calls it, worked out by the first frame that draws the overlay.
-    names_of_layers_for_overlay: OnceCell<Vec<Rc<str>>>,
+    /// What the layers overlay calls the layers whose names it shows, worked out by the first frame that shows each.
+    names_of_layers_for_overlay: RefCell<HashMap<LayerIndex, Rc<str>>>,
 }
 
 impl StackOfFrames {
@@ -489,7 +491,7 @@ impl StackOfFrames {
             geometry_by_space,
             band_tile_keys: Vec::new(),
             display_list_of_band_tile_keys,
-            names_of_layers_for_overlay: OnceCell::new(),
+            names_of_layers_for_overlay: RefCell::default(),
         };
         (stack_of_frames, band_tile_keys_of_latest_stack)
     }
@@ -1600,16 +1602,20 @@ impl ContextPresenting {
             .as_ref()
             .expect("a frame with layers has a stack");
         let stack = &stack_of_frames.stack;
-        let names_of_layers = stack_of_frames.names_of_layers_for_overlay.get_or_init(|| {
-            (0..stack.layers.len())
-                .map(|index| Rc::from(stack.name_of_layer(LayerIndex(index), &NodeNamesFromIndices)))
-                .collect()
-        });
+        let hidden_by_layer: Vec<bool> = layer_update
+            .compositing_of_layers
+            .iter()
+            .map(|compositing| self.layer_overlay.hides_layer(&compositing.identity))
+            .collect();
+        let name_is_shown_by_layer = layers_whose_names_are_shown(&hidden_by_layer);
+        let mut names_of_layers = stack_of_frames.names_of_layers_for_overlay.borrow_mut();
+        let name_not_shown: Rc<str> = Rc::from("");
         let why_context_shows_no_media = self.why_window_server_shows_no_media_of_this_context(env);
         let layers = layer_update
             .compositing_of_layers
             .iter()
-            .map(|compositing| {
+            .enumerate()
+            .map(|(position, compositing)| {
                 let layer_index = compositing.layer_index;
                 let layer = &stack.layers[layer_index.0];
                 let content = match &layer.content {
@@ -1642,10 +1648,18 @@ impl ContextPresenting {
                         },
                     },
                 };
+                let name = if name_is_shown_by_layer[position] {
+                    names_of_layers
+                        .entry(layer_index)
+                        .or_insert_with(|| Rc::from(stack.name_of_layer(layer_index, &NodeNamesFromIndices)))
+                        .clone()
+                } else {
+                    name_not_shown.clone()
+                };
                 ModelLayer {
                     identity: compositing.identity,
-                    name: names_of_layers[layer_index.0].clone(),
-                    hidden: self.layer_overlay.hides_layer(&compositing.identity),
+                    name,
+                    hidden: hidden_by_layer[position],
                     space_to_frame: compositing.space_to_frame,
                     composite_clip: compositing.composite_clip,
                     content,
@@ -1659,7 +1673,7 @@ impl ContextPresenting {
             notes_of_layer_stack: stack_of_frames
                 .layer_plan
                 .as_ref()
-                .map_or_else(Vec::new, |layer_plan| layer_plan.note_lines.to_vec()),
+                .map_or_else(Rc::default, |layer_plan| layer_plan.note_lines.clone()),
             work_counts_of_frame: layer_update.work_counts,
         };
         let painted_at = frame.frame_inputs.painted_at;
