@@ -473,6 +473,16 @@ impl DisplayListStorage {
         })
     }
 
+    /// Whether `tree` can take the place of the tree the list was paired with: the plan of the clips of its effects
+    /// that the list keeps, if it keeps one yet, is the plan of the list under `tree` too. A tree from another process
+    /// can claim the structural epoch of the list and still nest its effects otherwise.
+    pub fn effect_clip_plan_holds_under(&self, tree: &VisualContextTree) -> bool {
+        let Some(kept_plan) = self.effect_clip_plan.get() else {
+            return true;
+        };
+        EffectClipPlan::new(tree, self.runs()).is_some_and(|plan| plan.places_effects_as(kept_plan))
+    }
+
     pub fn run_groups(&self, tree: &VisualContextTree) -> Arc<RunGroups> {
         let mut cached_run_groups = self.cached_run_groups.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(run_groups) = cached_run_groups.as_ref()

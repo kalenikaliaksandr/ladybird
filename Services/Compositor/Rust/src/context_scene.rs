@@ -130,6 +130,17 @@ impl ContextScene {
             );
             return false;
         }
+        if self.display_list.as_ref().is_some_and(|list| {
+            !list
+                .storage()
+                .effect_clip_plan_holds_under(visual_context_tree.as_arc())
+        }) {
+            let _ = writeln!(
+                std::io::stderr(),
+                "Compositor: Dropping visual context tree update that nests the effects of the display list otherwise"
+            );
+            return false;
+        }
         self.layer_plan = None;
         self.take_visual_context_tree_unless_content_is_unchanged(visual_context_tree);
         update_visual_animation_sampling_state(
