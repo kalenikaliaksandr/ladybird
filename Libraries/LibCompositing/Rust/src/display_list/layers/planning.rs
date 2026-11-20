@@ -35,7 +35,7 @@ use crate::display_list::placement::{
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
-use crate::display_list::tiles::{CellRange, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
+use crate::display_list::tiles::CellRange;
 use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{FloatPoint, FloatRect, IntRect};
 use std::hash::Hash;
@@ -1257,36 +1257,24 @@ enum BarrierBeingBuilt {
     },
 }
 
-// Calls `for_layer_and_part_of_reach` with each layer that records of a band at `record_position` go into, and the part
-// of `reach` they go into it in: per tile, the layer above the last of `cuts` painted before them that cuts the tile, or
-// where they reach too many tiles to follow one by one, each layer above a cut painted before them, in all of `reach`.
+// Calls `for_layer` with each layer that records of a band at `record_position` within `reach` can go into: the layer
+// below all cuts, and the layer above each of `cuts` painted before them that cuts a tile they reach.
 fn for_each_layer_records_go_into(
     cuts: &[BarrierCut],
     layer_below_all_cuts: LayerIndex,
     record_position: ListPosition,
     reach: IntRect,
-    mut for_layer_and_part_of_reach: impl FnMut(LayerIndex, IntRect),
+    mut for_layer: impl FnMut(LayerIndex),
 ) {
-    let count_of_cuts_painted_before = cuts
+    for_layer(layer_below_all_cuts);
+    let cells_reached = CellRange::touched_by(reach).rect();
+    for cut in cuts
         .iter()
         .take_while(|cut| cut.barrier_first_record_position <= record_position)
-        .count();
-    let cuts_painted_before = &cuts[..count_of_cuts_painted_before];
-    if cuts_painted_before.is_empty() || reaches_too_many_cells_to_follow_one_by_one(reach) {
-        for_layer_and_part_of_reach(layer_below_all_cuts, reach);
-        for cut in cuts_painted_before {
-            for_layer_and_part_of_reach(cut.layer_above_cut, reach);
+    {
+        if cut.cuts_cell(cells_reached) {
+            for_layer(cut.layer_above_cut);
         }
-        return;
-    }
-    for coord in tile_coords_touching(reach) {
-        let cell = coord.cell_rect();
-        let layer_in_cell = cuts_painted_before
-            .iter()
-            .rev()
-            .find(|cut| cut.cuts_cell(cell))
-            .map_or(layer_below_all_cuts, |cut| cut.layer_above_cut);
-        for_layer_and_part_of_reach(layer_in_cell, reach.intersected(cell));
     }
 }
 
@@ -1800,16 +1788,10 @@ impl StackBeingBuilt<'_> {
         for &stretch_index in &own_record_stretch_indices {
             let stretch = &placement.record_stretches[stretch_index.0];
             let stretch_span = stretch.record_span;
-            for_each_layer_records_go_into(
-                &cuts,
-                LayerIndex(0),
-                stretch_span.begin,
-                stretch.reach,
-                |layer, part_of_reach| {
-                    painted_layers[layer.0].may_hold_content = true;
-                    painted_layers[layer.0].reach = painted_layers[layer.0].reach.united(part_of_reach);
-                },
-            );
+            for_each_layer_records_go_into(&cuts, LayerIndex(0), stretch_span.begin, stretch.reach, |layer| {
+                painted_layers[layer.0].may_hold_content = true;
+                painted_layers[layer.0].reach = painted_layers[layer.0].reach.united(stretch.reach);
+            });
             match record_spans.last_mut() {
                 Some(last) if last.end == stretch_span.begin => last.end = stretch_span.end,
                 _ => record_spans.push(stretch_span),
@@ -3207,12 +3189,13 @@ mod tests {
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
         // The label and the spinner of the toolbar are in different cells, and the card covers both of them.
         let label = IntRect::new(10, 110, 100, 30);
+        let card = IntRect::new(0, 100, 800, 50);
         assert!(TILE_SIZE_IN_DEVICE_PIXELS < 650);
         let list = ListOfOneChunk::default()
             .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(fill(label, GREEN), toolbar)
             .with(fill(IntRect::new(650, 105, 40, 40), GREEN), spinner)
-            .with(fill(IntRect::new(0, 100, 800, 50), GREEN), document);
+            .with(fill(card, GREEN), document);
         let planned = list.planned(&tree, &[]);
         assert_eq!(
             space_names(&planned.stack),
@@ -3224,13 +3207,27 @@ mod tests {
             ]
         );
         let storage = DisplayListStorage::of_builder(&list.builder);
-        let layers_of_card = planned.layers_of_record(storage.span_of_run(3).begin);
-        assert_eq!(
-            layers_of_card.len(),
-            1,
-            "the card goes into one layer in every cell: {layers_of_card:?}"
+        let card_position = storage.span_of_run(3).begin;
+        let band_of_card = planned
+            .stack
+            .bands
+            .iter()
+            .find(|band| band.record_spans.iter().any(|span| span.contains(card_position)))
+            .expect("a band holds the card");
+        let layers_of_card_by_cell: Vec<LayerIndex> = CellRange::touched_by(card)
+            .coords()
+            .map(|coord| band_of_card.layer_of_record_in_cell(card_position, coord.cell_rect()))
+            .collect();
+        assert!(
+            layers_of_card_by_cell.windows(2).all(|pair| pair[0] == pair[1]),
+            "the card goes into one layer in every cell: {layers_of_card_by_cell:?}"
         );
-        let layer_of_card = &planned.stack.layers[layers_of_card[0].0];
+        assert!(
+            planned
+                .layers_of_record(card_position)
+                .contains(&layers_of_card_by_cell[0])
+        );
+        let layer_of_card = &planned.stack.layers[layers_of_card_by_cell[0].0];
         assert!(matches!(
             layer_of_card.identity,
             LayerIdentity::Painted {

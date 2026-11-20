@@ -242,7 +242,7 @@ impl PlannedLayers {
             band.layer_below_all_cuts,
             stretch.record_span.begin,
             stretch.reach,
-            |layer, _| layers.push(layer),
+            |layer| layers.push(layer),
         );
         layers.sort_unstable();
         layers.dedup();
