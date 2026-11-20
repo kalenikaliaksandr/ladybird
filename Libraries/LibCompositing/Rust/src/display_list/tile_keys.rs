@@ -338,7 +338,7 @@ pub struct LayerRasterSettings {
 }
 
 impl LayerRasterSettings {
-    fn content_hash(&self) -> ContentHash {
+    pub fn content_hash(&self) -> ContentHash {
         let mut hasher = ContentHasher::new();
         hasher.write_u64(self.raster_space_identity);
         hasher.write_u32(self.clear_color.0);
@@ -2954,20 +2954,13 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         band_tile_keys: &mut BandTileKeys,
         stack: &LayerStack,
         band_index: BandIndex,
-        raster_settings_of_layer: impl Fn(LayerIndex) -> LayerRasterSettings,
+        raster_settings_hash_by_layer: &[ContentHash],
         shown_rect: IntRect,
         kept_rect: IntRect,
         frame: Option<IntRect>,
     ) -> TileKeyingCounts {
         let list = self.list;
         let band = &stack.bands[band_index.0];
-        // A band of a received stack can have too many layers to look through one by one for each tile.
-        let mut raster_settings_hash_by_layer: HashMap<LayerIndex, ContentHash> = HashMap::new();
-        let mut raster_settings_hash_of = |layer_index: LayerIndex| {
-            *raster_settings_hash_by_layer
-                .entry(layer_index)
-                .or_insert_with(|| raster_settings_of_layer(layer_index).content_hash())
-        };
         band_tile_keys
             .cells
             .retain(|coord, _| !coord.cell_rect().intersected(kept_rect).is_empty());
@@ -3003,7 +2996,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 .first()
                 .and_then(|tile| ContentHashesNearArea::of_cell(*coord, tile.raster_margin_in_device_pixels));
             for tile in &mut cell.tiles {
-                let raster_settings_hash = raster_settings_hash_of(tile.layer_index);
+                let raster_settings_hash = raster_settings_hash_by_layer[tile.layer_index.0];
                 if (frame_state_changed && tile.reads_frame_state)
                     || (sampled_values_changed && tile.reads_sampled_values)
                     || tile.raster_settings_hash != raster_settings_hash
@@ -3146,7 +3139,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     content_bounds,
                     count_of_cell_cuts_below_layer,
                     replay_items_in_paint_order,
-                    raster_settings_hash: raster_settings_hash_of(layer_index),
+                    raster_settings_hash: raster_settings_hash_by_layer[layer_index.0],
                     reads_frame_state,
                     reads_sampled_values,
                     frame_edge_backdrop_blurs_mirror_at,
@@ -3335,14 +3328,15 @@ mod tests {
         assert!(spans.windows(2).all(|pair| pair[0].end <= pair[1].begin));
     }
 
-    fn raster_settings_for_tests(_: LayerIndex) -> LayerRasterSettings {
-        LayerRasterSettings {
+    fn raster_settings_hash_by_layer_for_tests(stack: &LayerStack) -> Vec<ContentHash> {
+        let raster_settings = LayerRasterSettings {
             raster_space_identity: 0,
             clear_color: Color::TRANSPARENT,
             root_group_color: Color::TRANSPARENT,
             viewport_to_raster_transform: FloatMatrix4x4::identity(),
             allows_lcd_text: false,
-        }
+        };
+        vec![raster_settings.content_hash(); stack.layers.len()]
     }
 
     fn chunk_of(command: FillRect, context: ContextRef) -> Arc<ListChunk> {
@@ -3389,7 +3383,7 @@ mod tests {
             band_tile_keys,
             stack,
             band_index,
-            raster_settings_for_tests,
+            &raster_settings_hash_by_layer_for_tests(stack),
             shown_rect,
             shown_rect,
             None,

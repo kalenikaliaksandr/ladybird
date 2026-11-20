@@ -934,7 +934,7 @@ mod tests {
     use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry, WhatEverySpaceOfTreeShares};
     use crate::display_list::storage::ListChunk;
     use crate::display_list::tile_keys::{
-        BandTileKeys, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileKeyingOfList,
+        BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileKeyingOfList,
         TileKeyingOfRasterSpace,
     };
     use crate::node_slot_id::NodeSlotId;
@@ -2373,14 +2373,15 @@ mod tests {
         }
     }
 
-    fn raster_settings_of_layer(_: LayerIndex) -> LayerRasterSettings {
-        LayerRasterSettings {
+    fn raster_settings_hash_by_layer(stack: &LayerStack) -> Vec<ContentHash> {
+        let raster_settings = LayerRasterSettings {
             raster_space_identity: 0,
             clear_color: Color::TRANSPARENT,
             root_group_color: Color::TRANSPARENT,
             viewport_to_raster_transform: FloatMatrix4x4::identity(),
             allows_lcd_text: false,
-        }
+        };
+        vec![raster_settings.content_hash(); stack.layers.len()]
     }
 
     // Reads the stack as the compositor reads it for a frame over the whole viewport, and as the dump reads it.
@@ -2458,6 +2459,7 @@ mod tests {
             .iter()
             .map(|geometry| TileKeyingOfRasterSpace::new(&tile_keying_of_list, geometry))
             .collect();
+        let raster_settings_hash_by_layer = raster_settings_hash_by_layer(stack);
         for (band_position, band) in stack.bands.iter().enumerate() {
             let band_index = BandIndex(band_position);
             if !stack.band_has_layer_at_or_above_base_layer(band_index) {
@@ -2476,7 +2478,7 @@ mod tests {
                     &mut band_tile_keys,
                     stack,
                     band_index,
-                    raster_settings_of_layer,
+                    &raster_settings_hash_by_layer,
                     shown_rect,
                     shown_rect,
                     Some(VIEWPORT),

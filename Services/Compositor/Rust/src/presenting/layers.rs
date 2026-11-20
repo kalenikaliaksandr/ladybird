@@ -1287,13 +1287,19 @@ impl ContextPresenting {
             .collect();
         let surface_clear_color = frame.surface_clear_color();
         let root_group_color = frame.display_list.root_group_color();
-        let raster_settings_of_layer = |layer_index: LayerIndex| LayerRasterSettings {
-            raster_space_identity: stack.spaces[stack.space_of_layer(layer_index).0].identity,
-            clear_color: clear_color_of_layer(stack, layer_index, surface_clear_color),
-            root_group_color,
-            viewport_to_raster_transform: raster_transform,
-            allows_lcd_text: layer_allows_lcd_text(stack, layer_index, frame_allows_lcd_text),
-        };
+        let raster_settings_hash_by_layer: Vec<ContentHash> = (0..stack.layers.len())
+            .map(LayerIndex)
+            .map(|layer_index| {
+                LayerRasterSettings {
+                    raster_space_identity: stack.spaces[stack.space_of_layer(layer_index).0].identity,
+                    clear_color: clear_color_of_layer(stack, layer_index, surface_clear_color),
+                    root_group_color,
+                    viewport_to_raster_transform: raster_transform,
+                    allows_lcd_text: layer_allows_lcd_text(stack, layer_index, frame_allows_lcd_text),
+                }
+                .content_hash()
+            })
+            .collect();
 
         let chunk_names = storage.chunk_names();
         let list_holds_chunks_the_band_tile_keys_are_bound_to = stack_of_frames
@@ -1350,7 +1356,7 @@ impl ContextPresenting {
                 &mut band_tile_keys.tile_keys,
                 stack,
                 band_index,
-                raster_settings_of_layer,
+                &raster_settings_hash_by_layer,
                 shown_rect,
                 rect_of_kept_tiles(
                     raster_space_index,
@@ -2588,13 +2594,14 @@ mod tests {
             &mut band_tile_keys,
             &stack,
             BandIndex(0),
-            |_| LayerRasterSettings {
+            &[LayerRasterSettings {
                 raster_space_identity: 0,
                 clear_color: white,
                 root_group_color: Color::TRANSPARENT,
                 viewport_to_raster_transform: FloatMatrix4x4::identity(),
                 allows_lcd_text: false,
-            },
+            }
+            .content_hash()],
             VIEWPORT,
             VIEWPORT,
             None,
