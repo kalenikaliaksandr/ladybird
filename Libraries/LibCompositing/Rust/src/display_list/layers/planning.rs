@@ -26,6 +26,7 @@ use super::{
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
     KeyframeFiltersOfEffects, filter_may_spread_at_some_sample, nearest_effects_spreading_at_some_sample,
+    outermost_effects_with_filters,
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
@@ -735,11 +736,12 @@ fn place_list(
             .copied()
             .flatten()
     };
+    let outermost_effects_with_filters_at_some_sample = outermost_effects_with_filters(tree, true);
     let filters_and_clips = FiltersAndClipsOfList {
         tree,
         nearest_spreading_effects: &nearest_spreading_effects,
         effect_clips,
-        follows_filters_of_every_sample: true,
+        outermost_effects_with_filters: &outermost_effects_with_filters_at_some_sample,
     };
     let mut reach_of_run_by_run_index = vec![IntRect::default(); list.run_count()];
     let mut run_moves_within_space_by_run_index = vec![false; list.run_count()];

@@ -22,7 +22,10 @@ use super::commands::{
     SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
-use super::effect_geometry::{nearest_spreading_effects, spreading_filter_of};
+use super::effect_geometry::{
+    FiltersInsideInnermostCompositedEffects, nearest_spreading_effects, outermost_effects_with_filters,
+    spreading_filter_of,
+};
 use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
@@ -353,6 +356,8 @@ pub struct TileKeyingOfList<'a> {
     tree: &'a VisualContextTree,
     frame_state: FrameStateReadByReplay<'a>,
     nearest_spreading_effects: Vec<EffectNodeIndex>,
+    outermost_effects_with_filters: Vec<EffectNodeIndex>,
+    filters_inside_composited_effects: FiltersInsideInnermostCompositedEffects,
     replays_every_record_into_every_tile: bool,
     tree_sorts_planes_by_depth: bool,
     frame_state_hash: ContentHash,
@@ -484,6 +489,11 @@ impl<'a> TileKeyingOfList<'a> {
             tree,
             frame_state,
             nearest_spreading_effects: nearest_spreading_effects(tree),
+            outermost_effects_with_filters: outermost_effects_with_filters(tree, false),
+            filters_inside_composited_effects: FiltersInsideInnermostCompositedEffects::of(
+                tree,
+                &innermost_composited_effect_by_effect_index,
+            ),
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
                 || one_layer_list_cannot_tell_which_records_show_in_tile,
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
@@ -1392,6 +1402,8 @@ pub struct TileKeyingOfRasterSpace<'a> {
     clip_content_hashes: LazyContentHashesPerNode,
     effect_content_hashes_by_scope: [LazyContentHashesPerNode; 3],
     cached_filter_read_reach_in_device_pixels_by_composited_effect: RefCell<HashMap<u32, Option<i32>>>,
+    rastered_bounds_of_clips_by_first_and_end_clip: RefCell<HashMap<(ClipNodeIndex, ClipNodeIndex), Option<FloatRect>>>,
+    clips_without_rastered_bounds: RefCell<Vec<ClipNodeIndex>>,
     chunks_placed: Cell<u64>,
 }
 
@@ -1455,6 +1467,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 LazyContentHashesPerNode::new(tree.effect_nodes.len()),
             ],
             cached_filter_read_reach_in_device_pixels_by_composited_effect: RefCell::new(HashMap::new()),
+            rastered_bounds_of_clips_by_first_and_end_clip: RefCell::new(HashMap::new()),
+            clips_without_rastered_bounds: RefCell::new(Vec::new()),
             chunks_placed: Cell::new(0),
         }
     }
@@ -1470,7 +1484,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             tree: list.tree,
             nearest_spreading_effects: &list.nearest_spreading_effects,
             effect_clips: list.effect_clips,
-            follows_filters_of_every_sample: false,
+            outermost_effects_with_filters: &list.outermost_effects_with_filters,
         };
         let composited_effect = if context.effect.is_none() {
             EffectNodeIndex::NONE
@@ -1482,10 +1496,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         }
         self.geometry.reach_of_content_inside_composited_effect(
             &filters_and_clips,
+            &list.filters_inside_composited_effects,
             rect,
             context,
             composited_effect,
             self.read_reach_in_device_pixels_of_filters_at_and_around(composited_effect),
+            |first_clip, end_clip| {
+                self.geometry.rastered_bounds_of_clips_from_up_to(
+                    list.tree,
+                    first_clip,
+                    end_clip,
+                    &mut self.rastered_bounds_of_clips_by_first_and_end_clip.borrow_mut(),
+                    &mut self.clips_without_rastered_bounds.borrow_mut(),
+                )
+            },
         )
     }
 

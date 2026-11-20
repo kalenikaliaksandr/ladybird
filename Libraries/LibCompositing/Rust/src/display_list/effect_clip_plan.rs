@@ -5,7 +5,7 @@
  */
 
 use super::commands::{ClipNodeIndex, ContextRef, DisplayListCommandRun, EffectNodeIndex};
-use crate::visual_context::{EffectNodeData, VisualContextTree, clip_lowest_common_ancestor_with_depths};
+use crate::visual_context::{VisualContextTree, clip_lowest_common_ancestor_with_depths};
 
 /// Layer placement belongs to a complete display list, before replay culls any runs.
 /// The tree supplies the clip where each effect begins; recorded contexts can widen
@@ -89,30 +89,6 @@ impl EffectClipPlan {
 
     pub fn output_clip_if_participating(&self, effect: EffectNodeIndex) -> Option<ClipNodeIndex> {
         self.output_clips.get(effect.0 as usize).copied().flatten()
-    }
-
-    /// The output clip of the outermost effect of `context` that holds a filter, or where `counts_animated_filters`
-    /// holds, that an animation of its filter can give one.
-    pub fn clip_outside_every_filter(
-        &self,
-        tree: &VisualContextTree,
-        context: ContextRef,
-        counts_animated_filters: bool,
-    ) -> ClipNodeIndex {
-        let mut clip = context.clip;
-        let mut effect = context.effect;
-        while !effect.is_none() {
-            let node = &tree.effect_nodes[effect.0 as usize];
-            if let EffectNodeData::Effects(effects) = &node.data
-                && (effects.filter.is_some()
-                    || effects.backdrop_filter.is_some()
-                    || (counts_animated_filters && tree.effect_filter_is_animated(effect)))
-            {
-                clip = self.output_clip(effect);
-            }
-            effect = node.parent;
-        }
-        clip
     }
 }
 

@@ -18,7 +18,8 @@ use crate::display_list::commands::{
 };
 use crate::display_list::effect_clip_plan::EffectClipPlan;
 use crate::display_list::effect_geometry::{
-    Extent, changed_extent_through_filters, changed_extent_through_filters_inside, spreading_filter_of,
+    Extent, FiltersInsideInnermostCompositedEffects, changed_extent_through_filters,
+    changed_extent_through_filters_inside,
 };
 use crate::display_list::reach::Reach;
 use crate::host::FfiVisualAnimationTargetKind;
@@ -862,9 +863,10 @@ pub struct FiltersAndClipsOfList<'a> {
     /// `nearest_effects_spreading_at_some_sample` gives.
     pub nearest_spreading_effects: &'a [EffectNodeIndex],
     pub effect_clips: &'a EffectClipPlan,
-    /// Whether an effect counts as filtered where an animation of its filter gives it a filter at some sample, as
-    /// placing follows, rather than only where the tree holds a filter, as keying the tiles of a frame does.
-    pub follows_filters_of_every_sample: bool,
+    /// What `outermost_effects_with_filters` gives for the tree, counting the filters an animation gives an effect
+    /// where placing follows them at every sample, as placing does, rather than only the filters the tree holds, as
+    /// keying the tiles of a frame does.
+    pub outermost_effects_with_filters: &'a [EffectNodeIndex],
 }
 
 impl FiltersAndClipsOfList<'_> {
@@ -873,11 +875,14 @@ impl FiltersAndClipsOfList<'_> {
     pub(crate) fn clip_bounding_filter_spread(&self, context: ContextRef) -> ClipNodeIndex {
         let is_spread_by_filters =
             !context.effect.is_none() && !self.nearest_spreading_effects[context.effect.0 as usize].is_none();
-        if is_spread_by_filters {
-            self.effect_clips
-                .clip_outside_every_filter(self.tree, context, self.follows_filters_of_every_sample)
-        } else {
+        if !is_spread_by_filters {
+            return context.clip;
+        }
+        let outermost_effect_with_filter = self.outermost_effects_with_filters[context.effect.0 as usize];
+        if outermost_effect_with_filter.is_none() {
             context.clip
+        } else {
+            self.effect_clips.output_clip(outermost_effect_with_filter)
         }
     }
 }
@@ -1038,17 +1043,22 @@ impl RasterSpaceGeometry {
         ))
     }
 
-    /// As `reach_of_content`, for content a raster draws inside `composited_effect`, which it leaves out with the
-    /// effects around it and the clips the effect is entered within: through the filters inside the effect, within the
-    /// clips inside it, and within as far past the clips it is entered within as the filters left out read, by
-    /// `read_reach_of_filters_left_out` where that is known.
+    /// As `reach_of_content`, for content a raster draws inside `composited_effect`, the innermost effect the compositor
+    /// composites at or above the effect of `context`, which it leaves out with the effects around it and the clips the
+    /// effect is entered within: through the filters inside the effect, within the clips inside it, and within as far
+    /// past the clips it is entered within as the filters left out read, by `read_reach_of_filters_left_out` where that
+    /// is known. `bounds_of_rastered_clips` gives what `rastered_bounds_of_clips_from_up_to` gives, which a caller can
+    /// keep for every content of one context.
+    #[allow(clippy::too_many_arguments)]
     pub fn reach_of_content_inside_composited_effect(
         &self,
         list: &FiltersAndClipsOfList<'_>,
+        filters_inside_composited_effects: &FiltersInsideInnermostCompositedEffects,
         drawn_within: FloatRect,
         context: ContextRef,
         composited_effect: EffectNodeIndex,
         read_reach_of_filters_left_out: Option<i32>,
+        bounds_of_rastered_clips: impl FnOnce(ClipNodeIndex, ClipNodeIndex) -> Option<FloatRect>,
     ) -> Reach<IntRect> {
         if drawn_within.is_empty()
             || self.culling.context_culls_everything(context)
@@ -1056,46 +1066,26 @@ impl RasterSpaceGeometry {
         {
             return Reach::Nothing;
         }
-        let tree = list.tree;
         let (space_of_extent, extent) = changed_extent_through_filters_inside(
-            tree,
+            list.tree,
+            filters_inside_composited_effects,
             context.spatial,
             drawn_within,
             context.effect,
-            composited_effect,
             &self.world,
         );
         let Some(bounds) = self.bounds_where_extent_lands(space_of_extent, extent, context.spatial) else {
             return Reach::Nothing;
         };
-        let mut clip_bounding_filter_spread = context.clip;
-        let mut effect = context.effect;
-        let mut is_spread_by_filters = false;
-        while !effect.is_none() && effect != composited_effect {
-            let node = &tree.effect_nodes[effect.0 as usize];
-            if let EffectNodeData::Effects(effects) = &node.data
-                && (effects.filter.is_some() || effects.backdrop_filter.is_some())
-            {
-                is_spread_by_filters |= spreading_filter_of(node).is_some();
-                if is_spread_by_filters {
-                    clip_bounding_filter_spread = list.effect_clips.output_clip(effect);
-                }
-            }
-            effect = node.parent;
-        }
+        let clip_bounding_filter_spread = filters_inside_composited_effects
+            .effect_bounding_spread_of(context.effect)
+            .map_or(context.clip, |effect| list.effect_clips.output_clip(effect));
         let clip_composited_effect_is_entered_within = list
             .effect_clips
             .output_clip_if_participating(composited_effect)
             .unwrap_or(ClipNodeIndex::NONE);
-        let mut bounds_of_clips_inside_composited_effect = None;
-        let mut clip = clip_bounding_filter_spread;
-        while !clip.is_none() && clip != clip_composited_effect_is_entered_within {
-            bounds_of_clips_inside_composited_effect = intersect_bounds(
-                self.rastered_affine_own_clip_bounds_by_clip[clip.0 as usize],
-                bounds_of_clips_inside_composited_effect,
-            );
-            clip = tree.clip_nodes[clip.0 as usize].parent;
-        }
+        let bounds_of_clips_inside_composited_effect =
+            bounds_of_rastered_clips(clip_bounding_filter_spread, clip_composited_effect_is_entered_within);
         let clips_entered_within_widened_by_what_filters_left_out_read =
             read_reach_of_filters_left_out.and_then(|read_reach| {
                 let bounds = if clip_composited_effect_is_entered_within.is_none() {
@@ -1110,6 +1100,36 @@ impl RasterSpaceGeometry {
             intersect_bounds(bounds, bounds_of_clips_inside_composited_effect),
             clips_entered_within_widened_by_what_filters_left_out_read,
         ))
+    }
+
+    /// The bounds, rastered in the space, of the clips from `first_clip` up to the clip before `end_clip`, using what
+    /// `bounds_by_first_and_end_clip` holds, and keeping there what it works out, so that a walk of the clips of many
+    /// contents passes each clip once for each end clip.
+    pub fn rastered_bounds_of_clips_from_up_to(
+        &self,
+        tree: &VisualContextTree,
+        first_clip: ClipNodeIndex,
+        end_clip: ClipNodeIndex,
+        bounds_by_first_and_end_clip: &mut HashMap<(ClipNodeIndex, ClipNodeIndex), Option<FloatRect>>,
+        clips_without_bounds: &mut Vec<ClipNodeIndex>,
+    ) -> Option<FloatRect> {
+        clips_without_bounds.clear();
+        let mut clip = first_clip;
+        let mut bounds = loop {
+            if clip.is_none() || clip == end_clip {
+                break None;
+            }
+            if let Some(&bounds) = bounds_by_first_and_end_clip.get(&(clip, end_clip)) {
+                break bounds;
+            }
+            clips_without_bounds.push(clip);
+            clip = tree.clip_nodes[clip.0 as usize].parent;
+        };
+        while let Some(clip) = clips_without_bounds.pop() {
+            bounds = intersect_bounds(self.rastered_affine_own_clip_bounds_by_clip[clip.0 as usize], bounds);
+            bounds_by_first_and_end_clip.insert((clip, end_clip), bounds);
+        }
+        bounds
     }
 
     // None where the extent lands nowhere, Some(None) where nothing bounds where it lands.
