@@ -284,9 +284,6 @@ impl BarrierCut {
 pub struct PlacementNodeBand {
     pub placement_node_index: PlacementNodeIndex,
     pub band_ordinal_in_node: u32,
-    /// Where the first record painted in the band is, of the node or of a node inside it, which names the band from one
-    /// list to the next where bands of the node painted before it come or go.
-    pub first_record_position: ListPosition,
     pub parent_band_holding_this_band_as_barrier: Option<BandIndex>,
     /// In paint order.
     pub record_spans: Vec<ListSpan>,
@@ -610,7 +607,6 @@ struct NodeOfPlan {
 #[derive(Clone, Debug)]
 struct BandOfPlan {
     placement_node_index: PlacementNodeIndex,
-    first_record_position: ListPosition,
     /// In paint order.
     record_spans: Vec<ListSpan>,
     reach_of_layer_below_all_cuts: IntRect,
@@ -702,7 +698,6 @@ impl LayerStack {
             bands: vec![PlacementNodeBand {
                 placement_node_index: PlacementNodeIndex(0),
                 band_ordinal_in_node: 0,
-                first_record_position: whole_list_span.begin,
                 parent_band_holding_this_band_as_barrier: None,
                 record_spans: vec![whole_list_span],
                 cuts: Vec::new(),
@@ -773,7 +768,6 @@ impl LayerStack {
                 bands.push(PlacementNodeBand {
                     placement_node_index: band.placement_node_index,
                     band_ordinal_in_node: *band_ordinal_in_node,
-                    first_record_position: band.first_record_position,
                     parent_band_holding_this_band_as_barrier: walk.last().map(|walked| walked.band_index),
                     record_spans: band.record_spans,
                     cuts: Vec::with_capacity(band.cuts.len()),
@@ -835,8 +829,18 @@ impl LayerStack {
                     };
                     let nested_band = &bands[band_index.0];
                     let nested_node = &nodes[nested_band.placement_node_index.0];
+                    // A plan opens a band for the stretch of records it starts with, so the cut of a nested band is
+                    // painted where its content begins.
+                    let where_content_of_nested_band_begins = [
+                        nested_band.record_spans.first().map(|span| span.begin),
+                        nested_band.cuts.first().map(|cut| cut.barrier_first_record_position),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or_default();
                     let cut = BarrierCut {
-                        barrier_first_record_position: nested_band.first_record_position,
+                        barrier_first_record_position: where_content_of_nested_band_begins,
                         cut_reach: nested_node.reach_in_parent_node,
                         layer_above_cut: LayerIndex(layers.len()),
                     };

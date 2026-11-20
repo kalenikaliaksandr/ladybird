@@ -1866,14 +1866,9 @@ impl StackBeingBuilt<'_> {
         let placement_node_index = band_being_built.placement_node_index;
         let own_record_stretch_indices = std::mem::take(&mut band_being_built.own_record_stretch_indices);
         let barriers = std::mem::take(&mut band_being_built.barriers);
-        let first_record_position = placement
-            .record_stretches
-            .get(band_being_built.first_record_stretch_index.0)
-            .map_or(ListPosition::default(), |stretch| stretch.record_span.begin);
         let band_position = bands.len();
         bands.push(BandOfPlan {
             placement_node_index,
-            first_record_position,
             record_spans: Vec::new(),
             reach_of_layer_below_all_cuts: IntRect::default(),
             cuts: Vec::new(),

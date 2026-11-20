@@ -281,7 +281,6 @@ impl Decode for CutOfPlan {
 
 impl Decode for BandOfPlan {
     const MIN_ENCODED_SIZE: usize = PlacementNodeIndex::MIN_ENCODED_SIZE
-        + ListPosition::MIN_ENCODED_SIZE
         + Vec::<ListSpan>::MIN_ENCODED_SIZE
         + IntRect::MIN_ENCODED_SIZE
         + Vec::<CutOfPlan>::MIN_ENCODED_SIZE;
@@ -289,7 +288,6 @@ impl Decode for BandOfPlan {
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             placement_node_index: decoder.decode()?,
-            first_record_position: decoder.decode()?,
             record_spans: decoder.decode_with_max_size(MAXIMUM_SPAN_COUNT_OF_RECEIVED_BAND)?,
             reach_of_layer_below_all_cuts: decoder.decode()?,
             cuts: decoder.decode_with_max_size(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND)?,
@@ -408,7 +406,6 @@ impl Encode for LayerStack {
         encoder.encode_size(self.bands.len())?;
         for band in &self.bands {
             encoder.encode(&band.placement_node_index)?;
-            encoder.encode(&band.first_record_position)?;
             encoder.encode(&band.record_spans)?;
             encoder.encode(&self.layers[band.layer_below_all_cuts.0].reach)?;
             encoder.encode_size(band.cuts.len())?;
@@ -720,9 +717,6 @@ fn check_bands(plan: &LayeredPlan, list: &DisplayListStorage) -> Result<(), &'st
         if index != 0 && band.record_spans.is_empty() && band.cuts.is_empty() {
             return Err("a band other than the first holds no span and no cut");
         }
-        if !position_starts_run(list, band.first_record_position) {
-            return Err("a band starts where no run of the list starts");
-        }
         let spans_are_of_whole_runs_in_paint_order =
             band.record_spans.iter().all(|span| span_is_of_whole_runs(list, *span))
                 && band.record_spans.windows(2).all(|pair| pair[0].end <= pair[1].begin);
@@ -801,10 +795,8 @@ fn check_no_record_is_held_twice(plan: &LayeredPlan) -> Result<(), &'static str>
 }
 
 // What only the walk of the bands tells: the node of a band the walk enters at a cut of another band is in the node of
-// that band, and the first band is of a node in no other node; the cuts of a band are in paint order; a band the walk
-// enters at a cut starts where its first span or its first cut is, whichever is painted first, as a plan opens a band for
-// the stretch of records it starts with, and that start is where the cut of the band is painted; and the identities of
-// layers, so of bands too, are unique.
+// that band, and the first band is of a node in no other node; the cuts of a band are in paint order; and the identities
+// of layers, so of bands too, are unique.
 fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
     for band in &stack.bands {
         let node_of_band_around = band
@@ -819,18 +811,6 @@ fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
             .all(|pair| pair[0].barrier_first_record_position <= pair[1].barrier_first_record_position);
         if !cuts_are_in_paint_order {
             return Err("the cuts of a band are not in paint order");
-        }
-        let where_content_of_band_begins = [
-            band.record_spans.first().map(|span| span.begin),
-            band.cuts.first().map(|cut| cut.barrier_first_record_position),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
-        if band.parent_band_holding_this_band_as_barrier.is_some()
-            && where_content_of_band_begins != Some(band.first_record_position)
-        {
-            return Err("a band entered at a cut does not start where its content begins");
         }
     }
     let mut identities_of_layers = HashSet::with_capacity(stack.layers.len());
@@ -1927,7 +1907,6 @@ mod tests {
         });
         plan.bands.push(BandOfPlan {
             placement_node_index: PlacementNodeIndex(plan.nodes.len() - 1),
-            first_record_position: header_span.begin,
             record_spans: vec![header_span],
             reach_of_layer_below_all_cuts: IntRect::new(0, 0, 800, 50),
             cuts: Vec::new(),
@@ -2035,9 +2014,6 @@ mod tests {
                 let band = band_with_spans(plan);
                 let span = &mut plan.bands[band].record_spans[0];
                 std::mem::swap(&mut span.begin, &mut span.end);
-            }),
-            ("band that starts inside a run", page_with_two_canvases, |plan| {
-                plan.bands[0].first_record_position.offset += 4;
             }),
             ("media layer that starts inside a run", page_with_two_canvases, |plan| {
                 first_media_of(plan).2.begin.offset += 4
@@ -2198,11 +2174,6 @@ mod tests {
             ("first band of a node in another node", plain_page, |plan| {
                 plan.bands[0].placement_node_index = PlacementNodeIndex(1);
             }),
-            (
-                "band entered at a cut that starts past where its content begins",
-                plain_page,
-                |plan| plan.bands[1].first_record_position = plan.bands[1].record_spans[0].end,
-            ),
             (
                 "first drawing of a canvas numbered as if one came before it",
                 page_with_two_canvases,
