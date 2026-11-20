@@ -1026,7 +1026,6 @@ pub(crate) fn replay_with_scroll_offsets(
             replay_display_list(
                 tree,
                 storage,
-                storage.effect_clip_plan(tree),
                 display_list.root_group_color(),
                 &replay_frame,
                 selection,
@@ -1060,7 +1059,6 @@ pub(crate) fn composite_inside_effects_of_frame(
             composite_inside_effects(
                 tree,
                 storage,
-                storage.effect_clip_plan(tree),
                 display_list.root_group_color(),
                 &replay_frame,
                 painter,

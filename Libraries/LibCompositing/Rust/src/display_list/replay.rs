@@ -1559,25 +1559,15 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn replay_display_list<Painter: ReplayPainter + ?Sized>(
     tree: &VisualContextTree,
     display_list: &DisplayListStorage,
-    effect_clips: &EffectClipPlan,
     root_group_color: Color,
     frame: &ReplayFrame<'_>,
     selection: ReplaySelection<'_>,
     painter: &mut Painter,
 ) {
-    let mut driver = ReplayDriver::new(
-        tree,
-        display_list,
-        effect_clips,
-        root_group_color,
-        frame,
-        selection,
-        painter,
-    );
+    let mut driver = ReplayDriver::new(tree, display_list, root_group_color, frame, selection, painter);
     driver.execute();
     driver.return_scratch_storage();
 }
@@ -1586,13 +1576,13 @@ impl<'a, Painter: ReplayPainter + ?Sized> ReplayDriver<'a, Painter> {
     fn new(
         tree: &'a VisualContextTree,
         display_list: &'a DisplayListStorage,
-        effect_clips: &'a EffectClipPlan,
         root_group_color: Color,
         frame: &'a ReplayFrame<'a>,
         selection: ReplaySelection<'a>,
         painter: &'a mut Painter,
     ) -> Self {
         let replay_base_matrix = painter.canvas_matrix();
+        let effect_clips = display_list.effect_clip_plan(tree);
         let mut scratch = take_replay_scratch_storage();
         tree.fill_culling_scratch(&mut scratch.culling);
         let (effects_left_to_composite, clips_left_to_composite) =
@@ -1789,7 +1779,6 @@ pub struct CompositeClipsOfRaster<'a> {
 pub fn composite_inside_effects<Painter: ReplayPainter + ?Sized>(
     tree: &VisualContextTree,
     display_list: &DisplayListStorage,
-    effect_clips: &EffectClipPlan,
     root_group_color: Color,
     frame: &ReplayFrame<'_>,
     painter: &mut Painter,
@@ -1799,7 +1788,6 @@ pub fn composite_inside_effects<Painter: ReplayPainter + ?Sized>(
     let mut driver = ReplayDriver::new(
         tree,
         display_list,
-        effect_clips,
         root_group_color,
         frame,
         ReplaySelection {
@@ -2157,7 +2145,6 @@ mod tests {
         replay_display_list(
             tree,
             &list_of_one_chunk(&[], runs),
-            &EffectClipPlan::new(tree, runs).unwrap(),
             Color::TRANSPARENT,
             &ReplayFrame::unscrolled(0),
             ReplaySelection::default(),
@@ -2180,7 +2167,6 @@ mod tests {
         replay_display_list(
             tree,
             &list_of_one_chunk(&record_bytes, runs),
-            &EffectClipPlan::new(tree, &*runs).unwrap(),
             Color::TRANSPARENT,
             &ReplayFrame::unscrolled(0),
             selection,
@@ -2273,7 +2259,6 @@ mod tests {
             replay_display_list(
                 &tree,
                 list,
-                &EffectClipPlan::new(&tree, &runs).unwrap(),
                 Color::TRANSPARENT,
                 &ReplayFrame::unscrolled(0),
                 ReplaySelection {
@@ -2400,7 +2385,6 @@ mod tests {
                 visible_bounds(),
             )
         });
-        let effect_clips = EffectClipPlan::new(&tree, &runs).unwrap();
 
         let white = Color::from_rgb(255, 255, 255);
         for (color, allows_lcd_text, expected) in [
@@ -2412,7 +2396,6 @@ mod tests {
             replay_display_list(
                 &tree,
                 &list_of_one_chunk(&[], &runs),
-                &effect_clips,
                 color,
                 &ReplayFrame::unscrolled(0),
                 ReplaySelection {
@@ -3214,7 +3197,6 @@ mod tests {
         composite_inside_effects(
             &tree,
             &list_of_one_chunk(&[], &runs),
-            &EffectClipPlan::new(&tree, &runs).unwrap(),
             Color::TRANSPARENT,
             &ReplayFrame::unscrolled(0),
             &mut painter,
@@ -3295,7 +3277,6 @@ mod tests {
         replay_display_list(
             &tree,
             &list_of_one_chunk(&[], &runs),
-            &EffectClipPlan::new(&tree, &runs).unwrap(),
             white,
             &ReplayFrame::unscrolled(0),
             ReplaySelection::default(),
@@ -3339,7 +3320,6 @@ mod tests {
         replay_display_list(
             &tree,
             &list_of_one_chunk(&[], &runs),
-            &EffectClipPlan::new(&tree, &runs).unwrap(),
             white,
             &ReplayFrame::unscrolled(0),
             ReplaySelection {
@@ -3474,7 +3454,6 @@ mod tests {
         replay_display_list(
             &tree,
             &list_of_one_chunk(&[], &runs),
-            &EffectClipPlan::new(&tree, &runs).unwrap(),
             Color::TRANSPARENT,
             &ReplayFrame {
                 scroll_offsets: &scroll_offsets,

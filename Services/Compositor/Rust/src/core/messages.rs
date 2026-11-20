@@ -266,7 +266,6 @@ impl MessagesFromWebContent<'_> {
             replay_display_list(
                 &tree,
                 &storage,
-                storage.effect_clip_plan(&tree),
                 properties.root_group_color,
                 &frame,
                 ReplaySelection::default(),
