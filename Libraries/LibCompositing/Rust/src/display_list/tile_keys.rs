@@ -29,7 +29,7 @@ use super::nested_records::{
 };
 use super::placement::{
     ANTIALIASING_MARGIN_IN_DEVICE_PIXELS, FiltersAndClipsOfList, RasterSpaceGeometry, RunGroupIndex, RunGroups,
-    is_finite_rect,
+    enclosing_int_rect_within_extent_limit, is_finite_rect,
 };
 use super::reach::Reach;
 use super::replay::{ScrollbarShownByFrame, caret_is_visible_at_time, scrollbar_shown_by_frame};
@@ -47,10 +47,7 @@ use crate::visual_context::{
     ClipData, ClipNode, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
 };
 use foldhash::fast::{FixedState, FoldHasher};
-use libgfx_rust::{
-    Color, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect,
-    enclosing_int_rect,
-};
+use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, Hasher};
@@ -1490,7 +1487,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     .map_rect_to_root(node.spatial, region_in_effect_space)
             })
             .filter(|rect| is_finite_rect(*rect))
-            .map(enclosing_int_rect);
+            .map(enclosing_int_rect_within_extent_limit);
         let backdrop_read_reach = match (region_in_device_pixels, read_reach_in_device_pixels) {
             (Some(region), Some(read_reach)) => {
                 Reach::Within(region.inflated_edges(read_reach, read_reach, read_reach, read_reach))
@@ -1516,7 +1513,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         .map_rect_to_root(node.spatial, region_in_effect_space),
                 )
                 .filter(|rect| is_finite_rect(*rect))
-                .map_or(Reach::Anywhere, |rect| Reach::Within(enclosing_int_rect(rect)))
+                .map_or(Reach::Anywhere, |rect| {
+                    Reach::Within(enclosing_int_rect_within_extent_limit(rect))
+                })
             });
         BackdropReadInLayer {
             first_record_position,
@@ -3881,6 +3880,67 @@ mod tests {
         let root = root_context(&tree);
         let display_list = DisplayListStorage::of_chunks(vec![chunk_of(fill(VIEWPORT, GREEN), root)]).unwrap();
         (tree, display_list)
+    }
+
+    fn frosted_glass(tree: &mut VisualContextTree, parent: ContextRef, region: IntRect) -> ContextRef {
+        tree.append_effect_node_under(
+            parent,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
+                    filter: Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize()),
+                    region,
+                    corner_radii: CornerRadii::default(),
+                }),
+            }),
+        )
+    }
+
+    // The region of a backdrop filter in a tree from another process can lie past the extent of any space.
+    #[test]
+    fn a_backdrop_filter_whose_region_lies_past_the_extent_limit_reads_within_rects_whose_edges_fit() {
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let region_past_extent_limit = IntRect::new(i32::MAX - 1000, 0, 1000, 100);
+        let frosted = frosted_glass(&mut tree, root, region_past_extent_limit);
+        let list = TestList::default()
+            .with(fill(VIEWPORT, GREEN), root)
+            .with(fill(region_past_extent_limit, BLUE), frosted);
+        let display_list = DisplayListStorage::of_builder(&list.builder);
+        let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+        let list_keying = TileKeyingOfList::new(
+            &display_list,
+            &tree,
+            &stack,
+            FrameStateReadByReplay {
+                scrollbars: &[],
+                time_ns: 0,
+                live_content: &NoLiveContentChanges,
+            },
+        );
+        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
+        let geometry = RasterSpaceGeometry::new(
+            &tree,
+            &spaces,
+            RasterSpaceIndex::VIEWPORT,
+            &[],
+            FloatMatrix4x4::identity(),
+        );
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let backdrop_read = raster_space.backdrop_read_in_layer(frosted.effect, display_list.whole_span().begin);
+        let edges_fit_in_int_rect = |reach: Reach<IntRect>| match reach {
+            Reach::Within(rect) => {
+                rect.x.checked_add(rect.width).is_some() && rect.y.checked_add(rect.height).is_some()
+            }
+            Reach::Nothing | Reach::Anywhere => true,
+        };
+        assert!(edges_fit_in_int_rect(backdrop_read.backdrop_read_reach));
+        assert!(edges_fit_in_int_rect(backdrop_read.region_reach));
+        let tiles = viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &tree, &stack);
+        assert_eq!(tiles.len(), 4);
     }
 
     // A box that the compositor scales up from nothing shows at a tiny part of its raster scale at first.
