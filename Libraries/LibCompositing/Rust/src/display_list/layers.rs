@@ -16,8 +16,7 @@
 //! below it, that it reads, at its paint position: there, the band's records painted before the barrier go into the
 //! layer below the cut and those painted after it into the layer above the cut. Elsewhere it cuts nothing.
 
-use crate::display_list::builder::read_command;
-use crate::display_list::commands::{DeclareMaskContent, EffectNodeIndex, SpatialNodeIndex};
+use crate::display_list::commands::{EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::filter_may_spread_at_some_sample;
 pub use crate::display_list::placement::{
     CompositeClip, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex, RunGroupIndex, raster_space_anchors,
@@ -1398,10 +1397,9 @@ fn effect_is_or_is_inside(tree: &VisualContextTree, mut effect: EffectNodeIndex,
 // declaration is under there, which draw nothing only when they are the mask's own or those around it. A list from
 // another process can name a mask that the tree does not hold. No effect is inside such a mask.
 fn mask_declarations_are_on_effect_chains_of_their_masks(list: &DisplayListStorage, tree: &VisualContextTree) -> bool {
-    list.summary().mask_declarations.iter().all(|record| {
-        let (_, payload) = list.record_at(record.position());
-        let mask_effect = read_command::<DeclareMaskContent>(payload).effect;
-        let declaration_effect = list.run(record.run_index as usize).context.effect;
+    list.summary().mask_declarations.iter().all(|declaration| {
+        let mask_effect = declaration.mask_effect;
+        let declaration_effect = list.run(declaration.record.run_index as usize).context.effect;
         let tree_holds_mask_effect = (mask_effect.0 as usize) < tree.effect_nodes.len();
         declaration_effect.is_none()
             || effect_is_or_is_inside(tree, declaration_effect, mask_effect)

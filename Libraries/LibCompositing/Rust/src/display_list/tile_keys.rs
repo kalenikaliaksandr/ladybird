@@ -17,9 +17,9 @@ use super::builder::{
     inline_clips_of, read_command,
 };
 use super::commands::{
-    ClipMode, ClipNodeIndex, ContextRef, DeclareMaskContent, DisplayListCommandRun, DisplayListCommandType,
-    DrawCompositedContext, EffectNodeIndex, FillRect, FillRectWithRoundedCorners, FillRoundedRectRing, PaintCaret,
-    PaintScrollBar, SpatialNodeIndex,
+    ClipMode, ClipNodeIndex, ContextRef, DisplayListCommandRun, DisplayListCommandType, DrawCompositedContext,
+    EffectNodeIndex, FillRect, FillRectWithRoundedCorners, FillRoundedRectRing, PaintCaret, PaintScrollBar,
+    SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{nearest_spreading_effects, spreading_filter_of};
@@ -368,13 +368,7 @@ impl<'a> TileKeyingOfList<'a> {
             .summary()
             .mask_declarations
             .iter()
-            .map(|declaration| {
-                let (_, payload) = display_list.record_at(declaration.position());
-                (
-                    read_command::<DeclareMaskContent>(payload).effect,
-                    declaration.position(),
-                )
-            })
+            .map(|declaration| (declaration.mask_effect, declaration.record.position()))
             .collect();
         let mut is_composited_by_effect_index = vec![false; tree.effect_nodes.len()];
         for effect in stack.effects_the_compositor_composites() {
@@ -2859,7 +2853,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
-    use crate::display_list::commands::{CanvasId, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
+    use crate::display_list::commands::{
+        CanvasId, DeclareMaskContent, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
+    };
     use crate::display_list::layers::LayerStack;
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};

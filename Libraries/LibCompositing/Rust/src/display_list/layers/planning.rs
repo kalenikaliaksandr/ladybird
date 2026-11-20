@@ -565,14 +565,9 @@ fn why_media_has_no_layer(
     reach_of_run_holding_only_media: IntRect,
     is_under_transform_animation_leaving_plane: bool,
 ) -> Option<WhyMediaHasNoLayer> {
-    let record_table = inputs.list.chunk(media_record_position.chunk_index).record_table();
-    let record = record_table.record(
-        record_table
-            .record_indices_between_offsets(media_record_position.offset, media_record_position.offset + 1)
-            .start,
-    );
+    let (header, _) = inputs.list.record_at(media_record_position);
     if !matches!(
-        record.command_type,
+        header.command_type,
         DisplayListCommandType::DrawCanvas
             | DisplayListCommandType::DrawVideoFrame
             | DisplayListCommandType::DrawCompositedContext

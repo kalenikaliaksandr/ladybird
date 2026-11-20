@@ -54,6 +54,13 @@ pub struct LiveContentRecord {
     pub content: LiveContent,
 }
 
+/// A top-level record that declares the content of a mask, with the effect of the mask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaskDeclarationRecord {
+    pub record: IndexedRecord,
+    pub mask_effect: EffectNodeIndex,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct DisplayListSummary {
     pub font_ids: Vec<u64>,
@@ -65,7 +72,7 @@ pub struct DisplayListSummary {
     pub carets: Vec<IndexedRecord>,
     pub live_content_records: Vec<LiveContentRecord>,
     pub destination_blending_records: Vec<IndexedRecord>,
-    pub mask_declarations: Vec<IndexedRecord>,
+    pub mask_declarations: Vec<MaskDeclarationRecord>,
 }
 
 #[derive(Default)]
@@ -219,7 +226,10 @@ pub fn summarize(tape: &[u8], command_runs: &[DisplayListCommandRun]) -> Display
             };
             match header.command_type {
                 DisplayListCommandType::PaintCaret => summary.carets.push(indexed_record),
-                DisplayListCommandType::DeclareMaskContent => summary.mask_declarations.push(indexed_record),
+                DisplayListCommandType::DeclareMaskContent => summary.mask_declarations.push(MaskDeclarationRecord {
+                    record: indexed_record,
+                    mask_effect: read_command::<DeclareMaskContent>(payload).effect,
+                }),
                 _ => {}
             }
             if let Some((blend, blends_with_isolated_backdrop_color)) = command_blend(header.command_type, payload)
@@ -280,7 +290,15 @@ pub fn summary_of_pieces<'a>(
             .extend(chunk_summary.destination_blending_records.iter().map(shift_into_list));
         summary
             .mask_declarations
-            .extend(chunk_summary.mask_declarations.iter().map(shift_into_list));
+            .extend(
+                chunk_summary
+                    .mask_declarations
+                    .iter()
+                    .map(|declaration| MaskDeclarationRecord {
+                        record: shift_into_list(&declaration.record),
+                        mask_effect: declaration.mask_effect,
+                    }),
+            );
         summary.font_ids.extend_from_slice(&chunk_summary.font_ids);
         summary
             .image_frame_ids
