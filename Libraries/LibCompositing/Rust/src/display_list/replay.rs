@@ -733,6 +733,7 @@ struct ReplayDriver<'a, Painter: ReplayPainter + ?Sized> {
     effects_left_to_composite_around_composited_effect: Vec<bool>,
     clips_left_to_composite_around_composited_effect: Vec<bool>,
     content_reads_layer_by_effect_index: Option<Vec<bool>>,
+    first_backdrop_drawn_by_masks_by_reading_mask: std::cell::OnceCell<Vec<EffectNodeIndex>>,
 }
 
 fn effects_and_clips_left_to_composite_around(
@@ -835,6 +836,24 @@ fn backdrop_is_drawn_by_masks(tree: &VisualContextTree, effect: EffectNodeIndex)
         && matches!(&tree.effect_nodes[node.parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop)
 }
 
+// Per mask, the first effect whose backdrop the mask draws as the outermost of the masks of its box, if any.
+fn first_backdrop_drawn_by_masks_by_reading_mask(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
+    let mut first_backdrop_by_reading_mask = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
+    let node_reading_backdrop_by_effect_index = tree.nodes_reading_the_backdrops_of_effects();
+    for index in 0..tree.effect_nodes.len() {
+        let effect = EffectNodeIndex(index as u32);
+        if !backdrop_is_drawn_by_masks(tree, effect) {
+            continue;
+        }
+        let first_backdrop =
+            &mut first_backdrop_by_reading_mask[node_reading_backdrop_by_effect_index[index].0 as usize];
+        if first_backdrop.is_none() {
+            *first_backdrop = effect;
+        }
+    }
+    first_backdrop_by_reading_mask
+}
+
 fn replay_mask_of(mask: &crate::visual_context::MaskData) -> ReplayMask {
     ReplayMask {
         rect: mask.rect,
@@ -896,12 +915,14 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                     content_reads_layer_by_effect_index[layer.0 as usize] = true;
                 }
             };
+            let mut node_reading_backdrop_by_effect_index = None;
             for (index, node) in tree.effect_nodes.iter().enumerate() {
                 let EffectNodeData::Effects(effects) = &node.data else {
                     continue;
                 };
                 let reading_node = if effects.backdrop_filter.is_some() {
-                    tree.node_reading_the_backdrop_of(EffectNodeIndex(index as u32))
+                    node_reading_backdrop_by_effect_index
+                        .get_or_insert_with(|| tree.nodes_reading_the_backdrops_of_effects())[index]
                 } else if effects.blend_mode != libgfx_rust::CompositingAndBlendingOperator::Normal {
                     EffectNodeIndex(index as u32)
                 } else {
@@ -1019,11 +1040,10 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
             });
         // Compositing a mask's content enters the mask without the effect whose backdrop it draws.
         let backdrop_effect = backdrop_effect_in_target_canvas_stack.or_else(|| {
-            (0..tree.effect_nodes.len() as u32)
-                .map(EffectNodeIndex)
-                .find(|&effect| {
-                    backdrop_is_drawn_by_masks(tree, effect) && tree.node_reading_the_backdrop_of(effect) == mask_effect
-                })
+            let backdrop_effect = self
+                .first_backdrop_drawn_by_masks_by_reading_mask
+                .get_or_init(|| first_backdrop_drawn_by_masks_by_reading_mask(tree))[mask_effect.0 as usize];
+            (!backdrop_effect.is_none()).then_some(backdrop_effect)
         })?;
         let EffectNodeData::Effects(effects) = &tree.effect_nodes[backdrop_effect.0 as usize].data else {
             unreachable!("a backdrop that masks draw is of an effects node");
@@ -1590,6 +1610,7 @@ impl<'a, Painter: ReplayPainter + ?Sized> ReplayDriver<'a, Painter> {
             effects_left_to_composite_around_composited_effect: effects_left_to_composite,
             clips_left_to_composite_around_composited_effect: clips_left_to_composite,
             content_reads_layer_by_effect_index: None,
+            first_backdrop_drawn_by_masks_by_reading_mask: std::cell::OnceCell::new(),
         };
         driver.world.fill(
             tree,

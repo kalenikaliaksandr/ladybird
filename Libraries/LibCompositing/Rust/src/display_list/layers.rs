@@ -503,13 +503,15 @@ struct BackdropReader {
 // Per effect node, whether it reads what is below it, and if it reads for a backdrop filter, the effect of the filter.
 fn backdrop_reader_by_reading_effect_index(tree: &VisualContextTree) -> Vec<Option<BackdropReader>> {
     let mut backdrop_reader_by_reading_effect_index = vec![None; tree.effect_nodes.len()];
+    let mut node_reading_backdrop_by_effect_index = None;
     for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
         let EffectNodeData::Effects(effects) = &effect_node.data else {
             continue;
         };
         let effect = EffectNodeIndex(index as u32);
         if effects.backdrop_filter.is_some() {
-            let reading_effect = tree.node_reading_the_backdrop_of(effect);
+            let reading_effect = node_reading_backdrop_by_effect_index
+                .get_or_insert_with(|| tree.nodes_reading_the_backdrops_of_effects())[index];
             backdrop_reader_by_reading_effect_index[reading_effect.0 as usize] = Some(BackdropReader {
                 effect_with_backdrop_filter: Some(effect),
             });

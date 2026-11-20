@@ -525,6 +525,21 @@ impl VisualContextTree {
         }
     }
 
+    /// What `node_reading_the_backdrop_of` gives for each live effect node, in one pass over the tree, or none for a
+    /// node that is not live.
+    pub fn nodes_reading_the_backdrops_of_effects(&self) -> Vec<EffectNodeIndex> {
+        let mut reader_by_effect_index = vec![EffectNodeIndex::NONE; self.effect_nodes.len()];
+        self.visit_effect_nodes_parents_first(|index| {
+            let parent = self.effect_nodes[index].parent;
+            let reader_of_parent_masking_backdrop = (!parent.is_none()
+                && matches!(&self.effect_nodes[parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop))
+            .then(|| reader_by_effect_index[parent.0 as usize])
+            .filter(|reader| !reader.is_none());
+            reader_by_effect_index[index] = reader_of_parent_masking_backdrop.unwrap_or(EffectNodeIndex(index as u32));
+        });
+        reader_by_effect_index
+    }
+
     /// The backdrop of an effect whose box's masks draw it is read where the outermost of those masks composites.
     pub fn effect_backdrop_is_root_group(&self, effect: EffectNodeIndex) -> bool {
         let reader = self.node_reading_the_backdrop_of(effect);
