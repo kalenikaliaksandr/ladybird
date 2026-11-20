@@ -26,7 +26,7 @@ pub struct ReceivedLayerPlan {
     pub viewport_rect: IntRect,
     pub stack: Rc<LayerStack>,
     /// The spatial nodes whose scroll offset the plan reads. It holds wherever the compositor scrolls or moves the
-    /// other nodes to, which include the anchors of its spaces.
+    /// other nodes to, which include the anchors of its spaces. Empty for a plan of one layer.
     pub nodes_whose_scroll_offset_plan_reads: Rc<[u32]>,
     /// What the overlay of layers tells of the stack past its layers, as WebContent wrote it.
     pub note_lines: Rc<[String]>,
@@ -201,20 +201,23 @@ impl ContextScene {
         let layer_plan = layer_plan.validated(display_list.storage(), tree.as_arc())?;
         // The spaces of a plan of more than one layer are at the anchors that plans take for the tree. A plan of one
         // layer replays the whole display list, and no frame reads which scroll offsets it leaves out.
-        let anchors_of_spaces: Vec<SpatialNodeIndex> = layer_plan
-            .stack
-            .spaces
-            .iter()
-            .skip(1)
-            .map(|space| space.anchor)
-            .collect();
-        let nodes_whose_scroll_offset_plan_reads =
+        let nodes_whose_scroll_offset_plan_reads = if layer_plan.stack.replays_whole_list() {
+            Rc::default()
+        } else {
+            let anchors_of_spaces: Vec<SpatialNodeIndex> = layer_plan
+                .stack
+                .spaces
+                .iter()
+                .skip(1)
+                .map(|space| space.anchor)
+                .collect();
             spatial_nodes_whose_scroll_offset_placement_leaves_out(tree.as_arc(), &anchors_of_spaces)
                 .into_iter()
                 .enumerate()
                 .filter(|&(_, leaves_out)| !leaves_out)
                 .map(|(node_index, _)| node_index as u32)
-                .collect();
+                .collect()
+        };
         self.layer_plan = Some(ReceivedLayerPlan {
             viewport_rect: layer_plan.viewport_rect,
             stack: Rc::new(layer_plan.stack),
