@@ -32,6 +32,10 @@ const SHORTEST_TIME_BETWEEN_PUBLISHED_DESCRIPTIONS: Duration = Duration::from_mi
 // The compositor layers window lists no more layers, and no longer names of them, than a person can read.
 const MAXIMUM_LISTED_LAYER_COUNT: usize = 256;
 const MAXIMUM_LISTED_LAYER_NAME_LENGTH: usize = 1024;
+// A frame draws labels for at most this many layers, those nearest the top, and for at most this many of their tiles,
+// so that a stack of very many layers shapes and places few labels, which the cache of labels holds.
+const MAXIMUM_LABELED_LAYER_COUNT: usize = 64;
+const MAXIMUM_LABELED_TILE_COUNT: usize = 1024;
 const BYTES_PER_PIXEL: u64 = 4;
 const RASTER_HIGHLIGHT_ALPHA_BEFORE_FADING: u8 = 115;
 const ONE_COLOR_TILE_TINT_ALPHA: u8 = 40;
@@ -249,6 +253,45 @@ pub struct LayerOverlayModel {
     pub highlights_fade_until: Option<MonotonicTime>,
 }
 
+/// The layers that a frame of the overlay draws labels for, from the top down, each with the tiles it labels: those it
+/// holds where the frame shows them. Answers too how many shown layers and tiles get no label.
+fn labels_of_model(model: &LayerOverlayModel) -> (Vec<(&ModelLayer, Vec<&ModelTile>)>, usize, usize) {
+    let shown_layers = model.layers.iter().filter(|layer| !layer.hidden);
+    let unlabeled_layer_count = shown_layers.clone().count().saturating_sub(MAXIMUM_LABELED_LAYER_COUNT);
+    let mut labeled_tile_count = 0;
+    let mut unlabeled_tile_count = 0;
+    let labeled_layers = shown_layers
+        .rev()
+        .take(MAXIMUM_LABELED_LAYER_COUNT)
+        .map(|layer| {
+            let mut labeled_tiles = Vec::new();
+            if let ModelLayerContent::Painted { tiles, .. } = &layer.content {
+                let visible_rect = layer.visible_rect_in_frame(model.viewport_rect);
+                for tile in tiles {
+                    let Some(held_part_of_cell) = tile.held_part_of_cell else {
+                        continue;
+                    };
+                    if layer
+                        .rect_in_frame(held_part_of_cell)
+                        .intersected(visible_rect)
+                        .is_empty()
+                    {
+                        continue;
+                    }
+                    if labeled_tile_count == MAXIMUM_LABELED_TILE_COUNT {
+                        unlabeled_tile_count += 1;
+                        continue;
+                    }
+                    labeled_tile_count += 1;
+                    labeled_tiles.push(tile);
+                }
+            }
+            (layer, labeled_tiles)
+        })
+        .collect();
+    (labeled_layers, unlabeled_layer_count, unlabeled_tile_count)
+}
+
 fn count_with_noun(count: u64, singular_noun: &str, plural_noun: &str) -> String {
     if count == 1 {
         format!("1 {singular_noun}")
@@ -313,6 +356,19 @@ impl LayerOverlayModel {
             notes.push(format!(
                 "not listed: {} above these",
                 count_with_noun(unlisted_layer_count as u64, "layer", "layers")
+            ));
+        }
+        let (_, unlabeled_layer_count, unlabeled_tile_count) = labels_of_model(self);
+        if unlabeled_layer_count != 0 {
+            notes.push(format!(
+                "no labels: {} below the {MAXIMUM_LABELED_LAYER_COUNT} nearest the top",
+                count_with_noun(unlabeled_layer_count as u64, "layer", "layers")
+            ));
+        }
+        if unlabeled_tile_count != 0 {
+            notes.push(format!(
+                "no labels: {} past the first {MAXIMUM_LABELED_TILE_COUNT}",
+                count_with_noun(unlabeled_tile_count as u64, "tile", "tiles")
             ));
         }
         notes.extend(self.notes_of_layer_stack.iter().cloned());
@@ -647,17 +703,11 @@ impl LayerOverlay {
         device_pixel_ratio: f64,
         shaper: &dyn OverlayLabelShaper,
     ) -> OverlayRecords {
+        let (labeled_layers, _, _) = labels_of_model(model);
         let mut label_texts: Vec<String> = Vec::new();
-        for layer in model.layers.iter().filter(|layer| !layer.hidden) {
+        for (layer, labeled_tiles) in &labeled_layers {
             label_texts.push(layer_label_text(layer));
-            if let ModelLayerContent::Painted { tiles, .. } = &layer.content {
-                label_texts.extend(
-                    tiles
-                        .iter()
-                        .filter(|tile| tile.held_part_of_cell.is_some())
-                        .map(tile_label_text),
-                );
-            }
+            label_texts.extend(labeled_tiles.iter().map(|tile| tile_label_text(tile)));
         }
         self.shaped_labels.shape_labels_not_cached_yet(
             &label_texts,
@@ -689,12 +739,19 @@ impl OverlayDrawing<'_> {
         for layer in shown_layers() {
             self.draw_layer(recorder, layer, viewport_rect);
         }
+        let (labeled_layers, _, _) = labels_of_model(model);
         let mut rects_of_drawn_labels = Vec::new();
-        for layer in shown_layers().rev() {
+        for (layer, _) in &labeled_layers {
             self.draw_name_of_layer(recorder, layer, viewport_rect, &mut rects_of_drawn_labels);
         }
-        for layer in shown_layers().rev() {
-            self.draw_tile_labels_of_layer(recorder, layer, viewport_rect, &mut rects_of_drawn_labels);
+        for (layer, labeled_tiles) in &labeled_layers {
+            self.draw_tile_labels_of_layer(
+                recorder,
+                layer,
+                labeled_tiles,
+                viewport_rect,
+                &mut rects_of_drawn_labels,
+            );
         }
     }
 
@@ -871,16 +928,14 @@ impl OverlayDrawing<'_> {
         &self,
         recorder: &mut OverlayRecorder<'_>,
         layer: &ModelLayer,
+        labeled_tiles: &[&ModelTile],
         viewport_rect: IntRect,
         rects_of_drawn_labels: &mut Vec<IntRect>,
     ) {
-        let ModelLayerContent::Painted { tiles, .. } = &layer.content else {
-            return;
-        };
         let visible_rect = layer.visible_rect_in_frame(viewport_rect);
         let inset = self.device_pixels(3.0);
         recorder.clipped_to(visible_rect, |recorder| {
-            for tile in tiles {
+            for tile in labeled_tiles {
                 let Some(held_part_of_cell) = tile.held_part_of_cell else {
                     continue;
                 };
@@ -1079,6 +1134,41 @@ mod tests {
         assert!(overlay.raster_history_of_tiles_by_layer.is_empty());
     }
 
+    struct LabelShaperCountingTexts(std::cell::RefCell<Vec<String>>);
+
+    impl OverlayLabelShaper for LabelShaperCountingTexts {
+        fn shape_overlay_label(&self, _: Option<&str>, _: f32, _: f64, text: &str) -> Option<OverlayLabel> {
+            self.0.borrow_mut().push(text.to_owned());
+            None
+        }
+    }
+
+    // A stack of very many layers that each hold a tile the frame shows.
+    #[test]
+    fn a_frame_labels_only_the_layers_nearest_the_top() {
+        let layer_count = MAXIMUM_LABELED_LAYER_COUNT + 36;
+        let layers = (0..layer_count)
+            .map(|index| LayerOfFrame {
+                name: format!("layer {index}").into(),
+                ..painted_layer_holding(painted_layer_identity(index as u64), &[TileCoord::new(0, 0)])
+            })
+            .collect();
+        let shaper = LabelShaperCountingTexts(std::cell::RefCell::new(Vec::new()));
+        let mut overlay = LayerOverlay::default();
+        let frame = overlay.update_with_frame(frame_painted_at(MonotonicTime::default(), layers), 1.0, &shaper);
+        let shaped_texts = shaper.0.borrow();
+        let shaped_names: Vec<&String> = shaped_texts.iter().filter(|text| text.starts_with("layer ")).collect();
+        assert_eq!(shaped_names.len(), MAXIMUM_LABELED_LAYER_COUNT);
+        assert_eq!(shaped_names[0], &format!("layer {}", layer_count - 1));
+        assert_eq!(shaped_texts.len(), MAXIMUM_LABELED_LAYER_COUNT + 1);
+        let notes = frame.model.description_for_layers_window().notes;
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str() == Ok("no labels: 36 layers below the 64 nearest the top"))
+        );
+    }
+
     #[test]
     fn the_layers_window_is_told_of_no_more_layers_than_a_person_can_read() {
         let long_name = format!("a{}", "é".repeat(MAXIMUM_LISTED_LAYER_NAME_LENGTH));
@@ -1113,7 +1203,13 @@ mod tests {
 
         let all_listed = model_with_layer_count(MAXIMUM_LISTED_LAYER_COUNT).description_for_layers_window();
         assert_eq!(all_listed.layers.len(), MAXIMUM_LISTED_LAYER_COUNT);
-        assert_eq!(notes_of(&all_listed), ["a note of the plan"]);
+        assert_eq!(
+            notes_of(&all_listed),
+            [
+                "no labels: 192 layers below the 64 nearest the top",
+                "a note of the plan"
+            ]
+        );
 
         let some_unlisted = model_with_layer_count(MAXIMUM_LISTED_LAYER_COUNT + 3).description_for_layers_window();
         assert_eq!(some_unlisted.layers.len(), MAXIMUM_LISTED_LAYER_COUNT);
@@ -1123,7 +1219,11 @@ mod tests {
         );
         assert_eq!(
             notes_of(&some_unlisted),
-            ["not listed: 3 layers above these", "a note of the plan"]
+            [
+                "not listed: 3 layers above these",
+                "no labels: 195 layers below the 64 nearest the top",
+                "a note of the plan"
+            ]
         );
         assert!(some_unlisted.layers.iter().all(|layer| {
             let name = layer.name.as_str().unwrap();
