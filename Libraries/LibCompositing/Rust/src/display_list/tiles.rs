@@ -113,6 +113,16 @@ impl CellRange {
         self.last_row < self.first_row || self.last_column < self.first_column
     }
 
+    /// The rect its cells cover, which is empty where it holds no cell.
+    pub fn rect(self) -> IntRect {
+        if self.is_empty() {
+            return IntRect::default();
+        }
+        TileCoord::new(self.first_column, self.first_row)
+            .cell_rect()
+            .united(TileCoord::new(self.last_column, self.last_row).cell_rect())
+    }
+
     pub fn row_count(self) -> u64 {
         if self.is_empty() {
             return 0;

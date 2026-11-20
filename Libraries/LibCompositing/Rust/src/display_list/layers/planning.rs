@@ -34,7 +34,7 @@ use crate::display_list::placement::{
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
-use crate::display_list::tiles::{TileCoord, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
+use crate::display_list::tiles::{CellRange, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
 use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{FloatPoint, FloatRect, IntRect};
 use std::hash::Hash;
@@ -978,7 +978,7 @@ fn place_list(
             Some(WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame)
         } else if let Some(backdrop_root) = backdrop_root {
             let backdrop_read_tiles = match backdrop_read_reach {
-                Reach::Within(rect) => Reach::Within(expanded_to_tile_grid(rect)),
+                Reach::Within(rect) => Reach::Within(CellRange::touched_by(rect).rect()),
                 backdrop_read_reach => backdrop_read_reach,
             };
             let read_tiles_cut_by_earlier_composited_effect = why_composited_regardless_of_layer_content
@@ -1289,16 +1289,6 @@ fn for_each_layer_records_go_into(
     }
 }
 
-fn expanded_to_tile_grid(rect: IntRect) -> IntRect {
-    if rect.is_empty() {
-        return rect;
-    }
-    let last_cell = TileCoord::of_pixel(rect.right() - 1, rect.bottom() - 1);
-    TileCoord::of_pixel(rect.x, rect.y)
-        .cell_rect()
-        .united(last_cell.cell_rect())
-}
-
 struct StackBeingBuilt<'a> {
     placement: &'a ListPlacement,
     spaces: &'a [RasterSpace],
@@ -1567,7 +1557,7 @@ impl StackBeingBuilt<'_> {
             Reach::Within(backdrop_read_rect) => self.reader_painted_next_finds_all_it_reads_in_own_layer(
                 node_of_first_stretch_painted_next,
                 open_band_of_node,
-                expanded_to_tile_grid(backdrop_read_rect),
+                CellRange::touched_by(backdrop_read_rect).rect(),
             ),
             Reach::Anywhere => false,
         };
@@ -1631,7 +1621,7 @@ impl StackBeingBuilt<'_> {
                 let blending_records_find_all_they_read_in_own_layer = match reach_read_by_blending_records {
                     Reach::Within(read_rect) => {
                         let tiles_blending_records_draw_or_read =
-                            expanded_to_tile_grid(stretch.reach.united(read_rect));
+                            CellRange::touched_by(stretch.reach.united(read_rect)).rect();
                         self.reader_painted_next_finds_all_it_reads_in_own_layer(
                             node_of_stretch,
                             open_band_by_node_index[node_of_stretch.0],
