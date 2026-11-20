@@ -27,7 +27,6 @@ use libcompositing_rust::display_list::replay::{
     CompositedContexts, CompositingInsideEffects, NoCompositedContexts, ReplayFrame, ReplaySelection,
     ResolvedCompositedContext, composite_inside_effects, replay_display_list,
 };
-use libcompositing_rust::display_list::storage::ListSpan;
 use libcompositing_rust::host::FfiRasterPainter;
 use libcompositing_rust::ipc_types::Compositing_CompositorLayersDescription as CompositorLayersDescription;
 use libcompositing_rust::scrolling::DisplayList;
@@ -235,11 +234,6 @@ impl ContextPresenting {
 
     pub fn store_publication(&self) -> StorePublication {
         self.store_publication
-    }
-
-    /// The window server reads what it shows above the store straight from GPU memory.
-    pub fn remote_layer_may_show_media(&self, has_gpu: bool) -> bool {
-        self.shown_in_remote_layer && has_gpu && !self.presents_from_cpu_memory
     }
 
     pub fn set_viewport_size(
@@ -777,7 +771,10 @@ impl ContextPresenting {
             frame_inputs,
         };
         if !screenshots_paint_from_layers() || !self.paint_screenshot_from_layers(env, target, &frame) {
-            self.paint_current_display_list(env, target, &frame, None, false, false);
+            let save_count = env.raster.save(target);
+            replay_into(env, target, &frame, ReplaySelection::default());
+            self.paint_overlays(env, target, frame_inputs, false);
+            env.raster.restore_to_count(target, save_count);
         }
         env.raster.flush(target);
     }
@@ -894,29 +891,6 @@ impl ContextPresenting {
 
     pub fn tile_raster_scratch_surface_release_timer_fired(&mut self) {
         self.layers.tile_raster_scratch_surface_release_timer_fired();
-    }
-
-    fn paint_current_display_list(
-        &self,
-        env: &PresentingEnvironment<'_>,
-        surface: &SurfaceHandle,
-        frame: &FrameToPaint<'_>,
-        damage_rect: Option<IntRect>,
-        paints_ui_overlays: bool,
-        applies_raster_transform: bool,
-    ) {
-        let raster = env.raster;
-        let save_count = raster.save(surface);
-        if let Some(damage_rect) = damage_rect {
-            raster.clip_rect(surface, damage_rect);
-            raster.clear(surface, frame.surface_clear_color());
-        }
-        if applies_raster_transform {
-            self.apply_raster_transform(raster, surface);
-        }
-        replay_into(env, surface, frame, ReplaySelection::default());
-        self.paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
-        raster.restore_to_count(surface, save_count);
     }
 
     fn apply_raster_transform(&self, raster: &RasterHost, surface: &SurfaceHandle) {
@@ -1074,12 +1048,4 @@ pub(crate) fn composite_inside_effects_of_frame(
                 composite,
             );
         });
-}
-
-pub(crate) fn replaying_only(record_spans: &[ListSpan], skip_root_isolation_layer: bool) -> ReplaySelection<'_> {
-    ReplaySelection {
-        record_spans: Some(record_spans),
-        skip_root_isolation_layer,
-        ..ReplaySelection::default()
-    }
 }

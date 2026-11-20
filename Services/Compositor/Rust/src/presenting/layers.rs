@@ -13,7 +13,7 @@ use super::layer_overlay::{
 };
 use super::{
     ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform,
-    composite_inside_effects_of_frame, rect_of_size, replay_into, replay_with_scroll_offsets, replaying_only,
+    composite_inside_effects_of_frame, rect_of_size, replay_into, replay_with_scroll_offsets,
 };
 use crate::context_scene::ReceivedLayerPlan;
 use crate::host::ContextTimer;
@@ -795,7 +795,7 @@ impl ContextLayers {
         layer_plan: Option<&ReceivedLayerPlan>,
         one_layer: impl FnOnce(&mut Self) -> LayerStack,
         viewport_to_raster_transform: FloatMatrix4x4,
-    ) -> Rc<LayerStack> {
+    ) {
         let latest_plan = self
             .stack_of_frames
             .as_ref()
@@ -803,7 +803,7 @@ impl ContextLayers {
         if let Some(layer_plan) = layer_plan
             && latest_plan.is_some_and(|latest_plan| Rc::ptr_eq(&latest_plan.stack, &layer_plan.stack))
         {
-            return layer_plan.stack.clone();
+            return;
         }
         self.work_counts_of_this_frame.took_plan_into_use = layer_plan.is_some();
         let stack = match layer_plan {
@@ -812,11 +812,10 @@ impl ContextLayers {
         };
         self.stack_of_frames = Some(StackOfFrames::new(
             layer_plan.cloned(),
-            stack.clone(),
+            stack,
             viewport_to_raster_transform,
             self.stack_of_frames.take(),
         ));
-        stack
     }
 
     /// Takes in what a frame that is painted, or that shows nothing new, did with its layers: the stack it drew with,
@@ -1231,7 +1230,7 @@ fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> boo
 // A backdrop filter that reads past its tile by an unknown reach reads its layer's tiles wherever they are, so none of
 // them may be hidden.
 fn hide_tiles_covered_by_opaque_tiles_above(
-    stack_of_frames: &StackOfFrames,
+    stack: &LayerStack,
     shown_tiles_by_layer: &mut [Vec<TileShownInFrame>],
     compositing_of_layers: &[LayerCompositingInFrame],
     read_reaches_of_composited_effects_in_frame: &[IntRect],
@@ -1245,7 +1244,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
             break;
         }
         let layer_index = compositing.layer_index;
-        let layer = &stack_of_frames.stack.layers[layer_index.0];
+        let layer = &stack.layers[layer_index.0];
         if !matches!(layer.content, LayerContent::Painted { .. }) {
             continue;
         }
@@ -1265,7 +1264,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
             hidden_tile_count += tile_count_before - shown.len();
         }
         let frame_holds_layer = !compositing.shown_by_window_server;
-        let is_inside_composited_effects = stack_of_frames.stack.layer_is_inside_composited_effects(layer_index);
+        let is_inside_composited_effects = stack.layer_is_inside_composited_effects(layer_index);
         let covers_layers_below = frame_holds_layer
             && !is_inside_composited_effects
             && compositing.rounded_composite_clips.is_empty()
@@ -1332,14 +1331,8 @@ fn copy_held_tiles_into(
     raster.restore_to_count(target, save_count);
 }
 
-fn layer_allows_lcd_text(
-    stack_of_frames: &StackOfFrames,
-    layer_index: LayerIndex,
-    frame_allows_lcd_text: bool,
-) -> bool {
-    frame_allows_lcd_text
-        && layer_index == stack_of_frames.stack.base_layer
-        && !stack_of_frames.stack.layer_is_inside_composited_effects(layer_index)
+fn layer_allows_lcd_text(stack: &LayerStack, layer_index: LayerIndex, frame_allows_lcd_text: bool) -> bool {
+    frame_allows_lcd_text && layer_index == stack.base_layer && !stack.layer_is_inside_composited_effects(layer_index)
 }
 
 fn clear_color_of_layer(stack: &LayerStack, layer_index: LayerIndex, surface_clear_color: Color) -> Color {
@@ -1811,7 +1804,7 @@ impl ContextPresenting {
             clear_color: clear_color_of_layer(stack, layer_index, surface_clear_color),
             root_group_color,
             viewport_to_raster_transform: raster_transform,
-            allows_lcd_text: layer_allows_lcd_text(stack_of_frames, layer_index, frame_allows_lcd_text),
+            allows_lcd_text: layer_allows_lcd_text(stack, layer_index, frame_allows_lcd_text),
         };
 
         let chunk_names = storage.chunk_names();
@@ -1941,7 +1934,7 @@ impl ContextPresenting {
         self.layers
             .work_counts_of_this_frame
             .tiles_covered_by_opaque_tiles_above += hide_tiles_covered_by_opaque_tiles_above(
-            stack_of_frames,
+            stack,
             &mut shown_tiles_by_layer,
             &compositing_of_layers,
             &composited_effects.read_reaches_in_frame,
@@ -2007,7 +2000,6 @@ impl ContextPresenting {
         if self.presents_from_cpu_memory {
             return Some(WhyMediaIsReplayed::ContextIsPresentedFromCpuMemory);
         }
-        debug_assert!(self.remote_layer_may_show_media(env.has_gpu));
         None
     }
 
@@ -2340,8 +2332,8 @@ impl ContextPresenting {
                 .cached_layer_by_identity
                 .get(&base_layer_compositing.identity)
             {
-                // The base layer replaces what is below it, and nothing is below it outside its composite clip. The
-                // planner clips no base layer, but a plan from WebContent can.
+                // The base layer replaces what is below it, and nothing is below it outside its composite clip. Plans
+                // clip no base layer, but the compositor does not trust a plan from WebContent.
                 if base_layer_compositing.composite_clip.is_some() {
                     raster.clear(surface, frame.surface_clear_color());
                 }
@@ -2417,7 +2409,7 @@ impl ContextPresenting {
             composited_filter_read_reach,
         );
         let clear_color = clear_color_of_layer(stack, layer_index, frame.surface_clear_color());
-        let allows_lcd_text = layer_allows_lcd_text(stack_of_frames, layer_index, layer_update.frame_allows_lcd_text);
+        let allows_lcd_text = layer_allows_lcd_text(stack, layer_index, layer_update.frame_allows_lcd_text);
         let painted_at = frame.frame_inputs.painted_at;
         let layer_overlay_records_rasters = self.layer_overlay.overlay().is_some();
         let mut record_raster_in_layer_overlay = |coord: TileCoord, cause: RasterCause, rect: IntRect| {
@@ -2586,16 +2578,15 @@ impl ContextPresenting {
                         .tile(tile.coord, layer_index)
                         .expect("a shown tile is keyed")
                 }));
-            let mut selection = if band_tile_keys.tile_keys.replays_whole_list {
-                ReplaySelection::default()
-            } else {
-                replaying_only(&record_spans, false)
+            let selection = ReplaySelection {
+                record_spans: (!band_tile_keys.tile_keys.replays_whole_list).then_some(&record_spans[..]),
+                clips_left_to_composite,
+                composited_effect,
+                allows_lcd_text,
+                frame_edge_backdrop_blurs_mirror_at: frame_rect_in_layer_space.map(IntRect::to_float),
+                raster_root: stack.spaces[raster_space_index.0].raster_root(),
+                ..ReplaySelection::default()
             };
-            selection.clips_left_to_composite = clips_left_to_composite;
-            selection.composited_effect = composited_effect;
-            selection.allows_lcd_text = allows_lcd_text;
-            selection.frame_edge_backdrop_blurs_mirror_at = frame_rect_in_layer_space.map(IntRect::to_float);
-            selection.raster_root = stack.spaces[raster_space_index.0].raster_root();
             apply_raster_transform(raster, target, raster_scale, raster_translation);
             replay_with_scroll_offsets(env, target, frame, selection, &geometry.raster_scroll_offsets);
         };
