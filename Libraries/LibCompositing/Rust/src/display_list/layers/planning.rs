@@ -1533,9 +1533,20 @@ impl StackBeingBuilt<'_> {
         Reach::Within(placed_effect.reach).united(placed_effect.backdrop_read_reach)
     }
 
-    fn limit_reach_of_animated_space_nodes_to_content_swept_over_animation(&mut self) {
+    // A node of a space whose anchor the compositor animates reaches only where its content can show wherever the
+    // animation takes it, and a node of a sticky box only where its content, with the nodes of the spaces in it, can
+    // show wherever the box is held. Nodes come after the nodes they are in, so a walk from the last node sees the final
+    // reach of each node before the node it is in.
+    fn limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move(&mut self) {
         let placement = self.placement;
-        for node in &mut self.nodes {
+        let mut content_reach_by_node_index = vec![Reach::Nothing; self.nodes.len()];
+        for stretch in &placement.record_stretches {
+            let node_index = self.node_of_run_group[stretch.run_group_index.0];
+            content_reach_by_node_index[node_index.0] = content_reach_by_node_index[node_index.0]
+                .united(self.reach_of_stretch_with_what_effects_around_it_read(stretch));
+        }
+        for node_index in (0..self.nodes.len()).rev() {
+            let node = &mut self.nodes[node_index];
             if node.composited_effect.is_some() {
                 continue;
             }
@@ -1545,33 +1556,24 @@ impl StackBeingBuilt<'_> {
             {
                 node.reach_in_parent_node = node.reach_in_parent_node.limited_to(*swept_reach);
             }
-        }
-    }
-
-    fn limit_reach_of_sticky_nodes_to_content_swept_over_offset_range(&mut self) {
-        let placement = self.placement;
-        let mut content_reach_by_node_index = vec![Reach::Nothing; self.nodes.len()];
-        for stretch in &placement.record_stretches {
-            let node_index = self.node_of_run_group[stretch.run_group_index.0];
-            content_reach_by_node_index[node_index.0] = content_reach_by_node_index[node_index.0]
-                .united(self.reach_of_stretch_with_what_effects_around_it_read(stretch));
-        }
-        for (node, content_reach) in self.nodes.iter_mut().zip(content_reach_by_node_index) {
             let raster_space = &placement.spaces[node.raster_space_index.0];
-            if !matches!(raster_space.anchor_kind, RasterSpaceAnchorKind::StickyBox { .. }) {
-                continue;
+            if matches!(raster_space.anchor_kind, RasterSpaceAnchorKind::StickyBox { .. })
+                && let Reach::Within(content_reach) = content_reach_by_node_index[node_index]
+            {
+                let content_reach_swept_over_offset_range = rect_swept_over_translations(
+                    content_reach,
+                    raster_space.lowest_anchor_translation,
+                    raster_space.highest_anchor_translation,
+                );
+                node.reach_in_parent_node = node
+                    .reach_in_parent_node
+                    .limited_to(content_reach_swept_over_offset_range);
             }
-            let Reach::Within(content_reach) = content_reach else {
-                continue;
-            };
-            let content_reach_swept_over_offset_range = rect_swept_over_translations(
-                content_reach,
-                raster_space.lowest_anchor_translation,
-                raster_space.highest_anchor_translation,
-            );
-            node.reach_in_parent_node = node
-                .reach_in_parent_node
-                .limited_to(content_reach_swept_over_offset_range);
+            if let Some(parent_index) = node.parent_index {
+                let reach_in_parent_node = node.reach_in_parent_node;
+                content_reach_by_node_index[parent_index.0] =
+                    content_reach_by_node_index[parent_index.0].united(reach_in_parent_node);
+            }
         }
     }
 
@@ -1986,8 +1988,7 @@ fn assemble_stack_unless_records_blend_with_other_layers(
             stack_being_built.find_or_add_node(raster_space_index, composite_clips)
         })
         .collect();
-    stack_being_built.limit_reach_of_sticky_nodes_to_content_swept_over_offset_range();
-    stack_being_built.limit_reach_of_animated_space_nodes_to_content_swept_over_animation();
+    stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move();
     stack_being_built.cut_into_bands();
     if stack_being_built.records_blend_with_what_other_layers_hold_below_them {
         return None;
@@ -3614,6 +3615,69 @@ mod tests {
             .find(|run_group| run_group.first_run_index.0 <= 2 && 2 <= run_group.last_run_index.0)
             .expect("the run of the glass is placed");
         assert_ne!(run_group_of_glass.raster_space_index.0, space_of_outer_scroller);
+    }
+
+    #[test]
+    fn content_painted_after_a_sticky_toolbar_covers_a_spinner_in_it() {
+        use crate::visual_context::StickyData;
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let mut sticky_data = StickyData::unconstrained(
+            document.spatial,
+            None,
+            crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
+            NodeSlotId::INVALID,
+        );
+        sticky_data.position_relative_to_scroller = FloatPoint { x: 0.0, y: 100.0 };
+        sticky_data.border_box_size = libgfx_rust::FloatSize {
+            width: 800.0,
+            height: 50.0,
+        };
+        sticky_data.scrollport_size = libgfx_rust::FloatSize {
+            width: 800.0,
+            height: 600.0,
+        };
+        sticky_data.containing_block_region = FloatRect::new(0.0, 0.0, 800.0, 2000.0);
+        sticky_data.needs_parent_offset_adjustment = true;
+        sticky_data.inset_top = Some(0.0);
+        let toolbar = ContextRef {
+            spatial: tree.append_spatial(SpatialData::Sticky(sticky_data), document.spatial),
+            ..document
+        };
+        let spinner = transformed_context(&mut tree, toolbar, FloatRect::new(650.0, 105.0, 40.0, 40.0));
+        tree.set_visual_animations(vec![spinning(spinner.spatial)]);
+        // The label and the spinner of the toolbar are in different cells, and the card covers both of them.
+        let label = IntRect::new(10, 110, 100, 30);
+        assert!(TILE_SIZE_IN_DEVICE_PIXELS < 650);
+        let list = TestList::new()
+            .with(fill(IntRect::new(0, 0, 800, 2600)), document)
+            .with(fill(label), toolbar)
+            .with(fill(IntRect::new(650, 105, 40, 40)), spinner)
+            .with(fill(IntRect::new(0, 100, 800, 50)), document);
+        let planned = list.planned(&tree, &[]);
+        assert_eq!(
+            space_names(&planned.stack),
+            [
+                "viewport",
+                "document",
+                "sticky@s2 in document",
+                "animated@s3 in sticky@s2 in document"
+            ]
+        );
+        let storage = DisplayListStorage::of_builder(&list.builder);
+        let layers_of_card = planned.layers_of_record(storage.start_of_run(3));
+        assert_eq!(
+            layers_of_card.len(),
+            1,
+            "the card goes into one layer in every cell: {layers_of_card:?}"
+        );
+        let layer_of_card = &planned.stack.layers[layers_of_card[0].0];
+        assert!(matches!(
+            layer_of_card.identity,
+            LayerIdentity::Painted {
+                above_barrier: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
