@@ -1102,11 +1102,10 @@ pub struct BandTileKeys {
     /// these looks for no cell to key.
     cells_looked_at: CellRange,
     bound_band: Option<BandBoundToListAndGeometry>,
-    frame_state_hash: ContentHash,
-    sampled_values_hash: ContentHash,
-    // Frame state and sampled values, such as a sampled background color or the space of an inline clip, depend on the
-    // bound tree and geometry, so binding again can change them.
-    tiles_reading_frame_state_or_sampled_values_need_rehashing: bool,
+    // The frame state and the sampled values the tiles were keyed with, such as a sampled background color or the space
+    // of an inline clip, depend on the bound tree and geometry, so binding again forgets them.
+    frame_state_hash: Option<ContentHash>,
+    sampled_values_hash: Option<ContentHash>,
     pub replays_whole_list: bool,
 }
 
@@ -2956,6 +2955,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         band_tile_keys.replays_whole_list = self.list.one_layer_list_cannot_tell_which_records_show_in_tile;
         // Chunks of the new binding can reach cells that held nothing, and cells whose bin changed are forgotten.
         band_tile_keys.cells_looked_at = CellRange::NONE;
+        band_tile_keys.frame_state_hash = None;
+        band_tile_keys.sampled_values_hash = None;
         let Some(previous_bound_band) = band_tile_keys.bound_band.replace(bound_band) else {
             band_tile_keys.cells.clear();
             return;
@@ -2964,7 +2965,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         if band_tile_keys.cells.is_empty() {
             return;
         }
-        band_tile_keys.tiles_reading_frame_state_or_sampled_values_need_rehashing = true;
         if bound_band.binning_inputs_hash_beyond_held_chunks
             != previous_bound_band.binning_inputs_hash_beyond_held_chunks
             || bound_band.items_replayed_in_every_tile.is_some()
@@ -3061,13 +3061,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         );
 
         let mut counts = TileKeyingCounts::default();
-        let band_was_bound_again =
-            std::mem::take(&mut band_tile_keys.tiles_reading_frame_state_or_sampled_values_need_rehashing);
-        let frame_state_changed = band_tile_keys.frame_state_hash != list.frame_state_hash || band_was_bound_again;
-        let sampled_values_changed =
-            band_tile_keys.sampled_values_hash != list.sampled_values_tiles_draw.hash || band_was_bound_again;
-        band_tile_keys.frame_state_hash = list.frame_state_hash;
-        band_tile_keys.sampled_values_hash = list.sampled_values_tiles_draw.hash;
+        let frame_state_changed =
+            band_tile_keys.frame_state_hash.replace(list.frame_state_hash) != Some(list.frame_state_hash);
+        let sampled_values_changed = band_tile_keys
+            .sampled_values_hash
+            .replace(list.sampled_values_tiles_draw.hash)
+            != Some(list.sampled_values_tiles_draw.hash);
         for (coord, cell) in &mut band_tile_keys.cells {
             let frame_edge_backdrop_blurs_mirror_at =
                 bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
