@@ -343,6 +343,7 @@ impl Encode for WhyListIsOneLayer {
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => 7,
             WhyListIsOneLayer::CompositedEffectsNestTooDeep => 8,
             WhyListIsOneLayer::PlanShowsTooManyTiles => 9,
+            WhyListIsOneLayer::PlanFailsChecksOfCompositor => 10,
         };
         encoder.encode(&kind)?;
         if let WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why) = self {
@@ -367,6 +368,7 @@ impl Decode for WhyListIsOneLayer {
             7 => WhyListIsOneLayer::FrameIsNotDrawnAsPlanned,
             8 => WhyListIsOneLayer::CompositedEffectsNestTooDeep,
             9 => WhyListIsOneLayer::PlanShowsTooManyTiles,
+            10 => WhyListIsOneLayer::PlanFailsChecksOfCompositor,
             _ => return Err(DecodeError::InvalidValue("WhyListIsOneLayer")),
         })
     }
@@ -597,6 +599,13 @@ fn effect_is_strictly_inside(
         }
         _ => false,
     }
+}
+
+fn check_viewport_rect(viewport_rect: IntRect) -> Result<(), &'static str> {
+    if !rect_is_within_coordinate_limit(viewport_rect) {
+        return Err("the viewport of the plan lies past the limit a plan keeps to");
+    }
+    Ok(())
 }
 
 fn check_rects_and_coordinates(plan: &LayeredPlan) -> Result<(), &'static str> {
@@ -936,18 +945,36 @@ impl LayerStack {
         tree: &VisualContextTree,
         viewport_rect: IntRect,
     ) -> Result<LayerStack, &'static str> {
-        if !rect_is_within_coordinate_limit(viewport_rect) {
-            return Err("the viewport of the plan lies past the limit a plan keeps to");
-        }
-        let plan = match unvalidated.0 {
+        match unvalidated.0 {
             StackOnWire::OneLayer(why_list_is_one_layer) => {
+                check_viewport_rect(viewport_rect)?;
                 let mut stack = LayerStack::single_layer(viewport_rect, list.whole_span(), Some(why_list_is_one_layer));
                 stack.layering_obstacles = LayeringObstacles::of(list, tree);
-                return Ok(stack);
+                Ok(stack)
             }
-            StackOnWire::Layered(plan) => plan,
-        };
-        let spaces = RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect);
+            StackOnWire::Layered(plan) => LayerStack::of_plan_passing_checks(
+                plan,
+                RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
+                list,
+                tree,
+                viewport_rect,
+                LayeringObstacles::of(list, tree),
+            ),
+        }
+    }
+
+    /// The stack of `plan`, a plan of more layers for `list` under `tree` within `viewport_rect` at `spaces`, once the
+    /// plan passes the checks of `validated`. The planner runs them on a plan before it goes to the compositor, so the
+    /// compositor never refuses a plan the planner makes.
+    pub(super) fn of_plan_passing_checks(
+        plan: LayeredPlan,
+        spaces: Vec<RasterSpace>,
+        list: &DisplayListStorage,
+        tree: &VisualContextTree,
+        viewport_rect: IntRect,
+        layering_obstacles: LayeringObstacles,
+    ) -> Result<LayerStack, &'static str> {
+        check_viewport_rect(viewport_rect)?;
         check_rects_and_coordinates(&plan)?;
         check_values_per_space(&plan, &spaces)?;
         check_nodes(&plan.nodes, &spaces, list, tree)?;
@@ -955,10 +982,15 @@ impl LayerStack {
         check_composited_effects_nest_as_in_tree(&plan.nodes, tree)?;
         check_bands(&plan, list)?;
         check_no_record_is_held_twice(&plan)?;
-        let stack = LayerStack::of_layered_plan(plan, spaces, tree, LayeringObstacles::of(list, tree));
+        let stack = LayerStack::of_layered_plan(plan, spaces, tree, layering_obstacles);
         check_stack_of_plan(&stack)?;
         Ok(stack)
     }
+}
+
+/// Whether the compositor takes a plan made within `viewport_rect`, of one layer or more.
+pub fn compositor_takes_plans_within(viewport_rect: IntRect) -> bool {
+    check_viewport_rect(viewport_rect).is_ok()
 }
 
 #[cfg(test)]
@@ -1899,6 +1931,7 @@ mod tests {
             WhyListIsOneLayer::CompositedEffectsNestTooDeep,
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned,
             WhyListIsOneLayer::PlanShowsTooManyTiles,
+            WhyListIsOneLayer::PlanFailsChecksOfCompositor,
         ] {
             round_trip(why);
         }

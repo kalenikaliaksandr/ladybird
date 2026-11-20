@@ -38,7 +38,7 @@ use std::rc::Rc;
 pub mod planning;
 mod wire;
 
-pub use wire::{LayerPlan, UnvalidatedLayerPlan, UnvalidatedLayerStack};
+pub use wire::{LayerPlan, UnvalidatedLayerPlan, UnvalidatedLayerStack, compositor_takes_plans_within};
 
 // Twice the extent limit of a plan, which leaves room for the margins that planning adds past the extent of a space.
 // The rects of a stack from another process are within it, and so are the offsets a frame composites spaces at, so that
@@ -158,6 +158,8 @@ pub enum WhyListIsOneLayer {
     FrameIsNotDrawnAsPlanned,
     /// A frame drawn as the plan was made for shows more tiles than the compositor holds for a frame.
     PlanShowsTooManyTiles,
+    /// The plan the planner made fails the checks the compositor runs on a plan it receives.
+    PlanFailsChecksOfCompositor,
 }
 
 impl std::fmt::Display for WhyListIsOneLayer {
@@ -184,6 +186,7 @@ impl std::fmt::Display for WhyListIsOneLayer {
             }
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => "frame is not drawn as the plan was made for",
             WhyListIsOneLayer::PlanShowsTooManyTiles => "plan shows more tiles than a frame holds",
+            WhyListIsOneLayer::PlanFailsChecksOfCompositor => "plan fails the checks of the compositor",
         })
     }
 }
@@ -1018,15 +1021,6 @@ impl LayerStack {
             innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
-    }
-
-    /// Whether the composited effects of the stack nest deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`.
-    pub fn nests_composited_effects_too_deep(&self) -> bool {
-        composited_effects_nest_too_deep(
-            self.nodes
-                .iter()
-                .map(|node| (node.parent_index, node.composited_effect.is_some())),
-        )
     }
 
     pub fn replays_whole_list(&self) -> bool {

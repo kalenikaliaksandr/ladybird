@@ -14,8 +14,8 @@
 use crate::paint_stage::Presenting;
 use crate::painting::display_list::chunks::{Chunk, ChunkId, KeptChunks};
 use crate::painting::display_list::commands::CompositorContextId;
-use crate::painting::display_list::layers::LayerPlan;
 use crate::painting::display_list::layers::planning::InputsOfLayerPlan;
+use crate::painting::display_list::layers::{LayerPlan, compositor_takes_plans_within};
 use crate::painting::display_list::storage::{DisplayListStorage, ListChunk};
 use crate::painting::display_list_resources::DisplayListResources;
 use crate::painting::paint_passes::ClockTickVisualContexts;
@@ -796,8 +796,9 @@ fn post_frame_through(
     } = frame;
     // A plan is made for the rect the compositor rasters the frame within: at the origin, at the size of the viewport the
     // frame is presented in.
-    let viewport_rect_of_layer_plans =
-        present_viewport_rect.map(|viewport_rect| IntRect::new(0, 0, viewport_rect.width, viewport_rect.height));
+    let viewport_rect_of_layer_plans = present_viewport_rect
+        .map(|viewport_rect| IntRect::new(0, 0, viewport_rect.width, viewport_rect.height))
+        .filter(|viewport_rect| compositor_takes_plans_within(*viewport_rect));
     let sent = sent_display_list_chunks.entry(context_id).or_default();
     if let Some(update) = display_list_update {
         if !post_resources_ahead(poster, context_id, &update.resources) {

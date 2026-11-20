@@ -20,7 +20,8 @@ use super::{
     LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeNamesFromIndices, NodeOfPlan, PaintedLayerOfPlan,
     PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited,
     WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, backdrop_filter_read_reach,
-    backdrop_reader_by_reading_effect_index, effect_is_or_is_inside, media_name, wire,
+    backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, effect_is_or_is_inside, media_name,
+    wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
@@ -1955,11 +1956,10 @@ impl StackBeingBuilt<'_> {
     }
 }
 
-fn assemble_stack_unless_records_blend_with_other_layers(
-    tree: &VisualContextTree,
+// The plan of the stack, and one note per composited node, in the order of the nodes.
+fn assemble_plan_unless_records_blend_with_other_layers(
     placement: &ListPlacement,
-    spaces: Vec<RasterSpace>,
-) -> Option<(LayerStack, NotesOfStack)> {
+) -> Option<(LayeredPlan, Vec<NoteOfCompositedEffect>)> {
     let mut stack_being_built = StackBeingBuilt {
         placement,
         nodes: Vec::new(),
@@ -2010,25 +2010,11 @@ fn assemble_stack_unless_records_blend_with_other_layers(
             .clone(),
         swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
     };
-    let stack = LayerStack::of_layered_plan(plan, spaces, tree, placement.layering_obstacles);
-    debug_assert_eq!(stack.composited_effects.len(), notes_of_composited_effects.len());
-    let effects_reading_only_own_layer = placement
-        .backdrop_readers_in_paint_order
-        .iter()
-        .copied()
-        .filter(|reader| {
-            stack
-                .composited_effects
-                .iter()
-                .all(|composited| composited.effect != *reader)
-        })
-        .collect();
-    let notes = NotesOfStack {
-        composited_effects: notes_of_composited_effects,
-        media_without_layers: placement.media_without_layers.clone(),
-        effects_reading_only_own_layer,
-    };
-    Some((stack, notes))
+    Some((plan, notes_of_composited_effects))
+}
+
+fn effects_composited_in_plan(plan: &LayeredPlan) -> impl Iterator<Item = EffectNodeIndex> + '_ {
+    plan.nodes.iter().filter_map(|node| node.composited_effect)
 }
 
 // A 3D sorting context that sorts its planes by depth is placed whole into the tiles of one band, which replay it
@@ -2037,19 +2023,16 @@ fn assemble_stack_unless_records_blend_with_other_layers(
 fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     inputs: &LayerStackInputs<'_>,
     placement: &ListPlacement,
-    stack: &LayerStack,
+    plan: &LayeredPlan,
 ) -> bool {
-    if !stack.layering_obstacles.sorts_planes_by_depth {
+    if !placement.layering_obstacles.sorts_planes_by_depth {
         return false;
     }
     let tree = inputs.tree;
     let run_groups = inputs.list.run_groups(tree);
     let reads_backdrop_or_is_composited = |effect: EffectNodeIndex| {
         placement.backdrop_readers_in_paint_order.contains(&effect)
-            || stack
-                .composited_effects
-                .iter()
-                .any(|composited| composited.effect == effect)
+            || effects_composited_in_plan(plan).any(|composited_effect| composited_effect == effect)
     };
     (0..inputs.list.run_count())
         .filter(|&run_index| run_groups.run_is_sorted_by_depth(run_index))
@@ -2069,14 +2052,56 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
 // over and around where that is drawn, as the barriers inside it cut its tiles there, and reads no farther past each
 // pixel than tiles are followed past the frame. Media and animations get no layer inside any other filter;
 // an effect that reads what is below its layer can still make one composited.
-fn why_compositor_cannot_composite_effect_of_stack(
+fn why_compositor_cannot_composite_effect_of_plan(
     placement: &ListPlacement,
-    stack: &LayerStack,
+    plan: &LayeredPlan,
 ) -> Option<WhyListIsOneLayer> {
-    stack.composited_effects.iter().find_map(|composited| {
-        placement.why_compositor_cannot_composite_by_effect_index[composited.effect.0 as usize]
+    effects_composited_in_plan(plan).find_map(|composited_effect| {
+        placement.why_compositor_cannot_composite_by_effect_index[composited_effect.0 as usize]
             .map(WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited)
     })
+}
+
+fn why_plan_goes_as_one_layer(
+    inputs: &LayerStackInputs<'_>,
+    placement: &ListPlacement,
+    plan: &LayeredPlan,
+) -> Option<WhyListIsOneLayer> {
+    if composited_effects_nest_too_deep(
+        plan.nodes
+            .iter()
+            .map(|node| (node.parent_index, node.composited_effect.is_some())),
+    ) {
+        return Some(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
+    }
+    if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, placement, plan) {
+        return Some(WhyListIsOneLayer::SortingContext3D);
+    }
+    why_compositor_cannot_composite_effect_of_plan(placement, plan)
+}
+
+fn notes_of_stack(
+    placement: &ListPlacement,
+    stack: &LayerStack,
+    notes_of_composited_effects: Vec<NoteOfCompositedEffect>,
+) -> NotesOfStack {
+    debug_assert_eq!(stack.composited_effects.len(), notes_of_composited_effects.len());
+    let effects_reading_only_own_layer = placement
+        .backdrop_readers_in_paint_order
+        .iter()
+        .copied()
+        .filter(|reader| {
+            stack
+                .composited_effects
+                .iter()
+                .all(|composited| composited.effect != *reader)
+        })
+        .collect();
+    NotesOfStack {
+        composited_effects: notes_of_composited_effects,
+        media_without_layers: placement.media_without_layers.clone(),
+        effects_reading_only_own_layer,
+    }
 }
 
 /// Works out the layers of a list from where `place_list` placed its parts among `spaces`, whose extents are not filled
@@ -2086,6 +2111,9 @@ fn why_compositor_cannot_composite_effect_of_stack(
 /// placed: the layers an effect the compositor composites or a canvas, video or nested context needs cannot be given
 /// up without drawing the list wrong, and a layer holds tiles only where its content reaches, which the pool of tiles
 /// gives back.
+///
+/// A plan of more layers that fails the checks the compositor runs on a plan it receives is a bug of the planner. A
+/// build with debug assertions panics on it, and other builds give the list one layer.
 fn build_layer_stack(
     inputs: &LayerStackInputs<'_>,
     placement: ListPlacement,
@@ -2094,28 +2122,36 @@ fn build_layer_stack(
     let layering_obstacles = placement.layering_obstacles;
     let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
         Some(why) => why,
-        None => match assemble_stack_unless_records_blend_with_other_layers(inputs.tree, &placement, spaces) {
-            Some((stack, _)) if stack.nests_composited_effects_too_deep() => {
-                WhyListIsOneLayer::CompositedEffectsNestTooDeep
-            }
-            Some((stack, _))
-                if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
-                    inputs, &placement, &stack,
-                ) =>
-            {
-                WhyListIsOneLayer::SortingContext3D
-            }
-            Some((stack, notes)) => match why_compositor_cannot_composite_effect_of_stack(&placement, &stack) {
-                Some(why) => why,
-                None => {
-                    return PlannedLayers {
-                        stack,
-                        notes,
-                        placement,
-                    };
-                }
-            },
+        None => match assemble_plan_unless_records_blend_with_other_layers(&placement) {
             None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
+            Some((plan, notes_of_composited_effects)) => match why_plan_goes_as_one_layer(inputs, &placement, &plan) {
+                Some(why) => why,
+                None => match LayerStack::of_plan_passing_checks(
+                    plan,
+                    spaces,
+                    inputs.list,
+                    inputs.tree,
+                    inputs.viewport_rect,
+                    layering_obstacles,
+                ) {
+                    Ok(stack) => {
+                        return PlannedLayers {
+                            notes: notes_of_stack(&placement, &stack, notes_of_composited_effects),
+                            stack,
+                            placement,
+                        };
+                    }
+                    Err(why_plan_fails_checks) => {
+                        if cfg!(debug_assertions) {
+                            panic!("the compositor refuses a plan of layers the planner made: {why_plan_fails_checks}");
+                        }
+                        eprintln!(
+                            "WebContent: Sending one layer, as the compositor refuses the plan of layers: {why_plan_fails_checks}"
+                        );
+                        WhyListIsOneLayer::PlanFailsChecksOfCompositor
+                    }
+                },
+            },
         },
     };
     let mut stack = LayerStack::single_layer(
@@ -3701,6 +3737,21 @@ mod tests {
             stack.swept_reach_in_parent_space_by_space_index[1],
             Some(IntRect::new(0, 0, 800, 56))
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "the compositor refuses a plan of layers the planner made")]
+    fn the_planner_runs_the_checks_of_the_compositor_on_a_plan_of_more_layers() {
+        let (tree, _, document) = tree_with_document_scroll();
+        let viewport_past_coordinate_limit = IntRect::new(0, 0, 600_000_000, 600);
+        let list = TestList::new().with(fill(IntRect::new(0, 0, 800, 2600)), document);
+        plan_layer_stack(&LayerStackInputs {
+            list: &DisplayListStorage::of_builder(&list.builder),
+            tree: &tree,
+            scroll_offsets: &[],
+            viewport_rect: viewport_past_coordinate_limit,
+        });
     }
 
     #[test]
