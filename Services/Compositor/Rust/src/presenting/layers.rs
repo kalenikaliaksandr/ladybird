@@ -64,11 +64,14 @@ const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
 // the tag.
 const MEDIA_ORDINAL_SHIFT_PAST_CANVAS_AND_VIDEO_IDS: u32 = 44;
 
-// A frame drawn with a plan may show tiles with surfaces of as many pixels as this many layers that each show every cell
-// a rect of the viewport's size can touch, which a viewport smaller than a cell needs whole. The layers of a page show
-// two or three viewports of tiles. A frame whose plan shows more is drawn as one layer, which shows no more than one
-// such layer.
+// A frame drawn with a plan may show tiles, of one color or not, of as many pixels as this many layers that each show
+// every cell a rect of the viewport's size can touch, which a viewport smaller than a cell needs whole. The layers of a
+// page show two or three viewports of tiles. A frame whose plan shows more is drawn as one layer, which shows no more
+// than one such layer.
 const MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS: u64 = 16;
+// Each shown tile costs work whatever part of its cell it shows, so a frame drawn with a plan may show at most this many
+// tiles per cell that one such layer can touch. The pages of the tests show at most about twenty.
+const MAXIMUM_TILES_A_PLAN_SHOWS_PER_CELL_ONE_LAYER_SHOWS: u64 = 64;
 
 // Growing damage over what composited effects read takes a pass over them for each one it newly reaches. Past this many
 // passes, the damage grows over all they read, which holds what more passes would add.
@@ -627,27 +630,15 @@ impl ContextLayers {
             .is_some_and(|stack| std::ptr::eq(stack.as_ptr(), Rc::as_ptr(&layer_plan.stack)))
     }
 
-    /// Whether the frame, drawn with the plan of the stack it took, shows more pixels of tiles with surfaces than a
-    /// frame may. Then later frames with the plan are drawn as one layer too.
-    fn plan_of_frame_shows_too_many_tiles(
-        &mut self,
-        shown_tiles_by_layer: &[Vec<TileShownInFrame>],
-        viewport_rect: IntRect,
-    ) -> bool {
-        let Some(layer_plan) = self
+    /// Has later frames draw the plan of the stack the frame took as one layer, as the frame showed more tiles than a
+    /// frame may.
+    fn draw_plan_of_frames_as_one_layer(&mut self) {
+        let layer_plan = self
             .stack_of_frames
             .as_ref()
             .and_then(|stack_of_frames| stack_of_frames.layer_plan.as_ref())
-        else {
-            return false;
-        };
-        if tile_pixels_with_surfaces_shown(shown_tiles_by_layer)
-            <= MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS * tile_pixels_one_layer_shows_at_most(viewport_rect)
-        {
-            return false;
-        }
+            .expect("only a frame drawn with a plan has a budget of tiles");
         self.plan_showing_too_many_tiles = Some(Rc::downgrade(&layer_plan.stack));
-        true
     }
 
     /// The stack of one layer that replays the whole list, for a frame that is not drawn as a plan was made for, with
@@ -787,20 +778,39 @@ fn composited_filter_read_reach_by_layer(
     })
 }
 
-/// The pixels of every cell that a rect of the size of `viewport_rect` can touch.
-fn tile_pixels_one_layer_shows_at_most(viewport_rect: IntRect) -> u64 {
+/// How many cells a rect of the size of `viewport_rect` can touch.
+fn cells_one_layer_shows_at_most(viewport_rect: IntRect) -> u64 {
     let tile_size = TILE_SIZE_IN_DEVICE_PIXELS as u64;
     let most_cells_along = |length: i32| (length.max(1) as u64 - 1).div_ceil(tile_size) + 1;
-    most_cells_along(viewport_rect.width) * most_cells_along(viewport_rect.height) * tile_size * tile_size
+    most_cells_along(viewport_rect.width) * most_cells_along(viewport_rect.height)
 }
 
-fn tile_pixels_with_surfaces_shown(shown_tiles_by_layer: &[Vec<TileShownInFrame>]) -> u64 {
-    shown_tiles_by_layer
-        .iter()
-        .flatten()
-        .filter(|tile| !matches!(tile.coverage, TileCoverage::OneColor(_)))
-        .map(|tile| tile.part_of_cell_needed.width.max(0) as u64 * tile.part_of_cell_needed.height.max(0) as u64)
-        .sum()
+/// The tiles a frame drawn with a plan shows so far, which it counts as it keys them, against how many it may show.
+struct TileBudgetOfFrame {
+    most_tiles: u64,
+    most_tile_pixels: u64,
+    tiles: u64,
+    tile_pixels: u64,
+}
+
+impl TileBudgetOfFrame {
+    fn within(viewport_rect: IntRect) -> Self {
+        let cells = cells_one_layer_shows_at_most(viewport_rect);
+        let cell_pixels = (TILE_SIZE_IN_DEVICE_PIXELS as u64).pow(2);
+        Self {
+            most_tiles: MAXIMUM_TILES_A_PLAN_SHOWS_PER_CELL_ONE_LAYER_SHOWS * cells,
+            most_tile_pixels: MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS * cells * cell_pixels,
+            tiles: 0,
+            tile_pixels: 0,
+        }
+    }
+
+    /// Counts a tile that shows `part_of_cell_needed`, and answers whether the frame still shows no more than it may.
+    fn takes_tile(&mut self, part_of_cell_needed: IntRect) -> bool {
+        self.tiles += 1;
+        self.tile_pixels += part_of_cell_needed.width.max(0) as u64 * part_of_cell_needed.height.max(0) as u64;
+        self.tiles <= self.most_tiles && self.tile_pixels <= self.most_tile_pixels
+    }
 }
 
 fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> bool {
@@ -1144,7 +1154,7 @@ impl ContextPresenting {
         };
         let band_tile_keys_of_other_stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
         let took_plan_into_use = layer_plan.is_some() && band_tile_keys_of_other_stack.is_some();
-        let (mut layer_update, stale_rect) = self.with_stack_of_frames(|this, stack_of_frames| {
+        let layer_update = self.with_stack_of_frames(|this, stack_of_frames| {
             this.layer_update_of_stack(
                 env,
                 frame,
@@ -1156,12 +1166,10 @@ impl ContextPresenting {
                 band_tile_keys_of_other_stack,
             )
         });
-        if self
-            .layers
-            .plan_of_frame_shows_too_many_tiles(&layer_update.shown_tiles_by_layer, viewport_rect)
-        {
+        let Some((mut layer_update, stale_rect)) = layer_update else {
             // Frames draw the plan as one layer from now on. The budget does not hold a frame of one layer, so the frame
             // is worked out once more at most.
+            self.layers.draw_plan_of_frames_as_one_layer();
             return self.layer_update_for(
                 env,
                 frame,
@@ -1170,7 +1178,7 @@ impl ContextPresenting {
                 invalidates_every_tile,
                 frame_allows_lcd_text,
             );
-        }
+        };
         layer_update.work_counts.took_plan_into_use = took_plan_into_use;
         (layer_update, stale_rect)
     }
@@ -1213,7 +1221,7 @@ impl ContextPresenting {
         frame_allows_lcd_text: bool,
         stack_of_frames: &mut StackOfFrames,
         band_tile_keys_of_other_stack: Option<Vec<BandTileKeysOfFrame>>,
-    ) -> (LayerUpdate, IntRect) {
+    ) -> Option<(LayerUpdate, IntRect)> {
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
@@ -1322,6 +1330,11 @@ impl ContextPresenting {
         let mut work_counts = FrameWorkCounts::default();
         let mut shown_tiles_by_layer: Vec<Vec<TileShownInFrame>> =
             (0..stack.layers.len()).map(|_| Vec::new()).collect();
+        let mut tile_budget = stack_of_frames
+            .layer_plan
+            .is_some()
+            .then(|| TileBudgetOfFrame::within(viewport_rect));
+        let mut frame_shows_too_many_tiles = false;
         for (band_position, band) in stack.bands.iter().enumerate() {
             let band_index = BandIndex(band_position);
             let band_tile_keys_of_latest_frame = band_tile_keys_by_band[band_position].take();
@@ -1388,6 +1401,12 @@ impl ContextPresenting {
                 if part_of_cell_needed.is_empty() {
                     continue;
                 }
+                if let Some(tile_budget) = &mut tile_budget
+                    && !tile_budget.takes_tile(part_of_cell_needed)
+                {
+                    frame_shows_too_many_tiles = true;
+                    break;
+                }
                 let coverage = self
                     .layers
                     .tiles
@@ -1410,10 +1429,18 @@ impl ContextPresenting {
                 });
             }
             band_tile_keys_by_band[band_position] = Some(band_tile_keys);
+            if frame_shows_too_many_tiles {
+                // The tile keys of the bands not keyed yet may be bound to another list.
+                band_tile_keys_by_band[band_position + 1..].fill_with(|| None);
+                break;
+            }
         }
         // The frame paints its tiles from the stack, which keeps the tile keys where the frame is not painted.
         stack_of_frames.band_tile_keys = band_tile_keys_by_band;
         stack_of_frames.display_list_of_band_tile_keys = Some(frame.display_list.clone());
+        if frame_shows_too_many_tiles {
+            return None;
+        }
         work_counts.chunks_placed = tile_keying_by_raster_space
             .iter()
             .map(|tile_keying| tile_keying.chunks_placed())
@@ -1484,7 +1511,7 @@ impl ContextPresenting {
             frame_allows_lcd_text,
             work_counts,
         };
-        (layer_update, stale_rect)
+        Some((layer_update, stale_rect))
     }
 
     fn why_window_server_shows_no_media_of_this_context(
@@ -2234,7 +2261,6 @@ mod tests {
     use libcompositing_rust::display_list::commands::{
         ContextRef, EffectNodeIndex, FillRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
     };
-    use libcompositing_rust::display_list::layers::BarrierCutsOfCell;
     use libcompositing_rust::display_list::storage::DisplayListStorage;
     use libcompositing_rust::display_list::tiles::TileCoord;
     use libcompositing_rust::visual_context::{SpatialData, TransformData, TransformDataRole};
@@ -2741,28 +2767,26 @@ mod tests {
         assert!(reads_past_bound.iter().all(|read| tested[0].contains_rect(*read)));
     }
 
-    fn one_layer_showing(tiles: impl IntoIterator<Item = (IntRect, TileCoverage)>) -> Vec<Vec<TileShownInFrame>> {
-        vec![
-            tiles
-                .into_iter()
-                .map(|(part_of_cell_needed, coverage)| TileShownInFrame {
-                    coord: TileCoord::new(0, 0),
-                    content_hash: 1,
-                    part_of_cell_needed,
-                    cuts: BarrierCutsOfCell::BitPerCut(0),
-                    raster_margin_in_device_pixels: Some(0),
-                    coverage,
-                })
-                .collect(),
-        ]
+    // Many layers that each hold a fill of the whole viewport, of one color or not, or many small fills.
+    #[test]
+    fn a_frame_drawn_with_a_plan_shows_tiles_of_any_color_up_to_a_budget_of_pixels_and_of_tiles() {
+        // A viewport of 800 by 600 pixels touches at most 3 by 3 cells.
+        let cells_shown_most = MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS * 9;
+        let whole_cell = TileCoord::new(0, 0).cell_rect();
+        let one_pixel = IntRect::new(0, 0, 1, 1);
+        let mut budget_of_whole_cells = TileBudgetOfFrame::within(VIEWPORT);
+        assert!((0..cells_shown_most).all(|_| budget_of_whole_cells.takes_tile(whole_cell)));
+        assert!(!budget_of_whole_cells.takes_tile(one_pixel));
+        let tiles_shown_most = MAXIMUM_TILES_A_PLAN_SHOWS_PER_CELL_ONE_LAYER_SHOWS * 9;
+        let mut budget_of_small_tiles = TileBudgetOfFrame::within(VIEWPORT);
+        assert!((0..tiles_shown_most).all(|_| budget_of_small_tiles.takes_tile(one_pixel)));
+        assert!(!budget_of_small_tiles.takes_tile(one_pixel));
     }
 
-    // A stack of many layers that each hold a translucent fill of the whole viewport.
     #[test]
     fn a_plan_whose_frame_shows_more_tiles_than_a_frame_may_is_drawn_as_one_layer_until_another_plan_comes() {
         let tree = tree_of_viewport();
         let display_list = empty_display_list(&tree);
-        let identity = FloatMatrix4x4::identity();
         let plan = ReceivedLayerPlan {
             viewport_rect: VIEWPORT,
             stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
@@ -2773,55 +2797,25 @@ mod tests {
             stack: Rc::new((*plan.stack).clone()),
             ..plan.clone()
         };
-        // A viewport of 800 by 600 pixels touches at most 3 by 3 cells.
-        let cells_shown_most = MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS as usize * 9;
-        let cells_of_tiles = |count: usize, coverage: TileCoverage| {
-            std::iter::repeat_n((TileCoord::new(0, 0).cell_rect(), coverage), count)
-        };
         let mut layers = ContextLayers::default();
         layers.take_stack_of_frame(
             Some(&plan),
             |_| unreachable!("a frame drawn with a plan takes its stack"),
-            identity,
+            FloatMatrix4x4::identity(),
         );
-        let at_most = one_layer_showing(
-            cells_of_tiles(cells_shown_most, TileCoverage::Unknown).chain(cells_of_tiles(
-                cells_shown_most,
-                TileCoverage::OneColor(Color::from_rgb(0, 128, 0)),
-            )),
-        );
-        assert!(!layers.plan_of_frame_shows_too_many_tiles(&at_most, VIEWPORT));
         assert!(!layers.plan_shows_too_many_tiles(&plan));
-        let past_most = one_layer_showing(cells_of_tiles(cells_shown_most + 1, TileCoverage::Opaque));
-        assert!(layers.plan_of_frame_shows_too_many_tiles(&past_most, VIEWPORT));
+        layers.draw_plan_of_frames_as_one_layer();
         assert!(layers.plan_shows_too_many_tiles(&plan));
         assert!(!layers.plan_shows_too_many_tiles(&plan_received_again));
-
-        // A frame of one layer is drawn as one layer whatever it shows.
-        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
-        assert!(!layers.plan_of_frame_shows_too_many_tiles(&past_most, VIEWPORT));
     }
 
     // An iframe smaller than a cell shows a whole cell of each layer whose space it scrolls.
     #[test]
     fn the_tiles_of_a_viewport_smaller_than_a_cell_are_counted_in_whole_cells() {
-        let cell_pixels = (TILE_SIZE_IN_DEVICE_PIXELS * TILE_SIZE_IN_DEVICE_PIXELS) as u64;
-        assert_eq!(
-            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 1, 1)),
-            cell_pixels
-        );
-        assert_eq!(
-            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 100, 40)),
-            4 * cell_pixels
-        );
-        assert_eq!(
-            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 800, 1)),
-            3 * cell_pixels
-        );
-        assert_eq!(tile_pixels_one_layer_shows_at_most(VIEWPORT), 9 * cell_pixels);
-        assert_eq!(
-            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 1025, 513)),
-            6 * cell_pixels
-        );
+        assert_eq!(cells_one_layer_shows_at_most(IntRect::new(0, 0, 1, 1)), 1);
+        assert_eq!(cells_one_layer_shows_at_most(IntRect::new(0, 0, 100, 40)), 4);
+        assert_eq!(cells_one_layer_shows_at_most(IntRect::new(0, 0, 800, 1)), 3);
+        assert_eq!(cells_one_layer_shows_at_most(VIEWPORT), 9);
+        assert_eq!(cells_one_layer_shows_at_most(IntRect::new(0, 0, 1025, 513)), 6);
     }
 }
