@@ -40,7 +40,7 @@ use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
     TileKeyingOfList, TileKeyingOfRasterSpace, composited_filter_read_reach_in_device_pixels,
 };
-use libcompositing_rust::display_list::tiles::{CellRange, TileCoord, entries_within};
+use libcompositing_rust::display_list::tiles::{CellRange, TILE_SIZE_IN_DEVICE_PIXELS, TileCoord, entries_within};
 use libcompositing_rust::display_list::window_server_placement::{
     WhyWindowServerCannotShowMedia, WindowServerPlacement,
 };
@@ -67,10 +67,11 @@ const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
 // the tag.
 const MEDIA_ORDINAL_SHIFT_PAST_CANVAS_AND_VIDEO_IDS: u32 = 44;
 
-// How many pixels of tiles with surfaces a frame drawn with a plan may show, per pixel of the viewport. The layers of a
-// page show two or three viewports of tiles. A frame whose plan shows more is drawn as one layer, which shows about one
-// viewport of them.
-const MAXIMUM_TILE_PIXELS_OF_PLAN_PER_VIEWPORT_PIXEL: u64 = 16;
+// A frame drawn with a plan may show tiles with surfaces of as many pixels as this many layers that each show every cell
+// a rect of the viewport's size can touch, which a viewport smaller than a cell needs whole. The layers of a page show
+// two or three viewports of tiles. A frame whose plan shows more is drawn as one layer, which shows no more than one
+// such layer.
+const MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS: u64 = 16;
 
 // Growing damage over what composited effects read takes a pass over them for each one it newly reaches. Past this many
 // passes, the damage grows over all they read, which holds what more passes would add.
@@ -764,10 +765,8 @@ impl ContextLayers {
         else {
             return false;
         };
-        let viewport_pixel_count =
-            tile_state.viewport_rect.width.max(0) as u64 * tile_state.viewport_rect.height.max(0) as u64;
         if tile_pixels_with_surfaces_shown(tile_state)
-            <= MAXIMUM_TILE_PIXELS_OF_PLAN_PER_VIEWPORT_PIXEL * viewport_pixel_count
+            <= MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS * tile_pixels_one_layer_shows_at_most(tile_state.viewport_rect)
         {
             return false;
         }
@@ -1082,6 +1081,13 @@ fn composited_filter_read_reach_by_layer(
             )
         })
     })
+}
+
+/// The pixels of every cell that a rect of the size of `viewport_rect` can touch.
+fn tile_pixels_one_layer_shows_at_most(viewport_rect: IntRect) -> u64 {
+    let tile_size = TILE_SIZE_IN_DEVICE_PIXELS as u64;
+    let most_cells_along = |length: i32| (length.max(1) as u64 - 1).div_ceil(tile_size) + 1;
+    most_cells_along(viewport_rect.width) * most_cells_along(viewport_rect.height) * tile_size * tile_size
 }
 
 fn tile_pixels_with_surfaces_shown(tile_state: &FrameTileState) -> u64 {
@@ -3790,28 +3796,53 @@ mod tests {
             stack: Rc::new((*plan.stack).clone()),
             ..plan.clone()
         };
-        let viewports_most = MAXIMUM_TILE_PIXELS_OF_PLAN_PER_VIEWPORT_PIXEL as usize;
-        let viewports_of_tiles =
-            |count: usize, coverage: TileCoverage| std::iter::repeat_n((VIEWPORT, coverage), count);
+        // A viewport of 800 by 600 pixels touches at most 3 by 3 cells.
+        let cells_shown_most = MAXIMUM_LAYERS_OF_TILES_A_PLAN_SHOWS as usize * 9;
+        let cells_of_tiles = |count: usize, coverage: TileCoverage| {
+            std::iter::repeat_n((TileCoord::new(0, 0).cell_rect(), coverage), count)
+        };
         let mut layers = ContextLayers::default();
         layers.take_stack_of_frame(
             Some(&plan),
             |_| unreachable!("a frame drawn with a plan takes its stack"),
             identity,
         );
-        let at_most = tile_state_showing(viewports_of_tiles(viewports_most, TileCoverage::Unknown).chain(
-            viewports_of_tiles(viewports_most, TileCoverage::OneColor(Color::from_rgb(0, 128, 0))),
+        let at_most = tile_state_showing(cells_of_tiles(cells_shown_most, TileCoverage::Unknown).chain(
+            cells_of_tiles(cells_shown_most, TileCoverage::OneColor(Color::from_rgb(0, 128, 0))),
         ));
         assert!(!layers.plan_of_frame_shows_too_many_tiles(&at_most));
         assert!(!layers.plan_shows_too_many_tiles(&plan));
-        let past_most = tile_state_showing(viewports_of_tiles(viewports_most + 1, TileCoverage::Opaque));
+        let past_most = tile_state_showing(cells_of_tiles(cells_shown_most + 1, TileCoverage::Opaque));
         assert!(layers.plan_of_frame_shows_too_many_tiles(&past_most));
         assert!(layers.plan_shows_too_many_tiles(&plan));
         assert!(!layers.plan_shows_too_many_tiles(&plan_received_again));
 
-        // A frame of one layer shows about one viewport of tiles, and is drawn as one layer whatever it shows.
+        // A frame of one layer is drawn as one layer whatever it shows.
         layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
         assert!(!layers.plan_of_frame_shows_too_many_tiles(&past_most));
+    }
+
+    // An iframe smaller than a cell shows a whole cell of each layer whose space it scrolls.
+    #[test]
+    fn the_tiles_of_a_viewport_smaller_than_a_cell_are_counted_in_whole_cells() {
+        let cell_pixels = (TILE_SIZE_IN_DEVICE_PIXELS * TILE_SIZE_IN_DEVICE_PIXELS) as u64;
+        assert_eq!(
+            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 1, 1)),
+            cell_pixels
+        );
+        assert_eq!(
+            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 100, 40)),
+            4 * cell_pixels
+        );
+        assert_eq!(
+            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 800, 1)),
+            3 * cell_pixels
+        );
+        assert_eq!(tile_pixels_one_layer_shows_at_most(VIEWPORT), 9 * cell_pixels);
+        assert_eq!(
+            tile_pixels_one_layer_shows_at_most(IntRect::new(0, 0, 1025, 513)),
+            6 * cell_pixels
+        );
     }
 
     // A frame can find no store to be painted into once it took its stack.
