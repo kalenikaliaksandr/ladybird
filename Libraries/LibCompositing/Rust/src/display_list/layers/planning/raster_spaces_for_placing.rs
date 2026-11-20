@@ -152,7 +152,7 @@ impl RasterSpaceAnchorsOfTree {
 /// The raster spaces of a tree at a set of anchors, with what placing a list among them reads past what rastering
 /// reads: per spatial node, whether it moves on its own relative to the spaces, and per effect node, whether how far
 /// its filters spread its content moves on its own.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(super) struct RasterSpacesForPlacing {
     raster_spaces: RasterSpaces,
     spatial_node_moves_on_its_own: Vec<bool>,

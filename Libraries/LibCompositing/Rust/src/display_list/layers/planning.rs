@@ -421,8 +421,6 @@ pub fn why_list_cannot_be_layered(
 /// A group of runs, which is placed whole, with where it is placed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedRunGroup {
-    pub first_run_index: RunIndexInList,
-    pub last_run_index: RunIndexInList,
     pub raster_space_index: RasterSpaceIndex,
     /// At most one per space, ordered by space.
     pub composite_clips: Vec<CompositeClip>,
@@ -470,7 +468,6 @@ pub struct PlacedEffect {
     pub effect: EffectNodeIndex,
     /// The placed effect around it, inside which the compositor composites it.
     pub placed_effect_around_index: Option<PlacedEffectIndex>,
-    pub run_group_index: RunGroupIndex,
     /// Where compositing the effect can draw, in the raster coordinates of the run group's space: wherever the runs
     /// under it in the run group of its first run can show, and if it moves within its space, wherever it can show.
     pub reach: IntRect,
@@ -770,11 +767,11 @@ fn place_list(
             RasterSpaceAnchorKind::AnimatedTransform { .. }
         )
     };
-    let mut runs_by_animated_space: HashMap<RasterSpaceIndex, Vec<usize>> = HashMap::new();
+    let mut runs_of_animated_space_by_space_index: Vec<Vec<usize>> = vec![Vec::new(); spaces.len()];
     for run_index in 0..list.run_count() {
         let space = tables.deepest_space_of(list.run(run_index).context.spatial);
         if is_animated_space(space) {
-            runs_by_animated_space.entry(space).or_default().push(run_index);
+            runs_of_animated_space_by_space_index[space.0].push(run_index);
         }
     }
     let mut animated_space_is_decided = vec![false; spaces.len()];
@@ -810,7 +807,7 @@ fn place_list(
                 &filters_and_clips,
                 &why_compositor_cannot_composite_by_effect_index,
                 space,
-                &runs_by_animated_space[&space],
+                &runs_of_animated_space_by_space_index[space.0],
                 canvases_and_videos_placed_before,
             ) {
                 Ok(swept_reach) => swept_reach_in_parent_space_by_space_index[space.0] = Some(swept_reach),
@@ -893,8 +890,6 @@ fn place_list(
                 }),
             };
             PlacedRunGroup {
-                first_run_index: RunIndexInList(first_run_index),
-                last_run_index: RunIndexInList(last_run_index),
                 raster_space_index,
                 composite_clips,
                 reach: reach_of_run_group,
@@ -1294,7 +1289,6 @@ fn place_list(
         placed_effects.push(PlacedEffect {
             effect,
             placed_effect_around_index: innermost_placed_effect_around,
-            run_group_index: run_group_of_effect(effect),
             reach: reach_by_effect_index[effect.0 as usize],
             backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
             reads_root_group,
@@ -1521,6 +1515,7 @@ struct BandBeingBuilt {
     barriers: Vec<BarrierBeingBuilt>,
     own_record_stretch_indices: Vec<RecordStretchIndex>,
     first_record_stretch_index: RecordStretchIndex,
+    root_group_reach_so_far: Reach<IntRect>,
 }
 
 #[derive(Clone, Copy)]
@@ -1551,7 +1546,6 @@ struct StackBeingBuilt<'a> {
     node_of_run_group: Vec<PlacementNodeIndex>,
     children_of_node: Vec<Vec<PlacementNodeIndex>>,
     bands_being_built: Vec<BandBeingBuilt>,
-    root_group_reach_so_far_by_band_being_built: Vec<Reach<IntRect>>,
     why_composited_once_decided_by_placed_effect: Vec<Option<Option<WhyEffectIsComposited>>>,
     composited_node_by_placed_effect: Vec<Option<PlacementNodeIndex>>,
     /// One per composited node, in the order of the nodes.
@@ -1715,8 +1709,8 @@ impl StackBeingBuilt<'_> {
             barriers: Vec::new(),
             own_record_stretch_indices: Vec::new(),
             first_record_stretch_index,
+            root_group_reach_so_far: Reach::Nothing,
         });
-        self.root_group_reach_so_far_by_band_being_built.push(Reach::Nothing);
         BandBeingBuiltIndex(self.bands_being_built.len() - 1)
     }
 
@@ -1759,7 +1753,7 @@ impl StackBeingBuilt<'_> {
                 Some(BandBeingBuiltIndex(index)) != open_band_of_reader_node
                     && self.reach_can_meet_tiles(
                         band.placement_node_index,
-                        self.root_group_reach_so_far_by_band_being_built[index],
+                        band.root_group_reach_so_far,
                         &path_from_root_to_reader_node,
                         read_tiles,
                     )
@@ -1961,8 +1955,9 @@ impl StackBeingBuilt<'_> {
             if placement.run_groups[stretch.run_group_index.0].paints_within_root_group {
                 let open_band_of_stretch = open_band_by_node_index[node_of_stretch.0]
                     .expect("the band of a stretch is open once it is placed");
-                self.root_group_reach_so_far_by_band_being_built[open_band_of_stretch.0] = self
-                    .root_group_reach_so_far_by_band_being_built[open_band_of_stretch.0]
+                let band_of_stretch = &mut self.bands_being_built[open_band_of_stretch.0];
+                band_of_stretch.root_group_reach_so_far = band_of_stretch
+                    .root_group_reach_so_far
                     .united(Reach::Within(stretch.reach));
             }
         }
@@ -2097,7 +2092,6 @@ fn assemble_plan_unless_records_blend_with_other_layers(
         node_of_run_group: Vec::new(),
         children_of_node: Vec::new(),
         bands_being_built: Vec::new(),
-        root_group_reach_so_far_by_band_being_built: Vec::new(),
         why_composited_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
         composited_node_by_placed_effect: vec![None; placement.placed_effects.len()],
         notes_of_composited_effects: Vec::new(),
@@ -2107,17 +2101,8 @@ fn assemble_plan_unless_records_blend_with_other_layers(
     stack_being_built.node_of_run_group = placement
         .run_groups
         .iter()
-        .map(|run_group| run_group.composite_clips.clone())
-        .zip(
-            placement
-                .run_groups
-                .iter()
-                .map(|run_group| run_group.raster_space_index),
-        )
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|(composite_clips, raster_space_index)| {
-            stack_being_built.find_or_add_node(raster_space_index, composite_clips)
+        .map(|run_group| {
+            stack_being_built.find_or_add_node(run_group.raster_space_index, run_group.composite_clips.clone())
         })
         .collect();
     stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move();
@@ -3775,12 +3760,12 @@ mod tests {
         );
         // Scrolled to the end of its range, the inner scroller moves the glass far past the outer scrollport, which
         // would cut what the glass reads where it is composited in the space of the outer scroller.
-        let run_group_of_glass = planned
+        let stretch_of_glass = planned
             .placement
-            .run_groups
-            .iter()
-            .find(|run_group| run_group.first_run_index.0 <= 2 && 2 <= run_group.last_run_index.0)
+            .record_stretches
+            .last()
             .expect("the run of the glass is placed");
+        let run_group_of_glass = &planned.placement.run_groups[stretch_of_glass.run_group_index.0];
         assert_ne!(run_group_of_glass.raster_space_index.0, space_of_outer_scroller);
     }
 

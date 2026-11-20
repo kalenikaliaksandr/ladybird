@@ -101,9 +101,8 @@ fn spatial_nodes_that_animation_samples_move_within_their_space(
 type CompositeClipsOfContextInSpace = Option<Rc<[CompositeClip]>>;
 
 /// Where content is placed among the spaces at a set of anchors: the spaces, the clips that can be left to apply when
-/// rasters are composited, and the effects whose content reads its backdrop. Two tables that compare equal place every
-/// visual context alike, whatever tree copies they were worked out from. Where each context is placed is worked out as
-/// it is first asked for.
+/// rasters are composited, and the effects whose content reads its backdrop. Where each context is placed is worked out
+/// as it is first asked for.
 pub(super) struct PlacementTables {
     spaces: RasterSpacesForPlacing,
     /// Per spatial node, whether a sample of the compositor's animations can move it within the deepest space it is
@@ -124,16 +123,6 @@ enum EffectPlacementConstraint {
     ConstrainsNothing,
     MustMoveWithSpace,
     MustMoveWithSpaceAndKeepBackdropReadUncut,
-}
-
-impl PartialEq for PlacementTables {
-    fn eq(&self, other: &Self) -> bool {
-        self.spaces == other.spaces
-            && self.composite_form_of_clips == other.composite_form_of_clips
-            && self.placement_constraint_of_effects == other.placement_constraint_of_effects
-            && self.deepest_space_and_backdrop_filter_read_rect_by_effect
-                == other.deepest_space_and_backdrop_filter_read_rect_by_effect
-    }
 }
 
 impl PlacementTables {
