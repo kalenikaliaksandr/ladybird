@@ -185,7 +185,6 @@ pub(crate) struct ChunkRecord {
     pub(crate) offset: u32,
     pub(crate) end_offset: u32,
     pub(crate) run_index: RunIndexInChunk,
-    pub(crate) command_type: DisplayListCommandType,
     pub(crate) bounding_rect: IntRect,
     draws_something: bool,
     frame_state_read_flags: u8,
@@ -274,7 +273,6 @@ impl RecordTable {
                     offset,
                     end_offset,
                     run_index: RunIndexInChunk(run_index as u32),
-                    command_type: header.command_type,
                     bounding_rect: bounding_rect.unwrap_or_default(),
                     draws_something: !header.command_type.is_compositor_metadata()
                         && bounding_rect.is_some_and(|rect| !rect.is_empty()),
@@ -361,9 +359,9 @@ pub struct TileKeyingOfList<'a> {
     filters_inside_composited_effects: FiltersInsideInnermostCompositedEffects,
     replays_every_record_into_every_tile: bool,
     tree_sorts_planes_by_depth: bool,
+    one_layer_list_cannot_tell_which_records_show_in_tile: bool,
     frame_state_hash: ContentHash,
     sampled_values_tiles_draw: SampledValuesTilesDraw,
-    mask_effect_and_position_of_declarations: Vec<(EffectNodeIndex, ListPosition)>,
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
 }
 
@@ -460,27 +458,12 @@ impl<'a> TileKeyingOfList<'a> {
     ) -> Self {
         let layering_obstacles = stack.layering_obstacles;
         let run_groups = display_list.run_groups(tree);
-        let mask_effect_and_position_of_declarations = display_list
-            .summary()
-            .mask_declarations
-            .iter()
-            .map(|declaration| (declaration.mask_effect, declaration.record.position()))
-            .collect();
         let mut is_composited_by_effect_index = vec![false; tree.effect_nodes.len()];
         for effect in stack.effects_the_compositor_composites() {
             is_composited_by_effect_index[effect.0 as usize] = true;
         }
-        let mut innermost_composited_effect_by_effect_index = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
-        tree.visit_effect_nodes_parents_first(|index| {
-            let node = &tree.effect_nodes[index];
-            innermost_composited_effect_by_effect_index[index] = if is_composited_by_effect_index[index] {
-                EffectNodeIndex(index as u32)
-            } else if node.parent.is_none() {
-                EffectNodeIndex::NONE
-            } else {
-                innermost_composited_effect_by_effect_index[node.parent.0 as usize]
-            };
-        });
+        let innermost_composited_effect_by_effect_index =
+            nearest_effects_at_or_above_where(tree, |effect, _| is_composited_by_effect_index[effect.0 as usize]);
         let nearest_spreading_effects = nearest_spreading_effects(tree);
         let content_is_spread_by_filters = nearest_spreading_effects.iter().any(|effect| !effect.is_none());
         let one_layer_list_cannot_tell_which_records_show_in_tile =
@@ -507,9 +490,9 @@ impl<'a> TileKeyingOfList<'a> {
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
                 || one_layer_list_cannot_tell_which_records_show_in_tile,
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
+            one_layer_list_cannot_tell_which_records_show_in_tile,
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
             sampled_values_tiles_draw: SampledValuesTilesDraw::of(tree, &innermost_composited_effect_by_effect_index),
-            mask_effect_and_position_of_declarations,
             innermost_composited_effect_by_effect_index,
         }
     }
@@ -936,7 +919,6 @@ struct ChunkHeldByBand {
     /// Per held run, where the first of its records the band holds is.
     first_held_offset_by_held_run: Vec<u32>,
     reach_of_held_records: Reach<IntRect>,
-    uses_listed_reached_cells: bool,
     reach_past_listed_cells: Reach<IntRect>,
     binning_inputs_hash: ContentHash,
 }
@@ -958,8 +940,8 @@ struct RunReplayedWholeWhereverRunGroupShows {
 
 struct BandBoundToListAndGeometry {
     chunk_names: Arc<[ChunkName]>,
+    /// In the order of their chunks, as the spans of a band are in paint order.
     held_chunks: Vec<ChunkHeldByBand>,
-    held_chunk_index_by_chunk_index: HashMap<ChunkIndexInList, usize>,
     runs_replayed_whole: HashMap<(ChunkIndexInList, RunIndexInChunk), RunReplayedWholeWhereverRunGroupShows>,
     backdrop_reads: Vec<BackdropReadInLayer>,
     items_replayed_in_every_tile: Option<Vec<(ListPosition, TileReplayItem)>>,
@@ -967,8 +949,16 @@ struct BandBoundToListAndGeometry {
 }
 
 impl BandBoundToListAndGeometry {
+    fn held_chunk_if_held(&self, chunk_index: ChunkIndexInList) -> Option<&ChunkHeldByBand> {
+        self.held_chunks
+            .binary_search_by_key(&chunk_index, |held_chunk| held_chunk.chunk_index)
+            .ok()
+            .map(|held_chunk_index| &self.held_chunks[held_chunk_index])
+    }
+
     fn held_chunk(&self, chunk_index: ChunkIndexInList) -> &ChunkHeldByBand {
-        &self.held_chunks[self.held_chunk_index_by_chunk_index[&chunk_index]]
+        self.held_chunk_if_held(chunk_index)
+            .expect("an item of a band names a chunk the band holds")
     }
 
     fn placed_record_range(
@@ -1004,14 +994,8 @@ impl BandBoundToListAndGeometry {
             return true;
         };
         let Some(range) = self
-            .held_chunk_index_by_chunk_index
-            .get(&chunk_index)
-            .and_then(|&held_chunk_index| {
-                self.held_chunks[held_chunk_index]
-                    .placement
-                    .record_ranges
-                    .get(range_index.0 as usize)
-            })
+            .held_chunk_if_held(chunk_index)
+            .and_then(|held_chunk| held_chunk.placement.record_ranges.get(range_index.0 as usize))
         else {
             return false;
         };
@@ -1078,6 +1062,7 @@ impl BandBoundToListAndGeometry {
         let cells_area = held_chunks_by_cell
             .keys()
             .fold(IntRect::default(), |area, coord| area.united(coord.cell_rect()));
+        let placements_list_cells_held_records_reach = self.backdrop_reads.is_empty();
         for (held_chunk_index, held_chunk) in self.held_chunks.iter().enumerate() {
             if held_chunk.reach_of_held_records.part_of(cells_area).is_empty() {
                 continue;
@@ -1087,7 +1072,7 @@ impl BandBoundToListAndGeometry {
                     held_chunks.push(held_chunk_index);
                 }
             };
-            if held_chunk.uses_listed_reached_cells {
+            if placements_list_cells_held_records_reach {
                 for coord in &held_chunk.placement.listed_reached_cells {
                     if let Some(held_chunks) = held_chunks_by_cell.get_mut(coord) {
                         note_cell(held_chunks);
@@ -2617,10 +2602,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             begin_offset: record.offset,
             end_offset: record.end_offset,
         };
-        let Some(&held_chunk_index) = bound_band.held_chunk_index_by_chunk_index.get(&chunk_index) else {
+        let Some(held_chunk) = bound_band.held_chunk_if_held(chunk_index) else {
             return record_alone;
         };
-        let held_chunk = &bound_band.held_chunks[held_chunk_index];
         let run_index = record.run_index;
         let record_is_held = offset_is_held(&held_chunk.held_offset_ranges_in_paint_order, record.offset);
         if !record_is_held || held_chunk.held_run_indices.binary_search(&run_index).is_err() {
@@ -2698,7 +2682,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     }
                 }
             }
-            for &(mask_effect, declaration_position) in &list.mask_effect_and_position_of_declarations {
+            for declaration in &display_list.summary().mask_declarations {
+                let (mask_effect, declaration_position) = (declaration.mask_effect, declaration.record.position());
                 // A declaration can name any effect node.
                 let mask_is_around_held_run = effect_is_around_held_run.get(mask_effect.0 as usize) == Some(&true)
                     && matches!(tree.effect_nodes[mask_effect.0 as usize].data, EffectNodeData::Mask(_));
@@ -2727,7 +2712,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             return BandBoundToListAndGeometry {
                 chunk_names,
                 held_chunks: Vec::new(),
-                held_chunk_index_by_chunk_index: HashMap::new(),
                 runs_replayed_whole: HashMap::new(),
                 backdrop_reads: Vec::new(),
                 items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
@@ -2749,16 +2733,16 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 held_run_indices,
                 first_held_offset_by_held_run,
                 reach_of_held_records: Reach::Nothing,
-                uses_listed_reached_cells: false,
                 reach_past_listed_cells: Reach::Nothing,
                 binning_inputs_hash: 0,
             });
         }
-        let held_chunk_index_by_chunk_index: HashMap<ChunkIndexInList, usize> = held_chunks
-            .iter()
-            .enumerate()
-            .map(|(held_chunk_index, held_chunk)| (held_chunk.chunk_index, held_chunk_index))
-            .collect();
+        debug_assert!(
+            held_chunks
+                .windows(2)
+                .all(|pair| pair[0].chunk_index < pair[1].chunk_index),
+            "the checks of a plan take only bands whose spans are in paint order"
+        );
         let tree = list.tree;
         let effect_composited_around_band = stack.nodes[band.placement_node_index.0]
             .composited_effect
@@ -2848,20 +2832,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let mut bound_band = BandBoundToListAndGeometry {
             chunk_names,
             held_chunks,
-            held_chunk_index_by_chunk_index,
             runs_replayed_whole,
             backdrop_reads,
             items_replayed_in_every_tile: None,
             binning_inputs_hash_beyond_held_chunks: 0,
         };
 
-        if !list.mask_effect_and_position_of_declarations.is_empty() && !bound_band.runs_replayed_whole.is_empty() {
+        let mask_declarations = &display_list.summary().mask_declarations;
+        if !mask_declarations.is_empty() && !bound_band.runs_replayed_whole.is_empty() {
             let mut declaration_positions_by_mask: HashMap<EffectNodeIndex, Vec<ListPosition>> = HashMap::new();
-            for &(mask_effect, declaration_position) in &list.mask_effect_and_position_of_declarations {
+            for declaration in mask_declarations {
                 declaration_positions_by_mask
-                    .entry(mask_effect)
+                    .entry(declaration.mask_effect)
                     .or_default()
-                    .push(declaration_position);
+                    .push(declaration.record.position());
             }
             let nearest_declared_mask_by_effect_index = nearest_effects_at_or_above_where(tree, |effect, node| {
                 matches!(node.data, EffectNodeData::Mask(_)) && declaration_positions_by_mask.contains_key(&effect)
@@ -2954,8 +2938,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
             // A backdrop filter can extend content painted before it past the cells that content reaches.
-            let uses_listed_reached_cells = bound_band.backdrop_reads.is_empty();
-            let reach_past_listed_cells = if uses_listed_reached_cells {
+            let reach_past_listed_cells = if bound_band.backdrop_reads.is_empty() {
                 reach_of_runs_replayed_whole.united(held_chunk.placement.reach_past_listed_cells)
             } else {
                 reach_of_runs_replayed_whole.united(reach_extended_through_backdrop_reads(
@@ -2973,7 +2956,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             let chunk_binning_inputs_hash = chunk_binning_inputs_hasher.finish();
             let held_chunk = &mut bound_band.held_chunks[held_chunk_index];
             held_chunk.reach_of_held_records = reach_past_listed_cells.united(reach_of_runs_binned_range_by_range);
-            held_chunk.uses_listed_reached_cells = uses_listed_reached_cells;
             held_chunk.reach_past_listed_cells = reach_past_listed_cells;
             held_chunk.binning_inputs_hash = chunk_binning_inputs_hash;
         }
@@ -3027,7 +3009,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     /// are as they were, in the same order, whatever barriers they are, and is forgotten otherwise.
     pub fn bind_band(&self, band_tile_keys: &mut BandTileKeys, stack: &LayerStack, band_index: BandIndex) {
         let bound_band = self.bind_band_to_list_and_geometry(stack, band_index);
-        band_tile_keys.replays_whole_list = stack.replays_whole_list() && self.list.tree_sorts_planes_by_depth;
+        band_tile_keys.replays_whole_list = self.list.one_layer_list_cannot_tell_which_records_show_in_tile;
         // Chunks of the new binding can reach cells that held nothing, and cells whose bin changed are forgotten.
         band_tile_keys.cells_looked_at = CellRange::NONE;
         let Some(previous_bound_band) = band_tile_keys.bound_band.replace(bound_band) else {
