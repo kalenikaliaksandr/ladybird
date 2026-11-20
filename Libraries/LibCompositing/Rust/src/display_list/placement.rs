@@ -700,10 +700,11 @@ fn space_at_anchor(
 }
 
 /// The raster spaces of a tree at a set of anchors, and the deepest of them that each spatial node moves with.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct RasterSpaces {
     spaces: Vec<RasterSpace>,
     deepest_space_of_spatial_node: Vec<RasterSpaceIndex>,
+    clips_left_to_composite_by_space: Vec<std::cell::OnceCell<Rc<[bool]>>>,
 }
 
 impl RasterSpaces {
@@ -765,6 +766,7 @@ impl RasterSpaces {
             };
         });
         Self {
+            clips_left_to_composite_by_space: vec![std::cell::OnceCell::new(); spaces.len()],
             spaces,
             deepest_space_of_spatial_node,
         }
@@ -790,16 +792,20 @@ impl RasterSpaces {
     }
 
     /// Per clip node, whether rasters of `space` leave it to be applied as they are composited, since the clip does
-    /// not move with the space.
-    pub fn clips_left_to_composite(&self, space: RasterSpaceIndex, tree: &VisualContextTree) -> Vec<bool> {
-        tree.clip_nodes
-            .iter()
-            .map(|node| {
-                self.deepest_space_of_spatial_node
-                    .get(node.spatial.0 as usize)
-                    .is_none_or(|&deepest| !space_is_ancestor_or_self(&self.spaces, space, deepest))
+    /// not move with the space. Worked out once per space, as every tree the spaces serve has the same nodes.
+    pub fn clips_left_to_composite(&self, space: RasterSpaceIndex, tree: &VisualContextTree) -> Rc<[bool]> {
+        self.clips_left_to_composite_by_space[space.0]
+            .get_or_init(|| {
+                tree.clip_nodes
+                    .iter()
+                    .map(|node| {
+                        self.deepest_space_of_spatial_node
+                            .get(node.spatial.0 as usize)
+                            .is_none_or(|&deepest| !space_is_ancestor_or_self(&self.spaces, space, deepest))
+                    })
+                    .collect()
             })
-            .collect()
+            .clone()
     }
 }
 
@@ -906,7 +912,7 @@ pub struct RasterSpaceGeometry {
     pub world: Rc<WorldTransforms>,
     what_every_space_of_tree_shares: Rc<WhatEverySpaceOfTreeShares>,
     /// Empty for the viewport's space, which applies every clip.
-    pub clips_left_to_composite: Vec<bool>,
+    pub clips_left_to_composite: Rc<[bool]>,
     rastered_affine_clip_chain_bounds_by_clip: Vec<Option<FloatRect>>,
     pub(crate) rastered_affine_own_clip_bounds_by_clip: Vec<Option<FloatRect>>,
 }
@@ -952,7 +958,7 @@ impl RasterSpaceGeometry {
         what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
     ) -> Self {
         let clips_left_to_composite = if space == RasterSpaceIndex::VIEWPORT {
-            Vec::new()
+            Rc::default()
         } else {
             spaces.clips_left_to_composite(space, tree)
         };
