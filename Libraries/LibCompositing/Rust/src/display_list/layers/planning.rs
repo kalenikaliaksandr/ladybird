@@ -718,7 +718,7 @@ fn place_list(
             continue;
         }
         let record: IndexedRecord = live_content_record.record;
-        let (run_index, record_position) = (record.run_index, record.position());
+        let (run_index, record_position) = (record.run_index, record.position);
         let why_no_layer = if run_groups.run_is_sorted_by_depth(run_index as usize) {
             Some(WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext)
         } else {

@@ -537,7 +537,7 @@ impl DisplayListStorage {
         mut visit: impl FnMut(ContextRef, &DisplayListCommandHeader, &[u8]),
     ) {
         for record in records {
-            let (header, payload) = self.record_at(record.position());
+            let (header, payload) = self.record_at(record.position);
             visit(self.run(record.run_index as usize).context, &header, payload);
         }
     }
@@ -839,7 +839,7 @@ mod tests {
         );
         // What the list knows of its records is where they are in their chunks.
         assert_eq!(
-            list.summary().live_content_records[1].record.position(),
+            list.summary().live_content_records[1].record.position,
             ListPosition::new(ChunkIndexInList(1), canvas_offset_in_second_chunk)
         );
         assert_eq!(list.summary().live_content_records[1].record.run_index, 4);

@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-//! What C++ and damage ask about a display list's tape: the resources its commands reference, whether reusing a
-//! raster of it can differ from replaying it, its compositor metadata, its carets, and where it draws live content.
+//! What is asked about the records of a display list: the resources its commands reference, whether reusing a raster
+//! of it can differ from replaying it, its carets, where it draws live content, and where it declares the content of
+//! masks.
 
 use super::builder::{for_each_command, read_command};
 use super::commands::*;
@@ -15,25 +16,19 @@ use libgfx_rust::CompositingAndBlendingOperator;
 use libgfx_rust::filter::Filter;
 use std::collections::HashSet;
 
-/// A top-level record, by the index of its run among the runs of its list, the chunk that holds it, and its offset in
-/// that chunk. In the summary of a chunk alone, the run index counts the runs of that chunk only.
+/// A top-level record, by the index of its run among the runs of its list and its position in the list. In the summary
+/// of a chunk alone, the run index counts the runs of that chunk only, and the position is in that chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexedRecord {
     pub run_index: u32,
-    pub chunk_index: ChunkIndexInList,
-    pub record_offset: u32,
+    pub position: ListPosition,
 }
 
 impl IndexedRecord {
-    pub fn position(&self) -> ListPosition {
-        ListPosition::new(self.chunk_index, self.record_offset)
-    }
-
     fn shifted_into_list(self, first_run_index_of_chunk: u32, chunk_index: ChunkIndexInList) -> Self {
         Self {
             run_index: self.run_index + first_run_index_of_chunk,
-            chunk_index,
-            record_offset: self.record_offset,
+            position: ListPosition::new(chunk_index, self.position.offset),
         }
     }
 }
@@ -221,8 +216,7 @@ pub fn summarize(tape: &[u8], command_runs: &[DisplayListCommandRun]) -> Display
         for_each_command(records, |header, offset_in_run, payload| {
             let indexed_record = IndexedRecord {
                 run_index: run_index as u32,
-                chunk_index: ChunkIndexInList(0),
-                record_offset: (run_start + offset_in_run) as u32,
+                position: ListPosition::new(ChunkIndexInList(0), (run_start + offset_in_run) as u32),
             };
             match header.command_type {
                 DisplayListCommandType::PaintCaret => summary.carets.push(indexed_record),

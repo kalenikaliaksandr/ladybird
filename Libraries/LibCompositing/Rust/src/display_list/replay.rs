@@ -1602,7 +1602,7 @@ impl<'a, Painter: ReplayPainter + ?Sized> ReplayDriver<'a, Painter> {
     fn declare_every_mask_content_of_list(&mut self) {
         let display_list = self.display_list;
         for declaration in &display_list.summary().mask_declarations {
-            let (_, payload) = display_list.record_at(declaration.record.position());
+            let (_, payload) = display_list.record_at(declaration.record.position);
             let command = read_command::<DeclareMaskContent>(payload);
             self.list_replay
                 .declare_mask_content(command.effect, span_bytes(payload, command.content));

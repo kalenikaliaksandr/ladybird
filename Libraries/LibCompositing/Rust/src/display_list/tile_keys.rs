@@ -530,7 +530,7 @@ fn frame_state_hash_of(display_list: &DisplayListStorage, frame_state: &FrameSta
     let summary = display_list.summary();
     let mut hasher = ContentHasher::new();
     for caret in &summary.carets {
-        let (_, payload) = display_list.record_at(caret.position());
+        let (_, payload) = display_list.record_at(caret.position);
         hasher.write_bool(caret_is_visible_at_time(
             &read_command::<PaintCaret>(payload),
             frame_state.time_ns,
@@ -2562,7 +2562,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
             for declaration in &display_list.summary().mask_declarations {
-                let (mask_effect, declaration_position) = (declaration.mask_effect, declaration.record.position());
+                let (mask_effect, declaration_position) = (declaration.mask_effect, declaration.record.position);
                 // A declaration can name any effect node.
                 let mask_is_around_held_run = effect_is_around_held_run.get(mask_effect.0 as usize) == Some(&true)
                     && matches!(tree.effect_nodes[mask_effect.0 as usize].data, EffectNodeData::Mask(_));
@@ -2723,7 +2723,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 declaration_positions_by_mask
                     .entry(declaration.mask_effect)
                     .or_default()
-                    .push(declaration.record.position());
+                    .push(declaration.record.position);
             }
             let nearest_declared_mask_by_effect_index = nearest_effects_at_or_above_where(tree, |effect, node| {
                 matches!(node.data, EffectNodeData::Mask(_)) && declaration_positions_by_mask.contains_key(&effect)
