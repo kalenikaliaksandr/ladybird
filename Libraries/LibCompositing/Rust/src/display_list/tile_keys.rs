@@ -366,6 +366,12 @@ pub struct TileKeyingOfList<'a> {
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
     /// The chunks of the list by name, once a band that keeps its cells across bindings looks them up.
     chunk_index_by_name: OnceCell<HashMap<ChunkName, ChunkIndexInList>>,
+    /// Per effect, the nearest effect at or around it that the compositor composites or that is not a plain group,
+    /// once the coverage of a tile asks.
+    nearest_composited_or_not_plain_effect_by_effect_index: OnceCell<Vec<EffectNodeIndex>>,
+    /// Per effect, the nearest effect at or around it that the compositor composites or whose blend mode can lower the
+    /// alpha of what is below it, once the coverage of a tile asks.
+    nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell<Vec<EffectNodeIndex>>,
 }
 
 /// What tiles draw of the values that the compositor's animations take at the sample of a tree. A frame can keep the
@@ -498,11 +504,50 @@ impl<'a> TileKeyingOfList<'a> {
             sampled_values_tiles_draw: SampledValuesTilesDraw::of(tree, &innermost_composited_effect_by_effect_index),
             innermost_composited_effect_by_effect_index,
             chunk_index_by_name: OnceCell::new(),
+            nearest_composited_or_not_plain_effect_by_effect_index: OnceCell::new(),
+            nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell::new(),
         }
     }
 
     fn compositor_composites(&self, effect: EffectNodeIndex) -> bool {
         self.innermost_composited_effect_by_effect_index[effect.0 as usize] == effect
+    }
+
+    /// Whether the effects that tiles apply at and around `effect` are plain groups.
+    fn effects_applied_in_tiles_are_plain_groups(&self, effect: EffectNodeIndex) -> bool {
+        if effect.is_none() {
+            return true;
+        }
+        let nearest = self
+            .nearest_composited_or_not_plain_effect_by_effect_index
+            .get_or_init(|| {
+                nearest_effects_at_or_above_where(self.tree, |effect, node| {
+                    self.compositor_composites(effect)
+                        || !matches!(&node.data, EffectNodeData::Effects(effects)
+                            if effects.opacity == 1.0
+                                && effects.filter.is_none()
+                                && effects.backdrop_filter.is_none()
+                                && effects.blend_mode == CompositingAndBlendingOperator::Normal)
+                })
+            })[effect.0 as usize];
+        nearest.is_none() || self.compositor_composites(nearest)
+    }
+
+    /// Whether an effect that tiles apply at or around `effect` blends in a way that can lower the alpha below it.
+    fn effects_applied_in_tiles_can_lower_destination_alpha(&self, effect: EffectNodeIndex) -> bool {
+        if effect.is_none() {
+            return false;
+        }
+        let nearest = self
+            .nearest_composited_or_alpha_lowering_effect_by_effect_index
+            .get_or_init(|| {
+                nearest_effects_at_or_above_where(self.tree, |effect, node| {
+                    self.compositor_composites(effect)
+                        || matches!(&node.data, EffectNodeData::Effects(effects)
+                            if effects.blend_mode.lowers_destination_alpha())
+                })
+            })[effect.0 as usize];
+        !nearest.is_none() && !self.compositor_composites(nearest)
     }
 }
 
@@ -799,6 +844,14 @@ impl TileCoverage {
             TileCoverage::Unknown
         }
     }
+}
+
+/// The clips, and the effects whose output clips, a walk for the coverage of a tile found to leave its area unclipped,
+/// so that walks of chains that share nodes stop where they meet.
+#[derive(Default)]
+struct WhatLeavesAreaOfTileUnclipped {
+    clips: HashSet<ClipNodeIndex>,
+    effects: HashSet<EffectNodeIndex>,
 }
 
 enum WhatOneFillDoesWithinArea {
@@ -2350,15 +2403,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         })
     }
 
-    fn clip_chain_applied_in_tiles(&self, clip: ClipNodeIndex) -> impl Iterator<Item = &ClipNode> {
-        let tree = self.list.tree;
-        std::iter::successors((!clip.is_none()).then_some(clip), move |clip| {
-            Some(tree.clip_nodes[clip.0 as usize].parent).filter(|parent| !parent.is_none())
-        })
-        .filter(|&clip| !self.geometry.clip_is_left_to_composite(clip))
-        .map(move |clip| &tree.clip_nodes[clip.0 as usize])
-    }
-
     fn effect_chain_applied_in_tiles(&self, effect: EffectNodeIndex) -> impl Iterator<Item = EffectNodeIndex> {
         let tree = self.list.tree;
         std::iter::successors((!effect.is_none()).then_some(effect), move |effect| {
@@ -2367,23 +2411,73 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         .take_while(|&effect| !self.list.compositor_composites(effect))
     }
 
-    fn clip_chain_leaves_area_unclipped(&self, clip: ClipNodeIndex, area_in_device_pixels: FloatRect) -> bool {
-        self.clip_chain_applied_in_tiles(clip).all(|node| {
-            let ClipNodeData::Rect(ClipData {
-                rect,
-                corner_radii,
-                mode: ClipMode::Intersect,
-            }) = &node.data
-            else {
-                return false;
-            };
-            !node.clips_everything
-                && RoundedRect::device_aligned_of(&self.geometry.world, node.spatial, *rect, corner_radii)
-                    .is_some_and(|rect| rect.covers(area_in_device_pixels))
-        })
+    fn clip_node_leaves_area_unclipped(&self, node: &ClipNode, area_in_device_pixels: FloatRect) -> bool {
+        let ClipNodeData::Rect(ClipData {
+            rect,
+            corner_radii,
+            mode: ClipMode::Intersect,
+        }) = &node.data
+        else {
+            return false;
+        };
+        !node.clips_everything
+            && RoundedRect::device_aligned_of(&self.geometry.world, node.spatial, *rect, corner_radii)
+                .is_some_and(|rect| rect.covers(area_in_device_pixels))
     }
 
-    fn context_applies_no_clip_or_effect_within(&self, context: ContextRef, area_in_device_pixels: FloatRect) -> bool {
+    fn clip_chain_leaves_area_unclipped(
+        &self,
+        clip: ClipNodeIndex,
+        area_in_device_pixels: FloatRect,
+        known: &mut WhatLeavesAreaOfTileUnclipped,
+    ) -> bool {
+        let tree = self.list.tree;
+        let mut clips_walked = Vec::new();
+        let mut clip = clip;
+        while !clip.is_none() && !known.clips.contains(&clip) {
+            let node = &tree.clip_nodes[clip.0 as usize];
+            if !self.geometry.clip_is_left_to_composite(clip)
+                && !self.clip_node_leaves_area_unclipped(node, area_in_device_pixels)
+            {
+                return false;
+            }
+            clips_walked.push(clip);
+            clip = node.parent;
+        }
+        known.clips.extend(clips_walked);
+        true
+    }
+
+    fn output_clips_of_effects_applied_in_tiles_leave_area_unclipped(
+        &self,
+        effect: EffectNodeIndex,
+        area_in_device_pixels: FloatRect,
+        known: &mut WhatLeavesAreaOfTileUnclipped,
+    ) -> bool {
+        let mut effects_walked = Vec::new();
+        for effect in self.effect_chain_applied_in_tiles(effect) {
+            if known.effects.contains(&effect) {
+                break;
+            }
+            if !self.clip_chain_leaves_area_unclipped(
+                self.list.effect_clips.output_clip(effect),
+                area_in_device_pixels,
+                known,
+            ) {
+                return false;
+            }
+            effects_walked.push(effect);
+        }
+        known.effects.extend(effects_walked);
+        true
+    }
+
+    fn context_applies_no_clip_or_effect_within(
+        &self,
+        context: ContextRef,
+        area_in_device_pixels: FloatRect,
+        known: &mut WhatLeavesAreaOfTileUnclipped,
+    ) -> bool {
         let backface_culled = self
             .geometry
             .world
@@ -2392,20 +2486,13 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .copied()
             .unwrap_or(false);
         !backface_culled
-            && self.clip_chain_leaves_area_unclipped(context.clip, area_in_device_pixels)
-            && self.effect_chain_applied_in_tiles(context.effect).all(|effect| {
-                let EffectNodeData::Effects(effects) = &self.list.tree.effect_nodes[effect.0 as usize].data else {
-                    return false;
-                };
-                effects.opacity == 1.0
-                    && effects.filter.is_none()
-                    && effects.backdrop_filter.is_none()
-                    && effects.blend_mode == CompositingAndBlendingOperator::Normal
-                    && self.clip_chain_leaves_area_unclipped(
-                        self.list.effect_clips.output_clip(effect),
-                        area_in_device_pixels,
-                    )
-            })
+            && self.list.effects_applied_in_tiles_are_plain_groups(context.effect)
+            && self.clip_chain_leaves_area_unclipped(context.clip, area_in_device_pixels, known)
+            && self.output_clips_of_effects_applied_in_tiles_leave_area_unclipped(
+                context.effect,
+                area_in_device_pixels,
+                known,
+            )
     }
 
     fn what_one_fill_item_does_within_area(
@@ -2413,6 +2500,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         bound_band: &BandBoundToListAndGeometry,
         item: TileReplayItem,
         area_in_device_pixels: FloatRect,
+        known: &mut WhatLeavesAreaOfTileUnclipped,
     ) -> Option<WhatOneFillDoesWithinArea> {
         let TileReplayItem::PlacedRecordRange {
             chunk_index,
@@ -2439,7 +2527,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 .is_none_or(|unfilled_inner_rect| unfilled_inner_rect.misses(area_in_device_pixels));
         (fill_covers_area
             && fill.draws_recorded_color_with_source_over
-            && self.context_applies_no_clip_or_effect_within(range.context, area_in_device_pixels))
+            && self.context_applies_no_clip_or_effect_within(range.context, area_in_device_pixels, known))
         .then_some(WhatOneFillDoesWithinArea::CoversItWith(fill.color))
     }
 
@@ -2448,12 +2536,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         self.records_of_item(bound_band, item).iter().any(|record| {
             let context = chunk.runs()[record.run_index.0 as usize].context;
             record.can_lower_destination_alpha
-                || self.effect_chain_applied_in_tiles(context.effect).any(|effect| {
-                    matches!(
-                        &self.list.tree.effect_nodes[effect.0 as usize].data,
-                        EffectNodeData::Effects(effects) if effects.blend_mode.lowers_destination_alpha()
-                    )
-                })
+                || self
+                    .list
+                    .effects_applied_in_tiles_can_lower_destination_alpha(context.effect)
         })
     }
 
@@ -2482,6 +2567,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             return TileCoverage::Unknown;
         }
         let area_in_device_pixels = area.to_float();
+        let mut known_to_leave_area_unclipped = WhatLeavesAreaOfTileUnclipped::default();
         let mut coverage = TileCoverage::OneColor(clear_color);
         for &item in &tile.replay_items_in_paint_order {
             if matches!(item, TileReplayItem::PlacedRecordRange { .. })
@@ -2489,7 +2575,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             {
                 continue;
             }
-            coverage = match self.what_one_fill_item_does_within_area(bound_band, item, area_in_device_pixels) {
+            coverage = match self.what_one_fill_item_does_within_area(
+                bound_band,
+                item,
+                area_in_device_pixels,
+                &mut known_to_leave_area_unclipped,
+            ) {
                 Some(WhatOneFillDoesWithinArea::DrawsNothing) => coverage,
                 Some(WhatOneFillDoesWithinArea::CoversItWith(color)) => coverage.under_plain_fill_of(color),
                 None => coverage
@@ -3803,6 +3894,49 @@ mod tests {
             band_of_box_without_layer,
         );
         assert_eq!(tiles_within(&band_tile_keys, VIEWPORT), keyed_from_nothing[0].2);
+    }
+
+    // A tree from another process can nest plain effects as deep as it likes, each clipped by a chain of clips as deep.
+    #[test]
+    fn the_coverage_of_a_tile_under_deeply_nested_effects_and_clips_holds_what_its_fills_draw() {
+        use crate::visual_context::VisualContextNodeSink;
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
+        let mut innermost = root;
+        for _ in 0..20_000 {
+            innermost = tree.append_clip_node_under(
+                innermost,
+                ClipNodeData::Rect(ClipData {
+                    rect: VIEWPORT.to_float(),
+                    corner_radii: CornerRadii::default(),
+                    mode: ClipMode::Intersect,
+                }),
+            );
+            innermost = tree.append_effect_node_under(innermost, effects(1.0, CompositingAndBlendingOperator::Normal));
+        }
+        let multiplied_fill = FillRect {
+            compositing_and_blending_operator: CompositingAndBlendingOperator::Multiply,
+            ..fill(VIEWPORT, BLUE)
+        };
+        let display_list = DisplayListStorage::of_chunks(vec![
+            chunk_of(fill(VIEWPORT, GREEN), innermost),
+            chunk_of(multiplied_fill, innermost),
+        ])
+        .unwrap();
+        let stack = stack_of(&display_list, &tree);
+        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let mut band_tile_keys = BandTileKeys::default();
+        raster_space.bind_band(&mut band_tile_keys, &stack, BandIndex(0));
+        key_band(&raster_space, &mut band_tile_keys, &stack, BandIndex(0), VIEWPORT);
+        let tile = band_tile_keys
+            .tile(TileCoord::new(0, 0), stack.base_layer)
+            .expect("the base layer holds a tile at every shown cell");
+        let area = tile.coord.cell_rect();
+        assert_eq!(
+            raster_space.coverage_of_tile(&band_tile_keys, tile, area, Color::TRANSPARENT),
+            TileCoverage::Opaque
+        );
     }
 
     fn band_of_space(stack: &LayerStack, raster_space_index: RasterSpaceIndex) -> BandIndex {
