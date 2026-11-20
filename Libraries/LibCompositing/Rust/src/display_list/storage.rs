@@ -336,6 +336,17 @@ impl DisplayListStorage {
             .clone()
     }
 
+    /// Whether `other` holds the same chunks in the same order, which is when the chunk names of the two lists are the
+    /// same.
+    pub fn holds_same_chunks_in_same_order_as(&self, other: &Self) -> bool {
+        self.chunks_in_paint_order.len() == other.chunks_in_paint_order.len()
+            && self
+                .chunks_in_paint_order
+                .iter()
+                .zip(&other.chunks_in_paint_order)
+                .all(|(chunk, other_chunk)| chunk.id == other_chunk.id)
+    }
+
     /// The tree a list this process recorded was recorded against, which it replays against and goes to the compositor
     /// with. A list from another process comes without one.
     pub fn visual_context_tree(&self) -> Option<&Arc<VisualContextTree>> {

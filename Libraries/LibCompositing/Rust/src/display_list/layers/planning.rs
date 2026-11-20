@@ -19,8 +19,8 @@ use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerContent, LayerIndex, LayerStack, LayeredPlan,
     LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NodeNamesFromIndices, NodeOfPlan, PaintedLayerOfPlan,
     PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect, WhyEffectIsComposited,
-    WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, anchors_of_layer_plans,
-    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, effect_is_or_is_inside, media_name, wire,
+    WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia, backdrop_filter_read_reach,
+    backdrop_reader_by_reading_effect_index, effect_is_or_is_inside, media_name, wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
@@ -28,7 +28,7 @@ use crate::display_list::effect_geometry::{
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
-    RunGroupIndex, is_finite_rect, spatial_nodes_whose_scroll_offset_placement_leaves_out,
+    RunGroupIndex, is_finite_rect,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
@@ -47,7 +47,8 @@ mod raster_spaces_for_placing;
 
 use placement_tables::{PlacementTables, RunsReachingOutsideTheirContext, lowest_common_ancestor_space};
 use raster_spaces_for_placing::{
-    RasterSpaceGeometryForPlacing, RasterSpacesForPlacing, rect_swept_over_translations, spaces_with_geometries,
+    RasterSpaceAnchorsOfTree, RasterSpaceGeometryForPlacing, RasterSpacesForPlacing, rect_swept_over_translations,
+    spaces_with_geometries,
 };
 
 /// How many effects and subtrees the compositor animates get layers of their own, first in paint order.
@@ -357,7 +358,7 @@ pub struct LayerStackInputs<'a> {
     /// viewport transform of the compositor's.
     pub tree: &'a VisualContextTree,
     /// The scroll offsets WebContent published with the tree. A plan reads only those that
-    /// `spatial_nodes_whose_scroll_offset_layer_plans_leave_out` does not name.
+    /// `RasterSpaceAnchorsOfTree::leaves_out_scroll_offset_of_node` does not name.
     pub scroll_offsets: &'a [FloatPoint],
     /// The viewport in device pixels.
     pub viewport_rect: IntRect,
@@ -2130,12 +2131,6 @@ fn build_layer_stack(
     }
 }
 
-/// Per spatial node, whether `plan_layer_stack` leaves out the node's scroll offset as it plans a list under the tree.
-/// A plan reads the scroll offsets of the other nodes only.
-fn spatial_nodes_whose_scroll_offset_layer_plans_leave_out(tree: &VisualContextTree) -> Vec<bool> {
-    spatial_nodes_whose_scroll_offset_placement_leaves_out(tree, &anchors_of_layer_plans(tree))
-}
-
 // The scroll offsets a plan reads of `scroll_offsets`: zero for each node that `leaves_out_scroll_offset_of_node` names.
 fn scroll_offsets_layer_plans_read(
     scroll_offsets: &[FloatPoint],
@@ -2162,16 +2157,26 @@ fn scroll_offsets_layer_plans_read(
 /// sample of the compositor's animations and wherever the compositor scrolls the nodes it scrolls. Where the window
 /// server can show the media of the stack is left to be worked out for each frame.
 pub fn plan_layer_stack(inputs: &LayerStackInputs<'_>) -> PlannedLayers {
-    let anchors = anchors_of_layer_plans(inputs.tree);
-    let leaves_out_scroll_offset_of_node =
-        spatial_nodes_whose_scroll_offset_placement_leaves_out(inputs.tree, &anchors);
-    let scroll_offsets_read = scroll_offsets_layer_plans_read(inputs.scroll_offsets, &leaves_out_scroll_offset_of_node);
+    plan_layer_stack_at_anchors(inputs, &RasterSpaceAnchorsOfTree::of(inputs.tree))
+}
+
+// `anchors_of_tree` are those of `inputs.tree`.
+fn plan_layer_stack_at_anchors(
+    inputs: &LayerStackInputs<'_>,
+    anchors_of_tree: &RasterSpaceAnchorsOfTree,
+) -> PlannedLayers {
+    let scroll_offsets_read =
+        scroll_offsets_layer_plans_read(inputs.scroll_offsets, &anchors_of_tree.leaves_out_scroll_offset_of_node);
     let inputs = LayerStackInputs {
         scroll_offsets: &scroll_offsets_read,
         ..*inputs
     };
-    let (spaces, geometries) =
-        spaces_with_geometries(inputs.tree, &anchors, inputs.scroll_offsets, inputs.viewport_rect);
+    let (spaces, geometries) = spaces_with_geometries(
+        inputs.tree,
+        anchors_of_tree,
+        inputs.scroll_offsets,
+        inputs.viewport_rect,
+    );
     let spaces_of_stack = spaces.spaces().to_vec();
     let placement = place_list(&inputs, spaces, &geometries);
     build_layer_stack(&inputs, placement, spaces_of_stack)
@@ -2183,7 +2188,7 @@ pub struct InputsOfLayerPlan {
     list: Arc<DisplayListStorage>,
     tree: Arc<VisualContextTree>,
     viewport_rect: IntRect,
-    leaves_out_scroll_offset_of_node: Arc<[bool]>,
+    anchors_of_tree: Arc<RasterSpaceAnchorsOfTree>,
     scroll_offsets_plan_reads: Vec<FloatPoint>,
 }
 
@@ -2194,32 +2199,43 @@ impl InputsOfLayerPlan {
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
     ) -> Self {
-        let leaves_out_scroll_offset_of_node: Arc<[bool]> =
-            spatial_nodes_whose_scroll_offset_layer_plans_leave_out(&tree).into();
+        Self::new_after(None, list, tree, scroll_offsets, viewport_rect)
+    }
+
+    /// As `new`, but where `earlier` inputs were made for the same tree, what plans work out of the tree alone comes
+    /// from them.
+    pub fn new_after(
+        earlier: Option<&Self>,
+        list: Arc<DisplayListStorage>,
+        tree: Arc<VisualContextTree>,
+        scroll_offsets: &[FloatPoint],
+        viewport_rect: IntRect,
+    ) -> Self {
+        let anchors_of_tree = match earlier {
+            Some(earlier) if Arc::ptr_eq(&earlier.tree, &tree) => earlier.anchors_of_tree.clone(),
+            _ => Arc::new(RasterSpaceAnchorsOfTree::of(&tree)),
+        };
         Self {
             scroll_offsets_plan_reads: scroll_offsets_layer_plans_read(
                 scroll_offsets,
-                &leaves_out_scroll_offset_of_node,
+                &anchors_of_tree.leaves_out_scroll_offset_of_node,
             ),
             list,
             tree,
             viewport_rect,
-            leaves_out_scroll_offset_of_node,
+            anchors_of_tree,
         }
     }
 
     /// The inputs of the same list and tree under other scroll offsets and another viewport rect.
     pub fn with_scroll_offsets_and_viewport_rect(&self, scroll_offsets: &[FloatPoint], viewport_rect: IntRect) -> Self {
-        Self {
-            list: self.list.clone(),
-            tree: self.tree.clone(),
+        Self::new_after(
+            Some(self),
+            self.list.clone(),
+            self.tree.clone(),
+            scroll_offsets,
             viewport_rect,
-            leaves_out_scroll_offset_of_node: self.leaves_out_scroll_offset_of_node.clone(),
-            scroll_offsets_plan_reads: scroll_offsets_layer_plans_read(
-                scroll_offsets,
-                &self.leaves_out_scroll_offset_of_node,
-            ),
-        }
+        )
     }
 
     pub fn viewport_rect(&self) -> IntRect {
@@ -2241,18 +2257,21 @@ impl InputsOfLayerPlan {
                 offset_at(&self.scroll_offsets_plan_reads, node_index)
                     == offset_at(&other.scroll_offsets_plan_reads, node_index)
             })
-            && (Arc::ptr_eq(&self.list, &other.list) || self.list.chunk_names() == other.list.chunk_names())
+            && (Arc::ptr_eq(&self.list, &other.list) || self.list.holds_same_chunks_in_same_order_as(&other.list))
             && (Arc::ptr_eq(&self.tree, &other.tree) || self.tree.has_same_content_as(&other.tree))
     }
 
     /// Plans the layers of the list under these inputs.
     pub fn plan(&self) -> PlannedLayers {
-        plan_layer_stack(&LayerStackInputs {
-            list: &self.list,
-            tree: &self.tree,
-            scroll_offsets: &self.scroll_offsets_plan_reads,
-            viewport_rect: self.viewport_rect,
-        })
+        plan_layer_stack_at_anchors(
+            &LayerStackInputs {
+                list: &self.list,
+                tree: &self.tree,
+                scroll_offsets: &self.scroll_offsets_plan_reads,
+                viewport_rect: self.viewport_rect,
+            },
+            &self.anchors_of_tree,
+        )
     }
 }
 
@@ -2264,7 +2283,6 @@ mod tests {
         CanvasId, ClipNodeIndex, ContextRef, DisplayListCommand, DrawCanvas, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::{LayerIdentity, NodeNamesFromIndices, media_name};
-    use crate::display_list::placement::{raster_space_anchors, spatial_nodes_that_move_on_their_own};
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
         CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, SpatialData, TransformData,
@@ -2732,8 +2750,8 @@ mod tests {
             .with(fill(IntRect::new(50, 50, 40, 40)), spinner);
         let geometry_of_spinner_space_at = |time_ns: i64| {
             let sample = tree.with_visual_animation_samples(time_ns);
-            let anchors = raster_space_anchors(&sample, &spatial_nodes_that_move_on_their_own(&sample));
-            let (_, geometries) = spaces_with_geometries(&sample, &anchors, &[], VIEWPORT);
+            let (_, geometries) =
+                spaces_with_geometries(&sample, &RasterSpaceAnchorsOfTree::of(&sample), &[], VIEWPORT);
             geometries[1].raster.world.draw_matrix(spinner.spatial)
         };
         assert_eq!(
@@ -3541,6 +3559,16 @@ mod tests {
 
         // The compositor scrolls the document, which has a row in its scroll table, and not the scroller.
         assert!(inputs.plan_alike_as(&inputs.with_scroll_offsets_and_viewport_rect(&offsets(700.0, 0.0), VIEWPORT)));
+        // Inputs made after these for the same tree take what plans work out of the tree alone from them.
+        let inputs_after = InputsOfLayerPlan::new_after(
+            Some(&inputs),
+            storage.clone(),
+            tree.clone(),
+            &offsets(700.0, 0.0),
+            VIEWPORT,
+        );
+        assert!(Arc::ptr_eq(&inputs.anchors_of_tree, &inputs_after.anchors_of_tree));
+        assert!(inputs.plan_alike_as(&inputs_after));
         assert!(!inputs.plan_alike_as(&inputs.with_scroll_offsets_and_viewport_rect(&offsets(0.0, 30.0), VIEWPORT)));
         assert!(!inputs.plan_alike_as(
             &inputs.with_scroll_offsets_and_viewport_rect(&offsets(0.0, 0.0), IntRect::new(0, 0, 800, 500))

@@ -738,7 +738,8 @@ impl SentDisplayListChunks {
         }
         Some(self.layer_plan_of(
             held.display_list_id,
-            InputsOfLayerPlan::new(
+            InputsOfLayerPlan::new_after(
+                self.held_layer_plan.as_ref().map(|held_plan| &held_plan.inputs),
                 held.list.clone(),
                 visual_context_tree.clone(),
                 scroll_state.device_offsets(),
@@ -828,7 +829,8 @@ fn post_frame_through(
                     .map(|(list, viewport_rect)| {
                         sent.layer_plan_of(
                             display_list_id,
-                            InputsOfLayerPlan::new(
+                            InputsOfLayerPlan::new_after(
+                                sent.held_layer_plan.as_ref().map(|held_plan| &held_plan.inputs),
                                 list,
                                 update.visual_context_tree.clone(),
                                 update.scroll_state.device_offsets(),

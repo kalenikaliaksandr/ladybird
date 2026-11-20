@@ -256,7 +256,21 @@ pub fn spatial_nodes_whose_scroll_offset_placement_leaves_out(
     tree: &VisualContextTree,
     anchors: &[SpatialNodeIndex],
 ) -> Vec<bool> {
-    let mut leaves_out_by_node = spatial_nodes_that_move_on_their_own_relative_to_spaces_at(tree, Some(anchors));
+    spatial_nodes_whose_scroll_offset_placement_leaves_out_of_nodes_moving(
+        tree,
+        anchors,
+        spatial_nodes_that_move_on_their_own_relative_to_spaces_at(tree, Some(anchors)),
+    )
+}
+
+/// As `spatial_nodes_whose_scroll_offset_placement_leaves_out`, from whether each spatial node moves on its own
+/// relative to the spaces at `anchors`.
+pub(crate) fn spatial_nodes_whose_scroll_offset_placement_leaves_out_of_nodes_moving(
+    tree: &VisualContextTree,
+    anchors: &[SpatialNodeIndex],
+    spatial_node_moves_on_its_own: Vec<bool>,
+) -> Vec<bool> {
+    let mut leaves_out_by_node = spatial_node_moves_on_its_own;
     let nodes_the_compositor_scrolls = tree
         .compositor_scroll_table()
         .nodes

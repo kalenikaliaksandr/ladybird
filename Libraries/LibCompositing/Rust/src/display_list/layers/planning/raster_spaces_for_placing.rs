@@ -11,12 +11,13 @@
 
 use crate::display_list::commands::{ContextRef, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::filter_may_spread_at_some_sample;
+use crate::display_list::layers::anchors_of_layer_plans;
 use crate::display_list::placement::{
     FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex, RasterSpaces,
     antialiased_reach_in_device_pixels, chain_bounds_of_clip, compositor_scroll_record_of,
     enclosing_int_rect_within_extent_limit, extent_limit_rect, intersect_bounds, is_finite_rect,
     space_is_ancestor_or_self, spatial_nodes_that_move_on_their_own_relative_to_spaces_at,
-    translation_if_only_translates,
+    spatial_nodes_whose_scroll_offset_placement_leaves_out_of_nodes_moving, translation_if_only_translates,
 };
 use crate::display_list::reach::Reach;
 use crate::host::FfiVisualAnimationTargetKind;
@@ -120,6 +121,33 @@ fn extent_of_space(
     enclosing_int_rect_within_extent_limit(extent)
 }
 
+/// What plans of layers work out of a tree alone, once for every plan under the tree: the anchors of the raster spaces
+/// it offers, and per spatial node, whether the node moves on its own relative to those spaces, and whether a plan
+/// leaves out the scroll offset of the node.
+#[derive(Debug)]
+pub(super) struct RasterSpaceAnchorsOfTree {
+    pub(super) anchors: Vec<SpatialNodeIndex>,
+    spatial_node_moves_on_its_own: Vec<bool>,
+    pub(super) leaves_out_scroll_offset_of_node: Vec<bool>,
+}
+
+impl RasterSpaceAnchorsOfTree {
+    pub(super) fn of(tree: &VisualContextTree) -> Self {
+        let anchors = anchors_of_layer_plans(tree);
+        let spatial_node_moves_on_its_own =
+            spatial_nodes_that_move_on_their_own_relative_to_spaces_at(tree, Some(&anchors));
+        Self {
+            leaves_out_scroll_offset_of_node: spatial_nodes_whose_scroll_offset_placement_leaves_out_of_nodes_moving(
+                tree,
+                &anchors,
+                spatial_node_moves_on_its_own.clone(),
+            ),
+            anchors,
+            spatial_node_moves_on_its_own,
+        }
+    }
+}
+
 /// The raster spaces of a tree at a set of anchors, with what placing a list among them reads past what rastering
 /// reads: per spatial node, whether it moves on its own relative to the spaces, and per effect node, whether how far
 /// its filters spread its content moves on its own.
@@ -131,22 +159,28 @@ pub(super) struct RasterSpacesForPlacing {
 }
 
 impl RasterSpacesForPlacing {
-    /// The spaces at `anchors`, which `raster_space_anchors` gave or a prefix of them, with the extent of each but the
-    /// viewport's left to be filled in from its geometry.
-    fn at_anchors(tree: &VisualContextTree, anchors: &[SpatialNodeIndex], viewport_rect: IntRect) -> Self {
-        let raster_spaces =
-            RasterSpaces::of_spaces(tree, RasterSpaces::spaces_at_anchors(tree, anchors, viewport_rect));
-        let anchors_of_spaces: Vec<SpatialNodeIndex> = raster_spaces
-            .spaces()
-            .iter()
-            .skip(1)
-            .map(|space| space.anchor)
-            .collect();
+    /// The spaces at the anchors of `tree`, with the extent of each but the viewport's left to be filled in from its
+    /// geometry.
+    fn at_anchors(
+        tree: &VisualContextTree,
+        anchors_of_tree: &RasterSpaceAnchorsOfTree,
+        viewport_rect: IntRect,
+    ) -> Self {
+        let raster_spaces = RasterSpaces::of_spaces(
+            tree,
+            RasterSpaces::spaces_at_anchors(tree, &anchors_of_tree.anchors, viewport_rect),
+        );
+        debug_assert!(
+            raster_spaces
+                .spaces()
+                .iter()
+                .skip(1)
+                .map(|space| space.anchor)
+                .eq(anchors_of_tree.anchors.iter().copied()),
+            "every anchor of a tree has a space"
+        );
         Self {
-            spatial_node_moves_on_its_own: spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
-                tree,
-                Some(&anchors_of_spaces),
-            ),
+            spatial_node_moves_on_its_own: anchors_of_tree.spatial_node_moves_on_its_own.clone(),
             effect_node_spread_moves_on_its_own: effects_whose_spread_moves_on_its_own(tree),
             raster_spaces,
         }
@@ -257,14 +291,14 @@ impl RasterSpaceGeometryForPlacing {
     }
 }
 
-/// The spaces at `anchors` and the geometry of each, in the device pixels of the viewport.
+/// The spaces at the anchors of `tree` and the geometry of each, in the device pixels of the viewport.
 pub(super) fn spaces_with_geometries(
     tree: &VisualContextTree,
-    anchors: &[SpatialNodeIndex],
+    anchors_of_tree: &RasterSpaceAnchorsOfTree,
     scroll_offsets: &[FloatPoint],
     viewport_rect: IntRect,
 ) -> (RasterSpacesForPlacing, Vec<RasterSpaceGeometryForPlacing>) {
-    let spaces = RasterSpacesForPlacing::at_anchors(tree, anchors, viewport_rect);
+    let spaces = RasterSpacesForPlacing::at_anchors(tree, anchors_of_tree, viewport_rect);
     let geometries: Vec<RasterSpaceGeometryForPlacing> = (0..spaces.spaces().len())
         .map(|space| {
             RasterSpaceGeometryForPlacing::new(tree, &spaces, RasterSpaceIndex(space), scroll_offsets, viewport_rect)
