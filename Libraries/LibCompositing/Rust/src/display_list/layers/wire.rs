@@ -30,8 +30,8 @@ use libipc_rust::wire::{Decode, DecodeError, Decoder, Encode, EncodeError, Encod
 use std::collections::HashSet;
 
 // Caps on a received stack, which bound what decoding allocates. The values per space, and the composite clips of a node,
-// which are one per space, are capped at the most spaces a plan makes. The other caps are far more than a plan holds: it
-// holds nodes, bands, cuts and spans as many as the runs of a list ask for.
+// which are one per space, are capped at the most spaces a plan makes. A plan holds nodes, bands, cuts and spans as many
+// as the runs of a list ask for, and the planner gives a list one layer where they are more than these caps.
 const MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
 const MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
 const MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND: usize = 1 << 16;
@@ -342,6 +342,7 @@ impl Encode for WhyListIsOneLayer {
             WhyListIsOneLayer::CompositedEffectsNestTooDeep => 8,
             WhyListIsOneLayer::PlanShowsTooManyTiles => 9,
             WhyListIsOneLayer::PlanFailsChecksOfCompositor => 10,
+            WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes => 11,
         };
         encoder.encode(&kind)?;
         if let WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why) = self {
@@ -367,6 +368,7 @@ impl Decode for WhyListIsOneLayer {
             8 => WhyListIsOneLayer::CompositedEffectsNestTooDeep,
             9 => WhyListIsOneLayer::PlanShowsTooManyTiles,
             10 => WhyListIsOneLayer::PlanFailsChecksOfCompositor,
+            11 => WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes,
             _ => return Err(DecodeError::InvalidValue("WhyListIsOneLayer")),
         })
     }
@@ -536,6 +538,23 @@ fn span_is_run_drawing_content(list: &DisplayListStorage, span: ListSpan, conten
     }
     let (header, payload) = list.record_at(span.begin);
     live_content_of(header.command_type, payload) == Some(content)
+}
+
+/// Whether `plan` holds more nodes or bands, or a band of it more cuts or spans, than the compositor decodes.
+pub(super) fn plan_holds_more_than_compositor_decodes(plan: &LayeredPlan) -> bool {
+    plan.nodes.len() > MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK
+        || plan.bands.len() > MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK
+        || plan.bands.iter().any(|band| {
+            band.cuts.len() > MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND
+                || band.record_spans.len() > MAXIMUM_SPAN_COUNT_OF_RECEIVED_BAND
+        })
+}
+
+fn check_counts_compositor_decodes(plan: &LayeredPlan) -> Result<(), &'static str> {
+    if plan_holds_more_than_compositor_decodes(plan) {
+        return Err("the plan holds more nodes, bands, cuts or spans than the compositor decodes");
+    }
+    Ok(())
 }
 
 fn check_viewport_rect(viewport_rect: IntRect) -> Result<(), &'static str> {
@@ -900,6 +919,7 @@ impl LayerStack {
         nesting_of_live_effects: &NestingOfLiveEffects<'_>,
     ) -> Result<LayerStack, &'static str> {
         check_viewport_rect(viewport_rect)?;
+        check_counts_compositor_decodes(&plan)?;
         check_rects_and_coordinates(&plan)?;
         check_values_per_space(&plan, &spaces)?;
         check_nodes(&plan.nodes, &spaces, list, tree)?;
@@ -1539,6 +1559,62 @@ mod tests {
             }
             stack.layering_obstacles.sorts_planes_by_depth ^= true;
             assert_eq!(page.validated(stack), Ok(planned.stack));
+        }
+    }
+
+    // Boxes of the document, each 1 px, alternating with boxes fixed to the viewport that overlap them, so that each fixed
+    // box closes the band of the document's space and the next box opens another, cut into the band of the viewport.
+    fn page_of_document_boxes_alternating_with_fixed_boxes(pair_count: usize) -> Page {
+        let (tree, viewport, contexts) = tree_with_document_scroller(&[]);
+        let document = contexts[0];
+        let mut builder = DisplayListBuilder::new();
+        for _ in 0..pair_count {
+            builder.append(&fill(IntRect::new(0, 0, 1, 1), GREEN), &[], document);
+            builder.append(&fill(IntRect::new(0, 0, 1, 1), GREEN), &[], viewport);
+        }
+        Page {
+            tree,
+            list: DisplayListStorage::of_builder(&builder),
+        }
+    }
+
+    #[test]
+    fn a_plan_holding_more_than_the_compositor_decodes_is_one_layer() {
+        let page = page_of_document_boxes_alternating_with_fixed_boxes(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND + 1);
+        let planned = page.planned();
+        assert_eq!(
+            planned.stack.why_list_is_one_layer,
+            Some(WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes)
+        );
+        let sent = plan_sent_of(&planned);
+        assert_eq!(decoded_and_validated_plan(&page, &encoded(&sent)), Ok(sent));
+    }
+
+    #[test]
+    fn the_checks_refuse_a_plan_holding_more_than_the_compositor_decodes() {
+        let page = page_with_two_canvases();
+        let plan = page.planned_plan();
+        assert!(page.validated_plan(plan.clone()).is_ok());
+        let band_with_cut = plan
+            .bands
+            .iter()
+            .position(|band| !band.cuts.is_empty())
+            .expect("a canvas cuts a band");
+        let mut plan_with_too_many_cuts = plan.clone();
+        let cut = plan_with_too_many_cuts.bands[band_with_cut].cuts[0];
+        plan_with_too_many_cuts.bands[band_with_cut]
+            .cuts
+            .resize(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND + 1, cut);
+        let mut plan_with_too_many_bands = plan;
+        let band = plan_with_too_many_bands.bands[0].clone();
+        plan_with_too_many_bands
+            .bands
+            .resize(MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK + 1, band);
+        for plan in [plan_with_too_many_cuts, plan_with_too_many_bands] {
+            assert_eq!(
+                page.validated_plan(plan),
+                Err("the plan holds more nodes, bands, cuts or spans than the compositor decodes")
+            );
         }
     }
 

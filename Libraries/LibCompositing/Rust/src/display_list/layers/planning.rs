@@ -15,6 +15,7 @@
 //! effect whose opacity or filter the compositor animates, so that its samples change how its layers are composited and
 //! not their tiles.
 
+use super::wire::plan_holds_more_than_compositor_decodes;
 use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
     MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex,
@@ -1848,14 +1849,18 @@ fn assemble_plan(
     let mut bands = Vec::with_capacity(stack_being_built.bands_being_built.len());
     stack_being_built.emit_band(BandBeingBuiltIndex(0), &mut bands);
 
-    Ok(LayeredPlan {
+    let plan = LayeredPlan {
         nodes: stack_being_built.nodes,
         bands,
         tiles_hold_content_moving_within_space_by_space_index: placement
             .tiles_hold_content_moving_within_space_by_space_index
             .clone(),
         swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
-    })
+    };
+    if plan_holds_more_than_compositor_decodes(&plan) {
+        return Err(WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes);
+    }
+    Ok(plan)
 }
 
 fn effects_composited_in(nodes: &[NodeOfPlan]) -> impl Iterator<Item = EffectNodeIndex> + '_ {

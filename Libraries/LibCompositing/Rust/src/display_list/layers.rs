@@ -97,6 +97,7 @@ pub enum WhyListIsOneLayer {
     RecordsBlendWithWhatOtherLayersHoldBelowThem,
     EffectTheCompositorCannotCompositeIsComposited(WhyCompositorCannotCompositeEffect),
     CompositedEffectsNestTooDeep,
+    PlanHoldsMoreThanCompositorDecodes,
     /// The frame draws the list otherwise than a plan of its layers is made for, as through a raster transform or a
     /// visual viewport transform the plan does not know.
     FrameIsNotDrawnAsPlanned,
@@ -127,6 +128,9 @@ impl std::fmt::Display for WhyListIsOneLayer {
                     formatter,
                     "composited effects nest deeper than {MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS}"
                 );
+            }
+            WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes => {
+                "plan holds more nodes, bands, cuts or spans than the compositor decodes"
             }
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => "frame is not drawn as the plan was made for",
             WhyListIsOneLayer::PlanShowsTooManyTiles => "plan shows more tiles than a frame holds",
