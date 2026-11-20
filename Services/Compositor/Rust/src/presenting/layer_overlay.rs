@@ -219,7 +219,7 @@ pub struct LayerOverlayModel {
 /// overlay draws a label for it: only those show the layer's name.
 pub fn layers_whose_names_are_shown(hidden_by_layer: &[bool]) -> Vec<bool> {
     let mut name_is_shown_by_layer: Vec<bool> = (0..hidden_by_layer.len())
-        .map(|position| position < MAXIMUM_LISTED_LAYER_COUNT)
+        .map(|position| position < MAXIMUM_LISTED_LAYER_COUNT || hidden_by_layer[position])
         .collect();
     for position in (0..hidden_by_layer.len())
         .rev()
@@ -332,7 +332,15 @@ impl LayerOverlayModel {
         if let Some(why) = &self.why_list_is_one_layer {
             notes.push(format!("single layer: {why}"));
         }
-        let unlisted_layer_count = self.layers.len().saturating_sub(MAXIMUM_LISTED_LAYER_COUNT);
+        // The window forgets a hidden layer it is not told of, so hidden layers past those it lists are listed too.
+        let listed_layers: Vec<&ModelLayer> = self
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(position, layer)| *position < MAXIMUM_LISTED_LAYER_COUNT || layer.hidden)
+            .map(|(_, layer)| layer)
+            .collect();
+        let unlisted_layer_count = self.layers.len() - listed_layers.len();
         if unlisted_layer_count != 0 {
             notes.push(format!(
                 "not listed: {} above these",
@@ -354,10 +362,8 @@ impl LayerOverlayModel {
         }
         notes.extend(self.notes_of_layer_stack.iter().cloned());
         CompositorLayersDescription {
-            layers: self
-                .layers
-                .iter()
-                .take(MAXIMUM_LISTED_LAYER_COUNT)
+            layers: listed_layers
+                .into_iter()
                 .map(|layer| CompositorLayerDescription {
                     id: id_of_layer(&layer.identity),
                     name: layer.name[..layer.name.floor_char_boundary(MAXIMUM_LISTED_LAYER_NAME_LENGTH)].into(),
@@ -1007,13 +1013,8 @@ mod tests {
         let hidden_by_layer: Vec<bool> = (0..layer_count).map(|position| position >= topmost_hidden).collect();
         let shown = layers_whose_names_are_shown(&hidden_by_layer);
         let labeled = topmost_hidden - MAXIMUM_LABELED_LAYER_COUNT..topmost_hidden;
-        assert!(
-            shown
-                .iter()
-                .enumerate()
-                .all(|(position, &shown)| shown
-                    == (position < MAXIMUM_LISTED_LAYER_COUNT || labeled.contains(&position)))
-        );
+        assert!(shown.iter().enumerate().all(|(position, &shown)| shown
+            == (position < MAXIMUM_LISTED_LAYER_COUNT || hidden_by_layer[position] || labeled.contains(&position))));
         let model = model_of(
             (0..layer_count)
                 .map(|position| ModelLayer {
@@ -1216,5 +1217,19 @@ mod tests {
             let name = layer.name.as_str().unwrap();
             name.len() == MAXIMUM_LISTED_LAYER_NAME_LENGTH - 1 && long_name.starts_with(name)
         }));
+
+        // A layer hidden in the window stays listed where layers below it push it past those listed.
+        let mut with_hidden_layer_past_those_listed = model_with_layer_count(MAXIMUM_LISTED_LAYER_COUNT + 3);
+        with_hidden_layer_past_those_listed.layers[MAXIMUM_LISTED_LAYER_COUNT + 1].hidden = true;
+        let description = with_hidden_layer_past_those_listed.description_for_layers_window();
+        assert_eq!(description.layers.len(), MAXIMUM_LISTED_LAYER_COUNT + 1);
+        assert_eq!(
+            description.layers.last().map(|layer| (layer.id, layer.hidden)),
+            Some((
+                id_of_layer(&painted_layer_identity(MAXIMUM_LISTED_LAYER_COUNT as u64 + 1)),
+                true
+            ))
+        );
+        assert_eq!(notes_of(&description)[0], "not listed: 2 layers above these");
     }
 }
