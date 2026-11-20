@@ -31,10 +31,12 @@ use std::collections::HashSet;
 
 // Caps on a received stack, which bound what decoding allocates. The values per space, and the composite clips of a node,
 // which are one per space, are capped at the most spaces a plan makes. A plan holds nodes, bands, cuts and spans as many
-// as the runs of a list ask for, and the planner gives a list one layer where they are more than these caps.
+// as the runs of a list ask for, and the planner gives a list one layer where they are more than these caps. Keying a
+// cell looks through every cut of its band and keeps those that cut it, so the cuts of a band are capped lower: the
+// pages of the tests cut a band at most 90 times.
 const MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
 const MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK: usize = 1 << 16;
-const MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND: usize = 1 << 16;
+const MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND: usize = 256;
 const MAXIMUM_SPAN_COUNT_OF_RECEIVED_BAND: usize = 1 << 20;
 // The most note lines a plan holds, and the most bytes a line holds. A plan holds only the first lines, each cut to that
 // length, so that no plan exceeds the caps.
@@ -1580,6 +1582,19 @@ mod tests {
 
     #[test]
     fn a_plan_holding_more_than_the_compositor_decodes_is_one_layer() {
+        let page_at_limit = page_of_document_boxes_alternating_with_fixed_boxes(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND);
+        let planned_at_limit = page_at_limit.planned();
+        assert_eq!(planned_at_limit.stack.why_list_is_one_layer, None);
+        assert_eq!(
+            planned_at_limit.stack.bands.iter().map(|band| band.cuts.len()).max(),
+            Some(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND)
+        );
+        let sent_at_limit = plan_sent_of(&planned_at_limit);
+        assert_eq!(
+            decoded_and_validated_plan(&page_at_limit, &encoded(&sent_at_limit)),
+            Ok(sent_at_limit)
+        );
+
         let page = page_of_document_boxes_alternating_with_fixed_boxes(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND + 1);
         let planned = page.planned();
         assert_eq!(
