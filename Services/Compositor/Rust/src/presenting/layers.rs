@@ -488,6 +488,7 @@ pub struct LayerUpdate {
     media_replayed_by_layer: Vec<Option<MediaRecordsReplayedInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
     pub(super) frame_allows_lcd_text: bool,
+    work_counts: FrameWorkCounts,
 }
 
 impl LayerUpdate {
@@ -689,7 +690,6 @@ pub struct ContextLayers {
     cached_layer_by_identity: HashMap<LayerIdentity, CachedLayer>,
     tile_pool: TilePool,
     tile_raster_scratch_surface: Option<SurfaceHandle>,
-    work_counts_of_this_frame: FrameWorkCounts,
     latest_compositor_overlays_surface: Option<PresentableSurfaceHandle>,
     compositor_overlays_rect: IntRect,
     next_presentable_surface_pool: u32,
@@ -789,13 +789,13 @@ impl ContextLayers {
 
     /// Takes the stack a frame draws with: the plan WebContent sent, or for a frame that is not drawn as a plan was
     /// made for, one layer that replays the whole list. Keeps what frames kept of the stack where the frame before drew
-    /// with the same plan.
+    /// with the same plan. Answers whether the frame takes a plan into use that the frame before was not drawn with.
     fn take_stack_of_frame(
         &mut self,
         layer_plan: Option<&ReceivedLayerPlan>,
         one_layer: impl FnOnce(&mut Self) -> LayerStack,
         viewport_to_raster_transform: FloatMatrix4x4,
-    ) {
+    ) -> bool {
         let latest_plan = self
             .stack_of_frames
             .as_ref()
@@ -803,9 +803,8 @@ impl ContextLayers {
         if let Some(layer_plan) = layer_plan
             && latest_plan.is_some_and(|latest_plan| Rc::ptr_eq(&latest_plan.stack, &layer_plan.stack))
         {
-            return;
+            return false;
         }
-        self.work_counts_of_this_frame.took_plan_into_use = layer_plan.is_some();
         let stack = match layer_plan {
             Some(layer_plan) => layer_plan.stack.clone(),
             None => Rc::new(one_layer(self)),
@@ -816,6 +815,7 @@ impl ContextLayers {
             viewport_to_raster_transform,
             self.stack_of_frames.take(),
         ));
+        layer_plan.is_some()
     }
 
     /// Takes in what a frame that is painted, or that shows nothing new, did with its layers: the stack it drew with,
@@ -1641,7 +1641,6 @@ impl ContextPresenting {
     ) -> (LayerUpdate, IntRect) {
         let raster_transform = self.raster_transform();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
-        self.layers.work_counts_of_this_frame = FrameWorkCounts::default();
         // A plan places spaces that scroll at whole device pixels of the viewport it was made within, which a raster
         // that scales them or shifts them by a fraction lacks, as does a viewport of another size. So only a stack of
         // one layer, in the viewport's space, is drawn under a raster transform other than identity, and what
@@ -1658,8 +1657,8 @@ impl ContextPresenting {
         let one_layer = |layers: &mut ContextLayers| {
             layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect, why_list_is_one_layer)
         };
-        self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
-        let (layer_update, stale_rect) = self.with_stack_of_frames(|this, stack_of_frames| {
+        let took_plan_into_use = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
+        let (mut layer_update, stale_rect) = self.with_stack_of_frames(|this, stack_of_frames| {
             let (layer_update, stale_rect, band_tile_keys_by_band) = this.layer_update_of_stack(
                 env,
                 frame,
@@ -1690,6 +1689,7 @@ impl ContextPresenting {
                 frame_allows_lcd_text,
             );
         }
+        layer_update.work_counts.took_plan_into_use = took_plan_into_use;
         (layer_update, stale_rect)
     }
 
@@ -1822,6 +1822,7 @@ impl ContextPresenting {
             });
         band_tile_keys_by_band.resize_with(stack.bands.len(), || None);
         let composited_filter_read_reach_by_layer = composited_filter_read_reach_by_layer(stack, tree, &geometries);
+        let mut work_counts = FrameWorkCounts::default();
         let mut shown_tiles_by_layer: Vec<Vec<TileShownInFrame>> =
             (0..stack.layers.len()).map(|_| Vec::new()).collect();
         for (band_position, band) in stack.bands.iter().enumerate() {
@@ -1874,7 +1875,7 @@ impl ContextPresenting {
                     viewport_rect,
                 ),
             );
-            self.layers.work_counts_of_this_frame.cells_binned += keying_counts.cells_binned as u64;
+            work_counts.cells_binned += keying_counts.cells_binned as u64;
             for tile in band_tile_keys
                 .tile_keys
                 .tiles_within(shown_rect)
@@ -1914,10 +1915,10 @@ impl ContextPresenting {
             }
             band_tile_keys_by_band[band_position] = Some(band_tile_keys);
         }
-        self.layers.work_counts_of_this_frame.chunks_placed += tile_keying_by_raster_space
+        work_counts.chunks_placed = tile_keying_by_raster_space
             .iter()
             .map(|tile_keying| tile_keying.chunks_placed())
-            .sum::<u64>();
+            .sum();
 
         let painted = self.layers.painted.as_ref();
         let composited_effects = composited_effects_of_frame(
@@ -1931,9 +1932,7 @@ impl ContextPresenting {
             painted.map(|painted| &painted.content_hash_by_composited_node),
         );
         let mut stale_rect = composited_effects.stale_rect;
-        self.layers
-            .work_counts_of_this_frame
-            .tiles_covered_by_opaque_tiles_above += hide_tiles_covered_by_opaque_tiles_above(
+        work_counts.tiles_covered_by_opaque_tiles_above = hide_tiles_covered_by_opaque_tiles_above(
             stack,
             &mut shown_tiles_by_layer,
             &compositing_of_layers,
@@ -1962,6 +1961,10 @@ impl ContextPresenting {
                 media_replayed_by_layer[layer_index.0] = Some(media_replayed);
                 continue;
             }
+            work_counts.shown_tiles_of_one_color += shown_tiles_by_layer[layer_index.0]
+                .iter()
+                .filter(|tile| matches!(tile.coverage, TileCoverage::OneColor(_)))
+                .count() as u64;
             stale_rect = stale_rect.united(stale_rect_of_painted_layer(
                 self.layers
                     .cached_layer_by_identity
@@ -1983,6 +1986,7 @@ impl ContextPresenting {
             media_replayed_by_layer,
             composited_filter_read_reach_by_layer,
             frame_allows_lcd_text,
+            work_counts,
         };
         (layer_update, stale_rect, band_tile_keys_by_band)
     }
@@ -2145,7 +2149,7 @@ impl ContextPresenting {
                 .layer_plan
                 .as_ref()
                 .map_or_else(Vec::new, |layer_plan| layer_plan.note_lines.to_vec()),
-            work_counts_of_frame: self.layers.work_counts_of_this_frame,
+            work_counts_of_frame: layer_update.work_counts,
         };
         let painted_at = frame.frame_inputs.painted_at;
         let device_pixel_ratio = self.device_pixel_ratio;
@@ -2237,7 +2241,7 @@ impl ContextPresenting {
                 .cached_layer_by_identity
                 .remove(&compositing.identity)
                 .unwrap_or_default();
-            rects_painted_straight.extend(self.raster_shown_tiles_lacking_current_pixels(
+            let (rects_painted_straight_of_layer, tiles_rastered) = self.raster_shown_tiles_lacking_current_pixels(
                 env,
                 surface,
                 frame,
@@ -2247,7 +2251,9 @@ impl ContextPresenting {
                 &mut tile_pool,
                 &holder_count_by_content_hash,
                 layer_update,
-            ));
+            );
+            rects_painted_straight.extend(rects_painted_straight_of_layer);
+            layer_update.work_counts.tiles_rastered += tiles_rastered;
             self.layers
                 .cached_layer_by_identity
                 .insert(compositing.identity, cached_layer);
@@ -2380,6 +2386,7 @@ impl ContextPresenting {
         raster.restore_to_count(surface, save_count);
     }
 
+    /// Answers the rects of the frame where tiles are painted straight from the list, and how many tiles it rastered.
     #[allow(clippy::too_many_arguments)]
     fn raster_shown_tiles_lacking_current_pixels(
         &mut self,
@@ -2392,7 +2399,7 @@ impl ContextPresenting {
         tile_pool: &mut TilePool,
         holder_count_by_content_hash: &HashMap<ContentHash, usize>,
         layer_update: &LayerUpdate,
-    ) -> Vec<IntRect> {
+    ) -> (Vec<IntRect>, u64) {
         let stack = stack_of_frames.stack.as_ref();
         let layer_index = compositing.layer_index;
         let raster = env.raster;
@@ -2434,10 +2441,6 @@ impl ContextPresenting {
         });
         let mut held_tiles_changed = cached_layer.held_tiles.len() != held_tile_count_before;
 
-        self.layers.work_counts_of_this_frame.shown_tiles_of_one_color += shown
-            .iter()
-            .filter(|tile| matches!(tile.coverage, TileCoverage::OneColor(_)))
-            .count() as u64;
         let mut tiles_to_raster: Vec<TileToRaster> = Vec::new();
         for (shown_tile_index, tile) in shown.iter().enumerate() {
             let held_content_hash = cached_layer.held_tiles.get(&tile.coord).copied();
@@ -2552,9 +2555,8 @@ impl ContextPresenting {
             cached_layer.bump_content_version_of_held_tiles();
         }
         if tiles_to_raster.is_empty() {
-            return rects_painted_straight;
+            return (rects_painted_straight, 0);
         }
-        self.layers.work_counts_of_this_frame.tiles_rastered += tiles_to_raster.len() as u64;
 
         let band_tile_keys = stack_of_frames
             .band_tile_keys_keyed_with_this_stack(stack.layers[layer_index.0].band_index)
@@ -2685,7 +2687,7 @@ impl ContextPresenting {
                 record_raster_in_layer_overlay(tile.coord, cause, pooled.held_part_of_cell);
             }
         }
-        rects_painted_straight
+        (rects_painted_straight, tiles_to_raster.len() as u64)
     }
 
     /// Composites the layers above the base layer that the window server showed with the latest frame into the
@@ -3241,18 +3243,14 @@ mod tests {
         layer_plan: Option<&ReceivedLayerPlan>,
         one_layer: LayerStack,
     ) -> (bool, bool) {
-        layers.work_counts_of_this_frame = FrameWorkCounts::default();
-        layers.take_stack_of_frame(layer_plan, |_| one_layer, FloatMatrix4x4::identity());
+        let took_plan_into_use = layers.take_stack_of_frame(layer_plan, |_| one_layer, FloatMatrix4x4::identity());
         let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         let keeps_band_tile_keys = matches!(
             stack_of_frames.band_tile_keys_of_latest_frame,
             BandTileKeysOfLatestFrame::OfSameStack(_)
         );
         stack_of_frames.band_tile_keys_of_latest_frame = BandTileKeysOfLatestFrame::OfSameStack(Vec::new());
-        (
-            layers.work_counts_of_this_frame.took_plan_into_use,
-            keeps_band_tile_keys,
-        )
+        (took_plan_into_use, keeps_band_tile_keys)
     }
 
     #[test]
@@ -3617,6 +3615,7 @@ mod tests {
             window_server_placements_of_media: WindowServerPlacementsOfMedia::default(),
             content_hash_by_composited_node: HashMap::new(),
             frame_allows_lcd_text: false,
+            work_counts: FrameWorkCounts::default(),
         }
     }
 
