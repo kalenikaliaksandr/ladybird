@@ -130,6 +130,7 @@ impl ContextPresenting {
         env.raster.live_content(env.context_id, &canvas_ids)
     }
 
+    /// Remembers a frame that is painted, or that shows nothing new: what it draws, and what it did with its layers.
     pub(super) fn remember_painted_frame(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -137,8 +138,10 @@ impl ContextPresenting {
         display_list: &Rc<DisplayList>,
         frame_inputs: FrameInputs,
         live_content: &LiveContent,
-        allows_lcd_text: bool,
+        layer_update: LayerUpdate,
     ) {
+        let allows_lcd_text = layer_update.frame_allows_lcd_text;
+        self.commit_layer_update(env, layer_update);
         let canvas_generation = |id: u64| {
             live_content
                 .canvases

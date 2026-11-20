@@ -13,8 +13,7 @@ use super::layer_overlay::{
 };
 use super::{
     ContextPresenting, FrameToPaint, NestedContexts, PresentingEnvironment, apply_raster_transform,
-    composite_inside_effects_of_frame, paint_overlays, rect_of_size, replay_into, replay_with_scroll_offsets,
-    replaying_only,
+    composite_inside_effects_of_frame, rect_of_size, replay_into, replay_with_scroll_offsets, replaying_only,
 };
 use crate::context_scene::ReceivedLayerPlan;
 use crate::host::ContextTimer;
@@ -2196,7 +2195,7 @@ impl ContextPresenting {
         live_content: &LiveContent,
         paints_ui_overlays: bool,
     ) -> IntRect {
-        self.with_stack_of_frames(|this, stack_of_frames| {
+        let painted_rect = self.with_stack_of_frames(|this, stack_of_frames| {
             this.paint_layers(
                 env,
                 surface,
@@ -2207,7 +2206,9 @@ impl ContextPresenting {
                 live_content,
                 paints_ui_overlays,
             )
-        })
+        });
+        self.layer_overlay.did_paint_frame();
+        painted_rect
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2379,10 +2380,7 @@ impl ContextPresenting {
                 raster.restore_to_count(surface, save_count);
             }
             self.apply_raster_transform(raster, surface);
-            paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
-            if paints_ui_overlays {
-                self.paint_layer_overlay(env, surface);
-            }
+            self.paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
         }
         raster.restore_to_count(surface, save_count);
     }
@@ -2949,8 +2947,7 @@ impl ContextPresenting {
         raster.clear(&target, Color::TRANSPARENT);
         let save_count = raster.save(&target);
         raster.translate(&target, -overlays_rect.x as f32, -overlays_rect.y as f32);
-        paint_overlays(env, &target, frame.frame_inputs, true);
-        self.paint_layer_overlay(env, &target);
+        self.paint_overlays(env, &target, frame.frame_inputs, true);
         raster.restore_to_count(&target, save_count);
         self.layers.latest_compositor_overlays_surface = Some(presentable);
         true

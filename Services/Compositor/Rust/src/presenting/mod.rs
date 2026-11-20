@@ -630,15 +630,13 @@ impl ContextPresenting {
         if damage_rect.is_empty() && self.presented_frame == Some(pending_frame.viewport_rect) {
             let only_media_shown_by_window_server_changed =
                 frame_damage.layers.shown_by_window_server() && frame_damage.live_media_changed;
-            let allows_lcd_text = frame_damage.layers.frame_allows_lcd_text;
-            self.commit_layer_update(env, frame_damage.layers);
             self.remember_painted_frame(
                 env,
                 pending_frame.viewport_rect,
                 display_list,
                 frame_inputs,
                 &live_content,
-                allows_lcd_text,
+                frame_damage.layers,
             );
             let sublayers = self.sublayers_shown_by_window_server(&live_content);
             let media_shown_by_window_server_moved_resized_or_turned = sublayers != self.sublayers_of_latest_frame;
@@ -670,7 +668,6 @@ impl ContextPresenting {
             &live_content,
             true,
         );
-        self.layer_overlay.did_paint_frame();
         // The other stores miss all of what this one now holds.
         if painted_rect != repaint_rect {
             damage_rect = rect_of_size(IntSize {
@@ -679,15 +676,13 @@ impl ContextPresenting {
             });
             self.store_damage.add_damage_to_other_stores(bitmap_id, painted_rect);
         }
-        let allows_lcd_text = frame_damage.layers.frame_allows_lcd_text;
-        self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
             env,
             pending_frame.viewport_rect,
             display_list,
             frame_inputs,
             &live_content,
-            allows_lcd_text,
+            frame_damage.layers,
         );
         let sublayers = self.sublayers_shown_by_window_server(&live_content);
         self.sublayers_of_latest_frame = sublayers.clone();
@@ -754,16 +749,13 @@ impl ContextPresenting {
             &live_content,
             true,
         );
-        self.layer_overlay.did_paint_frame();
-        let allows_lcd_text = frame_damage.layers.frame_allows_lcd_text;
-        self.commit_layer_update(env, frame_damage.layers);
         self.remember_painted_frame(
             env,
             pending_frame.viewport_rect,
             display_list,
             frame_inputs,
             &live_content,
-            allows_lcd_text,
+            frame_damage.layers,
         );
         env.raster.flush(&surface);
         self.surface_drawn_by_parent = Some(surface);
@@ -888,8 +880,7 @@ impl ContextPresenting {
                     ..*env
                 };
                 self.composite_layers_shown_by_window_server(&snapshot_env, &composited, &frame, source_rect);
-                paint_overlays(&snapshot_env, &composited, &painted_frame.frame_inputs, true);
-                self.paint_layer_overlay(&snapshot_env, &composited);
+                self.paint_overlays(&snapshot_env, &composited, &painted_frame.frame_inputs, true);
                 source = composited;
             }
             self.painted_frame = Some(painted_frame);
@@ -924,10 +915,7 @@ impl ContextPresenting {
             self.apply_raster_transform(raster, surface);
         }
         replay_into(env, surface, frame, ReplaySelection::default());
-        paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
-        if paints_ui_overlays {
-            self.paint_layer_overlay(env, surface);
-        }
+        self.paint_overlays(env, surface, frame.frame_inputs, paints_ui_overlays);
         raster.restore_to_count(surface, save_count);
     }
 
@@ -950,13 +938,25 @@ impl ContextPresenting {
             })
     }
 
-    fn paint_layer_overlay(&self, env: &PresentingEnvironment<'_>, target: &SurfaceHandle) {
-        let Some(frame) = self.layer_overlay.latest_frame() else {
+    /// Paints what the compositor draws over the page: its scrollbars, and unless they are left out, the overlays of the
+    /// browser and of the layers.
+    fn paint_overlays(
+        &self,
+        env: &PresentingEnvironment<'_>,
+        target: &SurfaceHandle,
+        frame_inputs: &FrameInputs,
+        paints_ui_overlays: bool,
+    ) {
+        env.raster
+            .paint(env.context_id, target, PaintingResources::Overlays, false, |painter| {
+                frame_inputs.overlays.paint(painter, paints_ui_overlays);
+            });
+        let Some(layer_overlay_frame) = self.layer_overlay.latest_frame().filter(|_| paints_ui_overlays) else {
             return;
         };
         env.raster
             .paint(env.context_id, target, PaintingResources::Overlays, false, |painter| {
-                frame.records.paint(painter);
+                layer_overlay_frame.records.paint(painter);
             });
     }
 
@@ -1082,18 +1082,4 @@ pub(crate) fn replaying_only(record_spans: &[ListSpan], skip_root_isolation_laye
         skip_root_isolation_layer,
         ..ReplaySelection::default()
     }
-}
-
-/// Paints what the compositor draws over the page: its scrollbars, and unless they are left out, the overlays of the
-/// browser.
-pub(crate) fn paint_overlays(
-    env: &PresentingEnvironment<'_>,
-    target: &SurfaceHandle,
-    frame_inputs: &FrameInputs,
-    paints_ui_overlays: bool,
-) {
-    env.raster
-        .paint(env.context_id, target, PaintingResources::Overlays, false, |painter| {
-            frame_inputs.overlays.paint(painter, paints_ui_overlays);
-        });
 }
