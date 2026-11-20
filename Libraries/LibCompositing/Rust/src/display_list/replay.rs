@@ -836,13 +836,17 @@ fn backdrop_is_drawn_by_masks(tree: &VisualContextTree, effect: EffectNodeIndex)
         && matches!(&tree.effect_nodes[node.parent.0 as usize].data, EffectNodeData::Mask(mask) if mask.masks_backdrop)
 }
 
-// Per mask, the first effect whose backdrop the mask draws as the outermost of the masks of its box, if any.
-fn first_backdrop_drawn_by_masks_by_reading_mask(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
+// Per mask, the first effect whose backdrop the mask draws as the outermost of the masks of its box, if any. An effect
+// that no run of the list is inside has no output clip, so the mask draws none of its backdrop.
+fn first_backdrop_drawn_by_masks_by_reading_mask(
+    tree: &VisualContextTree,
+    effect_clips: &EffectClipPlan,
+) -> Vec<EffectNodeIndex> {
     let mut first_backdrop_by_reading_mask = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
     let node_reading_backdrop_by_effect_index = tree.nodes_reading_the_backdrops_of_effects();
     for index in 0..tree.effect_nodes.len() {
         let effect = EffectNodeIndex(index as u32);
-        if !backdrop_is_drawn_by_masks(tree, effect) {
+        if !backdrop_is_drawn_by_masks(tree, effect) || effect_clips.output_clip_if_participating(effect).is_none() {
             continue;
         }
         let first_backdrop =
@@ -1042,7 +1046,8 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
         let backdrop_effect = backdrop_effect_in_target_canvas_stack.or_else(|| {
             let backdrop_effect = self
                 .first_backdrop_drawn_by_masks_by_reading_mask
-                .get_or_init(|| first_backdrop_drawn_by_masks_by_reading_mask(tree))[mask_effect.0 as usize];
+                .get_or_init(|| first_backdrop_drawn_by_masks_by_reading_mask(tree, self.effect_clips))
+                [mask_effect.0 as usize];
             (!backdrop_effect.is_none()).then_some(backdrop_effect)
         })?;
         let EffectNodeData::Effects(effects) = &tree.effect_nodes[backdrop_effect.0 as usize].data else {
@@ -1932,6 +1937,7 @@ mod tests {
         layer_content_bounds: Vec<Option<FloatRect>>,
         layers_that_can_draw_directly_for_lcd_text: Vec<bool>,
         backdrop_base_colors: Vec<Color>,
+        masks_drawing_backdrop: Vec<bool>,
         run_record_sizes: Vec<usize>,
         filled_rects: Vec<IntRect>,
         begun_isolated_groups: usize,
@@ -1946,6 +1952,7 @@ mod tests {
                 layer_content_bounds: Vec::new(),
                 layers_that_can_draw_directly_for_lcd_text: Vec::new(),
                 backdrop_base_colors: Vec::new(),
+                masks_drawing_backdrop: Vec::new(),
                 run_record_sizes: Vec::new(),
                 filled_rects: Vec::new(),
                 begun_isolated_groups: 0,
@@ -1978,8 +1985,9 @@ mod tests {
                 self.backdrop_base_colors.push(layer.backdrop_base_color);
             }
         }
-        fn push_mask(&mut self, mask: &ReplayMask, _backdrop: Option<&ReplayLayer>) {
+        fn push_mask(&mut self, mask: &ReplayMask, backdrop: Option<&ReplayLayer>) {
             self.events.push(PainterEvent::PushMask(mask.rect));
+            self.masks_drawing_backdrop.push(backdrop.is_some());
         }
         fn begin_mask_content(&mut self, _mask: &ReplayMask) {}
         fn pop_mask(&mut self) {
@@ -3145,6 +3153,72 @@ mod tests {
                 PainterEvent::SetMatrix(base),
             ]
         );
+    }
+
+    #[test]
+    fn a_mask_draws_only_the_backdrop_of_an_effect_its_list_draws_into() {
+        let mut tree = identity_tree();
+        let root = effect_under(&mut tree, effects(1.0), EffectNodeIndex::NONE, ClipNodeIndex::NONE);
+        tree.root_isolation_effect = Some(root);
+        let mask_drawing_backdrop = effect_under(
+            &mut tree,
+            EffectNodeData::Mask(MaskData {
+                rect: visible_bounds(),
+                kind: MaskKind::Alpha,
+                origin: MaskLayerOrigin::CssMaskLayers,
+                masks_backdrop: true,
+            }),
+            root,
+            ClipNodeIndex::NONE,
+        );
+        let box_with_blurred_backdrop = effect_under(
+            &mut tree,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(BackdropFilterData {
+                    filter: std::sync::Arc::new(libgfx_rust::filter::Filter::blur(2.0, 2.0, None).serialize()),
+                    region: visible_bounds(),
+                    corner_radii: CornerRadii::default(),
+                }),
+            }),
+            mask_drawing_backdrop,
+            ClipNodeIndex::NONE,
+        );
+        let run_in = |effect| {
+            run(
+                VISUAL_VIEWPORT_NODE_INDEX,
+                ContextRef {
+                    effect,
+                    ..ContextRef::default()
+                },
+                visible_bounds(),
+            )
+        };
+
+        // A list from another process can draw under the mask and nothing inside the box.
+        let mut painter = RecordingPainter::new();
+        replay(&tree, &[run_in(mask_drawing_backdrop)], &mut painter);
+        assert!(painter.events.contains(&PainterEvent::Run(0)));
+        assert_eq!(painter.masks_drawing_backdrop, vec![false]);
+
+        let runs = [run_in(box_with_blurred_backdrop)];
+        let mut painter = RecordingPainter::new();
+        composite_inside_effects(
+            &tree,
+            &list_of_one_chunk(&[], &runs),
+            &EffectClipPlan::new(&tree, &runs).unwrap(),
+            Color::TRANSPARENT,
+            &ReplayFrame::unscrolled(0),
+            &mut painter,
+            |compositing| {
+                compositing.enter_effect(mask_drawing_backdrop);
+                compositing.leave_effect();
+            },
+        );
+        assert_eq!(painter.masks_drawing_backdrop, vec![true]);
     }
 
     #[test]
