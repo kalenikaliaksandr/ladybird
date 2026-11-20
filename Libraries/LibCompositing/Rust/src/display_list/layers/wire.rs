@@ -835,45 +835,27 @@ fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The stack that another process planned for `list` under `tree` within `viewport_rect`, once what came on the
-/// wire passes the checks that let every consumer read the stack without a panic, an index out of range, an
-/// overflow, or work without a bound.
+/// The stack of a plan that another process made for `list` under `tree` within `viewport_rect`, if the plan passes the
+/// checks.
 ///
-/// What is built needs no check, as the planner builds it with the same functions: a stack of one layer is the one
-/// `single_layer` makes for the whole list. The spaces of a stack of more layers are those
-/// `RasterSpaces::spaces_at_anchors` makes at the anchors `raster_space_anchors` gives for the tree, and
-/// `of_layered_plan` builds the rest from the plan: the identities of nodes and layers, the ordinals of bands, the
-/// layers in the order of the walk of the bands, the cuts and the layers above them, the band each band is in, the
-/// base layer, the composited effects with what the tree tells of how each reads, and the lookups. The layering
-/// obstacles of either stack are those of the list and the tree.
+/// The wire holds only what the plan alone knows. The rest is built here with the functions the planner calls: a stack
+/// of one layer is the one `LayerStack::one_layer_replaying_whole_list` makes, and the spaces of a stack of more layers
+/// are those `RasterSpaces::spaces_at_anchors` makes at the anchors of the tree, from which
+/// `LayerStack::of_layered_plan` builds the rest. The layering obstacles are those of the list and the tree.
 ///
-/// A stack passes where the viewport lies within twice the extent limit of a plan. A plan of more layers also
-/// passes only where every rect and coordinate it holds lies within that limit; it holds a value per space for each
-/// space, and only spaces whose anchor the compositor animates have a swept reach; nodes are after the nodes they
-/// are in, with composite clips one per space; a node that is not composited is in the node of the space its space
-/// is in, or in no node if it is in the viewport's space, and a composited node is in a node of its own space;
-/// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them
-/// and no deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`;
-/// bands are of nodes of the stack, and each band but the first holds a span or a cut; bands start at runs of the
-/// list, and spans are of whole runs, in paint order, and a band entered at a cut starts where its first span or its
-/// first cut is; each canvas, video or nested context with a layer is a run of
-/// the list that draws it, numbered by how many drawings of the same content with layers are painted before it,
-/// and the stack holds no more of those than a plan makes; no span is empty and no record
-/// is in two spans; and the walk of the bands enters each band once. Once the stack is built, the node of a band
-/// that the walk enters at a cut is in the node of the band of that cut, the cuts of each band are in paint order,
-/// and the identities of layers, and so of bands, are unique.
+/// After the checks, every consumer can read the stack without a panic, an index out of range, an overflow, or work
+/// without a bound. Each index names an item of the stack, the list or the tree, and each rect lies within twice the
+/// extent limit of a plan. The nodes, bands, cuts and spans nest and follow each other as a plan makes them, the spans
+/// are of whole runs, and no record is in two spans. So the stack holds no more spans than the list holds runs, no
+/// more canvas, video and nested context layers than a plan makes, and its nodes nest no deeper than its spaces plus
+/// `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. The layers of a band are next to each other, so a frame that composites
+/// the layers in order enters each composited band once. The base layer is never of a space whose anchor the
+/// compositor animates, and no two layers share an identity.
 ///
-/// So a stack holds no more spans than the list holds runs, no more cuts than bands and media layers, and no more
-/// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus
-/// `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. The layers inside a band are next to each other, so a frame that composites the layers in order
-/// enters each composited band once. The base layer is of a node of the viewport's space, or of the space of the
-/// viewport's scroller, and never of a space whose anchor the compositor animates.
-///
-/// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
-/// which layers can hold content, whether every record is in a span, whether the first band starts at its first record,
-/// whether composite clips are the clips content needs, which effects must be composited, which spaces hold content
-/// that moves within them, and where the window server could show media. The list and the tree pass their own
-/// checks first.
+/// The checks leave out what can only make pixels wrong: whether reaches and composite clips hold what the records
+/// draw, which effects must be composited, which layers can hold content, whether every record is in a span, which
+/// spaces hold content that moves within them, and where the window server can show media. The list and the tree pass
+/// their own checks first.
 fn validated_stack(
     stack: StackOnWire,
     list: &DisplayListStorage,
