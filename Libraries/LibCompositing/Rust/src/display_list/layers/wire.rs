@@ -53,10 +53,7 @@ pub(super) fn note_lines_a_plan_holds(lines: impl Iterator<Item = String>) -> Ve
 }
 
 /// A stack decoded from another process: why it is one layer that replays the whole list, or the plan of a stack of
-/// more layers. Nothing reads it until `LayerStack::validated` checks it and works out the stack.
-#[derive(Debug)]
-pub struct UnvalidatedLayerStack(StackOnWire);
-
+/// more layers. Nothing reads it until `validated_stack` checks it and works out the stack.
 #[derive(Debug)]
 enum StackOnWire {
     OneLayer(WhyListIsOneLayer),
@@ -79,19 +76,19 @@ pub struct LayerPlan {
 pub struct UnvalidatedLayerPlan {
     pub display_list_id: u64,
     pub viewport_rect: IntRect,
-    pub stack: UnvalidatedLayerStack,
+    stack: StackOnWire,
     note_lines: Vec<String>,
 }
 
 impl UnvalidatedLayerPlan {
-    /// The plan, once its stack passes `LayerStack::validated` for `list` under `tree` within the viewport the plan
+    /// The plan, once its stack passes `validated_stack` for `list` under `tree` within the viewport the plan
     /// names. The receiver makes sure that `list` is the list that `display_list_id` names. The note lines go unchecked:
     /// decoding bounds their count and length, and only the overlay of layers shows them.
     pub fn validated(self, list: &DisplayListStorage, tree: &VisualContextTree) -> Result<LayerPlan, &'static str> {
         Ok(LayerPlan {
             display_list_id: self.display_list_id,
             viewport_rect: self.viewport_rect,
-            stack: LayerStack::validated(self.stack, list, tree, self.viewport_rect)?,
+            stack: validated_stack(self.stack, list, tree, self.viewport_rect)?,
             note_lines: self.note_lines,
         })
     }
@@ -377,11 +374,11 @@ impl Decode for WhyListIsOneLayer {
 const PLAN_KIND_ONE_LAYER: u8 = 0;
 const PLAN_KIND_LAYERED: u8 = 1;
 
-impl Decode for UnvalidatedLayerStack {
+impl Decode for StackOnWire {
     const MIN_ENCODED_SIZE: usize = size_of::<u8>() + WhyListIsOneLayer::MIN_ENCODED_SIZE;
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(Self(match decoder.decode::<u8>()? {
+        Ok(match decoder.decode::<u8>()? {
             PLAN_KIND_ONE_LAYER => StackOnWire::OneLayer(decoder.decode()?),
             PLAN_KIND_LAYERED => StackOnWire::Layered(LayeredPlan {
                 nodes: decoder.decode_with_max_size(MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK)?,
@@ -390,8 +387,8 @@ impl Decode for UnvalidatedLayerStack {
                     .decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
                 swept_reach_in_parent_space_by_space_index: decoder.decode_with_max_size(MAXIMUM_RASTER_SPACE_COUNT)?,
             }),
-            _ => return Err(DecodeError::InvalidValue("UnvalidatedLayerStack")),
-        }))
+            _ => return Err(DecodeError::InvalidValue("StackOnWire")),
+        })
     }
 }
 
@@ -469,10 +466,8 @@ impl Encode for LayerPlan {
 }
 
 impl Decode for UnvalidatedLayerPlan {
-    const MIN_ENCODED_SIZE: usize = size_of::<u64>()
-        + IntRect::MIN_ENCODED_SIZE
-        + UnvalidatedLayerStack::MIN_ENCODED_SIZE
-        + Vec::<String>::MIN_ENCODED_SIZE;
+    const MIN_ENCODED_SIZE: usize =
+        size_of::<u64>() + IntRect::MIN_ENCODED_SIZE + StackOnWire::MIN_ENCODED_SIZE + Vec::<String>::MIN_ENCODED_SIZE;
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
@@ -838,76 +833,76 @@ fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
     Ok(())
 }
 
-impl LayerStack {
-    /// The stack that another process planned for `list` under `tree` within `viewport_rect`, once what came on the
-    /// wire passes the checks that let every consumer read the stack without a panic, an index out of range, an
-    /// overflow, or work without a bound.
-    ///
-    /// What is built needs no check, as the planner builds it with the same functions: a stack of one layer is the one
-    /// `single_layer` makes for the whole list. The spaces of a stack of more layers are those
-    /// `RasterSpaces::spaces_at_anchors` makes at the anchors `raster_space_anchors` gives for the tree, and
-    /// `of_layered_plan` builds the rest from the plan: the identities of nodes and layers, the ordinals of bands, the
-    /// layers in the order of the walk of the bands, the cuts and the layers above them, the band each band is in, the
-    /// base layer, the composited effects with what the tree tells of how each reads, and the lookups. The layering
-    /// obstacles of either stack are those of the list and the tree.
-    ///
-    /// A stack passes where the viewport lies within twice the extent limit of a plan. A plan of more layers also
-    /// passes only where every rect and coordinate it holds lies within that limit; it holds a value per space for each
-    /// space, and only spaces whose anchor the compositor animates have a swept reach; nodes are after the nodes they
-    /// are in, with composite clips one per space; a node that is not composited is in the node of the space its space
-    /// is in, or in no node if it is in the viewport's space, and a composited node is in a node of its own space;
-    /// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them
-    /// and no deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`;
-    /// bands are of nodes of the stack, and each band but the first holds a span or a cut; bands start at runs of the
-    /// list, and spans are of whole runs, in paint order, and a band entered at a cut starts where its first span or its
-    /// first cut is; each canvas, video or nested context with a layer is a run of
-    /// the list that draws it, numbered by how many drawings of the same content with layers are painted before it,
-    /// and the stack holds no more of those than a plan makes; no span is empty and no record
-    /// is in two spans; and the walk of the bands enters each band once. Once the stack is built, the node of a band
-    /// that the walk enters at a cut is in the node of the band of that cut, the cuts of each band are in paint order,
-    /// and the identities of layers, and so of bands, are unique.
-    ///
-    /// So a stack holds no more spans than the list holds runs, no more cuts than bands and media layers, and no more
-    /// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus
-    /// `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. The layers inside a band are next to each other, so a frame that composites the layers in order
-    /// enters each composited band once. The base layer is of a node of the viewport's space, or of the space of the
-    /// viewport's scroller, and never of a space whose anchor the compositor animates.
-    ///
-    /// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
-    /// which layers can hold content, whether every record is in a span, whether the first band starts at its first record,
-    /// whether composite clips are the clips content needs, which effects must be composited, which spaces hold content
-    /// that moves within them, and where the window server could show media. The list and the tree pass their own
-    /// checks first.
-    pub fn validated(
-        unvalidated: UnvalidatedLayerStack,
-        list: &DisplayListStorage,
-        tree: &VisualContextTree,
-        viewport_rect: IntRect,
-    ) -> Result<LayerStack, &'static str> {
-        match unvalidated.0 {
-            StackOnWire::OneLayer(why_list_is_one_layer) => {
-                check_viewport_rect(viewport_rect)?;
-                let mut stack = LayerStack::single_layer(viewport_rect, list.whole_span(), Some(why_list_is_one_layer));
-                stack.layering_obstacles = LayeringObstacles::of(list, tree);
-                Ok(stack)
-            }
-            StackOnWire::Layered(plan) => {
-                let nesting_of_live_effects = NestingOfLiveEffects::of(tree);
-                LayerStack::of_plan_passing_checks(
-                    plan,
-                    RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
-                    list,
-                    tree,
-                    viewport_rect,
-                    LayeringObstacles::of_with_nesting_of_live_effects(list, tree, &nesting_of_live_effects),
-                    &nesting_of_live_effects,
-                )
-            }
+/// The stack that another process planned for `list` under `tree` within `viewport_rect`, once what came on the
+/// wire passes the checks that let every consumer read the stack without a panic, an index out of range, an
+/// overflow, or work without a bound.
+///
+/// What is built needs no check, as the planner builds it with the same functions: a stack of one layer is the one
+/// `single_layer` makes for the whole list. The spaces of a stack of more layers are those
+/// `RasterSpaces::spaces_at_anchors` makes at the anchors `raster_space_anchors` gives for the tree, and
+/// `of_layered_plan` builds the rest from the plan: the identities of nodes and layers, the ordinals of bands, the
+/// layers in the order of the walk of the bands, the cuts and the layers above them, the band each band is in, the
+/// base layer, the composited effects with what the tree tells of how each reads, and the lookups. The layering
+/// obstacles of either stack are those of the list and the tree.
+///
+/// A stack passes where the viewport lies within twice the extent limit of a plan. A plan of more layers also
+/// passes only where every rect and coordinate it holds lies within that limit; it holds a value per space for each
+/// space, and only spaces whose anchor the compositor animates have a swept reach; nodes are after the nodes they
+/// are in, with composite clips one per space; a node that is not composited is in the node of the space its space
+/// is in, or in no node if it is in the viewport's space, and a composited node is in a node of its own space;
+/// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them
+/// and no deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`;
+/// bands are of nodes of the stack, and each band but the first holds a span or a cut; bands start at runs of the
+/// list, and spans are of whole runs, in paint order, and a band entered at a cut starts where its first span or its
+/// first cut is; each canvas, video or nested context with a layer is a run of
+/// the list that draws it, numbered by how many drawings of the same content with layers are painted before it,
+/// and the stack holds no more of those than a plan makes; no span is empty and no record
+/// is in two spans; and the walk of the bands enters each band once. Once the stack is built, the node of a band
+/// that the walk enters at a cut is in the node of the band of that cut, the cuts of each band are in paint order,
+/// and the identities of layers, and so of bands, are unique.
+///
+/// So a stack holds no more spans than the list holds runs, no more cuts than bands and media layers, and no more
+/// composited nodes than the tree holds effects. Its nodes nest no deeper than its spaces nest plus
+/// `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. The layers inside a band are next to each other, so a frame that composites the layers in order
+/// enters each composited band once. The base layer is of a node of the viewport's space, or of the space of the
+/// viewport's scroller, and never of a space whose anchor the compositor animates.
+///
+/// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
+/// which layers can hold content, whether every record is in a span, whether the first band starts at its first record,
+/// whether composite clips are the clips content needs, which effects must be composited, which spaces hold content
+/// that moves within them, and where the window server could show media. The list and the tree pass their own
+/// checks first.
+fn validated_stack(
+    stack: StackOnWire,
+    list: &DisplayListStorage,
+    tree: &VisualContextTree,
+    viewport_rect: IntRect,
+) -> Result<LayerStack, &'static str> {
+    match stack {
+        StackOnWire::OneLayer(why_list_is_one_layer) => {
+            check_viewport_rect(viewport_rect)?;
+            let mut stack = LayerStack::single_layer(viewport_rect, list.whole_span(), Some(why_list_is_one_layer));
+            stack.layering_obstacles = LayeringObstacles::of(list, tree);
+            Ok(stack)
+        }
+        StackOnWire::Layered(plan) => {
+            let nesting_of_live_effects = NestingOfLiveEffects::of(tree);
+            LayerStack::of_plan_passing_checks(
+                plan,
+                RasterSpaces::spaces_at_anchors(tree, &anchors_of_layer_plans(tree), viewport_rect),
+                list,
+                tree,
+                viewport_rect,
+                LayeringObstacles::of_with_nesting_of_live_effects(list, tree, &nesting_of_live_effects),
+                &nesting_of_live_effects,
+            )
         }
     }
+}
 
+impl LayerStack {
     /// The stack of `plan`, a plan of more layers for `list` under `tree` within `viewport_rect` at `spaces`, once the
-    /// plan passes the checks of `validated`. The planner runs them on a plan before it goes to the compositor, so the
+    /// plan passes the checks of `validated_stack`. The planner runs them on a plan before it goes to the compositor, so the
     /// compositor never refuses a plan the planner makes.
     pub(super) fn of_plan_passing_checks(
         plan: LayeredPlan,
@@ -985,28 +980,23 @@ mod tests {
         }
 
         fn validated(&self, stack: LayerStack) -> Result<LayerStack, &'static str> {
-            LayerStack::validated(on_wire(&stack), &self.list, &self.tree, VIEWPORT)
+            validated_stack(on_wire(&stack), &self.list, &self.tree, VIEWPORT)
         }
 
         fn planned_plan(&self) -> LayeredPlan {
-            let StackOnWire::Layered(plan) = on_wire(&self.planned().stack).0 else {
+            let StackOnWire::Layered(plan) = on_wire(&self.planned().stack) else {
                 panic!("the page is planned in more than one layer");
             };
             plan
         }
 
         fn validated_plan(&self, plan: LayeredPlan) -> Result<LayerStack, &'static str> {
-            LayerStack::validated(
-                UnvalidatedLayerStack(StackOnWire::Layered(plan)),
-                &self.list,
-                &self.tree,
-                VIEWPORT,
-            )
+            validated_stack(StackOnWire::Layered(plan), &self.list, &self.tree, VIEWPORT)
         }
     }
 
     // The stack as decoding its wire form gives it.
-    fn on_wire(stack: &LayerStack) -> UnvalidatedLayerStack {
+    fn on_wire(stack: &LayerStack) -> StackOnWire {
         let mut encoder = Encoder::new();
         encoder.encode(stack).expect("a planned stack encodes");
         Decoder::new(&encoder.finish().0, [])
@@ -1789,8 +1779,8 @@ mod tests {
         let viewport_past_limit = IntRect::new(0, 0, COORDINATE_LIMIT_IN_DEVICE_PIXELS + 1, 600);
         for page in [plain_page(), page_under_translucent_root()] {
             let stack = page.planned().stack;
-            assert!(LayerStack::validated(on_wire(&stack), &page.list, &page.tree, VIEWPORT).is_ok());
-            assert!(LayerStack::validated(on_wire(&stack), &page.list, &page.tree, viewport_past_limit).is_err());
+            assert!(validated_stack(on_wire(&stack), &page.list, &page.tree, VIEWPORT).is_ok());
+            assert!(validated_stack(on_wire(&stack), &page.list, &page.tree, viewport_past_limit).is_err());
         }
     }
 
@@ -1901,7 +1891,7 @@ mod tests {
         encoder.encode_size(MAXIMUM_NODE_COUNT_OF_RECEIVED_STACK + 1).unwrap();
         let bytes = encoder.finish().0;
         assert!(matches!(
-            Decoder::new(&bytes, []).decode::<UnvalidatedLayerStack>(),
+            Decoder::new(&bytes, []).decode::<StackOnWire>(),
             Err(DecodeError::SizeTooLarge(_))
         ));
         let page = page_with_two_canvases();

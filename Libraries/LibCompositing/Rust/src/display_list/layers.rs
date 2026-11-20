@@ -38,7 +38,7 @@ use std::rc::Rc;
 pub mod planning;
 mod wire;
 
-pub use wire::{LayerPlan, UnvalidatedLayerPlan, UnvalidatedLayerStack, compositor_takes_plans_within};
+pub use wire::{LayerPlan, UnvalidatedLayerPlan, compositor_takes_plans_within};
 
 // Twice the extent limit of a plan, which leaves room for the margins that planning adds past the extent of a space.
 // The rects of a stack from another process are within it, and so are the offsets a frame composites spaces at, so that
