@@ -481,7 +481,6 @@ pub struct LayerStack {
     /// Per raster space whose anchor the compositor animates and that holds content, where that content can show in
     /// the raster coordinates of the space it is in wherever the animation takes it.
     pub swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
-    index_of_layer_with_identity: HashMap<LayerIdentity, LayerIndex>,
     /// Per band, the innermost band at or around it whose node the compositor composites inside its effect.
     innermost_composited_band_at_or_around_band: Vec<Option<BandIndex>>,
 }
@@ -540,16 +539,6 @@ fn innermost_composited_band_at_or_around_each_band(
         innermost_composited_band_by_band_index.push(innermost_composited_band);
     }
     innermost_composited_band_by_band_index
-}
-
-fn index_of_layer_with_identity(layers: &[StackLayer]) -> HashMap<LayerIdentity, LayerIndex> {
-    let mut index_by_identity = HashMap::with_capacity(layers.len());
-    for (layer_index, layer) in layers.iter().enumerate() {
-        index_by_identity
-            .entry(layer.identity)
-            .or_insert(LayerIndex(layer_index));
-    }
-    index_by_identity
 }
 
 fn identity_of_node(
@@ -727,7 +716,6 @@ impl LayerStack {
             layering_obstacles,
             tiles_hold_content_moving_within_space_by_space_index: vec![true],
             swept_reach_in_parent_space_by_space_index: vec![None],
-            index_of_layer_with_identity: HashMap::new(),
             innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
@@ -735,7 +723,6 @@ impl LayerStack {
 
     // The lookups that the methods read, built from what the stack holds. Every index the stack holds must be in range.
     fn with_lookups(mut self) -> Self {
-        self.index_of_layer_with_identity = index_of_layer_with_identity(&self.layers);
         self.innermost_composited_band_at_or_around_band =
             innermost_composited_band_at_or_around_each_band(&self.nodes, &self.bands);
         self
@@ -890,7 +877,6 @@ impl LayerStack {
             tiles_hold_content_moving_within_space_by_space_index: plan
                 .tiles_hold_content_moving_within_space_by_space_index,
             swept_reach_in_parent_space_by_space_index: plan.swept_reach_in_parent_space_by_space_index,
-            index_of_layer_with_identity: HashMap::new(),
             innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
@@ -910,11 +896,6 @@ impl LayerStack {
                 .get(raster_space_index.0)
                 .copied()
                 .unwrap_or(true)
-    }
-
-    pub fn layer_with_identity(&self, identity: LayerIdentity) -> Option<(LayerIndex, &StackLayer)> {
-        let &layer_index = self.index_of_layer_with_identity.get(&identity)?;
-        Some((layer_index, &self.layers[layer_index.0]))
     }
 
     // The layers of a band come in the order of its cuts, so its topmost layer is the one above its last cut.

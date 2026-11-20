@@ -833,7 +833,12 @@ fn check_stack_of_plan(stack: &LayerStack) -> Result<(), &'static str> {
             return Err("a band entered at a cut does not start where its content begins");
         }
     }
-    if stack.index_of_layer_with_identity.len() != stack.layers.len() {
+    let mut identities_of_layers = HashSet::with_capacity(stack.layers.len());
+    if !stack
+        .layers
+        .iter()
+        .all(|layer| identities_of_layers.insert(layer.identity))
+    {
         return Err("two layers share an identity");
     }
     Ok(())
@@ -2302,7 +2307,6 @@ mod tests {
         }
         planned_with_stack.note_lines_for_layers_overlay();
         for layer_index in 0..stack.layers.len() {
-            stack.layer_with_identity(stack.layers[layer_index].identity);
             stack.space_holds_content_that_moves_within_it(stack.space_of_layer(LayerIndex(layer_index)));
         }
 
