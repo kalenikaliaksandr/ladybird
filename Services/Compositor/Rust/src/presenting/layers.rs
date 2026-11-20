@@ -499,33 +499,29 @@ impl StackOfFrames {
         for (space_index, cached_geometry) in self.geometry_by_space.iter_mut().enumerate() {
             let raster_space_index = RasterSpaceIndex(space_index);
             // What reads the geometry of a space of a plan that holds nothing that moves within it reads no value the
-            // compositor animates, and no scroll offset that the plan leaves out.
-            let geometry_readers_leave_out_offset_of_node = self
+            // compositor animates, and of the scroll offsets only those the plan reads. The plan leaves out the offsets
+            // of the anchors of the spaces, which are the only ones a geometry's raster scroll offsets change.
+            let nodes_whose_scroll_offset_geometry_readers_read = self
                 .layer_plan
                 .as_ref()
                 .filter(|_| !stack.space_holds_content_that_moves_within_it(raster_space_index))
-                .map(|layer_plan| layer_plan.leaves_out_scroll_offset_of_node.as_slice());
-            let raster_scroll_offsets_of_space =
-                raster_scroll_offsets(&stack.spaces, raster_space_index, scroll_offsets);
+                .map(|layer_plan| &*layer_plan.nodes_whose_scroll_offset_plan_reads);
+            let offset_of_node = |scroll_offsets: &[FloatPoint], node_index: u32| {
+                scroll_offsets.get(node_index as usize).copied().unwrap_or_default()
+            };
             if let Some(cached) = cached_geometry
                 && (cached.tree_copy_number == tree.copy.number()
-                    || (geometry_readers_leave_out_offset_of_node.is_some()
+                    || (nodes_whose_scroll_offset_geometry_readers_read.is_some()
                         && cached.tree_copy_without_animation_samples == tree.copy_without_animation_samples()))
-                && match geometry_readers_leave_out_offset_of_node {
-                    Some(geometry_readers_leave_out_offset_of_node) => cached
-                        .geometry
-                        .raster_scroll_offsets
-                        .iter()
-                        .zip(&raster_scroll_offsets_of_space)
-                        .enumerate()
-                        .all(|(node_index, (cached_offset, offset))| {
-                            cached_offset == offset
-                                || geometry_readers_leave_out_offset_of_node
-                                    .get(node_index)
-                                    .copied()
-                                    .unwrap_or(false)
-                        }),
-                    None => cached.geometry.raster_scroll_offsets == raster_scroll_offsets_of_space,
+                && match nodes_whose_scroll_offset_geometry_readers_read {
+                    Some(nodes) => nodes.iter().all(|&node_index| {
+                        offset_of_node(&cached.geometry.raster_scroll_offsets, node_index)
+                            == offset_of_node(scroll_offsets, node_index)
+                    }),
+                    None => {
+                        cached.geometry.raster_scroll_offsets
+                            == raster_scroll_offsets(&stack.spaces, raster_space_index, scroll_offsets)
+                    }
                 }
             {
                 geometries.push(cached.geometry.clone());
@@ -2433,7 +2429,7 @@ mod tests {
         let plan = ReceivedLayerPlan {
             viewport_rect: VIEWPORT,
             stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
-            leaves_out_scroll_offset_of_node: Rc::default(),
+            nodes_whose_scroll_offset_plan_reads: Rc::default(),
             note_lines: Rc::default(),
         };
         // A plan received again is another plan, even where it holds what the plan before held.
@@ -2755,7 +2751,7 @@ mod tests {
         let plan = ReceivedLayerPlan {
             viewport_rect: VIEWPORT,
             stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
-            leaves_out_scroll_offset_of_node: Rc::default(),
+            nodes_whose_scroll_offset_plan_reads: Rc::default(),
             note_lines: Rc::default(),
         };
         let plan_received_again = ReceivedLayerPlan {

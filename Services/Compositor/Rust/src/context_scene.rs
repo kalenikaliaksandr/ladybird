@@ -25,9 +25,9 @@ pub struct ReceivedLayerPlan {
     /// The viewport, in device pixels, the plan was made within.
     pub viewport_rect: IntRect,
     pub stack: Rc<LayerStack>,
-    /// Per spatial node, whether the plan leaves out its scroll offset, as the plan holds wherever the node is scrolled
-    /// to.
-    pub leaves_out_scroll_offset_of_node: Rc<Vec<bool>>,
+    /// The spatial nodes whose scroll offset the plan reads. It holds wherever the compositor scrolls or moves the
+    /// other nodes to, which include the anchors of its spaces.
+    pub nodes_whose_scroll_offset_plan_reads: Rc<[u32]>,
     /// What the overlay of layers tells of the stack past its layers, as WebContent wrote it.
     pub note_lines: Rc<[String]>,
 }
@@ -208,12 +208,17 @@ impl ContextScene {
             .skip(1)
             .map(|space| space.anchor)
             .collect();
-        let leaves_out_scroll_offset_of_node =
-            spatial_nodes_whose_scroll_offset_placement_leaves_out(tree.as_arc(), &anchors_of_spaces);
+        let nodes_whose_scroll_offset_plan_reads =
+            spatial_nodes_whose_scroll_offset_placement_leaves_out(tree.as_arc(), &anchors_of_spaces)
+                .into_iter()
+                .enumerate()
+                .filter(|&(_, leaves_out)| !leaves_out)
+                .map(|(node_index, _)| node_index as u32)
+                .collect();
         self.layer_plan = Some(ReceivedLayerPlan {
             viewport_rect: layer_plan.viewport_rect,
             stack: Rc::new(layer_plan.stack),
-            leaves_out_scroll_offset_of_node: Rc::new(leaves_out_scroll_offset_of_node),
+            nodes_whose_scroll_offset_plan_reads,
             note_lines: layer_plan.note_lines.into(),
         });
         Ok(())
