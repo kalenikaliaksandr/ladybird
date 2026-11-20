@@ -16,7 +16,9 @@ use crate::display_list::commands::{
 };
 use crate::display_list::depth_sorted_plan::{DepthSortedReplayStepKind, build_depth_sorted_replay_plan};
 use crate::display_list::effect_clip_plan::EffectClipPlan;
-use crate::display_list::effect_geometry::{EffectGeometry, Extent, compute_effect_geometry};
+use crate::display_list::effect_geometry::{
+    EffectGeometry, Extent, compute_effect_geometry, nearest_effects_at_or_above_where,
+};
 use crate::display_list::nested_records::{replays_nested_records_where_it_plays, span_bytes};
 use crate::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
 use crate::host::{
@@ -914,8 +916,11 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
         let display_list = self.display_list;
         self.content_reads_layer_by_effect_index.get_or_insert_with(|| {
             let mut content_reads_layer_by_effect_index = vec![false; tree.effect_nodes.len()];
+            let nearest_layer_by_effect_index =
+                nearest_effects_at_or_above_where(tree, |effect, _| tree.effect_pushes_layer_at_replay(effect));
             let mut mark_layer_at_or_above_as_read = |effect: EffectNodeIndex| {
-                if let Some(layer) = tree.nearest_layer_at_or_above(effect) {
+                let layer = nearest_layer_by_effect_index[effect.0 as usize];
+                if !layer.is_none() {
                     content_reads_layer_by_effect_index[layer.0 as usize] = true;
                 }
             };

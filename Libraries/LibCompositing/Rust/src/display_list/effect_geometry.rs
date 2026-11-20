@@ -194,7 +194,8 @@ pub fn nearest_effects_spreading_at_some_sample(tree: &VisualContextTree) -> Vec
     nearest_effects_at_or_above_where(tree, |effect, _| filter_may_spread_at_some_sample(tree, effect))
 }
 
-fn nearest_effects_at_or_above_where(
+/// Per effect, the nearest effect at or above it for which `holds` holds, or `EffectNodeIndex::NONE`.
+pub(crate) fn nearest_effects_at_or_above_where(
     tree: &VisualContextTree,
     holds: impl Fn(EffectNodeIndex, &EffectNode) -> bool,
 ) -> Vec<EffectNodeIndex> {
