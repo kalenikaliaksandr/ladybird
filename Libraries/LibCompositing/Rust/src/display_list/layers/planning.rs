@@ -16,8 +16,8 @@
 //! not their tiles.
 
 use super::{
-    BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerContent, LayerIndex, LayerStack, LayeredPlan,
-    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeNamesFromIndices, NodeOfPlan,
+    BandOfPlan, BarrierCut, BarrierOfPlan, CompositedEffect, CutOfPlan, LayerContent, LayerIndex, LayerStack,
+    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeNamesFromIndices, NodeOfPlan,
     PaintedLayerOfPlan, PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect,
     WhyEffectIsComposited, WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia,
     backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, media_name,
@@ -101,20 +101,10 @@ impl std::fmt::Display for WhyAnimationHasNoLayer {
     }
 }
 
-/// Why the compositor composites an effect, and what the effect reads of what is composited below it, in the raster
-/// coordinates of its node's space.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NoteOfCompositedEffect {
-    pub why: WhyEffectIsComposited,
-    pub backdrop_read_reach: Reach<IntRect>,
-}
-
-/// What the dump and the overlay of layers tell of a stack past what a frame reads of it. A stack of one layer that
-/// replays the whole list has no notes.
+/// What the dump and the overlay of layers tell of a stack past what a frame and its composited effects read of it. A
+/// stack of one layer that replays the whole list has no notes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NotesOfStack {
-    /// One per effect of `LayerStack::composited_effects`, in that order.
-    pub composited_effects: Vec<NoteOfCompositedEffect>,
     pub media_without_layers: Vec<(LiveContent, WhyMediaHasNoLayer)>,
     /// The backdrop filters and blend modes that find all they read in the layer they go into, and read it there
     /// rather than the compositor compositing them, in paint order.
@@ -122,8 +112,8 @@ pub struct NotesOfStack {
 }
 
 /// A plan of the layers of a list: the stack the compositor composites frames from, the notes the dump and the overlay
-/// of layers tell of it, and where the parts of the list are placed among the spaces of the stack, which only the dump
-/// and the tests read.
+/// of layers tell of it, and where the parts of the list are placed among the spaces of the stack, which only the dump,
+/// the overlay of layers and the tests read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlannedLayers {
     pub stack: LayerStack,
@@ -132,6 +122,27 @@ pub struct PlannedLayers {
 }
 
 impl PlannedLayers {
+    // Each effect the stack composites, with why it is composited and what it reads of what is composited below it, as
+    // where it is placed tells.
+    fn composited_effects_with_why_and_backdrop_read_reach(
+        &self,
+    ) -> impl Iterator<Item = (&CompositedEffect, WhyEffectIsComposited, Reach<IntRect>)> + '_ {
+        let placed_effect_by_effect: HashMap<EffectNodeIndex, &PlacedEffect> = self
+            .placement
+            .placed_effects
+            .iter()
+            .map(|placed_effect| (placed_effect.effect, placed_effect))
+            .collect();
+        self.stack.composited_effects.iter().filter_map(move |composited| {
+            let placed_effect = placed_effect_by_effect.get(&composited.effect)?;
+            // A placed effect whose layer content decides whether it is composited is composited only for this.
+            let why = placed_effect
+                .why_composited_regardless_of_layer_content
+                .unwrap_or(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold);
+            Some((composited, why, placed_effect.backdrop_read_reach))
+        })
+    }
+
     /// What the dump says of each effect the compositor composites: the space of its node, what it reads of what is
     /// composited below it, and why it is composited.
     pub fn lines_of_composited_effects<'a>(
@@ -139,15 +150,12 @@ impl PlannedLayers {
         node_namer: &'a dyn VisualContextNodeNamer,
     ) -> impl Iterator<Item = String> + 'a {
         let stack = &self.stack;
-        stack
-            .composited_effects
-            .iter()
-            .zip(&self.notes.composited_effects)
-            .map(move |(composited, note)| {
+        self.composited_effects_with_why_and_backdrop_read_reach()
+            .map(move |(composited, why, backdrop_read_reach)| {
                 let parent_node_index = stack.nodes[composited.placement_node_index.0]
                     .parent_index
                     .expect("a composited node is inside another");
-                let backdrop_read_text = match note.backdrop_read_reach {
+                let backdrop_read_text = match backdrop_read_reach {
                     Reach::Nothing => String::new(),
                     Reach::Within(rect) => format!(" reads=[{},{} {}x{}]", rect.x, rect.y, rect.width, rect.height),
                     Reach::Anywhere => " reads=anywhere".into(),
@@ -156,7 +164,7 @@ impl PlannedLayers {
                     "composited {} space={}{backdrop_read_text}: {}",
                     node_namer.name_of_effect_node(composited.effect),
                     stack.name_of_node(parent_node_index, node_namer),
-                    note.why
+                    why
                 )
             })
     }
@@ -1543,10 +1551,8 @@ struct StackBeingBuilt<'a> {
     node_of_run_group: Vec<PlacementNodeIndex>,
     children_of_node: Vec<Vec<PlacementNodeIndex>>,
     bands_being_built: Vec<BandBeingBuilt>,
-    why_composited_once_decided_by_placed_effect: Vec<Option<Option<WhyEffectIsComposited>>>,
-    composited_node_by_placed_effect: Vec<Option<PlacementNodeIndex>>,
-    /// One per composited node, in the order of the nodes.
-    notes_of_composited_effects: Vec<NoteOfCompositedEffect>,
+    /// Per placed effect, once decided, the node the compositor composites it in, if it composites it.
+    composited_node_once_decided_by_placed_effect: Vec<Option<Option<PlacementNodeIndex>>>,
     records_blend_with_what_other_layers_hold_below_them: bool,
 }
 
@@ -1789,17 +1795,17 @@ impl StackBeingBuilt<'_> {
         }
     }
 
-    fn why_effect_is_composited(
+    fn placed_effect_is_composited(
         &self,
         placed_effect: &PlacedEffect,
         node_of_first_stretch_painted_next: PlacementNodeIndex,
         open_band_of_node: Option<BandBeingBuiltIndex>,
-    ) -> Option<WhyEffectIsComposited> {
-        if let Some(why) = placed_effect.why_composited_regardless_of_layer_content {
-            return Some(why);
+    ) -> bool {
+        if placed_effect.why_composited_regardless_of_layer_content.is_some() {
+            return true;
         }
         if !placed_effect.reads_root_group {
-            return None;
+            return false;
         }
         let finds_all_it_reads_in_own_layer = match placed_effect.backdrop_read_reach {
             Reach::Nothing => true,
@@ -1810,7 +1816,7 @@ impl StackBeingBuilt<'_> {
             ),
             Reach::Anywhere => false,
         };
-        (!finds_all_it_reads_in_own_layer).then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+        !finds_all_it_reads_in_own_layer
     }
 
     fn node_of_stretch(
@@ -1820,37 +1826,33 @@ impl StackBeingBuilt<'_> {
     ) -> PlacementNodeIndex {
         let mut node_index = self.node_of_run_group[stretch.run_group_index.0];
         for placed_effect_index in self.placed_effects_around_stretch_outermost_first(stretch) {
-            let why_composited = match self.why_composited_once_decided_by_placed_effect[placed_effect_index.0] {
-                Some(why_composited) => why_composited,
-                None => {
-                    let why_composited = self.why_effect_is_composited(
-                        &self.placement.placed_effects[placed_effect_index.0],
-                        node_index,
-                        open_band_by_node_index[node_index.0],
-                    );
-                    self.why_composited_once_decided_by_placed_effect[placed_effect_index.0] = Some(why_composited);
-                    why_composited
-                }
-            };
-            let Some(why) = why_composited else {
-                break;
-            };
-            node_index = match self.composited_node_by_placed_effect[placed_effect_index.0] {
+            let composited_node_index = match self.composited_node_once_decided_by_placed_effect[placed_effect_index.0]
+            {
                 Some(composited_node_index) => composited_node_index,
                 None => {
                     let placed_effect = self.placement.placed_effects[placed_effect_index.0];
-                    let draw_and_read_reach = self.draw_and_read_reach_of_placed_effect(placed_effect_index);
-                    let composited_node_index =
-                        self.add_composited_node_inside(node_index, placed_effect.effect, draw_and_read_reach);
-                    open_band_by_node_index.push(None);
-                    self.composited_node_by_placed_effect[placed_effect_index.0] = Some(composited_node_index);
-                    self.notes_of_composited_effects.push(NoteOfCompositedEffect {
-                        why,
-                        backdrop_read_reach: placed_effect.backdrop_read_reach,
-                    });
+                    let composited_node_index = if self.placed_effect_is_composited(
+                        &placed_effect,
+                        node_index,
+                        open_band_by_node_index[node_index.0],
+                    ) {
+                        let draw_and_read_reach = self.draw_and_read_reach_of_placed_effect(placed_effect_index);
+                        let composited_node_index =
+                            self.add_composited_node_inside(node_index, placed_effect.effect, draw_and_read_reach);
+                        open_band_by_node_index.push(None);
+                        Some(composited_node_index)
+                    } else {
+                        None
+                    };
+                    self.composited_node_once_decided_by_placed_effect[placed_effect_index.0] =
+                        Some(composited_node_index);
                     composited_node_index
                 }
             };
+            let Some(composited_node_index) = composited_node_index else {
+                break;
+            };
+            node_index = composited_node_index;
         }
         node_index
     }
@@ -2079,14 +2081,14 @@ impl StackBeingBuilt<'_> {
     }
 }
 
-// The plan of the stack, and one note per composited node, in the order of the nodes, or why the list goes as one layer
-// after all, which the nodes tell before the bands are worked out.
+// The plan of the stack, or why the list goes as one layer after all, which the nodes tell before the bands are worked
+// out.
 fn assemble_plan(
     inputs: &LayerStackInputs<'_>,
     placement: &ListPlacement,
     spaces: &[RasterSpace],
     layering_obstacles: &LayeringObstacles,
-) -> Result<(LayeredPlan, Vec<NoteOfCompositedEffect>), WhyListIsOneLayer> {
+) -> Result<LayeredPlan, WhyListIsOneLayer> {
     let mut stack_being_built = StackBeingBuilt {
         placement,
         spaces,
@@ -2094,9 +2096,7 @@ fn assemble_plan(
         node_of_run_group: Vec::new(),
         children_of_node: Vec::new(),
         bands_being_built: Vec::new(),
-        why_composited_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
-        composited_node_by_placed_effect: vec![None; placement.placed_effects.len()],
-        notes_of_composited_effects: Vec::new(),
+        composited_node_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
         records_blend_with_what_other_layers_hold_below_them: false,
     };
     stack_being_built.find_or_add_node(RasterSpaceIndex::VIEWPORT, Vec::new());
@@ -2118,20 +2118,14 @@ fn assemble_plan(
     let mut bands = Vec::with_capacity(stack_being_built.bands_being_built.len());
     stack_being_built.emit_band(BandBeingBuiltIndex(0), &mut bands);
 
-    let StackBeingBuilt {
-        nodes,
-        notes_of_composited_effects,
-        ..
-    } = stack_being_built;
-    let plan = LayeredPlan {
-        nodes,
+    Ok(LayeredPlan {
+        nodes: stack_being_built.nodes,
         bands,
         tiles_hold_content_moving_within_space_by_space_index: placement
             .tiles_hold_content_moving_within_space_by_space_index
             .clone(),
         swept_reach_in_parent_space_by_space_index: placement.swept_reach_in_parent_space_by_space_index.clone(),
-    };
-    Ok((plan, notes_of_composited_effects))
+    })
 }
 
 fn effects_composited_in(nodes: &[NodeOfPlan]) -> impl Iterator<Item = EffectNodeIndex> + '_ {
@@ -2196,12 +2190,7 @@ fn why_nodes_go_as_one_layer(
     why_compositor_cannot_composite_effect_of_nodes(placement, nodes)
 }
 
-fn notes_of_stack(
-    placement: &ListPlacement,
-    stack: &LayerStack,
-    notes_of_composited_effects: Vec<NoteOfCompositedEffect>,
-) -> NotesOfStack {
-    debug_assert_eq!(stack.composited_effects.len(), notes_of_composited_effects.len());
+fn notes_of_stack(placement: &ListPlacement, stack: &LayerStack) -> NotesOfStack {
     let effects_reading_only_own_layer = placement
         .backdrop_readers_in_paint_order
         .iter()
@@ -2214,7 +2203,6 @@ fn notes_of_stack(
         })
         .collect();
     NotesOfStack {
-        composited_effects: notes_of_composited_effects,
         media_without_layers: placement.media_without_layers.clone(),
         effects_reading_only_own_layer,
     }
@@ -2237,7 +2225,7 @@ fn build_layer_stack(
     layering_obstacles: LayeringObstacles,
     nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> PlannedLayers {
-    let stack_of_plan = assemble_plan(inputs, &placement, &spaces, &layering_obstacles).and_then(|(plan, notes)| {
+    let stack_of_plan = assemble_plan(inputs, &placement, &spaces, &layering_obstacles).and_then(|plan| {
         LayerStack::of_plan_passing_checks(
             plan,
             spaces,
@@ -2247,7 +2235,6 @@ fn build_layer_stack(
             layering_obstacles,
             nesting_of_live_effects,
         )
-        .map(|stack| (stack, notes))
         .map_err(|why_plan_fails_checks| {
             debug_assert!(
                 false,
@@ -2260,8 +2247,8 @@ fn build_layer_stack(
         })
     });
     match stack_of_plan {
-        Ok((stack, notes_of_composited_effects)) => PlannedLayers {
-            notes: notes_of_stack(&placement, &stack, notes_of_composited_effects),
+        Ok(stack) => PlannedLayers {
+            notes: notes_of_stack(&placement, &stack),
             stack,
             placement,
         },
@@ -3378,11 +3365,8 @@ mod tests {
 
     fn whys_of_composited_effects(planned: &PlannedLayers) -> Vec<(EffectNodeIndex, WhyEffectIsComposited)> {
         planned
-            .stack
-            .composited_effects
-            .iter()
-            .zip(&planned.notes.composited_effects)
-            .map(|(composited, note)| (composited.effect, note.why))
+            .composited_effects_with_why_and_backdrop_read_reach()
+            .map(|(composited, why, _)| (composited.effect, why))
             .collect()
     }
 
