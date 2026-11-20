@@ -2859,6 +2859,7 @@ mod tests {
     use crate::display_list::layers::LayerStack;
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};
+    use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::CompositingAndBlendingOperator;
 
@@ -3298,12 +3299,13 @@ mod tests {
             keyframes: vec![color_at(0.0, RED), color_at(1.0, BLUE)],
             ..VisualAnimation::default()
         }]);
+        let animated_box = IntRect::new(600, 400, 20, 20);
         let display_list = DisplayListStorage::of_chunks(vec![
             chunk_of(fill(VIEWPORT, GREEN), root),
             chunk_of(
                 FillRect {
                     background_color_animation_effect: animated_color,
-                    ..fill(IntRect::new(600, 400, 20, 20), RED)
+                    ..fill(animated_box, RED)
                 },
                 ContextRef {
                     effect: animated_color,
@@ -3335,6 +3337,10 @@ mod tests {
             .filter(|(old, new)| old != new)
             .map(|(old, _)| old.0)
             .collect();
-        assert_eq!(changed, [TileCoord::new(2, 1)]);
+        let cell_of_animated_box = TileCoord::new(
+            animated_box.x / TILE_SIZE_IN_DEVICE_PIXELS,
+            animated_box.y / TILE_SIZE_IN_DEVICE_PIXELS,
+        );
+        assert_eq!(changed, [cell_of_animated_box]);
     }
 }

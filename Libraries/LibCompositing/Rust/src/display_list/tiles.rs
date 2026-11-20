@@ -7,7 +7,7 @@
 use libgfx_rust::IntRect;
 use std::cmp::Ordering;
 
-pub const TILE_SIZE_IN_DEVICE_PIXELS: i32 = 256;
+pub const TILE_SIZE_IN_DEVICE_PIXELS: i32 = 512;
 const MAXIMUM_CELLS_CONTENT_IS_FOLLOWED_INTO_ONE_BY_ONE: u64 = 4096;
 
 /// A cell of the tile grid of a layer's raster space, which starts at the space's origin.
@@ -89,7 +89,13 @@ mod tests {
 
     #[test]
     fn a_rect_touches_the_cells_it_reaches_into_row_by_row() {
-        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(250, 10, 300, 250)).collect();
+        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(
+            TILE_SIZE_IN_DEVICE_PIXELS - 6,
+            10,
+            TILE_SIZE_IN_DEVICE_PIXELS + 44,
+            TILE_SIZE_IN_DEVICE_PIXELS - 6,
+        ))
+        .collect();
         assert_eq!(
             coords,
             [
@@ -105,13 +111,20 @@ mod tests {
 
     #[test]
     fn a_rect_ending_on_a_cell_edge_does_not_touch_the_next_cell() {
-        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(0, 0, 256, 512)).collect();
+        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(
+            0,
+            0,
+            TILE_SIZE_IN_DEVICE_PIXELS,
+            2 * TILE_SIZE_IN_DEVICE_PIXELS,
+        ))
+        .collect();
         assert_eq!(coords, [TileCoord::new(0, 0), TileCoord::new(0, 1)]);
     }
 
     #[test]
     fn cells_left_of_and_above_the_origin_have_negative_coords() {
-        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(-1, -257, 2, 1)).collect();
+        let coords: Vec<TileCoord> =
+            tile_coords_touching(IntRect::new(-1, -TILE_SIZE_IN_DEVICE_PIXELS - 1, 2, 1)).collect();
         assert_eq!(coords, [TileCoord::new(-1, -2), TileCoord::new(0, -2)]);
     }
 

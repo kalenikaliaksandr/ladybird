@@ -8,12 +8,13 @@ AccumulatedVisualContext Tree:
 
 Layers:
   [L0] base space=viewport
-  [L1] canvas #0 space=viewport region=[17,17 206x126] shown by the window server: clip=[0,0 800x600]
+  [L1] canvas #0 space=viewport region=[17,17 206x126] replayed: under a layer the frame holds
   [L2] painted space=viewport above L1
-  e1 is not composited: it reads only its own layer
+  [L3] painted space=viewport inside e1
+  composited e1 space=viewport reads=[297,117 66x46]: it reads what its own layer does not hold
 
 DisplayList:
 L1 DrawCanvas@s1/e0 dst_rect=[20,20 200x120] canvas_id=canvas1 scaling_mode=Bilinear owner=CanvasBox<CANVAS>#canvas phase=foreground
-L0,L2 FillRect@s1/e0 rect=[180,100 200x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-canvas phase=background
-L0 BackdropFilterRegion@s1/e1 rect=[300,120 60x40] owner=BlockContainer<DIV>#frosted phase=background
+L2 FillRect@s1/e0 rect=[180,100 200x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-canvas phase=background
+L3 BackdropFilterRegion@s1/e1 rect=[300,120 60x40] owner=BlockContainer<DIV>#frosted phase=background
 

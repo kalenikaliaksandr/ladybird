@@ -8,7 +8,6 @@ AccumulatedVisualContext Tree:
 Layers:
   [L0] base space=viewport
   [L1] composited context #0 space=viewport region=[17,17 206x126]
-  [L2] painted space=viewport above L1
   [L3] canvas #0 space=viewport region=[297,17 206x126] shown by the window server: clip=[0,0 800x600]
   [L4] painted space=viewport above L3
 
@@ -21,5 +20,5 @@ L0 CompositorNestedContextWheelRegion@s1/e0 rect=[20,20 200x120] child_context_i
 L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[300,20 200x120] owner=CanvasBox<CANVAS>#canvas phase=scroll-metadata
 L3 DrawCanvas@s1/e0 dst_rect=[300,20 200x120] canvas_id=canvas1 scaling_mode=Bilinear owner=CanvasBox<CANVAS>#canvas phase=foreground
 L0 CompositorWheelHitTestTarget@s1/e0 target_scroll_node_index=s0 rect=[100,60 300x40] owner=BlockContainer<DIV>#over-both phase=scroll-metadata
-L2,L4 FillRect@s1/e0 rect=[100,60 300x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-both phase=background
+L4 FillRect@s1/e0 rect=[100,60 300x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-both phase=background
 
