@@ -7149,7 +7149,7 @@ bool LocalNavigable::commit_frame(PaintConfig paint_config)
     // NB: Only the top-level traversable fills its canvas. A local root under a remote parent is an iframe in another
     //     process, and its canvas stays transparent like that of a same-process iframe.
     if (is_top_level_traversable() && !paint_config.canvas_fill_rect.has_value())
-        paint_config.canvas_fill_rect = Gfx::IntRect { {}, page().css_to_device_rect(viewport_rect()).size().to_type<int>() };
+        paint_config.canvas_fill_rect = Gfx::IntRect { {}, viewport_size_in_device_pixels() };
 
     // A frame is left to the next rendering update while the compositor cannot be reached.
     if (!compositor_context().ready_for_frame())
