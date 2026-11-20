@@ -472,6 +472,7 @@ private:
     Compositor::SealedPresentation seal_presentation(Layout::BegunRead const&, DOM::Document&, PaintConfig const&, bool records_display_list);
     void finish_recording_in_flight(RecordingInFlight&, Layout::RustFFI::FfiRecordingLanding, bool presented_other_scroll_offsets);
     Gfx::IntRect present_viewport_rect() const;
+    Gfx::IntSize viewport_size_in_device_pixels() const;
 
     Optional<CSSPixelPoint> to_local_root_viewport_position(CSSPixelPoint);
 
