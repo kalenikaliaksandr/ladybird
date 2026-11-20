@@ -843,6 +843,53 @@ mod tests {
         bytes
     }
 
+    // A list from another process can hold records whose rects, clips and shadows reach past where coordinates fit.
+    #[test]
+    fn records_reaching_past_where_coordinates_fit_validate_with_bounds_whose_edges_fit() {
+        use crate::display_list::builder::PendingInlineClip;
+        use crate::display_list::commands::PaintOuterBoxShadow;
+        use libgfx_rust::{CornerRadii, FloatRect};
+        let mut builder = DisplayListBuilder::new();
+        let fill_past_the_right_edge = FillRect {
+            rect: IntRect::new(2_147_483_000, 0, 1000, 10),
+            ..fill_rect()
+        };
+        builder.append(&fill_past_the_right_edge, &[], ContextRef::default());
+        builder.append(&fill_past_the_right_edge, &[], ContextRef::default());
+        builder.append_with_inline_clips(
+            &fill_rect(),
+            &[],
+            ContextRef::default(),
+            &[PendingInlineClip::intersecting_float_rect(FloatRect::new(
+                2.0e9, 0.0, 2.0e8, 10.0,
+            ))],
+        );
+        builder.append(
+            &PaintOuterBoxShadow {
+                color: Color::default(),
+                blur_radius: i32::MAX,
+                device_content_rect: IntRect::new(0, 0, 10, 10),
+                content_corner_radii: CornerRadii::default(),
+                shadow_rect: IntRect::new(0, 0, 10, 10),
+                shadow_corner_radii: CornerRadii::default(),
+            },
+            &[],
+            ContextRef::default(),
+        );
+        let recorded = builder.finish();
+        assert!(validate_tape(&recorded.bytes, &run_table_bytes(&recorded.command_runs)).is_ok());
+        let edge_fits = |near: i32, length: i32| i32::try_from(i64::from(near) + i64::from(length)).is_ok();
+        assert!(recorded.command_runs.iter().all(|run| {
+            edge_fits(run.ink_bounds.x, run.ink_bounds.width) && edge_fits(run.ink_bounds.y, run.ink_bounds.height)
+        }));
+        // The blur of the shadow reaches as far as bounds do.
+        assert!(
+            recorded.command_runs[0]
+                .ink_bounds
+                .contains_rect(IntRect::new(0, 0, 10, 10))
+        );
+    }
+
     #[test]
     fn run_ink_bounds_are_checked_against_the_payloads_of_their_records() {
         let mut builder = DisplayListBuilder::new();

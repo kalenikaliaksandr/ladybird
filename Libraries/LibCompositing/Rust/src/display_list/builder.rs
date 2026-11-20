@@ -155,14 +155,14 @@ fn record_bounding_rect(
     inline_transform: Option<AffineTransform>,
     rects_of_inline_clips_confining_the_command: impl IntoIterator<Item = FloatRect>,
 ) -> Option<IntRect> {
-    let mut bounding_rect = command_bounding_rect;
+    let mut bounding_rect = command_bounding_rect.map(int_rect_within_record_bounds_limit);
     if let (Some(transform), Some(rect)) = (inline_transform, bounding_rect) {
         bounding_rect = Some(enclosing_int_rect_within_extent_limit(
             transform.map_rect(rect.to_float()),
         ));
     }
     for clip_rect in rects_of_inline_clips_confining_the_command {
-        let restriction = enclosing_int_rect(clip_rect);
+        let restriction = enclosing_int_rect_within_record_bounds_limit(clip_rect);
         bounding_rect = Some(match bounding_rect {
             Some(rect) => rect.intersected(restriction),
             None => restriction,
