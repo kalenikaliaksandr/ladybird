@@ -17,10 +17,10 @@
 
 use super::wire::plan_holds_more_than_compositor_decodes;
 use super::{
-    BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
-    MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NestingOfLiveEffects, NodeOfPlan,
-    PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, backdrop_reader_by_reading_effect_index,
-    media_name,
+    BackdropReader, BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan,
+    LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NestingOfLiveEffects,
+    NodeOfPlan, PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer,
+    backdrop_reader_by_reading_effect_index, media_name,
 };
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
@@ -30,7 +30,7 @@ use crate::display_list::effect_geometry::{
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
-    RunGroupIndex, enclosing_int_rect_within_extent_limit, is_finite_rect,
+    RunGroupIndex, RunGroups, enclosing_int_rect_within_extent_limit, is_finite_rect,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
@@ -319,39 +319,6 @@ fn one_composite_clip_per_space_sorted_by_space(clips: &[CompositeClip]) -> Vec<
     clip_per_space
 }
 
-// Under a transform animation that leaves the plane, a sample can draw the media through a matrix that is not 2D
-// affine, whatever the tree holds.
-fn why_media_has_no_layer(
-    inputs: &LayerStackInputs<'_>,
-    geometry: &RasterSpaceGeometry,
-    why_compositor_cannot_composite_effects_around: impl Fn(EffectNodeIndex) -> Option<WhyCompositorCannotCompositeEffect>,
-    run_index: u32,
-    media_record_position: ListPosition,
-    reach_of_run_holding_only_media: IntRect,
-    is_under_transform_animation_leaving_plane: bool,
-) -> Option<WhyMediaHasNoLayer> {
-    let (header, _) = inputs.list.record_at(media_record_position);
-    if !matches!(
-        header.command_type,
-        DisplayListCommandType::DrawCanvas
-            | DisplayListCommandType::DrawVideoFrame
-            | DisplayListCommandType::DrawCompositedContext
-    ) {
-        return Some(WhyMediaHasNoLayer::DrawnInsideAnotherCommand);
-    }
-    let run = inputs.list.run(run_index as usize);
-    if is_under_transform_animation_leaving_plane || !geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
-        return Some(WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine);
-    }
-    if let Some(why) = why_compositor_cannot_composite_effects_around(run.context.effect) {
-        return Some(WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
-    }
-    if reach_of_run_holding_only_media.is_empty() {
-        return Some(WhyMediaHasNoLayer::DrawsNothingVisible);
-    }
-    None
-}
-
 // Marks in each of `marks_by_effect_index` every effect node that holds a node marked there, in one walk of the tree.
 fn mark_effects_around_marked_effects<const MARK_KIND_COUNT: usize>(
     tree: &VisualContextTree,
@@ -449,84 +416,8 @@ fn place_list(
     nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> (ListPlacement, Vec<Option<IntRect>>, Vec<bool>) {
     let tree = inputs.tree;
-    let list = inputs.list;
-    let effect_clips = list.effect_clip_plan(tree);
-    let run_groups = list.run_groups(tree);
-    let mut tables = PlacementTables::new(tree, spaces, geometries);
-    let is_animated_space =
-        |space: &RasterSpace| matches!(space.anchor_kind, RasterSpaceAnchorKind::AnimatedTransform { .. });
-    let some_space_is_animated = tables.spaces().iter().any(is_animated_space);
-    if some_space_is_animated {
-        tables.note_animated_spaces_holding_every_run_of_effects(tree, list);
-    }
-    let tables = tables;
-    let spaces = tables.spaces();
-    let runs_reaching_outside = RunsReachingOutsideTheirContext::new(list);
-    let mut run_blends_with_root_group_by_run_index = vec![false; list.run_count()];
-    for record in &list.summary().destination_blending_records {
-        let effect = list.run(record.run_index as usize).context.effect;
-        if tree.content_under_effect_composites_into_root_group(effect) {
-            run_blends_with_root_group_by_run_index[record.run_index as usize] = true;
-        }
-    }
     // Placing decides for the filter that the tree holds and for each filter that an animation can give the effect.
     let nearest_spreading_effects = nearest_effects_spreading_at_some_sample(tree);
-    let keyframe_filters = KeyframeFiltersOfEffects::of(tree);
-    // A space whose anchor the compositor animates rasters at a scale of its own, so how far a filter reads in the
-    // pixels of tiles is told by the deepest space of the filter. Where a transform the compositor animates within that
-    // space scales the filter, it is not known.
-    let why_compositor_cannot_composite_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>> = tree
-        .effect_nodes
-        .iter()
-        .enumerate()
-        .map(|(index, effect_node)| {
-            let effect = EffectNodeIndex(index as u32);
-            if keyframe_filters.filter_may_move_what_it_filters(tree, effect) {
-                return Some(WhyCompositorCannotCompositeEffect::FilterMovesWhatItFilters);
-            }
-            if !filter_may_spread_at_some_sample(tree, effect) {
-                return None;
-            }
-            let deepest_space = tables.deepest_space_of(effect_node.spatial);
-            let read_reach_in_device_pixels = (!tables
-                .animation_samples_move_spatial_within_space(effect_node.spatial, deepest_space))
-            .then(|| {
-                keyframe_filters.filter_read_reach_in_device_pixels(
-                    tree,
-                    effect,
-                    &geometries[deepest_space.0]
-                        .raster
-                        .world
-                        .draw_matrix(effect_node.spatial),
-                )
-            })
-            .flatten();
-            read_reach_in_device_pixels
-                .is_none()
-                .then_some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
-        })
-        .collect();
-    // The walk up from an effect stops at the root isolation effect, which holds no reason.
-    let why_compositor_cannot_composite_effect_or_effect_around_by_effect_index = std::cell::OnceCell::new();
-    let why_compositor_cannot_composite_effect_or_effects_around = |effect: EffectNodeIndex| {
-        why_compositor_cannot_composite_effect_or_effect_around_by_effect_index
-            .get_or_init(|| {
-                let mut why_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>> =
-                    vec![None; tree.effect_nodes.len()];
-                tree.visit_effect_nodes_parents_first(|index| {
-                    if tree.root_isolation_effect == Some(EffectNodeIndex(index as u32)) {
-                        return;
-                    }
-                    let parent = tree.effect_nodes[index].parent;
-                    why_by_effect_index[index] = why_compositor_cannot_composite_by_effect_index[index]
-                        .or_else(|| why_by_effect_index.get(parent.0 as usize).copied().flatten());
-                });
-                why_by_effect_index
-            })
-            .get(effect.0 as usize)
-            .copied()
-            .flatten()
-    };
     let content_is_spread_by_filters = nearest_spreading_effects.iter().any(|effect| !effect.is_none());
     let outermost_effects_with_filters_at_some_sample = if content_is_spread_by_filters {
         outermost_effects_with_filters(tree, true)
@@ -536,168 +427,197 @@ fn place_list(
     let filters_and_clips = FiltersAndClipsOfList {
         tree,
         nearest_spreading_effects: &nearest_spreading_effects,
-        effect_clips,
+        effect_clips: inputs.list.effect_clip_plan(tree),
         outermost_effects_with_filters: &outermost_effects_with_filters_at_some_sample,
     };
-    let mut reach_of_run_by_run_index = vec![IntRect::default(); list.run_count()];
-    let mut run_moves_within_space_by_run_index = vec![false; list.run_count()];
+    let placing = ListBeingPlaced::new(inputs, spaces, geometries, nesting_of_live_effects, filters_and_clips);
+    let (runs, mut animations_without_layers) = placing.place_run_groups();
+    let (placed_media, media_without_layers) = placing.place_media(&runs);
+    let mut why_composited_regardless_of_layer_content =
+        placing.effects_composited_regardless_of_layer_content(&runs, &placed_media, &mut animations_without_layers);
+    let (backdrop_read_reach_by_effect_index, backdrop_readers_in_paint_order, reads_root_group_by_effect_index) =
+        placing.note_backdrop_readers(&runs, &placed_media, &mut why_composited_regardless_of_layer_content);
+    let (placed_effects, innermost_placed_effect_at_or_around_by_effect_index) = placing.place_effects(
+        &runs,
+        &why_composited_regardless_of_layer_content,
+        &backdrop_read_reach_by_effect_index,
+        &reads_root_group_by_effect_index,
+    );
+    let (record_stretches, tiles_hold_content_moving_within_space_by_space_index) = placing.place_record_stretches(
+        &runs,
+        &placed_media,
+        &placed_effects,
+        &innermost_placed_effect_at_or_around_by_effect_index,
+    );
+    let placement = ListPlacement {
+        run_groups: runs.groups,
+        record_stretches,
+        placed_media,
+        media_without_layers,
+        animations_without_layers,
+        placed_effects,
+        backdrop_readers_in_paint_order,
+        why_compositor_cannot_composite_by_effect_index: placing.why_compositor_cannot_composite_by_effect_index,
+    };
+    (
+        placement,
+        runs.swept_reach_in_parent_space_by_space_index,
+        tiles_hold_content_moving_within_space_by_space_index,
+    )
+}
 
-    let mut runs_of_animated_space_by_space_index: Vec<Vec<usize>> = vec![Vec::new(); spaces.len()];
-    if some_space_is_animated {
-        for run_index in 0..list.run_count() {
-            let space = tables.deepest_space_of(list.run(run_index).context.spatial);
-            if is_animated_space(&spaces[space.0]) {
-                runs_of_animated_space_by_space_index[space.0].push(run_index);
-            }
-        }
-    }
-    let mut animated_space_is_decided = vec![false; spaces.len()];
-    let mut swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>> = vec![None; spaces.len()];
-    let mut animations_without_layers: Vec<(AnimatedNode, WhyAnimationHasNoLayer)> = Vec::new();
+fn is_animated_space(space: &RasterSpace) -> bool {
+    matches!(space.anchor_kind, RasterSpaceAnchorKind::AnimatedTransform { .. })
+}
 
-    let mut placed_run_groups: Vec<PlacedRunGroup> =
-        Vec::with_capacity(run_groups.first_and_last_run_of_groups().len());
-    for &(first_run_index, last_run_index) in run_groups.first_and_last_run_of_groups() {
+// What placing a list reads: its inputs, and what is worked out of them alone before anything is placed.
+struct ListBeingPlaced<'a> {
+    tree: &'a VisualContextTree,
+    list: &'a DisplayListStorage,
+    run_groups: Arc<RunGroups>,
+    tables: PlacementTables,
+    geometries: &'a [RasterSpaceGeometryForPlacing],
+    nesting_of_live_effects: &'a NestingOfLiveEffects<'a>,
+    filters_and_clips: FiltersAndClipsOfList<'a>,
+    some_space_is_animated: bool,
+    why_compositor_cannot_composite_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>>,
+    why_compositor_cannot_composite_effect_or_effect_around_by_effect_index:
+        std::cell::OnceCell<Vec<Option<WhyCompositorCannotCompositeEffect>>>,
+    backdrop_reader_by_effect_index: Vec<Option<BackdropReader>>,
+    first_run_index_by_effect_index: Vec<usize>,
+    effects_in_paint_order_with_outer_before_inner: Vec<EffectNodeIndex>,
+}
+
+// What placing the run groups of a list works out, which the phases after it read.
+struct RunGroupsPlaced {
+    groups: Vec<PlacedRunGroup>,
+    reach_of_run_by_run_index: Vec<IntRect>,
+    run_moves_within_space_by_run_index: Vec<bool>,
+    swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
+    reach_by_effect_index_once_worked_out: std::cell::OnceCell<Vec<IntRect>>,
+}
+
+impl<'a> ListBeingPlaced<'a> {
+    fn new(
+        inputs: &LayerStackInputs<'a>,
+        spaces: RasterSpacesForPlacing,
+        geometries: &'a [RasterSpaceGeometryForPlacing],
+        nesting_of_live_effects: &'a NestingOfLiveEffects<'a>,
+        filters_and_clips: FiltersAndClipsOfList<'a>,
+    ) -> Self {
+        let (tree, list) = (inputs.tree, inputs.list);
+        let mut tables = PlacementTables::new(tree, spaces, geometries);
+        let some_space_is_animated = tables.spaces().iter().any(is_animated_space);
         if some_space_is_animated {
-            for run_index in first_run_index as usize..=last_run_index as usize {
-                let space = tables.deepest_space_of(list.run(run_index).context.spatial);
-                if !is_animated_space(&spaces[space.0]) || animated_space_is_decided[space.0] {
-                    continue;
-                }
-                animated_space_is_decided[space.0] = true;
-                let canvases_and_videos_placed_before = list
-                    .summary()
-                    .live_content_records
-                    .iter()
-                    .filter(|media| matches!(media.content, LiveContent::Canvas(_) | LiveContent::VideoFrame(_)))
-                    .filter_map(|media| {
-                        let media_run_index = media.record.run_index as usize;
-                        let placed_group = placed_run_groups.get(run_groups.group_of_run(media_run_index).0)?;
-                        Some((
-                            placed_group.raster_space_index,
-                            reach_of_run_by_run_index[media_run_index],
-                        ))
-                    });
-                match swept_reach_of_animated_space_in_parent_space(
-                    inputs,
-                    &tables,
-                    geometries,
-                    &filters_and_clips,
-                    &why_compositor_cannot_composite_by_effect_index,
-                    space,
-                    &runs_of_animated_space_by_space_index[space.0],
-                    canvases_and_videos_placed_before,
-                ) {
-                    Ok(swept_reach) => swept_reach_in_parent_space_by_space_index[space.0] = Some(swept_reach),
-                    Err(why_no_layer) => {
-                        tables.refuse_animated_space(space);
-                        animations_without_layers.push((AnimatedNode::Transform(spaces[space.0].anchor), why_no_layer));
-                    }
-                }
-            }
+            tables.note_animated_spaces_holding_every_run_of_effects(tree, list);
         }
-        placed_run_groups.push({
-            let run_indices = first_run_index as usize..=last_run_index as usize;
-            let mut raster_space_index = run_indices
-                .clone()
-                .map(|run_index| {
-                    runs_reaching_outside.deepest_space_of_run(tree, &tables, run_index, list.run(run_index))
-                })
-                .reduce(|first, second| lowest_common_ancestor_space(spaces, first, second))
-                .unwrap_or(RasterSpaceIndex::VIEWPORT);
-            let composite_clips = loop {
-                let mut clips_of_runs = run_indices.clone().map(|run_index| {
-                    runs_reaching_outside.composite_clips_of_run_in(
+        let keyframe_filters = KeyframeFiltersOfEffects::of(tree);
+        // A space whose anchor the compositor animates rasters at a scale of its own, so how far a filter reads in the
+        // pixels of tiles is told by the deepest space of the filter. Where a transform the compositor animates within
+        // that space scales the filter, it is not known.
+        let why_compositor_cannot_composite_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>> = tree
+            .effect_nodes
+            .iter()
+            .enumerate()
+            .map(|(index, effect_node)| {
+                let effect = EffectNodeIndex(index as u32);
+                if keyframe_filters.filter_may_move_what_it_filters(tree, effect) {
+                    return Some(WhyCompositorCannotCompositeEffect::FilterMovesWhatItFilters);
+                }
+                if !filter_may_spread_at_some_sample(tree, effect) {
+                    return None;
+                }
+                let deepest_space = tables.deepest_space_of(effect_node.spatial);
+                let read_reach_in_device_pixels = (!tables
+                    .animation_samples_move_spatial_within_space(effect_node.spatial, deepest_space))
+                .then(|| {
+                    keyframe_filters.filter_read_reach_in_device_pixels(
                         tree,
-                        &tables,
-                        run_index,
-                        list.run(run_index),
-                        raster_space_index,
+                        effect,
+                        &geometries[deepest_space.0]
+                            .raster
+                            .world
+                            .draw_matrix(effect_node.spatial),
                     )
-                });
-                let first_clips = clips_of_runs.next().flatten();
-                if let Some(first_clips) = first_clips
-                    && clips_of_runs.all(|clips| clips.as_deref() == Some(&*first_clips))
-                {
-                    break one_composite_clip_per_space_sorted_by_space(&first_clips);
-                }
-                if raster_space_index == RasterSpaceIndex::VIEWPORT {
-                    break Vec::new();
-                }
-                raster_space_index = spaces[raster_space_index.0].parent_index;
-            };
-            let geometry = &geometries[raster_space_index.0];
-            let mut moves_within_space = false;
-            for run_index in run_indices.clone() {
-                let run_moves_within_space =
-                    tables.context_moves_within_space(tree, list.run(run_index).context, raster_space_index)
-                        || runs_reaching_outside.inline_clips_of_run_move_within_space(
-                            tree,
-                            &tables,
-                            run_index,
-                            raster_space_index,
-                        );
-                run_moves_within_space_by_run_index[run_index] = run_moves_within_space;
-                moves_within_space |= run_moves_within_space;
+                })
+                .flatten();
+                read_reach_in_device_pixels
+                    .is_none()
+                    .then_some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
+            })
+            .collect();
+        let mut first_run_index_by_effect_index = vec![usize::MAX; tree.effect_nodes.len()];
+        let mut effects_in_paint_order_with_outer_before_inner = Vec::new();
+        for run_index in 0..list.run_count() {
+            let mut effect = list.run(run_index).context.effect;
+            let mut newly_reached_effects_inner_to_outer = Vec::new();
+            while !effect.is_none() && first_run_index_by_effect_index[effect.0 as usize] == usize::MAX {
+                first_run_index_by_effect_index[effect.0 as usize] = run_index;
+                newly_reached_effects_inner_to_outer.push(effect);
+                effect = tree.effect_nodes[effect.0 as usize].parent;
             }
-            let mut reach_of_run_group = IntRect::default();
-            let mut reach_read_by_records_blending_with_root_group = Reach::Nothing;
-            for run_index in run_indices {
-                let run = list.run(run_index);
-                let ink_bounds_unless_moving_within_space = (!moves_within_space).then(|| run.ink_bounds.to_float());
-                let reach_of_run = geometry.part_of_extent_reached_by(geometry.reach_of_content(
-                    &filters_and_clips,
-                    ink_bounds_unless_moving_within_space,
-                    run.context,
-                ));
-                reach_of_run_by_run_index[run_index] = reach_of_run;
-                reach_of_run_group = reach_of_run_group.united(reach_of_run);
-                if run_blends_with_root_group_by_run_index[run_index] {
-                    let blend_reads_below_where_it_draws = Reach::Within(reach_of_run);
-                    reach_read_by_records_blending_with_root_group =
-                        reach_read_by_records_blending_with_root_group.united(blend_reads_below_where_it_draws);
-                }
-            }
-            let paints_within_root_group = match tree.root_isolation_effect {
-                None => true,
-                Some(root_isolation_effect) => (first_run_index..=last_run_index).any(|run_index| {
-                    nesting_of_live_effects
-                        .is_or_is_inside(list.run(run_index as usize).context.effect, root_isolation_effect)
-                }),
-            };
-            PlacedRunGroup {
-                raster_space_index,
-                composite_clips,
-                reach: reach_of_run_group,
-                moves_within_space,
-                paints_within_root_group,
-                reach_read_by_records_blending_with_root_group,
-            }
-        });
+            effects_in_paint_order_with_outer_before_inner
+                .extend(newly_reached_effects_inner_to_outer.into_iter().rev());
+        }
+        Self {
+            tree,
+            list,
+            run_groups: list.run_groups(tree),
+            tables,
+            geometries,
+            nesting_of_live_effects,
+            filters_and_clips,
+            some_space_is_animated,
+            why_compositor_cannot_composite_by_effect_index,
+            why_compositor_cannot_composite_effect_or_effect_around_by_effect_index: std::cell::OnceCell::new(),
+            backdrop_reader_by_effect_index: backdrop_reader_by_reading_effect_index(tree),
+            first_run_index_by_effect_index,
+            effects_in_paint_order_with_outer_before_inner,
+        }
     }
 
-    let mut first_run_index_by_effect_index = vec![usize::MAX; tree.effect_nodes.len()];
-    let mut effects_in_paint_order_with_outer_before_inner = Vec::new();
-    for run_index in 0..list.run_count() {
-        let mut effect = list.run(run_index).context.effect;
-        let mut newly_reached_effects_inner_to_outer = Vec::new();
-        while !effect.is_none() && first_run_index_by_effect_index[effect.0 as usize] == usize::MAX {
-            first_run_index_by_effect_index[effect.0 as usize] = run_index;
-            newly_reached_effects_inner_to_outer.push(effect);
-            effect = tree.effect_nodes[effect.0 as usize].parent;
-        }
-        effects_in_paint_order_with_outer_before_inner.extend(newly_reached_effects_inner_to_outer.into_iter().rev());
+    // The walk up from an effect stops at the root isolation effect, which holds no reason.
+    fn why_compositor_cannot_composite_effect_or_effects_around(
+        &self,
+        effect: EffectNodeIndex,
+    ) -> Option<WhyCompositorCannotCompositeEffect> {
+        let tree = self.tree;
+        self.why_compositor_cannot_composite_effect_or_effect_around_by_effect_index
+            .get_or_init(|| {
+                let mut why_by_effect_index: Vec<Option<WhyCompositorCannotCompositeEffect>> =
+                    vec![None; tree.effect_nodes.len()];
+                tree.visit_effect_nodes_parents_first(|index| {
+                    if tree.root_isolation_effect == Some(EffectNodeIndex(index as u32)) {
+                        return;
+                    }
+                    let parent = tree.effect_nodes[index].parent;
+                    why_by_effect_index[index] = self.why_compositor_cannot_composite_by_effect_index[index]
+                        .or_else(|| why_by_effect_index.get(parent.0 as usize).copied().flatten());
+                });
+                why_by_effect_index
+            })
+            .get(effect.0 as usize)
+            .copied()
+            .flatten()
     }
-    let run_group_of_effect =
-        |effect: EffectNodeIndex| run_groups.group_of_run(first_run_index_by_effect_index[effect.0 as usize]);
-    let reach_by_effect_index_once_worked_out = std::cell::OnceCell::new();
-    let reach_of_effect = |effect: EffectNodeIndex| {
-        reach_by_effect_index_once_worked_out.get_or_init(|| {
+
+    fn run_group_of_effect(&self, effect: EffectNodeIndex) -> RunGroupIndex {
+        self.run_groups
+            .group_of_run(self.first_run_index_by_effect_index[effect.0 as usize])
+    }
+
+    fn space_of_run(&self, runs: &RunGroupsPlaced, run_index: usize) -> RasterSpaceIndex {
+        runs.groups[self.run_groups.group_of_run(run_index).0].raster_space_index
+    }
+
+    fn reach_of_effect(&self, runs: &RunGroupsPlaced, effect: EffectNodeIndex) -> IntRect {
+        let (tree, list) = (self.tree, self.list);
+        runs.reach_by_effect_index_once_worked_out.get_or_init(|| {
             let mut reach_by_effect_index = vec![IntRect::default(); tree.effect_nodes.len()];
-            for (run_index, &reach_of_run) in reach_of_run_by_run_index.iter().enumerate() {
+            for (run_index, &reach_of_run) in runs.reach_of_run_by_run_index.iter().enumerate() {
                 let mut effect = list.run(run_index).context.effect;
                 while !effect.is_none() {
-                    if run_group_of_effect(effect) == run_groups.group_of_run(run_index) {
+                    if self.run_group_of_effect(effect) == self.run_groups.group_of_run(run_index) {
                         let reach_of_effect = &mut reach_by_effect_index[effect.0 as usize];
                         *reach_of_effect = reach_of_effect.united(reach_of_run);
                     }
@@ -706,536 +626,759 @@ fn place_list(
             }
             reach_by_effect_index
         })[effect.0 as usize]
-    };
-    let space_of_run = |run_index: usize| placed_run_groups[run_groups.group_of_run(run_index).0].raster_space_index;
+    }
 
-    let mut placed_media: Vec<PlacedMedia> = Vec::new();
-    let mut media_without_layers = Vec::new();
-    let spatial_node_is_under_transform_animation_leaving_plane =
-        spatial_nodes_under_transform_animations(tree, |node| tree.transform_animation_of_node_leaves_plane(node));
-    for live_content_record in &list.summary().live_content_records {
-        let content = live_content_record.content;
-        if matches!(content, LiveContent::ImageFrame(_)) {
-            continue;
-        }
-        let record: IndexedRecord = live_content_record.record;
-        let (run_index, record_position) = (record.run_index, record.position);
-        let why_no_layer = if run_groups.run_is_sorted_by_depth(run_index as usize) {
-            Some(WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext)
-        } else {
-            why_media_has_no_layer(
-                inputs,
-                &geometries[space_of_run(run_index as usize).0].raster,
-                why_compositor_cannot_composite_effect_or_effects_around,
-                run_index,
-                record_position,
-                reach_of_run_by_run_index[run_index as usize],
-                spatial_node_is_under_transform_animation_leaving_plane
-                    .get(list.run(run_index as usize).context.spatial.0 as usize)
-                    .copied()
-                    .unwrap_or(false),
-            )
-        };
-        match why_no_layer {
-            None => {
-                let record_span = list.span_of_run(run_index as usize);
-                debug_assert_eq!(
-                    record_position, record_span.begin,
-                    "a canvas, video or nested context is alone in its run"
-                );
-                placed_media.push(PlacedMedia {
-                    content,
-                    ordinal: 0,
-                    record_span,
-                    run_index: RunIndexInList(run_index),
-                    reach: reach_of_run_by_run_index[run_index as usize],
-                });
+    fn place_run_groups(&self) -> (RunGroupsPlaced, Vec<(AnimatedNode, WhyAnimationHasNoLayer)>) {
+        let (tree, list, tables, run_groups) = (self.tree, self.list, &self.tables, &*self.run_groups);
+        let spaces = tables.spaces();
+        let runs_reaching_outside = RunsReachingOutsideTheirContext::new(list);
+        let mut run_blends_with_root_group_by_run_index = vec![false; list.run_count()];
+        for record in &list.summary().destination_blending_records {
+            let effect = list.run(record.run_index as usize).context.effect;
+            if tree.content_under_effect_composites_into_root_group(effect) {
+                run_blends_with_root_group_by_run_index[record.run_index as usize] = true;
             }
-            Some(why_no_layer) => media_without_layers.push((content, why_no_layer)),
         }
-    }
-    if placed_media.len() > MAXIMUM_MEDIA_LAYER_COUNT {
-        let nested_contexts_after_canvases_and_videos =
-            |media: &PlacedMedia| matches!(media.content, LiveContent::CompositedContext(_));
-        placed_media.sort_by_key(nested_contexts_after_canvases_and_videos);
-        for media_past_limit in placed_media.drain(MAXIMUM_MEDIA_LAYER_COUNT..) {
-            media_without_layers.push((media_past_limit.content, WhyMediaHasNoLayer::MoreMediaThanLayersFor));
+        let mut reach_of_run_by_run_index = vec![IntRect::default(); list.run_count()];
+        let mut run_moves_within_space_by_run_index = vec![false; list.run_count()];
+
+        let mut runs_of_animated_space_by_space_index: Vec<Vec<usize>> = vec![Vec::new(); spaces.len()];
+        if self.some_space_is_animated {
+            for run_index in 0..list.run_count() {
+                let space = tables.deepest_space_of(list.run(run_index).context.spatial);
+                if is_animated_space(&spaces[space.0]) {
+                    runs_of_animated_space_by_space_index[space.0].push(run_index);
+                }
+            }
         }
-        placed_media.sort_by_key(|media| media.record_span.begin);
+        let mut animated_space_is_decided = vec![false; spaces.len()];
+        let mut swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>> = vec![None; spaces.len()];
+        let mut animations_without_layers: Vec<(AnimatedNode, WhyAnimationHasNoLayer)> = Vec::new();
+
+        let mut placed_run_groups: Vec<PlacedRunGroup> =
+            Vec::with_capacity(run_groups.first_and_last_run_of_groups().len());
+        for &(first_run_index, last_run_index) in run_groups.first_and_last_run_of_groups() {
+            if self.some_space_is_animated {
+                for run_index in first_run_index as usize..=last_run_index as usize {
+                    let space = tables.deepest_space_of(list.run(run_index).context.spatial);
+                    if !is_animated_space(&spaces[space.0]) || animated_space_is_decided[space.0] {
+                        continue;
+                    }
+                    animated_space_is_decided[space.0] = true;
+                    let canvases_and_videos_placed_before = list
+                        .summary()
+                        .live_content_records
+                        .iter()
+                        .filter(|media| matches!(media.content, LiveContent::Canvas(_) | LiveContent::VideoFrame(_)))
+                        .filter_map(|media| {
+                            let media_run_index = media.record.run_index as usize;
+                            let placed_group = placed_run_groups.get(run_groups.group_of_run(media_run_index).0)?;
+                            Some((
+                                placed_group.raster_space_index,
+                                reach_of_run_by_run_index[media_run_index],
+                            ))
+                        });
+                    match self.swept_reach_of_animated_space_in_parent_space(
+                        space,
+                        &runs_of_animated_space_by_space_index[space.0],
+                        canvases_and_videos_placed_before,
+                    ) {
+                        Ok(swept_reach) => swept_reach_in_parent_space_by_space_index[space.0] = Some(swept_reach),
+                        Err(why_no_layer) => {
+                            tables.refuse_animated_space(space);
+                            animations_without_layers
+                                .push((AnimatedNode::Transform(spaces[space.0].anchor), why_no_layer));
+                        }
+                    }
+                }
+            }
+            placed_run_groups.push({
+                let run_indices = first_run_index as usize..=last_run_index as usize;
+                let mut raster_space_index = run_indices
+                    .clone()
+                    .map(|run_index| {
+                        runs_reaching_outside.deepest_space_of_run(tree, tables, run_index, list.run(run_index))
+                    })
+                    .reduce(|first, second| lowest_common_ancestor_space(spaces, first, second))
+                    .unwrap_or(RasterSpaceIndex::VIEWPORT);
+                let composite_clips = loop {
+                    let mut clips_of_runs = run_indices.clone().map(|run_index| {
+                        runs_reaching_outside.composite_clips_of_run_in(
+                            tree,
+                            tables,
+                            run_index,
+                            list.run(run_index),
+                            raster_space_index,
+                        )
+                    });
+                    let first_clips = clips_of_runs.next().flatten();
+                    if let Some(first_clips) = first_clips
+                        && clips_of_runs.all(|clips| clips.as_deref() == Some(&*first_clips))
+                    {
+                        break one_composite_clip_per_space_sorted_by_space(&first_clips);
+                    }
+                    if raster_space_index == RasterSpaceIndex::VIEWPORT {
+                        break Vec::new();
+                    }
+                    raster_space_index = spaces[raster_space_index.0].parent_index;
+                };
+                let geometry = &self.geometries[raster_space_index.0];
+                let mut moves_within_space = false;
+                for run_index in run_indices.clone() {
+                    let run_moves_within_space =
+                        tables.context_moves_within_space(tree, list.run(run_index).context, raster_space_index)
+                            || runs_reaching_outside.inline_clips_of_run_move_within_space(
+                                tree,
+                                tables,
+                                run_index,
+                                raster_space_index,
+                            );
+                    run_moves_within_space_by_run_index[run_index] = run_moves_within_space;
+                    moves_within_space |= run_moves_within_space;
+                }
+                let mut reach_of_run_group = IntRect::default();
+                let mut reach_read_by_records_blending_with_root_group = Reach::Nothing;
+                for run_index in run_indices {
+                    let run = list.run(run_index);
+                    let ink_bounds_unless_moving_within_space =
+                        (!moves_within_space).then(|| run.ink_bounds.to_float());
+                    let reach_of_run = geometry.part_of_extent_reached_by(geometry.reach_of_content(
+                        &self.filters_and_clips,
+                        ink_bounds_unless_moving_within_space,
+                        run.context,
+                    ));
+                    reach_of_run_by_run_index[run_index] = reach_of_run;
+                    reach_of_run_group = reach_of_run_group.united(reach_of_run);
+                    if run_blends_with_root_group_by_run_index[run_index] {
+                        let blend_reads_below_where_it_draws = Reach::Within(reach_of_run);
+                        reach_read_by_records_blending_with_root_group =
+                            reach_read_by_records_blending_with_root_group.united(blend_reads_below_where_it_draws);
+                    }
+                }
+                let paints_within_root_group = match tree.root_isolation_effect {
+                    None => true,
+                    Some(root_isolation_effect) => (first_run_index..=last_run_index).any(|run_index| {
+                        self.nesting_of_live_effects
+                            .is_or_is_inside(list.run(run_index as usize).context.effect, root_isolation_effect)
+                    }),
+                };
+                PlacedRunGroup {
+                    raster_space_index,
+                    composite_clips,
+                    reach: reach_of_run_group,
+                    moves_within_space,
+                    paints_within_root_group,
+                    reach_read_by_records_blending_with_root_group,
+                }
+            });
+        }
+        let runs = RunGroupsPlaced {
+            groups: placed_run_groups,
+            reach_of_run_by_run_index,
+            run_moves_within_space_by_run_index,
+            swept_reach_in_parent_space_by_space_index,
+            reach_by_effect_index_once_worked_out: std::cell::OnceCell::new(),
+        };
+        (runs, animations_without_layers)
     }
 
-    let mut why_composited_regardless_of_layer_content = WhyEffectsAreCompositedRegardlessOfLayerContent {
-        why_by_effect_index: vec![None; tree.effect_nodes.len()],
-        composited_effects: Vec::new(),
-    };
-    for media in &placed_media {
-        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
-            tree,
-            list.run(media.run_index.0 as usize).context.effect,
-            WhyEffectIsComposited::ItHoldsMedia(media.content),
-        );
-    }
+    /// Where content of `space`, whose anchor the compositor animates, can show in the raster coordinates of the space
+    /// it is in wherever the animation takes it, or why the space holds none of it: content that a frame cannot
+    /// composite through the anchor's transform, or whose reach nothing bounds, which would cut every tile around it,
+    /// or that can show over a canvas or video painted before it, which would take those from the window server for the
+    /// whole animation.
+    fn swept_reach_of_animated_space_in_parent_space(
+        &self,
+        space: RasterSpaceIndex,
+        run_indices_of_space: &[usize],
+        canvases_and_videos_placed_before: impl Iterator<Item = (RasterSpaceIndex, IntRect)>,
+    ) -> Result<IntRect, WhyAnimationHasNoLayer> {
+        let (tree, list, tables, geometries) = (self.tree, self.list, &self.tables, self.geometries);
+        let filters_and_clips = &self.filters_and_clips;
+        let raster_space = tables.spaces()[space.0];
+        let RasterSpaceAnchorKind::AnimatedTransform { raster_scale } = raster_space.anchor_kind else {
+            unreachable!("only spaces whose anchor the compositor animates are swept");
+        };
+        if list
+            .summary()
+            .destination_blending_records
+            .iter()
+            .any(|record| run_indices_of_space.binary_search(&(record.run_index as usize)).is_ok())
+        {
+            return Err(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
+        }
+        for &run_index in run_indices_of_space {
+            let mut effect = list.run(run_index).context.effect;
+            while !effect.is_none() {
+                let effect_node = &tree.effect_nodes[effect.0 as usize];
+                let composited_around_space = tables.animated_space_holding_every_run_of_effect(effect) == Some(space)
+                    && !tables.moves_with(effect_node.spatial, space);
+                if composited_around_space {
+                    if effect_reads_below_it(tree, effect) {
+                        return Err(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
+                    }
+                    if let Some(why) = self.why_compositor_cannot_composite_by_effect_index[effect.0 as usize] {
+                        return Err(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
+                    }
+                }
+                effect = effect_node.parent;
+            }
+        }
 
-    let backdrop_reader_by_effect_index = backdrop_reader_by_reading_effect_index(tree);
-    let effect_reads_what_is_below_it = |effect: EffectNodeIndex| {
-        backdrop_reader_by_effect_index[effect.0 as usize].is_some() || effect_reads_below_it(tree, effect)
-    };
-    let canvas_or_video_painted_before_can_show_under =
-        |first_run_index: usize, raster_space_index: RasterSpaceIndex, reach: IntRect| {
-            placed_media.iter().any(|media| {
-                matches!(media.content, LiveContent::Canvas(_) | LiveContent::VideoFrame(_))
-                    && (media.run_index.0 as usize) < first_run_index
-                    && (space_of_run(media.run_index.0 as usize) != raster_space_index
-                        || !media.reach.intersected(reach).is_empty())
+        let geometry = &geometries[space.0];
+        // Content that moves within the space, as a sample of an animation inside it moves it or spreads it, reaches
+        // wherever its clips fixed in the space let it.
+        let content_reach_in_space = run_indices_of_space.iter().fold(Reach::Nothing, |reach, &run_index| {
+            let run = list.run(run_index);
+            if run.ink_bounds.is_empty() {
+                return reach;
+            }
+            let drawn_within =
+                (!tables.context_moves_within_space(tree, run.context, space)).then(|| run.ink_bounds.to_float());
+            reach.united(geometry.reach_of_content(filters_and_clips, drawn_within, run.context))
+        });
+        let content_rect_in_anchor_space = match content_reach_in_space {
+            Reach::Nothing => return Ok(IntRect::default()),
+            Reach::Anywhere => return Err(WhyAnimationHasNoLayer::NothingBoundsWhereItMoves),
+            Reach::Within(rect) => libgfx_rust::FloatRect::new(
+                rect.x as f32 / raster_scale,
+                rect.y as f32 / raster_scale,
+                rect.width as f32 / raster_scale,
+                rect.height as f32 / raster_scale,
+            ),
+        };
+
+        let parent_space = raster_space.parent_index;
+        let parent_geometry = &geometries[parent_space.0];
+        let parent_of_anchor = tree.spatial_nodes[raster_space.anchor.0 as usize].parent;
+        let reach_within_clips_fixed_in_parent_space =
+            run_indices_of_space.iter().fold(Reach::Nothing, |reach, &run_index| {
+                reach.united(parent_geometry.reach_of_content(filters_and_clips, None, list.run(run_index).context))
+            });
+        let swept_bounds_in_parent_space = (!tables.spatial_moves_within_space(parent_of_anchor, parent_space))
+            .then(|| {
+                crate::display_list::animated_transform_spaces::swept_bounds_in_parent(
+                    tree,
+                    raster_space.anchor,
+                    content_rect_in_anchor_space,
+                )
             })
+            .flatten()
+            .map(|bounds| parent_geometry.raster.world.map_rect_to_root(parent_of_anchor, bounds))
+            .filter(|bounds| is_finite_rect(*bounds));
+        let swept_reach = match swept_bounds_in_parent_space {
+            Some(bounds) => {
+                let margin = crate::display_list::placement::ANTIALIASING_MARGIN_IN_DEVICE_PIXELS;
+                let swept_rect =
+                    enclosing_int_rect_within_extent_limit(bounds).inflated_edges(margin, margin, margin, margin);
+                reach_within_clips_fixed_in_parent_space.limited_to(swept_rect)
+            }
+            None => reach_within_clips_fixed_in_parent_space,
         };
-    let mut animated_nodes_with_layers_count = 0;
+        if swept_reach == Reach::Anywhere {
+            return Err(WhyAnimationHasNoLayer::NothingBoundsWhereItMoves);
+        }
+        let swept_reach = parent_geometry.part_of_extent_reached_by(swept_reach);
 
-    let space_holds_placed_content_by_space_index = std::cell::OnceCell::new();
-    let space_holds_placed_content = |space: RasterSpaceIndex| {
-        space_holds_placed_content_by_space_index.get_or_init(|| {
-            let mut holds_by_space_index = vec![false; spaces.len()];
-            for run_group in &placed_run_groups {
-                holds_by_space_index[run_group.raster_space_index.0] = true;
+        for (space_of_media, reach_of_media) in canvases_and_videos_placed_before {
+            if space_of_media != parent_space || !reach_of_media.intersected(swept_reach).is_empty() {
+                return Err(WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo);
             }
-            holds_by_space_index
-        })[space.0]
-    };
-    if some_space_is_animated {
-        for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
-            let effect = EffectNodeIndex(index as u32);
-            let Some(space) = tables.animated_space_holding_every_run_of_effect(effect) else {
+        }
+        Ok(swept_reach)
+    }
+
+    fn place_media(&self, runs: &RunGroupsPlaced) -> (Vec<PlacedMedia>, Vec<(LiveContent, WhyMediaHasNoLayer)>) {
+        let (tree, list, run_groups) = (self.tree, self.list, &*self.run_groups);
+        let mut placed_media: Vec<PlacedMedia> = Vec::new();
+        let mut media_without_layers = Vec::new();
+        let spatial_node_is_under_transform_animation_leaving_plane =
+            spatial_nodes_under_transform_animations(tree, |node| tree.transform_animation_of_node_leaves_plane(node));
+        for live_content_record in &list.summary().live_content_records {
+            let content = live_content_record.content;
+            if matches!(content, LiveContent::ImageFrame(_)) {
                 continue;
+            }
+            let record: IndexedRecord = live_content_record.record;
+            let (run_index, record_position) = (record.run_index, record.position);
+            let why_no_layer = if run_groups.run_is_sorted_by_depth(run_index as usize) {
+                Some(WhyMediaHasNoLayer::SortedByDepthInA3DSortingContext)
+            } else {
+                self.why_media_has_no_layer(
+                    &self.geometries[self.space_of_run(runs, run_index as usize).0].raster,
+                    run_index,
+                    record_position,
+                    runs.reach_of_run_by_run_index[run_index as usize],
+                    spatial_node_is_under_transform_animation_leaving_plane
+                        .get(list.run(run_index as usize).context.spatial.0 as usize)
+                        .copied()
+                        .unwrap_or(false),
+                )
             };
-            let applies_over_animated_transform = swept_reach_in_parent_space_by_space_index[space.0].is_some()
-                && !tables.moves_with(effect_node.spatial, space)
-                && space_holds_placed_content(space);
-            if !applies_over_animated_transform || !tree.effect_pushes_layer_at_replay(effect) {
-                continue;
+            match why_no_layer {
+                None => {
+                    let record_span = list.span_of_run(run_index as usize);
+                    debug_assert_eq!(
+                        record_position, record_span.begin,
+                        "a canvas, video or nested context is alone in its run"
+                    );
+                    placed_media.push(PlacedMedia {
+                        content,
+                        ordinal: 0,
+                        record_span,
+                        run_index: RunIndexInList(run_index),
+                        reach: runs.reach_of_run_by_run_index[run_index as usize],
+                    });
+                }
+                Some(why_no_layer) => media_without_layers.push((content, why_no_layer)),
             }
-            why_composited_regardless_of_layer_content.set_unless_composited(
-                effect,
-                WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates,
-            );
+        }
+        if placed_media.len() > MAXIMUM_MEDIA_LAYER_COUNT {
+            let nested_contexts_after_canvases_and_videos =
+                |media: &PlacedMedia| matches!(media.content, LiveContent::CompositedContext(_));
+            placed_media.sort_by_key(nested_contexts_after_canvases_and_videos);
+            for media_past_limit in placed_media.drain(MAXIMUM_MEDIA_LAYER_COUNT..) {
+                media_without_layers.push((media_past_limit.content, WhyMediaHasNoLayer::MoreMediaThanLayersFor));
+            }
+            placed_media.sort_by_key(|media| media.record_span.begin);
+        }
+        for index in 0..placed_media.len() {
+            placed_media[index].ordinal = placed_media[..index]
+                .iter()
+                .filter(|earlier| earlier.content == placed_media[index].content)
+                .count() as u32;
+        }
+        (placed_media, media_without_layers)
+    }
+
+    // Under a transform animation that leaves the plane, a sample can draw the media through a matrix that is not 2D
+    // affine, whatever the tree holds.
+    fn why_media_has_no_layer(
+        &self,
+        geometry: &RasterSpaceGeometry,
+        run_index: u32,
+        media_record_position: ListPosition,
+        reach_of_run_holding_only_media: IntRect,
+        is_under_transform_animation_leaving_plane: bool,
+    ) -> Option<WhyMediaHasNoLayer> {
+        let (header, _) = self.list.record_at(media_record_position);
+        if !matches!(
+            header.command_type,
+            DisplayListCommandType::DrawCanvas
+                | DisplayListCommandType::DrawVideoFrame
+                | DisplayListCommandType::DrawCompositedContext
+        ) {
+            return Some(WhyMediaHasNoLayer::DrawnInsideAnotherCommand);
+        }
+        let run = self.list.run(run_index as usize);
+        if is_under_transform_animation_leaving_plane || !geometry.world.draw_matrix(run.context.spatial).is_2d_affine()
+        {
+            return Some(WhyMediaHasNoLayer::UnderTransformThatIsNot2DAffine);
+        }
+        if let Some(why) = self.why_compositor_cannot_composite_effect_or_effects_around(run.context.effect) {
+            return Some(WhyMediaHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
+        }
+        if reach_of_run_holding_only_media.is_empty() {
+            return Some(WhyMediaHasNoLayer::DrawsNothingVisible);
+        }
+        None
+    }
+
+    fn effects_composited_regardless_of_layer_content(
+        &self,
+        runs: &RunGroupsPlaced,
+        placed_media: &[PlacedMedia],
+        animations_without_layers: &mut Vec<(AnimatedNode, WhyAnimationHasNoLayer)>,
+    ) -> WhyEffectsAreCompositedRegardlessOfLayerContent {
+        let (tree, list) = (self.tree, self.list);
+        let spaces = self.tables.spaces();
+        let mut why_composited_regardless_of_layer_content = WhyEffectsAreCompositedRegardlessOfLayerContent {
+            why_by_effect_index: vec![None; tree.effect_nodes.len()],
+            composited_effects: Vec::new(),
+        };
+        for media in placed_media {
             why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
                 tree,
-                effect_node.parent,
+                list.run(media.run_index.0 as usize).context.effect,
+                WhyEffectIsComposited::ItHoldsMedia(media.content),
+            );
+        }
+
+        let effect_reads_what_is_below_it = |effect: EffectNodeIndex| {
+            self.backdrop_reader_by_effect_index[effect.0 as usize].is_some() || effect_reads_below_it(tree, effect)
+        };
+        let canvas_or_video_painted_before_can_show_under =
+            |first_run_index: usize, raster_space_index: RasterSpaceIndex, reach: IntRect| {
+                placed_media.iter().any(|media| {
+                    matches!(media.content, LiveContent::Canvas(_) | LiveContent::VideoFrame(_))
+                        && (media.run_index.0 as usize) < first_run_index
+                        && (self.space_of_run(runs, media.run_index.0 as usize) != raster_space_index
+                            || !media.reach.intersected(reach).is_empty())
+                })
+            };
+        let mut animated_nodes_with_layers_count = 0;
+
+        let space_holds_placed_content_by_space_index = std::cell::OnceCell::new();
+        let space_holds_placed_content = |space: RasterSpaceIndex| {
+            space_holds_placed_content_by_space_index.get_or_init(|| {
+                let mut holds_by_space_index = vec![false; spaces.len()];
+                for run_group in &runs.groups {
+                    holds_by_space_index[run_group.raster_space_index.0] = true;
+                }
+                holds_by_space_index
+            })[space.0]
+        };
+        if self.some_space_is_animated {
+            for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
+                let effect = EffectNodeIndex(index as u32);
+                let Some(space) = self.tables.animated_space_holding_every_run_of_effect(effect) else {
+                    continue;
+                };
+                let applies_over_animated_transform = runs.swept_reach_in_parent_space_by_space_index[space.0]
+                    .is_some()
+                    && !self.tables.moves_with(effect_node.spatial, space)
+                    && space_holds_placed_content(space);
+                if !applies_over_animated_transform || !tree.effect_pushes_layer_at_replay(effect) {
+                    continue;
+                }
+                why_composited_regardless_of_layer_content.set_unless_composited(
+                    effect,
+                    WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates,
+                );
+                why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
+                    tree,
+                    effect_node.parent,
+                    WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
+                );
+            }
+        }
+
+        let what_effects_hold_once_worked_out = std::cell::OnceCell::new();
+        let what_effects_hold = || {
+            what_effects_hold_once_worked_out.get_or_init(|| {
+                let mut runs_holding_records_blending_with_what_is_below_them = vec![false; list.run_count()];
+                for record in &list.summary().destination_blending_records {
+                    runs_holding_records_blending_with_what_is_below_them[record.run_index as usize] = true;
+                }
+                let mut effect_reads_what_is_below_it_by_effect_index = vec![false; tree.effect_nodes.len()];
+                for &effect in &self.effects_in_paint_order_with_outer_before_inner {
+                    effect_reads_what_is_below_it_by_effect_index[effect.0 as usize] =
+                        effect_reads_what_is_below_it(effect);
+                }
+                let mut marks = [
+                    effects_of_marked_runs(list, tree, |run_index| {
+                        self.run_groups.run_is_sorted_by_depth(run_index)
+                    }),
+                    effects_of_marked_runs(list, tree, |run_index| {
+                        runs_holding_records_blending_with_what_is_below_them[run_index]
+                    }),
+                    effect_reads_what_is_below_it_by_effect_index,
+                ];
+                mark_effects_around_marked_effects(tree, &mut marks);
+                let [
+                    run_sorted_by_depth_by_effect_index,
+                    records_blending_with_what_is_below_them_by_effect_index,
+                    effect_reading_what_is_below_it_by_effect_index,
+                ] = marks;
+                WhatEffectsHold {
+                    run_sorted_by_depth_by_effect_index,
+                    records_blending_with_what_is_below_them_by_effect_index,
+                    effect_reading_what_is_below_it_by_effect_index,
+                }
+            })
+        };
+        for &effect in &self.effects_in_paint_order_with_outer_before_inner {
+            if !tree.effect_opacity_or_filter_is_animated(effect) {
+                continue;
+            }
+            let filter_is_animated = tree.effect_filter_is_animated(effect);
+            let first_run_index = self.first_run_index_by_effect_index[effect.0 as usize];
+            if tree.root_isolation_effect == Some(effect)
+                || !matches!(tree.effect_nodes[effect.0 as usize].data, EffectNodeData::Effects(_))
+            {
+                continue;
+            }
+            let why_no_layer = (|| {
+                if filter_is_animated && filter_may_spread_at_some_sample(tree, effect) {
+                    return Some(WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters);
+                }
+                if let Some(why) = self.why_compositor_cannot_composite_effect_or_effects_around(effect) {
+                    return Some(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
+                }
+                let what_effects_hold = what_effects_hold();
+                if what_effects_hold.run_sorted_by_depth_by_effect_index[effect.0 as usize] {
+                    return Some(WhyAnimationHasNoLayer::SortedByDepthInA3DSortingContext);
+                }
+                if what_effects_hold.records_blending_with_what_is_below_them_by_effect_index[effect.0 as usize] {
+                    return Some(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
+                }
+                if what_effects_hold.effect_reading_what_is_below_it_by_effect_index[effect.0 as usize] {
+                    return Some(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
+                }
+                if canvas_or_video_painted_before_can_show_under(
+                    first_run_index,
+                    self.space_of_run(runs, first_run_index),
+                    self.reach_of_effect(runs, effect),
+                ) {
+                    return Some(WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo);
+                }
+                if animated_nodes_with_layers_count == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
+                    return Some(WhyAnimationHasNoLayer::MoreAnimationsThanLayersFor);
+                }
+                None
+            })();
+            if let Some(why_no_layer) = why_no_layer {
+                animations_without_layers.push((AnimatedNode::Effect(effect), why_no_layer));
+                continue;
+            }
+            animated_nodes_with_layers_count += 1;
+            why_composited_regardless_of_layer_content
+                .set_unless_composited(effect, WhyEffectIsComposited::TheCompositorAnimatesIt);
+            why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
+                tree,
+                tree.effect_nodes[effect.0 as usize].parent,
                 WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
             );
         }
-    }
-
-    let what_effects_hold_once_worked_out = std::cell::OnceCell::new();
-    let what_effects_hold = || {
-        what_effects_hold_once_worked_out.get_or_init(|| {
-            let mut runs_holding_records_blending_with_what_is_below_them = vec![false; list.run_count()];
-            for record in &list.summary().destination_blending_records {
-                runs_holding_records_blending_with_what_is_below_them[record.run_index as usize] = true;
-            }
-            let mut effect_reads_what_is_below_it_by_effect_index = vec![false; tree.effect_nodes.len()];
-            for &effect in &effects_in_paint_order_with_outer_before_inner {
-                effect_reads_what_is_below_it_by_effect_index[effect.0 as usize] =
-                    effect_reads_what_is_below_it(effect);
-            }
-            let mut marks = [
-                effects_of_marked_runs(list, tree, |run_index| run_groups.run_is_sorted_by_depth(run_index)),
-                effects_of_marked_runs(list, tree, |run_index| {
-                    runs_holding_records_blending_with_what_is_below_them[run_index]
-                }),
-                effect_reads_what_is_below_it_by_effect_index,
-            ];
-            mark_effects_around_marked_effects(tree, &mut marks);
-            let [
-                run_sorted_by_depth_by_effect_index,
-                records_blending_with_what_is_below_them_by_effect_index,
-                effect_reading_what_is_below_it_by_effect_index,
-            ] = marks;
-            WhatEffectsHold {
-                run_sorted_by_depth_by_effect_index,
-                records_blending_with_what_is_below_them_by_effect_index,
-                effect_reading_what_is_below_it_by_effect_index,
-            }
-        })
-    };
-    for &effect in &effects_in_paint_order_with_outer_before_inner {
-        if !tree.effect_opacity_or_filter_is_animated(effect) {
-            continue;
-        }
-        let filter_is_animated = tree.effect_filter_is_animated(effect);
-        let first_run_index = first_run_index_by_effect_index[effect.0 as usize];
-        if tree.root_isolation_effect == Some(effect)
-            || !matches!(tree.effect_nodes[effect.0 as usize].data, EffectNodeData::Effects(_))
-        {
-            continue;
-        }
-        let why_no_layer = (|| {
-            if filter_is_animated && filter_may_spread_at_some_sample(tree, effect) {
-                return Some(WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters);
-            }
-            if let Some(why) = why_compositor_cannot_composite_effect_or_effects_around(effect) {
-                return Some(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
-            }
-            let what_effects_hold = what_effects_hold();
-            if what_effects_hold.run_sorted_by_depth_by_effect_index[effect.0 as usize] {
-                return Some(WhyAnimationHasNoLayer::SortedByDepthInA3DSortingContext);
-            }
-            if what_effects_hold.records_blending_with_what_is_below_them_by_effect_index[effect.0 as usize] {
-                return Some(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
-            }
-            if what_effects_hold.effect_reading_what_is_below_it_by_effect_index[effect.0 as usize] {
-                return Some(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
-            }
-            if canvas_or_video_painted_before_can_show_under(
-                first_run_index,
-                space_of_run(first_run_index),
-                reach_of_effect(effect),
-            ) {
-                return Some(WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo);
-            }
-            if animated_nodes_with_layers_count == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
-                return Some(WhyAnimationHasNoLayer::MoreAnimationsThanLayersFor);
-            }
-            None
-        })();
-        if let Some(why_no_layer) = why_no_layer {
-            animations_without_layers.push((AnimatedNode::Effect(effect), why_no_layer));
-            continue;
-        }
-        animated_nodes_with_layers_count += 1;
         why_composited_regardless_of_layer_content
-            .set_unless_composited(effect, WhyEffectIsComposited::TheCompositorAnimatesIt);
-        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
-            tree,
-            tree.effect_nodes[effect.0 as usize].parent,
-            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
-        );
     }
 
-    for index in 0..placed_media.len() {
-        placed_media[index].ordinal = placed_media[..index]
-            .iter()
-            .filter(|earlier| earlier.content == placed_media[index].content)
-            .count() as u32;
-    }
-
-    let mut backdrop_read_reach_by_effect_index = vec![Reach::Nothing; tree.effect_nodes.len()];
-    let mut backdrop_readers_in_paint_order = Vec::new();
-    // Empty until an effect reads the root group.
-    let mut reads_root_group_by_effect_index: Vec<bool> = Vec::new();
-    for &effect in &effects_in_paint_order_with_outer_before_inner {
-        let Some(backdrop_reader) = backdrop_reader_by_effect_index[effect.0 as usize] else {
-            continue;
-        };
-        let run_group = &placed_run_groups[run_group_of_effect(effect).0];
-        let geometry = &geometries[run_group.raster_space_index.0];
-        let reach_of_reading_effect = reach_of_effect(effect);
-        let (backdrop_read_reach, reads_nothing_past_mirrored_edge) = match backdrop_reader.effect_with_backdrop_filter
-        {
-            Some(effect_with_backdrop_filter) => {
-                let effect_node = &tree.effect_nodes[effect_with_backdrop_filter.0 as usize];
-                let EffectNodeData::Effects(effects) = &effect_node.data else {
-                    unreachable!("a backdrop filter belongs to an effects node");
-                };
-                let backdrop_filter = effects
-                    .backdrop_filter
-                    .as_ref()
-                    .expect("a reader with a backdrop filter has one");
-                // Where a transform the compositor animates moves or scales the backdrop filter within the space, a
-                // sample can read anywhere.
-                let backdrop_read_reach = if tables
-                    .animation_samples_move_spatial_within_space(effect_node.spatial, run_group.raster_space_index)
-                {
-                    Reach::Anywhere
-                } else if run_group.moves_within_space {
-                    filter_read_reach_in_device_pixels(
-                        &backdrop_filter.filter,
-                        &geometry.raster.world.draw_matrix(effect_node.spatial),
-                    )
-                    .map_or(Reach::Anywhere, |read_reach_in_device_pixels| {
-                        Reach::Within(run_group.reach.inflated_edges(
-                            read_reach_in_device_pixels,
-                            read_reach_in_device_pixels,
-                            read_reach_in_device_pixels,
-                            read_reach_in_device_pixels,
-                        ))
-                    })
-                } else {
-                    backdrop_filter_read_reach(tree, &geometry.raster, effect_with_backdrop_filter)
-                };
-                (
-                    backdrop_read_reach,
-                    backdrop_filter_reads_nothing_past_mirrored_edge(&backdrop_filter.filter),
-                )
-            }
-            None => (Reach::Within(reach_of_reading_effect), true),
-        };
-        backdrop_read_reach_by_effect_index[effect.0 as usize] = backdrop_read_reach;
-        let reading_effect_node = &tree.effect_nodes[effect.0 as usize];
-        let backdrop_root = if reading_effect_node.parent.is_none() {
-            None
-        } else {
-            tree.nearest_layer_at_or_above(reading_effect_node.parent)
-                .filter(|root| tree.root_isolation_effect != Some(*root))
-        };
-        let why_composited = if !reads_nothing_past_mirrored_edge {
-            Some(WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame)
-        } else if let Some(backdrop_root) = backdrop_root {
-            let backdrop_read_tiles = match backdrop_read_reach {
-                Reach::Within(rect) => Reach::Within(CellRange::touched_by(rect).rect()),
-                backdrop_read_reach => backdrop_read_reach,
+    // What each backdrop reader reads, in paint order, and whether it reads the root group. An effect that reads what
+    // its own layer does not hold is composited.
+    fn note_backdrop_readers(
+        &self,
+        runs: &RunGroupsPlaced,
+        placed_media: &[PlacedMedia],
+        why_composited_regardless_of_layer_content: &mut WhyEffectsAreCompositedRegardlessOfLayerContent,
+    ) -> (Vec<Reach<IntRect>>, Vec<EffectNodeIndex>, Vec<bool>) {
+        let (tree, list) = (self.tree, self.list);
+        let mut backdrop_read_reach_by_effect_index = vec![Reach::Nothing; tree.effect_nodes.len()];
+        let mut backdrop_readers_in_paint_order = Vec::new();
+        // Empty until an effect reads the root group.
+        let mut reads_root_group_by_effect_index: Vec<bool> = Vec::new();
+        for &effect in &self.effects_in_paint_order_with_outer_before_inner {
+            let Some(backdrop_reader) = self.backdrop_reader_by_effect_index[effect.0 as usize] else {
+                continue;
             };
-            let read_tiles_cut_by_earlier_composited_effect = why_composited_regardless_of_layer_content
-                .composited_effects
-                .iter()
-                .any(|&other_effect| {
-                    other_effect != effect
-                        && first_run_index_by_effect_index[other_effect.0 as usize]
-                            < first_run_index_by_effect_index[effect.0 as usize]
-                        && nesting_of_live_effects.is_strictly_inside(other_effect, backdrop_root)
-                        && !nesting_of_live_effects.is_strictly_inside(effect, other_effect)
-                        && backdrop_read_tiles.meets(Reach::Within(reach_of_effect(other_effect).united(
-                            match backdrop_read_reach_by_effect_index[other_effect.0 as usize] {
-                                Reach::Within(rect) => rect,
-                                _ => IntRect::default(),
-                            },
-                        )))
+            let run_group = &runs.groups[self.run_group_of_effect(effect).0];
+            let geometry = &self.geometries[run_group.raster_space_index.0];
+            let reach_of_reading_effect = self.reach_of_effect(runs, effect);
+            let (backdrop_read_reach, reads_nothing_past_mirrored_edge) =
+                match backdrop_reader.effect_with_backdrop_filter {
+                    Some(effect_with_backdrop_filter) => {
+                        let effect_node = &tree.effect_nodes[effect_with_backdrop_filter.0 as usize];
+                        let EffectNodeData::Effects(effects) = &effect_node.data else {
+                            unreachable!("a backdrop filter belongs to an effects node");
+                        };
+                        let backdrop_filter = effects
+                            .backdrop_filter
+                            .as_ref()
+                            .expect("a reader with a backdrop filter has one");
+                        // Where a transform the compositor animates moves or scales the backdrop filter within the
+                        // space, a sample can read anywhere.
+                        let backdrop_read_reach = if self.tables.animation_samples_move_spatial_within_space(
+                            effect_node.spatial,
+                            run_group.raster_space_index,
+                        ) {
+                            Reach::Anywhere
+                        } else if run_group.moves_within_space {
+                            filter_read_reach_in_device_pixels(
+                                &backdrop_filter.filter,
+                                &geometry.raster.world.draw_matrix(effect_node.spatial),
+                            )
+                            .map_or(Reach::Anywhere, |read_reach_in_device_pixels| {
+                                Reach::Within(run_group.reach.inflated_edges(
+                                    read_reach_in_device_pixels,
+                                    read_reach_in_device_pixels,
+                                    read_reach_in_device_pixels,
+                                    read_reach_in_device_pixels,
+                                ))
+                            })
+                        } else {
+                            backdrop_filter_read_reach(tree, &geometry.raster, effect_with_backdrop_filter)
+                        };
+                        (
+                            backdrop_read_reach,
+                            backdrop_filter_reads_nothing_past_mirrored_edge(&backdrop_filter.filter),
+                        )
+                    }
+                    None => (Reach::Within(reach_of_reading_effect), true),
+                };
+            backdrop_read_reach_by_effect_index[effect.0 as usize] = backdrop_read_reach;
+            let reading_effect_node = &tree.effect_nodes[effect.0 as usize];
+            let backdrop_root = if reading_effect_node.parent.is_none() {
+                None
+            } else {
+                tree.nearest_layer_at_or_above(reading_effect_node.parent)
+                    .filter(|root| tree.root_isolation_effect != Some(*root))
+            };
+            let why_composited = if !reads_nothing_past_mirrored_edge {
+                Some(WhyEffectIsComposited::ItsBackdropFilterReadsPastTheEdgeOfTheFrame)
+            } else if let Some(backdrop_root) = backdrop_root {
+                let backdrop_read_tiles = match backdrop_read_reach {
+                    Reach::Within(rect) => Reach::Within(CellRange::touched_by(rect).rect()),
+                    backdrop_read_reach => backdrop_read_reach,
+                };
+                let read_tiles_cut_by_earlier_composited_effect = why_composited_regardless_of_layer_content
+                    .composited_effects
+                    .iter()
+                    .any(|&other_effect| {
+                        other_effect != effect
+                            && self.first_run_index_by_effect_index[other_effect.0 as usize]
+                                < self.first_run_index_by_effect_index[effect.0 as usize]
+                            && self
+                                .nesting_of_live_effects
+                                .is_strictly_inside(other_effect, backdrop_root)
+                            && !self.nesting_of_live_effects.is_strictly_inside(effect, other_effect)
+                            && backdrop_read_tiles.meets(Reach::Within(
+                                self.reach_of_effect(runs, other_effect).united(
+                                    match backdrop_read_reach_by_effect_index[other_effect.0 as usize] {
+                                        Reach::Within(rect) => rect,
+                                        _ => IntRect::default(),
+                                    },
+                                ),
+                            ))
+                    });
+                let read_tiles_cut_by_earlier_media = placed_media.iter().any(|media| {
+                    let effect_of_media = list.run(media.run_index.0 as usize).context.effect;
+                    (media.run_index.0 as usize) < self.first_run_index_by_effect_index[effect.0 as usize]
+                        && self
+                            .nesting_of_live_effects
+                            .is_or_is_inside(effect_of_media, backdrop_root)
+                        && backdrop_read_tiles.meets(Reach::Within(media.reach))
                 });
-            let read_tiles_cut_by_earlier_media = placed_media.iter().any(|media| {
-                let effect_of_media = list.run(media.run_index.0 as usize).context.effect;
-                (media.run_index.0 as usize) < first_run_index_by_effect_index[effect.0 as usize]
-                    && nesting_of_live_effects.is_or_is_inside(effect_of_media, backdrop_root)
-                    && backdrop_read_tiles.meets(Reach::Within(media.reach))
-            });
-            (read_tiles_cut_by_earlier_composited_effect || read_tiles_cut_by_earlier_media)
-                .then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
-        } else {
-            None
-        };
-        backdrop_readers_in_paint_order.push(effect);
-        if backdrop_root.is_none() {
-            reads_root_group_by_effect_index.resize(tree.effect_nodes.len(), false);
-            reads_root_group_by_effect_index[effect.0 as usize] = true;
-        }
-        let Some(why_composited) = why_composited else {
-            continue;
-        };
-        why_composited_regardless_of_layer_content.set(effect, why_composited);
-        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
-            tree,
-            reading_effect_node.parent,
-            WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
-        );
-    }
-
-    // Effects come after the effects around them, so the innermost placed effect at or around each is known by then.
-    let mut innermost_placed_effect_at_or_around_by_effect_index: Vec<Option<PlacedEffectIndex>> =
-        vec![None; tree.effect_nodes.len()];
-    let mut placed_effects: Vec<PlacedEffect> = Vec::new();
-    for &effect in &effects_in_paint_order_with_outer_before_inner {
-        let parent = tree.effect_nodes[effect.0 as usize].parent;
-        let innermost_placed_effect_around = innermost_placed_effect_at_or_around_by_effect_index
-            .get(parent.0 as usize)
-            .copied()
-            .flatten();
-        innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] = innermost_placed_effect_around;
-        let why_composited_regardless_of_layer_content =
-            why_composited_regardless_of_layer_content.why_by_effect_index[effect.0 as usize];
-        let reads_root_group = reads_root_group_by_effect_index
-            .get(effect.0 as usize)
-            .copied()
-            .unwrap_or(false);
-        if why_composited_regardless_of_layer_content.is_none() && !reads_root_group {
-            continue;
-        }
-        innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] =
-            Some(PlacedEffectIndex(placed_effects.len()));
-        placed_effects.push(PlacedEffect {
-            effect,
-            placed_effect_around_index: innermost_placed_effect_around,
-            reach: reach_of_effect(effect),
-            backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
-            why_composited_regardless_of_layer_content,
-        });
-    }
-    let innermost_placed_effect_of_run = |run_index: usize| {
-        innermost_placed_effect_at_or_around_by_effect_index
-            .get(list.run(run_index).context.effect.0 as usize)
-            .copied()
-            .flatten()
-    };
-
-    let mut record_stretches: Vec<PlacedRecordStretch> = Vec::with_capacity(placed_run_groups.len());
-    let mut remaining_placed_media = placed_media.iter().enumerate().peekable();
-    let mut tiles_hold_content_moving_within_space_by_space_index = vec![false; spaces.len()];
-    for run_index in 0..list.run_count() {
-        let run_group_index = run_groups.group_of_run(run_index);
-        let innermost_placed_effect = innermost_placed_effect_of_run(run_index);
-        if let Some((placed_media_index, media)) =
-            remaining_placed_media.next_if(|(_, media)| media.run_index.0 as usize == run_index)
-        {
-            record_stretches.push(PlacedRecordStretch {
-                record_span: media.record_span,
-                run_group_index,
-                reach: media.reach,
-                placed_media_index: Some(PlacedMediaIndex(placed_media_index)),
-                placed_effect_index: innermost_placed_effect,
-            });
-            continue;
-        }
-        if run_moves_within_space_by_run_index[run_index] {
-            tiles_hold_content_moving_within_space_by_space_index[space_of_run(run_index).0] = true;
-        }
-        let run_span = list.span_of_run(run_index);
-        let run_draws_nothing = list.run(run_index).ink_bounds.is_empty();
-        let reach_of_run_in_stretch = match innermost_placed_effect {
-            _ if run_draws_nothing => IntRect::default(),
-            Some(placed_effect_index) => placed_effects[placed_effect_index.0].reach,
-            None => reach_of_run_by_run_index[run_index],
-        };
-        match record_stretches.last_mut() {
-            Some(last)
-                if last.run_group_index == run_group_index
-                    && last.placed_effect_index == innermost_placed_effect
-                    && last.placed_media_index.is_none() =>
-            {
-                last.record_span.end = run_span.end;
-                last.reach = last.reach.united(reach_of_run_in_stretch);
+                (read_tiles_cut_by_earlier_composited_effect || read_tiles_cut_by_earlier_media)
+                    .then_some(WhyEffectIsComposited::ItReadsWhatItsOwnLayerDoesNotHold)
+            } else {
+                None
+            };
+            backdrop_readers_in_paint_order.push(effect);
+            if backdrop_root.is_none() {
+                reads_root_group_by_effect_index.resize(tree.effect_nodes.len(), false);
+                reads_root_group_by_effect_index[effect.0 as usize] = true;
             }
-            _ => record_stretches.push(PlacedRecordStretch {
-                record_span: run_span,
-                run_group_index,
-                reach: reach_of_run_in_stretch,
-                placed_media_index: None,
-                placed_effect_index: innermost_placed_effect,
-            }),
-        }
-    }
-
-    let placement = ListPlacement {
-        run_groups: placed_run_groups,
-        record_stretches,
-        placed_media,
-        media_without_layers,
-        animations_without_layers,
-        placed_effects,
-        backdrop_readers_in_paint_order,
-        why_compositor_cannot_composite_by_effect_index,
-    };
-    (
-        placement,
-        swept_reach_in_parent_space_by_space_index,
-        tiles_hold_content_moving_within_space_by_space_index,
-    )
-}
-
-/// Where content of `space`, whose anchor the compositor animates, can show in the raster coordinates of the space it
-/// is in wherever the animation takes it, or why the space holds none of it: content that a frame cannot composite
-/// through the anchor's transform, or whose reach nothing bounds, which would cut every tile around it, or that can
-/// show over a canvas or video painted before it, which would take those from the window server for the whole
-/// animation.
-#[allow(clippy::too_many_arguments)]
-fn swept_reach_of_animated_space_in_parent_space(
-    inputs: &LayerStackInputs<'_>,
-    tables: &PlacementTables,
-    geometries: &[RasterSpaceGeometryForPlacing],
-    filters_and_clips: &FiltersAndClipsOfList<'_>,
-    why_compositor_cannot_composite_by_effect_index: &[Option<WhyCompositorCannotCompositeEffect>],
-    space: RasterSpaceIndex,
-    run_indices_of_space: &[usize],
-    canvases_and_videos_placed_before: impl Iterator<Item = (RasterSpaceIndex, IntRect)>,
-) -> Result<IntRect, WhyAnimationHasNoLayer> {
-    let (tree, list) = (inputs.tree, inputs.list);
-    let raster_space = tables.spaces()[space.0];
-    let RasterSpaceAnchorKind::AnimatedTransform { raster_scale } = raster_space.anchor_kind else {
-        unreachable!("only spaces whose anchor the compositor animates are swept");
-    };
-    if list
-        .summary()
-        .destination_blending_records
-        .iter()
-        .any(|record| run_indices_of_space.binary_search(&(record.run_index as usize)).is_ok())
-    {
-        return Err(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
-    }
-    for &run_index in run_indices_of_space {
-        let mut effect = list.run(run_index).context.effect;
-        while !effect.is_none() {
-            let effect_node = &tree.effect_nodes[effect.0 as usize];
-            let composited_around_space = tables.animated_space_holding_every_run_of_effect(effect) == Some(space)
-                && !tables.moves_with(effect_node.spatial, space);
-            if composited_around_space {
-                if effect_reads_below_it(tree, effect) {
-                    return Err(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
-                }
-                if let Some(why) = why_compositor_cannot_composite_by_effect_index[effect.0 as usize] {
-                    return Err(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
-                }
-            }
-            effect = effect_node.parent;
-        }
-    }
-
-    let geometry = &geometries[space.0];
-    // Content that moves within the space, as a sample of an animation inside it moves it or spreads it, reaches
-    // wherever its clips fixed in the space let it.
-    let content_reach_in_space = run_indices_of_space.iter().fold(Reach::Nothing, |reach, &run_index| {
-        let run = list.run(run_index);
-        if run.ink_bounds.is_empty() {
-            return reach;
-        }
-        let drawn_within =
-            (!tables.context_moves_within_space(tree, run.context, space)).then(|| run.ink_bounds.to_float());
-        reach.united(geometry.reach_of_content(filters_and_clips, drawn_within, run.context))
-    });
-    let content_rect_in_anchor_space = match content_reach_in_space {
-        Reach::Nothing => return Ok(IntRect::default()),
-        Reach::Anywhere => return Err(WhyAnimationHasNoLayer::NothingBoundsWhereItMoves),
-        Reach::Within(rect) => libgfx_rust::FloatRect::new(
-            rect.x as f32 / raster_scale,
-            rect.y as f32 / raster_scale,
-            rect.width as f32 / raster_scale,
-            rect.height as f32 / raster_scale,
-        ),
-    };
-
-    let parent_space = raster_space.parent_index;
-    let parent_geometry = &geometries[parent_space.0];
-    let parent_of_anchor = tree.spatial_nodes[raster_space.anchor.0 as usize].parent;
-    let reach_within_clips_fixed_in_parent_space =
-        run_indices_of_space.iter().fold(Reach::Nothing, |reach, &run_index| {
-            reach.united(parent_geometry.reach_of_content(filters_and_clips, None, list.run(run_index).context))
-        });
-    let swept_bounds_in_parent_space = (!tables.spatial_moves_within_space(parent_of_anchor, parent_space))
-        .then(|| {
-            crate::display_list::animated_transform_spaces::swept_bounds_in_parent(
+            let Some(why_composited) = why_composited else {
+                continue;
+            };
+            why_composited_regardless_of_layer_content.set(effect, why_composited);
+            why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
                 tree,
-                raster_space.anchor,
-                content_rect_in_anchor_space,
-            )
-        })
-        .flatten()
-        .map(|bounds| parent_geometry.raster.world.map_rect_to_root(parent_of_anchor, bounds))
-        .filter(|bounds| is_finite_rect(*bounds));
-    let swept_reach = match swept_bounds_in_parent_space {
-        Some(bounds) => {
-            let margin = crate::display_list::placement::ANTIALIASING_MARGIN_IN_DEVICE_PIXELS;
-            let swept_rect =
-                enclosing_int_rect_within_extent_limit(bounds).inflated_edges(margin, margin, margin, margin);
-            reach_within_clips_fixed_in_parent_space.limited_to(swept_rect)
+                reading_effect_node.parent,
+                WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
+            );
         }
-        None => reach_within_clips_fixed_in_parent_space,
-    };
-    if swept_reach == Reach::Anywhere {
-        return Err(WhyAnimationHasNoLayer::NothingBoundsWhereItMoves);
+        (
+            backdrop_read_reach_by_effect_index,
+            backdrop_readers_in_paint_order,
+            reads_root_group_by_effect_index,
+        )
     }
-    let swept_reach = parent_geometry.part_of_extent_reached_by(swept_reach);
 
-    for (space_of_media, reach_of_media) in canvases_and_videos_placed_before {
-        if space_of_media != parent_space || !reach_of_media.intersected(swept_reach).is_empty() {
-            return Err(WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo);
+    fn place_effects(
+        &self,
+        runs: &RunGroupsPlaced,
+        why_composited_regardless_of_layer_content: &WhyEffectsAreCompositedRegardlessOfLayerContent,
+        backdrop_read_reach_by_effect_index: &[Reach<IntRect>],
+        reads_root_group_by_effect_index: &[bool],
+    ) -> (Vec<PlacedEffect>, Vec<Option<PlacedEffectIndex>>) {
+        let tree = self.tree;
+        // Effects come after the effects around them, so the innermost placed effect at or around each is known by
+        // then.
+        let mut innermost_placed_effect_at_or_around_by_effect_index: Vec<Option<PlacedEffectIndex>> =
+            vec![None; tree.effect_nodes.len()];
+        let mut placed_effects: Vec<PlacedEffect> = Vec::new();
+        for &effect in &self.effects_in_paint_order_with_outer_before_inner {
+            let parent = tree.effect_nodes[effect.0 as usize].parent;
+            let innermost_placed_effect_around = innermost_placed_effect_at_or_around_by_effect_index
+                .get(parent.0 as usize)
+                .copied()
+                .flatten();
+            innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] = innermost_placed_effect_around;
+            let why_composited_regardless_of_layer_content =
+                why_composited_regardless_of_layer_content.why_by_effect_index[effect.0 as usize];
+            let reads_root_group = reads_root_group_by_effect_index
+                .get(effect.0 as usize)
+                .copied()
+                .unwrap_or(false);
+            if why_composited_regardless_of_layer_content.is_none() && !reads_root_group {
+                continue;
+            }
+            innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] =
+                Some(PlacedEffectIndex(placed_effects.len()));
+            placed_effects.push(PlacedEffect {
+                effect,
+                placed_effect_around_index: innermost_placed_effect_around,
+                reach: self.reach_of_effect(runs, effect),
+                backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
+                why_composited_regardless_of_layer_content,
+            });
         }
+        (placed_effects, innermost_placed_effect_at_or_around_by_effect_index)
     }
-    Ok(swept_reach)
+
+    fn place_record_stretches(
+        &self,
+        runs: &RunGroupsPlaced,
+        placed_media: &[PlacedMedia],
+        placed_effects: &[PlacedEffect],
+        innermost_placed_effect_at_or_around_by_effect_index: &[Option<PlacedEffectIndex>],
+    ) -> (Vec<PlacedRecordStretch>, Vec<bool>) {
+        let list = self.list;
+        let innermost_placed_effect_of_run = |run_index: usize| {
+            innermost_placed_effect_at_or_around_by_effect_index
+                .get(list.run(run_index).context.effect.0 as usize)
+                .copied()
+                .flatten()
+        };
+
+        let mut record_stretches: Vec<PlacedRecordStretch> = Vec::with_capacity(runs.groups.len());
+        let mut remaining_placed_media = placed_media.iter().enumerate().peekable();
+        let mut tiles_hold_content_moving_within_space_by_space_index = vec![false; self.tables.spaces().len()];
+        for run_index in 0..list.run_count() {
+            let run_group_index = self.run_groups.group_of_run(run_index);
+            let innermost_placed_effect = innermost_placed_effect_of_run(run_index);
+            if let Some((placed_media_index, media)) =
+                remaining_placed_media.next_if(|(_, media)| media.run_index.0 as usize == run_index)
+            {
+                record_stretches.push(PlacedRecordStretch {
+                    record_span: media.record_span,
+                    run_group_index,
+                    reach: media.reach,
+                    placed_media_index: Some(PlacedMediaIndex(placed_media_index)),
+                    placed_effect_index: innermost_placed_effect,
+                });
+                continue;
+            }
+            if runs.run_moves_within_space_by_run_index[run_index] {
+                tiles_hold_content_moving_within_space_by_space_index[self.space_of_run(runs, run_index).0] = true;
+            }
+            let run_span = list.span_of_run(run_index);
+            let run_draws_nothing = list.run(run_index).ink_bounds.is_empty();
+            let reach_of_run_in_stretch = match innermost_placed_effect {
+                _ if run_draws_nothing => IntRect::default(),
+                Some(placed_effect_index) => placed_effects[placed_effect_index.0].reach,
+                None => runs.reach_of_run_by_run_index[run_index],
+            };
+            match record_stretches.last_mut() {
+                Some(last)
+                    if last.run_group_index == run_group_index
+                        && last.placed_effect_index == innermost_placed_effect
+                        && last.placed_media_index.is_none() =>
+                {
+                    last.record_span.end = run_span.end;
+                    last.reach = last.reach.united(reach_of_run_in_stretch);
+                }
+                _ => record_stretches.push(PlacedRecordStretch {
+                    record_span: run_span,
+                    run_group_index,
+                    reach: reach_of_run_in_stretch,
+                    placed_media_index: None,
+                    placed_effect_index: innermost_placed_effect,
+                }),
+            }
+        }
+        (record_stretches, tiles_hold_content_moving_within_space_by_space_index)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
