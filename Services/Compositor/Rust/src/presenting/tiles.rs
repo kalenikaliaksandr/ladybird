@@ -796,17 +796,22 @@ pub(super) fn joined_rects_of_grid_given_row_by_row<T: Copy + PartialEq>(
         rects_joined_within_rows.push((rect, value));
     }
     let mut joined: Vec<(IntRect, T)> = Vec::new();
+    let mut index_of_joined_rect_by_left_width_and_bottom: HashMap<(i32, i32, i32), usize> = HashMap::new();
     for (row_rect, value) in rects_joined_within_rows {
-        if let Some((above, _)) = joined.iter_mut().find(|(above, above_value)| {
-            *above_value == value
-                && above.x == row_rect.x
-                && above.width == row_rect.width
-                && above.bottom() == row_rect.y
-        }) {
-            above.height += row_rect.height;
-            continue;
+        let left_width_and_bottom_of_rect_above = (row_rect.x, row_rect.width, row_rect.y);
+        match index_of_joined_rect_by_left_width_and_bottom.get(&left_width_and_bottom_of_rect_above) {
+            Some(&index) if joined[index].1 == value => {
+                index_of_joined_rect_by_left_width_and_bottom.remove(&left_width_and_bottom_of_rect_above);
+                joined[index].0.height += row_rect.height;
+                index_of_joined_rect_by_left_width_and_bottom
+                    .insert((row_rect.x, row_rect.width, joined[index].0.bottom()), index);
+            }
+            _ => {
+                index_of_joined_rect_by_left_width_and_bottom
+                    .insert((row_rect.x, row_rect.width, row_rect.bottom()), joined.len());
+                joined.push((row_rect, value));
+            }
         }
-        joined.push((row_rect, value));
     }
     joined
 }
@@ -921,6 +926,27 @@ mod tests {
     }
 
     // A box that the compositor scales up from nothing shows at a tiny part of its raster scale at first.
+    // A layer of another process can show many tiles of one color, with colors that keep any two from joining.
+    #[test]
+    fn rects_of_a_grid_given_row_by_row_join_into_columns_without_a_search_of_every_joined_rect() {
+        let cell = |column: i32, row: i32| IntRect::new(column * 16, row * 16, 16, 16);
+        let grid = |columns: i32, rows: i32, value_of_cell: fn(i32, i32) -> i32| {
+            (0..rows)
+                .flat_map(move |row| (0..columns).map(move |column| (cell(column, row), value_of_cell(column, row))))
+        };
+        assert_eq!(
+            joined_rects_of_grid_given_row_by_row(grid(300, 300, |column, _| column / 100)),
+            [
+                (IntRect::new(0, 0, 1600, 4800), 0),
+                (IntRect::new(1600, 0, 1600, 4800), 1),
+                (IntRect::new(3200, 0, 1600, 4800), 2),
+            ]
+        );
+        let checkerboard = joined_rects_of_grid_given_row_by_row(grid(300, 300, |column, row| (column + row) % 2));
+        assert_eq!(checkerboard.len(), 300 * 300);
+        assert_eq!(checkerboard[300 * 300 - 1], (cell(299, 299), 0));
+    }
+
     #[test]
     fn a_layer_shown_at_a_tiny_scale_draws_its_held_tiles_without_visiting_every_cell_the_viewport_maps_to() {
         let tiny_scale = 1.0e-5;

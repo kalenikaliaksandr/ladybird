@@ -46,6 +46,7 @@ use libcompositing_rust::fast_hash::fast_hasher;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, ScalingMode};
+use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hasher;
@@ -74,6 +75,7 @@ const MAXIMUM_PASSES_GROWING_DAMAGE_OVER_WHAT_COMPOSITED_EFFECTS_READ: usize = 8
 // uncovered. Past either bound, tiles are not hidden but drawn, which is right, only slower.
 const MAXIMUM_OPAQUE_RECTS_HIDING_TILES_BELOW: usize = 128;
 const MAXIMUM_UNCOVERED_PARTS_OF_TILE: usize = 64;
+const MAXIMUM_COMPOSITED_EFFECT_READS_TESTED_ONE_BY_ONE: usize = 64;
 
 struct PaintedLayerPresentation {
     presentable_surface_pool: u32,
@@ -844,6 +846,19 @@ fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> boo
     uncovered_parts.is_empty()
 }
 
+// A tile below is tested against what at most `MAXIMUM_COMPOSITED_EFFECT_READS_TESTED_ONE_BY_ONE` composited effects
+// read, one by one. Past that, it is tested against the bounds of all they read, which hides fewer tiles.
+fn composited_effect_reads_tiles_are_tested_against(read_reaches_in_frame: &[IntRect]) -> Cow<'_, [IntRect]> {
+    if read_reaches_in_frame.len() <= MAXIMUM_COMPOSITED_EFFECT_READS_TESTED_ONE_BY_ONE {
+        return Cow::Borrowed(read_reaches_in_frame);
+    }
+    Cow::Owned(vec![
+        read_reaches_in_frame
+            .iter()
+            .fold(IntRect::default(), |bounds, &read_reach| bounds.united(read_reach)),
+    ])
+}
+
 // A backdrop filter that reads past its tile by an unknown reach reads its layer's tiles wherever they are, so none of
 // them may be hidden.
 fn hide_tiles_covered_by_opaque_tiles_above(
@@ -854,6 +869,8 @@ fn hide_tiles_covered_by_opaque_tiles_above(
     viewport_rect: IntRect,
     is_hidden_from_view: impl Fn(&LayerIdentity) -> bool,
 ) -> usize {
+    let composited_effect_reads_tested_against_tiles =
+        composited_effect_reads_tiles_are_tested_against(read_reaches_of_composited_effects_in_frame);
     let mut opaque_rects_in_frame_above: Vec<IntRect> = Vec::new();
     let mut hidden_tile_count = 0;
     for compositing in compositing_of_layers.iter().rev() {
@@ -871,7 +888,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
             let tile_count_before = shown.len();
             shown.retain(|tile| {
                 let needed_rect_in_frame = compositing.rect_in_frame(tile.part_of_cell_needed, viewport_rect);
-                let is_read_by_composited_effect = read_reaches_of_composited_effects_in_frame
+                let is_read_by_composited_effect = composited_effect_reads_tested_against_tiles
                     .iter()
                     .any(|read_reach| !read_reach.intersected(needed_rect_in_frame).is_empty());
                 needed_rect_in_frame.is_empty()
@@ -2710,6 +2727,20 @@ mod tests {
             tile,
             &[IntRect::new(0, 0, 300, 512), IntRect::new(200, 0, 312, 512)]
         ));
+    }
+
+    // A frame from another process can composite many effects that each read past each of their pixels.
+    #[test]
+    fn tiles_are_tested_against_the_bounds_of_what_composited_effects_read_past_a_bound() {
+        let reads: Vec<IntRect> = (0..MAXIMUM_COMPOSITED_EFFECT_READS_TESTED_ONE_BY_ONE as i32)
+            .map(|index| IntRect::new(index * 10, 0, 5, 5))
+            .collect();
+        assert_eq!(*composited_effect_reads_tiles_are_tested_against(&reads), reads[..]);
+        let mut reads_past_bound = reads;
+        reads_past_bound.push(IntRect::new(0, 1000, 5, 5));
+        let tested = composited_effect_reads_tiles_are_tested_against(&reads_past_bound);
+        assert_eq!(tested.len(), 1);
+        assert!(reads_past_bound.iter().all(|read| tested[0].contains_rect(*read)));
     }
 
     fn one_layer_showing(tiles: impl IntoIterator<Item = (IntRect, TileCoverage)>) -> Vec<Vec<TileShownInFrame>> {
