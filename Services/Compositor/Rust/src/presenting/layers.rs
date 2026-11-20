@@ -303,8 +303,8 @@ fn any_layer_shown_by_window_server(compositing_of_layers: &[LayerCompositingInF
         .any(|compositing| compositing.shown_by_window_server)
 }
 
-struct ListAndGeometryOfBandTileKeys {
-    display_list: Rc<DisplayList>,
+/// What the tile keys of a band were bound with, besides the list the stack of frames keeps them for.
+struct BindingOfBandTileKeys {
     geometry: Rc<RasterSpaceGeometry>,
     band: PlacementNodeBand,
     base_layer: LayerIndex,
@@ -313,14 +313,14 @@ struct ListAndGeometryOfBandTileKeys {
 #[derive(Default)]
 struct BandTileKeysOfFrame {
     identities: BandIdentities,
-    bound_to_list_and_geometry: Option<ListAndGeometryOfBandTileKeys>,
+    binding: Option<BindingOfBandTileKeys>,
     tile_keys: BandTileKeys,
 }
 
 impl BandTileKeysOfFrame {
     fn bound_geometry(&self) -> &RasterSpaceGeometry {
         &self
-            .bound_to_list_and_geometry
+            .binding
             .as_ref()
             .expect("the tile keys of a band of a frame are bound")
             .geometry
@@ -539,6 +539,8 @@ struct StackOfFrames {
     raster_spaces: Option<RasterSpaces>,
     geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
     band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame,
+    /// The list the band tile keys are bound to: that of the latest frame that keyed them.
+    display_list_of_band_tile_keys: Option<Rc<DisplayList>>,
     /// Per layer, what the layers overlay calls it, worked out by the first frame that draws the overlay.
     names_of_layers_for_overlay: OnceCell<Vec<Rc<str>>>,
 }
@@ -554,6 +556,7 @@ impl StackOfFrames {
     ) -> Self {
         let mut geometry_by_space: Vec<_> = (0..stack.spaces.len()).map(|_| None).collect();
         let mut band_tile_keys_of_latest_frame = Vec::new();
+        let mut display_list_of_band_tile_keys = None;
         if let Some(latest) = latest {
             if latest.viewport_to_raster_transform == viewport_to_raster_transform
                 && latest
@@ -568,6 +571,7 @@ impl StackOfFrames {
             let (BandTileKeysOfLatestFrame::OfSameStack(band_tile_keys_by_band)
             | BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_by_band)) = latest.band_tile_keys_of_latest_frame;
             band_tile_keys_of_latest_frame = band_tile_keys_by_band;
+            display_list_of_band_tile_keys = latest.display_list_of_band_tile_keys;
         }
         Self {
             layer_plan,
@@ -576,6 +580,7 @@ impl StackOfFrames {
             raster_spaces: None,
             geometry_by_space,
             band_tile_keys_of_latest_frame: BandTileKeysOfLatestFrame::OfOtherStack(band_tile_keys_of_latest_frame),
+            display_list_of_band_tile_keys,
             names_of_layers_for_overlay: OnceCell::new(),
         }
     }
@@ -1675,6 +1680,7 @@ impl ContextPresenting {
             // The frame paints its tiles from the stack, which keeps the tile keys where the frame is not painted.
             stack_of_frames.band_tile_keys_of_latest_frame =
                 BandTileKeysOfLatestFrame::OfSameStack(band_tile_keys_by_band);
+            stack_of_frames.display_list_of_band_tile_keys = Some(frame.display_list.clone());
             (layer_update, stale_rect)
         });
         if self
@@ -1810,6 +1816,10 @@ impl ContextPresenting {
         };
 
         let chunk_names = storage.chunk_names();
+        let list_holds_chunks_the_band_tile_keys_are_bound_to = stack_of_frames
+            .display_list_of_band_tile_keys
+            .as_ref()
+            .is_some_and(|list_of_band_tile_keys| lists_hold_same_chunks(list_of_band_tile_keys, frame.display_list));
         // The tile keys that a frame drawn with the same stack left are bound to the list, the bands and the base layer
         // of this frame, as frames drawn with one stack draw one list.
         let (mut band_tile_keys_by_band, band_tile_keys_are_of_same_stack) = band_tile_keys_of_latest_frame
@@ -1839,25 +1849,20 @@ impl ContextPresenting {
                 identities: BandIdentities::of(stack, band_index, &chunk_names),
                 ..BandTileKeysOfFrame::default()
             });
-            let still_bound_to_same_list_and_geometry =
-                band_tile_keys.bound_to_list_and_geometry.as_ref().is_some_and(|bound| {
-                    Rc::ptr_eq(&bound.geometry, &geometries[raster_space_index.0])
-                        && (band_tile_keys_are_of_same_stack
-                            || (lists_hold_same_chunks(&bound.display_list, frame.display_list)
-                                && bound.band == *band
-                                && bound.base_layer == stack.base_layer))
+            let still_bound_to_same_list_and_geometry = band_tile_keys.binding.as_ref().is_some_and(|binding| {
+                Rc::ptr_eq(&binding.geometry, &geometries[raster_space_index.0])
+                    && (band_tile_keys_are_of_same_stack
+                        || (list_holds_chunks_the_band_tile_keys_are_bound_to
+                            && binding.band == *band
+                            && binding.base_layer == stack.base_layer))
+            });
+            if !still_bound_to_same_list_and_geometry {
+                tile_keying.bind_band(&mut band_tile_keys.tile_keys, stack, band_index);
+                band_tile_keys.binding = Some(BindingOfBandTileKeys {
+                    geometry: geometries[raster_space_index.0].clone(),
+                    band: band.clone(),
+                    base_layer: stack.base_layer,
                 });
-            match &mut band_tile_keys.bound_to_list_and_geometry {
-                Some(bound) if still_bound_to_same_list_and_geometry => bound.display_list = frame.display_list.clone(),
-                _ => {
-                    tile_keying.bind_band(&mut band_tile_keys.tile_keys, stack, band_index);
-                    band_tile_keys.bound_to_list_and_geometry = Some(ListAndGeometryOfBandTileKeys {
-                        display_list: frame.display_list.clone(),
-                        geometry: geometries[raster_space_index.0].clone(),
-                        band: band.clone(),
-                        base_layer: stack.base_layer,
-                    });
-                }
             }
             let keying_counts = tile_keying.key_shown_tiles(
                 &mut band_tile_keys.tile_keys,
@@ -3073,7 +3078,7 @@ mod tests {
     fn band_tile_keys_of(identities: BandIdentities) -> BandTileKeysOfFrame {
         BandTileKeysOfFrame {
             identities,
-            bound_to_list_and_geometry: None,
+            binding: None,
             tile_keys: BandTileKeys::default(),
         }
     }
