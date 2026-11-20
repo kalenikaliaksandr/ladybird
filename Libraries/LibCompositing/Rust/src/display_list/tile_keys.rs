@@ -793,12 +793,16 @@ struct ContentHashesNearArea {
 }
 
 impl ContentHashesNearArea {
-    fn new(area: FloatRect) -> Self {
-        Self {
-            area,
-            content_hash_by_clip: HashMap::new(),
-            content_hash_by_effect: HashMap::new(),
-        }
+    /// The area that the tiles of the cell at `coord` raster within, where their raster margin is known.
+    fn of_cell(coord: TileCoord, raster_margin_in_device_pixels: Option<i32>) -> Option<Self> {
+        raster_margin_in_device_pixels.map(|backdrop_read_margin| {
+            let margin = 2.0 * (ANTIALIASING_MARGIN_IN_DEVICE_PIXELS + backdrop_read_margin) as f32;
+            Self {
+                area: coord.cell_rect().to_float().inflated(margin, margin),
+                content_hash_by_clip: HashMap::new(),
+                content_hash_by_effect: HashMap::new(),
+            }
+        })
     }
 }
 
@@ -2511,7 +2515,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         coverage
     }
 
-    fn content_hash_of_tile(&self, bound_band: &BandBoundToListAndGeometry, tile: &KeyedTile) -> ContentHash {
+    fn content_hash_of_tile(
+        &self,
+        bound_band: &BandBoundToListAndGeometry,
+        tile: &KeyedTile,
+        mut near_area: Option<&mut ContentHashesNearArea>,
+    ) -> ContentHash {
         let mut hasher = ContentHasher::new();
         hasher.write_content_hash(tile.raster_settings_hash);
         hasher.write_i32(tile.coord.column);
@@ -2521,17 +2530,13 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             Some(frame) => hasher.write_int_rect(frame),
             None => hasher.write_u32(0),
         }
-        let mut near_area = tile.raster_margin_in_device_pixels.map(|backdrop_read_margin| {
-            let margin = 2.0 * (ANTIALIASING_MARGIN_IN_DEVICE_PIXELS + backdrop_read_margin) as f32;
-            ContentHashesNearArea::new(tile.coord.cell_rect().to_float().inflated(margin, margin))
-        });
         for &item in &tile.replay_items_in_paint_order {
             hasher.write_content_hash(self.content_hash_of_replay_item(
                 bound_band,
                 item,
                 tile.reads_frame_state,
                 tile.reads_sampled_values,
-                near_area.as_mut(),
+                near_area.as_deref_mut(),
             ));
             // Depth-sorted planes replay in an order their sorting context decides.
             if self.list.tree_sorts_planes_by_depth
@@ -3070,6 +3075,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         for (coord, cell) in &mut band_tile_keys.cells {
             let frame_edge_backdrop_blurs_mirror_at =
                 bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
+            // The tiles of a cell are keyed together, with one raster margin.
+            let mut near_area = cell
+                .tiles
+                .first()
+                .and_then(|tile| ContentHashesNearArea::of_cell(*coord, tile.raster_margin_in_device_pixels));
             for tile in &mut cell.tiles {
                 let raster_settings_hash = raster_settings_hash_of(tile.layer_index);
                 if (frame_state_changed && tile.reads_frame_state)
@@ -3079,7 +3089,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 {
                     tile.raster_settings_hash = raster_settings_hash;
                     tile.frame_edge_backdrop_blurs_mirror_at = frame_edge_backdrop_blurs_mirror_at;
-                    tile.content_hash = self.content_hash_of_tile(bound_band, tile);
+                    tile.content_hash = self.content_hash_of_tile(bound_band, tile, near_area.as_mut());
                     counts.tiles_keyed += 1;
                 }
             }
@@ -3181,6 +3191,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             }
             let cell = coord.cell_rect();
             let raster_margin_in_device_pixels = raster_margin_of_cell(&bound_band.backdrop_reads, cell);
+            let mut near_area = ContentHashesNearArea::of_cell(coord, raster_margin_in_device_pixels);
             let cuts = cuts_of_cell.barrier_cuts();
             let frame_edge_backdrop_blurs_mirror_at =
                 bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(cell, frame);
@@ -3218,7 +3229,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     reads_sampled_values,
                     frame_edge_backdrop_blurs_mirror_at,
                 };
-                tile.content_hash = self.content_hash_of_tile(bound_band, &tile);
+                tile.content_hash = self.content_hash_of_tile(bound_band, &tile, near_area.as_mut());
                 tiles.push(tile);
                 counts.tiles_keyed += 1;
             }
