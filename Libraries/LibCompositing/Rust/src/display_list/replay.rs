@@ -1351,29 +1351,6 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
         SwitchResult::Switched
     }
 
-    fn execute_whole_run(&mut self, run_index: usize) {
-        let (chunk_index, run_index_in_chunk) = self.display_list.chunk_of_run(run_index);
-        let run = self.display_list.chunk(chunk_index).runs()[run_index_in_chunk];
-        self.execute_run_records(run_index, chunk_index, run, run.offset, run.offset + run.size);
-    }
-
-    fn execute_whole_list(&mut self) {
-        let display_list = self.display_list;
-        let mut run_index = 0;
-        for (chunk_index, chunk) in display_list.chunks().iter().enumerate() {
-            for run in chunk.runs() {
-                self.execute_run_records(
-                    run_index,
-                    ChunkIndexInList(chunk_index as u32),
-                    *run,
-                    run.offset,
-                    run.offset + run.size,
-                );
-                run_index += 1;
-            }
-        }
-    }
-
     fn execute_record_span(&mut self, span: ListSpan) {
         let display_list = self.display_list;
         for (chunk_index, begin_offset, end_offset) in display_list.parts_of_span(span) {
@@ -1431,33 +1408,26 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
     }
 
     fn execute_selected_records_of_run(&mut self, run_index: usize) {
-        let Some(record_spans) = self.selection.record_spans else {
-            self.execute_whole_run(run_index);
-            return;
-        };
         let display_list = self.display_list;
         let (chunk_index, run_index_in_chunk) = display_list.chunk_of_run(run_index);
         let run = display_list.chunk(chunk_index).runs()[run_index_in_chunk];
-        let (run_begin_position, run_end_position) = (
-            ListPosition::new(chunk_index, run.offset),
-            ListPosition::new(chunk_index, run.offset + run.size),
-        );
-        let first_span_index = record_spans.partition_point(|span| span.end <= run_begin_position);
+        let run_span = ListSpan {
+            begin: ListPosition::new(chunk_index, run.offset),
+            end: ListPosition::new(chunk_index, run.offset + run.size),
+        };
+        let Some(record_spans) = self.selection.record_spans else {
+            self.execute_record_span(run_span);
+            return;
+        };
+        let first_span_index = record_spans.partition_point(|span| span.end <= run_span.begin);
         for span in &record_spans[first_span_index..] {
-            if span.begin >= run_end_position {
+            if span.begin >= run_span.end {
                 break;
             }
-            let begin_offset = if span.begin <= run_begin_position {
-                run.offset
-            } else {
-                span.begin.offset
-            };
-            let end_offset = if span.end >= run_end_position {
-                run.offset + run.size
-            } else {
-                span.end.offset
-            };
-            self.execute_run_records(run_index, chunk_index, run, begin_offset, end_offset);
+            self.execute_record_span(ListSpan {
+                begin: span.begin.max(run_span.begin),
+                end: span.end.min(run_span.end),
+            });
         }
     }
 
@@ -1492,7 +1462,7 @@ impl<Painter: ReplayPainter + ?Sized> ReplayDriver<'_, Painter> {
                 self.execute_record_span(*span);
             }
         } else if !self.tree_sorts_planes_by_depth {
-            self.execute_whole_list();
+            self.execute_record_span(self.display_list.whole_span());
         } else {
             let root_isolation_effect = tree.root_isolation_effect;
             let canvas_stack_length_below_plane_clips = usize::from(root_isolation_effect.is_some());
@@ -2141,10 +2111,27 @@ mod tests {
         .unwrap()
     }
 
+    // Lays the runs over a record each, as a recorded list holds no run without a record.
+    fn list_of_runs(runs: &[DisplayListCommandRun]) -> std::sync::Arc<DisplayListStorage> {
+        let mut builder = crate::display_list::builder::DisplayListBuilder::new();
+        builder.append(&fill_rect_command(visible_bounds()), &[], ContextRef::default());
+        let record = builder.bytes();
+        let runs: Vec<DisplayListCommandRun> = runs
+            .iter()
+            .enumerate()
+            .map(|(index, run)| DisplayListCommandRun {
+                offset: (index * record.len()) as u32,
+                size: record.len() as u32,
+                ..*run
+            })
+            .collect();
+        list_of_one_chunk(&record.repeat(runs.len()), &runs)
+    }
+
     fn replay(tree: &VisualContextTree, runs: &[DisplayListCommandRun], painter: &mut RecordingPainter) {
         replay_display_list(
             tree,
-            &list_of_one_chunk(&[], runs),
+            &list_of_runs(runs),
             Color::TRANSPARENT,
             &ReplayFrame::unscrolled(0),
             ReplaySelection::default(),
@@ -2395,7 +2382,7 @@ mod tests {
             let mut painter = RecordingPainter::new();
             replay_display_list(
                 &tree,
-                &list_of_one_chunk(&[], &runs),
+                &list_of_runs(&runs),
                 color,
                 &ReplayFrame::unscrolled(0),
                 ReplaySelection {
@@ -3196,7 +3183,7 @@ mod tests {
         let mut painter = RecordingPainter::new();
         composite_inside_effects(
             &tree,
-            &list_of_one_chunk(&[], &runs),
+            &list_of_runs(&runs),
             Color::TRANSPARENT,
             &ReplayFrame::unscrolled(0),
             &mut painter,
@@ -3276,7 +3263,7 @@ mod tests {
         let mut painter = RecordingPainter::new();
         replay_display_list(
             &tree,
-            &list_of_one_chunk(&[], &runs),
+            &list_of_runs(&runs),
             white,
             &ReplayFrame::unscrolled(0),
             ReplaySelection::default(),
@@ -3319,7 +3306,7 @@ mod tests {
         let mut painter = RecordingPainter::new();
         replay_display_list(
             &tree,
-            &list_of_one_chunk(&[], &runs),
+            &list_of_runs(&runs),
             white,
             &ReplayFrame::unscrolled(0),
             ReplaySelection {
@@ -3453,7 +3440,7 @@ mod tests {
         let base = painter.base_matrix;
         replay_display_list(
             &tree,
-            &list_of_one_chunk(&[], &runs),
+            &list_of_runs(&runs),
             Color::TRANSPARENT,
             &ReplayFrame {
                 scroll_offsets: &scroll_offsets,
