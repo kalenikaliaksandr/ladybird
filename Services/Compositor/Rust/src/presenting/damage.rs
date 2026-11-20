@@ -291,16 +291,13 @@ impl ContextPresenting {
             raster_rect,
             invalidates_every_tile,
         );
-        let composites_layers_like_last_frame = self.painted_frame.is_some()
-            && self.layers.compositing_of_latest_frame() == layer_update.compositing_of_layers.as_slice();
-        let damage_of_layers_moved_by_animated_transforms = (self.painted_frame.is_some()
-            && !composites_layers_like_last_frame)
+        let damage_of_layers_moved_by_animated_transforms = self
+            .painted_frame
+            .is_some()
             .then(|| self.damage_of_layers_moved_by_animated_transforms(&layer_update, raster_rect))
             .flatten();
-        let composites_layers_like_last_frame_but_animated_transforms =
-            composites_layers_like_last_frame || damage_of_layers_moved_by_animated_transforms.is_some();
         let repaints_everything = invalidates_every_tile
-            || !composites_layers_like_last_frame_but_animated_transforms
+            || damage_of_layers_moved_by_animated_transforms.is_none()
             || self.layer_overlay.repaints_everything();
         let stale_rect = stale_rect.united(damage_of_layers_moved_by_animated_transforms.unwrap_or_default());
         FrameDamage {

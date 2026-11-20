@@ -710,10 +710,6 @@ impl ContextLayers {
         any_layer_shown_by_window_server(&self.compositing_of_latest_frame)
     }
 
-    pub fn compositing_of_latest_frame(&self) -> &[LayerCompositingInFrame] {
-        &self.compositing_of_latest_frame
-    }
-
     pub fn spare_tile_eviction_timer_fired(&mut self, env: &PresentingEnvironment<'_>) {
         self.evict_spare_tiles(env);
     }
