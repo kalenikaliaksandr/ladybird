@@ -130,8 +130,6 @@ pub(super) struct LayerTiles {
     /// Whether a layer took or let go of tiles, or the pixels of pooled tiles changed, since spare tiles were last
     /// evicted.
     changed_since_eviction: bool,
-    /// The latest time at which every tile held at the latest eviction was still held.
-    held_at_eviction_still_held_at: MonotonicTime,
     raster_scratch_surface: Option<SurfaceHandle>,
 }
 
@@ -349,12 +347,21 @@ impl LayerTiles {
     pub(super) fn evict_spare_tiles_if_tiles_changed(&mut self, env: &PresentingEnvironment<'_>) {
         if self.changed_since_eviction {
             self.evict_spare_tiles(env);
-        } else {
-            self.held_at_eviction_still_held_at = env.now;
         }
     }
 
     pub(super) fn evict_spare_tiles(&mut self, env: &PresentingEnvironment<'_>) {
+        if let Some(time_until_a_spare_tile_grows_too_old) = self.evict_spare_tiles_at(env.now) {
+            env.host.set_timer(
+                env.context_id,
+                ContextTimer::SpareTileEviction,
+                time_until_a_spare_tile_grows_too_old,
+            );
+        }
+    }
+
+    /// Evicts spare tiles as of `now`, and answers how long the least recently held spare tile left stays pooled.
+    fn evict_spare_tiles_at(&mut self, now: MonotonicTime) -> Option<Duration> {
         let held_content_hashes: HashSet<ContentHash> = self
             .held_by_layer
             .values()
@@ -368,19 +375,19 @@ impl LayerTiles {
         };
         let mut pixel_count_of_held_tiles = 0u64;
         let mut spare_tiles: Vec<(MonotonicTime, ContentHash, u64)> = Vec::new();
-        let held_at_eviction_still_held_at = self.held_at_eviction_still_held_at;
         self.pool.retain(|content_hash, tile| {
             if held_content_hashes.contains(content_hash) {
                 tile.held_at_latest_eviction = true;
                 pixel_count_of_held_tiles += surface_pixel_count_of(tile);
                 return true;
             }
-            // A tile let go since the latest eviction was held for as long as every tile held then still was.
+            // A frame that lets go of tiles evicts spare tiles as it is committed, so a tile let go since the latest
+            // eviction was held until now.
             if std::mem::take(&mut tile.held_at_latest_eviction) {
-                tile.last_held_at = held_at_eviction_still_held_at;
+                tile.last_held_at = now;
             }
             if !tile.holds_current_pixels
-                || env.now - tile.last_held_at >= TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK
+                || now - tile.last_held_at >= TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK
             {
                 return false;
             }
@@ -388,7 +395,6 @@ impl LayerTiles {
             true
         });
         self.changed_since_eviction = false;
-        self.held_at_eviction_still_held_at = env.now;
         let spare_tiles_least_recently_held_first = {
             spare_tiles.sort_unstable();
             spare_tiles
@@ -407,13 +413,11 @@ impl LayerTiles {
             pixel_count_of_spare_tiles -= pixel_count;
             evicted_count += 1;
         }
-        if let Some((least_recently_held_at, _, _)) = spare_tiles_least_recently_held_first.get(evicted_count) {
-            env.host.set_timer(
-                env.context_id,
-                ContextTimer::SpareTileEviction,
-                TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK - (env.now - *least_recently_held_at),
-            );
-        }
+        spare_tiles_least_recently_held_first
+            .get(evicted_count)
+            .map(|(least_recently_held_at, _, _)| {
+                TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK - (now - *least_recently_held_at)
+            })
     }
 
     pub(super) fn release_raster_scratch_surface(&mut self) {
@@ -957,6 +961,21 @@ mod tests {
         let tiles = one_color_tiles_at(&held_cells);
         let draws = tiles.draws_reaching_into(&LAYER, &layer, VIEWPORT);
         assert_eq!(rects_of_draws(&draws), held_cells.map(TileCoord::cell_rect));
+    }
+
+    // A frame lets go of a tile that the screen showed through a spell of no frames.
+    #[test]
+    fn a_tile_let_go_after_a_spell_of_no_frames_stays_pooled_for_a_while() {
+        let mut tiles = one_color_tiles_at(&[TileCoord::new(0, 0)]);
+        let at_start = MonotonicTime::from_nanoseconds(1_000_000_000);
+        assert_eq!(tiles.evict_spare_tiles_at(at_start), None);
+        let after_spell_of_no_frames = at_start + Duration::from_milliseconds(10_000);
+        tiles.keep_only_layers(&HashSet::new());
+        assert_eq!(
+            tiles.evict_spare_tiles_at(after_spell_of_no_frames),
+            Some(TIME_SPARE_TILE_STAYS_POOLED_FOR_CONTENT_THAT_COMES_BACK)
+        );
+        assert_eq!(tiles.pool.len(), 1);
     }
 
     #[test]
