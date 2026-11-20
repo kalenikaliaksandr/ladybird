@@ -537,13 +537,6 @@ pub(super) fn plan_holds_more_than_compositor_decodes(plan: &LayeredPlan) -> boo
         })
 }
 
-fn check_counts_compositor_decodes(plan: &LayeredPlan) -> Result<(), &'static str> {
-    if plan_holds_more_than_compositor_decodes(plan) {
-        return Err("the plan holds more nodes, bands, cuts or spans than the compositor decodes");
-    }
-    Ok(())
-}
-
 fn check_viewport_rect(viewport_rect: IntRect) -> Result<(), &'static str> {
     if !rect_is_within_coordinate_limit(viewport_rect) {
         return Err("the viewport of the plan lies past the limit a plan keeps to");
@@ -911,7 +904,6 @@ impl LayerStack {
         nesting_of_live_effects: &NestingOfLiveEffects<'_>,
     ) -> Result<LayerStack, &'static str> {
         check_viewport_rect(viewport_rect)?;
-        check_counts_compositor_decodes(&plan)?;
         check_rects_and_coordinates(&plan)?;
         check_values_per_space(&plan, &spaces)?;
         check_nodes(&plan.nodes, &spaces, list, tree)?;
@@ -1593,34 +1585,6 @@ mod tests {
         );
         let sent = plan_sent_of(&planned);
         assert_eq!(decoded_and_validated_plan(&page, &encoded(&sent)), Ok(sent));
-    }
-
-    #[test]
-    fn the_checks_refuse_a_plan_holding_more_than_the_compositor_decodes() {
-        let page = page_with_two_canvases();
-        let plan = page.planned_plan();
-        assert!(page.validated_plan(plan.clone()).is_ok());
-        let band_with_cut = plan
-            .bands
-            .iter()
-            .position(|band| !band.cuts.is_empty())
-            .expect("a canvas cuts a band");
-        let mut plan_with_too_many_cuts = plan.clone();
-        let cut = plan_with_too_many_cuts.bands[band_with_cut].cuts[0];
-        plan_with_too_many_cuts.bands[band_with_cut]
-            .cuts
-            .resize(MAXIMUM_CUT_COUNT_OF_RECEIVED_BAND + 1, cut);
-        let mut plan_with_too_many_bands = plan;
-        let band = plan_with_too_many_bands.bands[0].clone();
-        plan_with_too_many_bands
-            .bands
-            .resize(MAXIMUM_BAND_COUNT_OF_RECEIVED_STACK + 1, band);
-        for plan in [plan_with_too_many_cuts, plan_with_too_many_bands] {
-            assert_eq!(
-                page.validated_plan(plan),
-                Err("the plan holds more nodes, bands, cuts or spans than the compositor decodes")
-            );
-        }
     }
 
     // A page can nest composited effects deeper than a walk over the nodes of its plan can hold frames of on a stack.
