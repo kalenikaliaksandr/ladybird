@@ -632,13 +632,14 @@ fn dump_layers(
         return;
     }
     output.push_str("\nLayers:\n");
-    planned_layers
-        .write_layer_lines(output, "  ", presentation_of_media, &names, |layer| {
-            record_id_ranges_by_layer
-                .as_ref()
-                .map(|ranges| describe_record_id_ranges(&ranges[layer.0]))
-        })
-        .unwrap();
+    let describe_records = |layer: LayerIndex| {
+        record_id_ranges_by_layer
+            .as_ref()
+            .map(|ranges| describe_record_id_ranges(&ranges[layer.0]))
+    };
+    for (_, line) in planned_layers.layer_lines(presentation_of_media, &names, describe_records) {
+        writeln!(output, "  {line}").unwrap();
+    }
 }
 
 struct DumpNodeNamer<'a>(std::cell::RefCell<&'a mut DumpNames>);

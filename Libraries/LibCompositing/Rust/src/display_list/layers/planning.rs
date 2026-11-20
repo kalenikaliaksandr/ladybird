@@ -352,21 +352,6 @@ impl PlannedLayers {
         lines
     }
 
-    /// The lines of `layer_lines`, each after `indent`.
-    pub fn write_layer_lines(
-        &self,
-        output: &mut impl std::fmt::Write,
-        indent: &str,
-        presentation: &WindowServerPresentationOfMedia,
-        node_namer: &dyn VisualContextNodeNamer,
-        describe_records: impl Fn(LayerIndex) -> Option<String>,
-    ) -> std::fmt::Result {
-        for (_, line) in self.layer_lines(presentation, node_namer, describe_records) {
-            writeln!(output, "{indent}{line}")?;
-        }
-        Ok(())
-    }
-
     /// The layers that the record at `position` can be drawn into, in the tiles it reaches.
     pub fn layers_of_record(&self, position: ListPosition) -> Vec<LayerIndex> {
         let stack = &self.stack;
