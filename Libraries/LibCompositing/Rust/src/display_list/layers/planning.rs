@@ -912,14 +912,6 @@ fn place_list(
         }
         effects_in_paint_order_with_outer_before_inner.extend(newly_reached_effects_inner_to_outer.into_iter().rev());
     }
-    let mut last_run_index_by_effect_index: Vec<Option<usize>> = vec![None; tree.effect_nodes.len()];
-    for run_index in (0..list.run_count()).rev() {
-        let mut effect = list.run(run_index).context.effect;
-        while !effect.is_none() && last_run_index_by_effect_index[effect.0 as usize].is_none() {
-            last_run_index_by_effect_index[effect.0 as usize] = Some(run_index);
-            effect = tree.effect_nodes[effect.0 as usize].parent;
-        }
-    }
     let run_group_of_effect =
         |effect: EffectNodeIndex| run_groups.group_of_run(first_run_index_by_effect_index[effect.0 as usize]);
     let mut reach_by_effect_index = vec![IntRect::default(); tree.effect_nodes.len()];
@@ -1089,13 +1081,12 @@ fn place_list(
             }
         })
     };
-    let mut animated_effects_in_paint_order = effects_whose_opacity_or_filter_the_compositor_animates(tree);
-    animated_effects_in_paint_order.sort_by_key(|(effect, _)| first_run_index_by_effect_index[effect.0 as usize]);
-    for (effect, filter_is_animated) in animated_effects_in_paint_order {
-        let first_run_index = first_run_index_by_effect_index[effect.0 as usize];
-        if last_run_index_by_effect_index[effect.0 as usize].is_none() {
+    for &effect in &effects_in_paint_order_with_outer_before_inner {
+        if !tree.effect_opacity_or_filter_is_animated(effect) {
             continue;
         }
+        let filter_is_animated = tree.effect_filter_is_animated(effect);
+        let first_run_index = first_run_index_by_effect_index[effect.0 as usize];
         if tree.root_isolation_effect == Some(effect)
             || !matches!(tree.effect_nodes[effect.0 as usize].data, EffectNodeData::Effects(_))
         {
@@ -1474,35 +1465,6 @@ fn swept_reach_of_animated_space_in_parent_space(
         }
     }
     Ok(swept_reach)
-}
-
-/// The effects whose opacity or filter the compositor animates, each with whether its filter is animated.
-fn effects_whose_opacity_or_filter_the_compositor_animates(tree: &VisualContextTree) -> Vec<(EffectNodeIndex, bool)> {
-    use crate::host::FfiVisualAnimationTargetKind;
-    let mut animated_effects: Vec<(EffectNodeIndex, bool)> = Vec::new();
-    let mut position_in_animated_effects_by_effect_index: HashMap<u32, usize> = HashMap::new();
-    for animation in tree.visual_animations() {
-        let filter_is_animated = match animation.target_kind {
-            FfiVisualAnimationTargetKind::Opacity => false,
-            FfiVisualAnimationTargetKind::Filter => true,
-            _ => continue,
-        };
-        for &effect_index in &animation.node_indices {
-            if effect_index as usize >= tree.effect_nodes.len() {
-                continue;
-            }
-            match position_in_animated_effects_by_effect_index.entry(effect_index) {
-                std::collections::hash_map::Entry::Occupied(position) => {
-                    animated_effects[*position.get()].1 |= filter_is_animated;
-                }
-                std::collections::hash_map::Entry::Vacant(position) => {
-                    position.insert(animated_effects.len());
-                    animated_effects.push((EffectNodeIndex(effect_index), filter_is_animated));
-                }
-            }
-        }
-    }
-    animated_effects
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
