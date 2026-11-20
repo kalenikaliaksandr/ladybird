@@ -378,7 +378,7 @@ pub enum BarrierCutsOfCell {
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayerContent {
     /// The records of a band that the layer holds in some of its tiles.
-    Painted { band_index: BandIndex },
+    Painted,
     /// A canvas, video or nested context, replayed or shown by the window server.
     Media {
         content: LiveContent,
@@ -491,8 +491,6 @@ pub struct LayerStack {
     /// the raster coordinates of the space it is in wherever the animation takes it.
     pub swept_reach_in_parent_space_by_space_index: Vec<Option<IntRect>>,
     index_of_layer_with_identity: HashMap<LayerIdentity, LayerIndex>,
-    index_of_node_with_identity: HashMap<PlacementNodeIdentity, PlacementNodeIndex>,
-    has_layer_at_or_above_base_by_band_index: Vec<bool>,
     /// Per band, the innermost band at or around it whose node the compositor composites inside its effect.
     innermost_composited_band_at_or_around_band: Vec<Option<BandIndex>>,
 }
@@ -532,20 +530,6 @@ impl WindowServerPresentationOfMedia {
             .copied()
             .unwrap_or(false)
     }
-}
-
-fn which_bands_have_layer_at_or_above_base(
-    layers: &[StackLayer],
-    band_count: usize,
-    base_layer: LayerIndex,
-) -> Vec<bool> {
-    let mut has_layer_at_or_above_base_by_band_index = vec![false; band_count];
-    for layer in layers.iter().skip(base_layer.0) {
-        if let LayerContent::Painted { band_index } = layer.content {
-            has_layer_at_or_above_base_by_band_index[band_index.0] = true;
-        }
-    }
-    has_layer_at_or_above_base_by_band_index
 }
 
 // A band comes after the band it is in.
@@ -590,16 +574,6 @@ fn index_of_layer_with_identity(layers: &[StackLayer]) -> HashMap<LayerIdentity,
         index_by_identity
             .entry(layer.identity)
             .or_insert(LayerIndex(layer_index));
-    }
-    index_by_identity
-}
-
-fn index_of_node_with_identity(nodes: &[PlacementNode]) -> HashMap<PlacementNodeIdentity, PlacementNodeIndex> {
-    let mut index_by_identity = HashMap::with_capacity(nodes.len());
-    for (node_index, node) in nodes.iter().enumerate() {
-        index_by_identity
-            .entry(node.identity)
-            .or_insert(PlacementNodeIndex(node_index));
     }
     index_by_identity
 }
@@ -732,7 +706,7 @@ fn painted_layer_of_band(
         },
         placement_node_index: band.placement_node_index,
         band_index,
-        content: LayerContent::Painted { band_index },
+        content: LayerContent::Painted,
         may_hold_content: layer.may_hold_content,
         reach: layer.reach,
     }
@@ -762,9 +736,7 @@ impl LayerStack {
             },
             placement_node_index: PlacementNodeIndex(0),
             band_index: BandIndex(0),
-            content: LayerContent::Painted {
-                band_index: BandIndex(0),
-            },
+            content: LayerContent::Painted,
             may_hold_content: true,
             reach: viewport_rect,
         }];
@@ -788,8 +760,6 @@ impl LayerStack {
             tiles_hold_content_moving_within_space_by_space_index: vec![true],
             swept_reach_in_parent_space_by_space_index: vec![None],
             index_of_layer_with_identity: HashMap::new(),
-            index_of_node_with_identity: HashMap::new(),
-            has_layer_at_or_above_base_by_band_index: Vec::new(),
             innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
@@ -798,9 +768,6 @@ impl LayerStack {
     // The lookups that the methods read, built from what the stack holds. Every index the stack holds must be in range.
     fn with_lookups(mut self) -> Self {
         self.index_of_layer_with_identity = index_of_layer_with_identity(&self.layers);
-        self.index_of_node_with_identity = index_of_node_with_identity(&self.nodes);
-        self.has_layer_at_or_above_base_by_band_index =
-            which_bands_have_layer_at_or_above_base(&self.layers, self.bands.len(), self.base_layer);
         self.innermost_composited_band_at_or_around_band =
             innermost_composited_band_at_or_around_each_band(&self.nodes, &self.bands);
         self
@@ -960,8 +927,6 @@ impl LayerStack {
                 .tiles_hold_content_moving_within_space_by_space_index,
             swept_reach_in_parent_space_by_space_index: plan.swept_reach_in_parent_space_by_space_index,
             index_of_layer_with_identity: HashMap::new(),
-            index_of_node_with_identity: HashMap::new(),
-            has_layer_at_or_above_base_by_band_index: Vec::new(),
             innermost_composited_band_at_or_around_band: Vec::new(),
         }
         .with_lookups()
@@ -988,8 +953,14 @@ impl LayerStack {
         Some((layer_index, &self.layers[layer_index.0]))
     }
 
+    // The layers of a band come in the order of its cuts, so its topmost layer is the one above its last cut.
     pub fn band_has_layer_at_or_above_base_layer(&self, band_index: BandIndex) -> bool {
-        self.has_layer_at_or_above_base_by_band_index[band_index.0]
+        let band = &self.bands[band_index.0];
+        let topmost_layer_of_band = band
+            .cuts
+            .last()
+            .map_or(band.layer_below_all_cuts, |cut| cut.layer_above_cut);
+        topmost_layer_of_band >= self.base_layer
     }
 
     pub fn space_of_layer(&self, layer_index: LayerIndex) -> RasterSpaceIndex {
@@ -1398,29 +1369,18 @@ impl LayerStack {
         name
     }
 
-    fn name_of_barrier(&self, barrier: &BarrierIdentity, node_namer: &dyn VisualContextNodeNamer) -> String {
-        match barrier {
-            BarrierIdentity::Media { content, ordinal } => {
-                let media_layer_identity = LayerIdentity::Media {
-                    content: *content,
-                    ordinal: *ordinal,
-                };
-                let (media_layer_index, _) = self
-                    .layer_with_identity(media_layer_identity)
-                    .expect("a media barrier is a layer of the stack");
-                format!("L{}", media_layer_index.0)
-            }
-            BarrierIdentity::NestedNodeBand {
-                node,
-                band_ordinal_in_node,
-            } => {
-                let &nested_node_index = self
-                    .index_of_node_with_identity
-                    .get(node)
-                    .expect("a band barrier names a node of the stack");
+    // The layer right below a layer above a cut is the layer of the cut's canvas, video or nested context, or the
+    // topmost layer of the cut's nested band.
+    fn name_of_barrier_below(&self, layer_index: LayerIndex, node_namer: &dyn VisualContextNodeNamer) -> String {
+        let layer_below = &self.layers[layer_index.0 - 1];
+        match layer_below.identity {
+            LayerIdentity::Media { .. } => format!("L{}", layer_index.0 - 1),
+            LayerIdentity::Painted { .. } => {
+                let nested_band = &self.bands[layer_below.band_index.0];
                 format!(
-                    "band {band_ordinal_in_node} of {}",
-                    self.name_of_node(nested_node_index, node_namer)
+                    "band {} of {}",
+                    nested_band.band_ordinal_in_node,
+                    self.name_of_node(nested_band.placement_node_index, node_namer)
                 )
             }
         }
@@ -1453,8 +1413,11 @@ impl LayerStack {
                 if *band_ordinal_in_node != 0 {
                     name.push_str(&format!(" band={band_ordinal_in_node}"));
                 }
-                if let Some(barrier) = above_barrier {
-                    name.push_str(&format!(" above {}", self.name_of_barrier(barrier, node_namer)));
+                if above_barrier.is_some() {
+                    name.push_str(&format!(
+                        " above {}",
+                        self.name_of_barrier_below(layer_index, node_namer)
+                    ));
                 }
                 name
             }

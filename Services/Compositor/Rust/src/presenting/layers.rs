@@ -870,7 +870,7 @@ fn hide_tiles_covered_by_opaque_tiles_above(
         }
         let layer_index = compositing.layer_index;
         let layer = &stack.layers[layer_index.0];
-        if !matches!(layer.content, LayerContent::Painted { .. }) {
+        if !matches!(layer.content, LayerContent::Painted) {
             continue;
         }
         let shown = &mut shown_tiles_by_layer[layer_index.0];
@@ -1583,7 +1583,7 @@ impl ContextPresenting {
                 let layer_index = compositing.layer_index;
                 let layer = &stack.layers[layer_index.0];
                 let content = match &layer.content {
-                    LayerContent::Painted { .. } => ModelLayerContent::Painted {
+                    LayerContent::Painted => ModelLayerContent::Painted {
                         tiles: self.layers.tiles.model_tiles_of(&compositing.identity),
                     },
                     LayerContent::Media { reach, .. } => ModelLayerContent::Media {
@@ -2050,12 +2050,7 @@ impl ContextPresenting {
             .iter()
             .skip(1)
             .filter(|compositing| compositing.shown_by_window_server)
-            .filter(|compositing| {
-                matches!(
-                    stack.layers[compositing.layer_index.0].content,
-                    LayerContent::Painted { .. }
-                )
-            })
+            .filter(|compositing| matches!(stack.layers[compositing.layer_index.0].content, LayerContent::Painted))
         {
             let Some(content_version_of_held_tiles) = layers.tiles.content_version_of(&compositing.identity) else {
                 continue;

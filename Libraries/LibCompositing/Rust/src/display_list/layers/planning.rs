@@ -2304,8 +2304,11 @@ mod tests {
                         ..
                     } => {
                         let kind = if index == stack.base_layer.0 { "base" } else { "painted" };
-                        let above = above_barrier.map_or(String::new(), |barrier| {
-                            format!(" above {}", stack.name_of_barrier(&barrier, &NodeNamesFromIndices))
+                        let above = above_barrier.map_or(String::new(), |_| {
+                            format!(
+                                " above {}",
+                                stack.name_of_barrier_below(LayerIndex(index), &NodeNamesFromIndices)
+                            )
                         });
                         format!("{kind} {space} band {band}{above}")
                     }
