@@ -42,6 +42,7 @@ use super::tiles::{
     tile_coords_touching,
 };
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
+use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::{
     ClipData, ClipNode, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
 };
@@ -170,8 +171,9 @@ impl ContentHasher {
 
 const FRAME_STATE_CARET_BLINK_PHASE: u8 = 1 << 0;
 const FRAME_STATE_SCROLL_BAR: u8 = 1 << 1;
-const FRAME_STATE_LIVE_CONTENT_OR_SAMPLED_BACKGROUND_COLORS: u8 = 1 << 2;
+const FRAME_STATE_LIVE_CONTENT: u8 = 1 << 2;
 const FRAME_STATE_SPACES_OF_INLINE_CLIPS: u8 = 1 << 3;
+const FRAME_STATE_SAMPLED_BACKGROUND_COLOR: u8 = 1 << 4;
 
 /// A top-level record of a chunk, with what placing it and hashing tile content read of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,10 +215,11 @@ fn frame_state_read_flags_of_record(
         flags |= FRAME_STATE_SPACES_OF_INLINE_CLIPS;
     }
     for_each_command_including_nested(record_bytes, &mut |command_type, _, payload| {
-        if live_content_of(command_type, payload).is_some()
-            || !background_color_animation_effect_of(command_type, payload).is_none()
-        {
-            flags |= FRAME_STATE_LIVE_CONTENT_OR_SAMPLED_BACKGROUND_COLORS;
+        if live_content_of(command_type, payload).is_some() {
+            flags |= FRAME_STATE_LIVE_CONTENT;
+        }
+        if !background_color_animation_effect_of(command_type, payload).is_none() {
+            flags |= FRAME_STATE_SAMPLED_BACKGROUND_COLOR;
         }
     });
     flags
@@ -353,8 +356,92 @@ pub struct TileKeyingOfList<'a> {
     replays_every_record_into_every_tile: bool,
     tree_sorts_planes_by_depth: bool,
     frame_state_hash: ContentHash,
+    sampled_values_tiles_draw: SampledValuesTilesDraw,
     mask_effect_and_position_of_declarations: Vec<(EffectNodeIndex, ListPosition)>,
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
+}
+
+/// What tiles draw of the values that the compositor's animations take at the sample of a tree. A frame can keep the
+/// geometry of a space, and with it the binding of its bands, across samples, as where nothing moves within the space.
+struct SampledValuesTilesDraw {
+    hash: ContentHash,
+    background_colors_are_sampled: bool,
+    /// Per effect, whether tiles draw a sampled opacity or filter where they draw content of the effect: that of the
+    /// effect or of an effect around it, up to the first one the compositor composites. Empty where tiles draw none.
+    effect_reads_sampled_value_by_effect_index: Vec<bool>,
+}
+
+impl SampledValuesTilesDraw {
+    fn of(tree: &VisualContextTree, innermost_composited_effect_by_effect_index: &[EffectNodeIndex]) -> Self {
+        let mut hasher = ContentHasher::new();
+        let mut background_colors_are_sampled = false;
+        let mut effect_value_is_sampled_by_effect_index: Vec<bool> = Vec::new();
+        for animation in tree.visual_animations() {
+            for &node_index in &animation.node_indices {
+                let effect = EffectNodeIndex(node_index);
+                match animation.target_kind {
+                    FfiVisualAnimationTargetKind::BackgroundColor => {
+                        background_colors_are_sampled = true;
+                        let sampled = tree.sampled_background_color(effect);
+                        hasher.write_u32(node_index);
+                        hasher.write_u32(sampled.map_or(u32::MAX, |color| color.0));
+                        hasher.write_bool(sampled.is_some());
+                    }
+                    FfiVisualAnimationTargetKind::Opacity | FfiVisualAnimationTargetKind::Filter => {
+                        let Some(EffectNodeData::Effects(effects)) =
+                            tree.effect_nodes.get(node_index as usize).map(|node| &node.data)
+                        else {
+                            continue;
+                        };
+                        // Compositing applies the opacity and the filter of an effect the compositor composites.
+                        if innermost_composited_effect_by_effect_index[node_index as usize] == effect {
+                            continue;
+                        }
+                        if effect_value_is_sampled_by_effect_index.is_empty() {
+                            effect_value_is_sampled_by_effect_index.resize(tree.effect_nodes.len(), false);
+                        }
+                        effect_value_is_sampled_by_effect_index[node_index as usize] = true;
+                        hasher.write_u32(node_index);
+                        hasher.write_f32(effects.opacity);
+                        match &effects.filter {
+                            Some(filter) => hasher.write_bytes(filter),
+                            None => hasher.write_u64(u64::MAX),
+                        }
+                    }
+                    FfiVisualAnimationTargetKind::Transform => {}
+                }
+            }
+        }
+        let mut effect_reads_sampled_value_by_effect_index = Vec::new();
+        if !effect_value_is_sampled_by_effect_index.is_empty() {
+            effect_reads_sampled_value_by_effect_index = vec![false; tree.effect_nodes.len()];
+            tree.visit_effect_nodes_parents_first(|index| {
+                let node = &tree.effect_nodes[index];
+                let tiles_draw_effect =
+                    innermost_composited_effect_by_effect_index[index] != EffectNodeIndex(index as u32);
+                effect_reads_sampled_value_by_effect_index[index] = tiles_draw_effect
+                    && (effect_value_is_sampled_by_effect_index[index]
+                        || (!node.parent.is_none()
+                            && effect_reads_sampled_value_by_effect_index[node.parent.0 as usize]));
+            });
+        }
+        Self {
+            hash: hasher.finish(),
+            background_colors_are_sampled,
+            effect_reads_sampled_value_by_effect_index,
+        }
+    }
+
+    fn tiles_can_draw_sampled_values(&self) -> bool {
+        self.background_colors_are_sampled || !self.effect_reads_sampled_value_by_effect_index.is_empty()
+    }
+
+    fn effect_reads_sampled_value(&self, effect: EffectNodeIndex) -> bool {
+        self.effect_reads_sampled_value_by_effect_index
+            .get(effect.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 impl<'a> TileKeyingOfList<'a> {
@@ -401,6 +488,7 @@ impl<'a> TileKeyingOfList<'a> {
                 || one_layer_list_cannot_tell_which_records_show_in_tile,
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
+            sampled_values_tiles_draw: SampledValuesTilesDraw::of(tree, &innermost_composited_effect_by_effect_index),
             mask_effect_and_position_of_declarations,
             innermost_composited_effect_by_effect_index,
         }
@@ -811,6 +899,7 @@ pub struct KeyedTile {
     replay_items_in_paint_order: Vec<TileReplayItem>,
     raster_settings_hash: ContentHash,
     reads_frame_state: bool,
+    reads_sampled_values: bool,
     frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
 }
 
@@ -1032,9 +1121,10 @@ pub struct BandTileKeys {
     cells_looked_at: CellRange,
     bound_band: Option<BandBoundToListAndGeometry>,
     frame_state_hash: ContentHash,
-    // Frame state such as a sampled background color or the space of an inline clip depends on the bound tree and
-    // geometry, so binding again can change it.
-    tiles_reading_frame_state_need_rehashing: bool,
+    sampled_values_hash: ContentHash,
+    // Frame state and sampled values, such as a sampled background color or the space of an inline clip, depend on the
+    // bound tree and geometry, so binding again can change them.
+    tiles_reading_frame_state_or_sampled_values_need_rehashing: bool,
     pub replays_whole_list: bool,
 }
 
@@ -1704,7 +1794,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
         }
-        if record.frame_state_read_flags & FRAME_STATE_LIVE_CONTENT_OR_SAMPLED_BACKGROUND_COLORS == 0 {
+        if record.frame_state_read_flags & (FRAME_STATE_LIVE_CONTENT | FRAME_STATE_SAMPLED_BACKGROUND_COLOR) == 0 {
             return;
         }
         let tree = list.tree;
@@ -2024,6 +2114,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         bound_band: &BandBoundToListAndGeometry,
         item: TileReplayItem,
         includes_frame_state: bool,
+        includes_sampled_values: bool,
         near_area: Option<&mut ContentHashesNearArea>,
     ) -> ContentHash {
         let display_list = self.list.display_list;
@@ -2037,6 +2128,18 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let content_hash = match near_area {
                     Some(near_area) if range.is_spread_by_no_filter => {
                         self.content_hash_of_placed_range_near_area(chunk, range, near_area)
+                    }
+                    // The range can be placed under the values of an earlier sample.
+                    _ if includes_sampled_values
+                        && self
+                            .list
+                            .sampled_values_tiles_draw
+                            .effect_reads_sampled_value(range.context.effect) =>
+                    {
+                        self.content_hash_of_records_without_frame_state(
+                            chunk,
+                            range.first_record_index..range.end_record_index,
+                        )
                     }
                     _ => range.content_hash_without_frame_state,
                 };
@@ -2142,6 +2245,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         self.records_of_item(bound_band, item)
             .iter()
             .any(|record| record.frame_state_read_flags != 0)
+    }
+
+    /// Whether the item draws a value that the compositor's animations take at the frame's sample: a sampled background
+    /// color, or the sampled opacity or filter of an effect that tiles draw.
+    fn item_reads_sampled_values(&self, bound_band: &BandBoundToListAndGeometry, item: TileReplayItem) -> bool {
+        let sampled_values = &self.list.sampled_values_tiles_draw;
+        if !sampled_values.tiles_can_draw_sampled_values() {
+            return false;
+        }
+        let runs = self.list.display_list.chunk(item.chunk_index()).runs();
+        self.records_of_item(bound_band, item).iter().any(|record| {
+            record.frame_state_read_flags & FRAME_STATE_SAMPLED_BACKGROUND_COLOR != 0
+                || sampled_values.effect_reads_sampled_value(runs[record.run_index.0 as usize].context.effect)
+        })
     }
 
     fn clip_chain_applied_in_tiles(&self, clip: ClipNodeIndex) -> impl Iterator<Item = &ClipNode> {
@@ -2315,6 +2432,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 bound_band,
                 item,
                 tile.reads_frame_state,
+                tile.reads_sampled_values,
                 near_area.as_mut(),
             ));
             // Depth-sorted planes replay in an order their sorting context decides.
@@ -2656,6 +2774,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         &bound_band,
                         mask_declaration,
                         false,
+                        false,
                         None,
                     ));
                 }
@@ -2781,7 +2900,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         if band_tile_keys.cells.is_empty() {
             return;
         }
-        band_tile_keys.tiles_reading_frame_state_need_rehashing = true;
+        band_tile_keys.tiles_reading_frame_state_or_sampled_values_need_rehashing = true;
         if bound_band.binning_inputs_hash_beyond_held_chunks
             != previous_bound_band.binning_inputs_hash_beyond_held_chunks
             || bound_band.items_replayed_in_every_tile.is_some()
@@ -2832,8 +2951,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     /// Keys the tiles of the layers of `band_index` within `shown_rect` that are not keyed yet: each replay item of the
     /// band that reaches a tile goes into the layer of the band its paint position falls in there, and the base layer,
     /// if it is one of the band's, holds every tile. Tiles keyed before are keyed again only where the frame state
-    /// their replay items read, the raster settings of their layer, or the edge of `frame` that their backdrop blurs
-    /// mirror at changed, and those outside `kept_rect` are forgotten. `frame` is where the frame is in the band's
+    /// their replay items read, the values of the compositor's animations they draw, the raster settings of their
+    /// layer, or the edge of `frame` that their backdrop blurs mirror at changed, and those outside `kept_rect` are
+    /// forgotten. `frame` is where the frame is in the band's
     /// space, where that is not the frame's own. The band is bound to the list and the geometry of the frame.
     ///
     /// Only the cells where the band can hold something are keyed, at most `MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME` of
@@ -2878,15 +2998,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         );
 
         let mut counts = TileKeyingCounts::default();
-        let frame_state_changed = band_tile_keys.frame_state_hash != list.frame_state_hash
-            || std::mem::take(&mut band_tile_keys.tiles_reading_frame_state_need_rehashing);
+        let band_was_bound_again =
+            std::mem::take(&mut band_tile_keys.tiles_reading_frame_state_or_sampled_values_need_rehashing);
+        let frame_state_changed = band_tile_keys.frame_state_hash != list.frame_state_hash || band_was_bound_again;
+        let sampled_values_changed =
+            band_tile_keys.sampled_values_hash != list.sampled_values_tiles_draw.hash || band_was_bound_again;
         band_tile_keys.frame_state_hash = list.frame_state_hash;
+        band_tile_keys.sampled_values_hash = list.sampled_values_tiles_draw.hash;
         for (coord, cell) in &mut band_tile_keys.cells {
             let frame_edge_backdrop_blurs_mirror_at =
                 bound_band.frame_edge_backdrop_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
             for tile in &mut cell.tiles {
                 let raster_settings_hash = raster_settings_hash_of(tile.layer_index);
                 if (frame_state_changed && tile.reads_frame_state)
+                    || (sampled_values_changed && tile.reads_sampled_values)
                     || tile.raster_settings_hash != raster_settings_hash
                     || tile.frame_edge_backdrop_blurs_mirror_at != frame_edge_backdrop_blurs_mirror_at
                 {
@@ -2999,6 +3124,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let reads_frame_state = replay_items_in_paint_order
                     .iter()
                     .any(|&item| self.item_reads_frame_state(bound_band, item));
+                let reads_sampled_values = replay_items_in_paint_order
+                    .iter()
+                    .any(|&item| self.item_reads_sampled_values(bound_band, item));
                 let mut tile = KeyedTile {
                     layer_index,
                     coord,
@@ -3010,6 +3138,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     replay_items_in_paint_order,
                     raster_settings_hash: raster_settings_hash_of(layer_index),
                     reads_frame_state,
+                    reads_sampled_values,
                     frame_edge_backdrop_blurs_mirror_at,
                 };
                 tile.content_hash = self.content_hash_of_tile(bound_band, &tile);
@@ -3464,10 +3593,104 @@ mod tests {
         assert_eq!(hashes, &turns[0].2);
     }
 
+    // As the compositor keys a band across the samples of its animations where the plan says the space of the band
+    // holds nothing that moves within it: under the geometry of the first frame, to which the band is bound once.
+    fn counts_and_viewport_tile_hashes_of_samples_keyed_in_turn_under_one_geometry(
+        display_list: &DisplayListStorage,
+        stack: &LayerStack,
+        band_index: BandIndex,
+        samples: &[&VisualContextTree],
+    ) -> Vec<(TileKeyingCounts, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
+        let raster_space_index = stack.nodes[stack.bands[band_index.0].placement_node_index.0].raster_space_index;
+        assert!(!stack.space_holds_content_that_moves_within_it(raster_space_index));
+        let spaces = RasterSpaces::of_spaces(samples[0], stack.spaces.clone());
+        let geometry =
+            RasterSpaceGeometry::new(samples[0], &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
+        let mut band_tile_keys = BandTileKeys::default();
+        samples
+            .iter()
+            .enumerate()
+            .map(|(frame_index, tree)| {
+                let list_keying = TileKeyingOfList::new(
+                    display_list,
+                    tree,
+                    stack,
+                    FrameStateReadByReplay {
+                        scrollbars: &[],
+                        time_ns: 0,
+                        live_content: &NoLiveContentChanges,
+                    },
+                );
+                let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+                if frame_index == 0 {
+                    raster_space.bind_band(&mut band_tile_keys, stack, band_index);
+                }
+                let counts = raster_space.key_shown_tiles(
+                    &mut band_tile_keys,
+                    stack,
+                    band_index,
+                    raster_settings_for_tests,
+                    VIEWPORT,
+                    VIEWPORT,
+                    None,
+                );
+                (counts, viewport_tile_hashes(&band_tile_keys))
+            })
+            .collect()
+    }
+
+    fn cells_whose_hashes_differ(
+        before: &[(TileCoord, LayerIndex, ContentHash)],
+        after: &[(TileCoord, LayerIndex, ContentHash)],
+    ) -> Vec<TileCoord> {
+        before
+            .iter()
+            .zip(after)
+            .filter(|(before, after)| before != after)
+            .map(|(before, _)| before.0)
+            .collect()
+    }
+
+    fn cell_of(rect: IntRect) -> TileCoord {
+        TileCoord::new(rect.x / TILE_SIZE_IN_DEVICE_PIXELS, rect.y / TILE_SIZE_IN_DEVICE_PIXELS)
+    }
+
+    // The tiles of a band are keyed again for the values the compositor's animations take only where they draw one, and
+    // only when the sample changes it.
+    fn assert_only_the_cell_drawing_the_sampled_value_is_keyed_again(
+        display_list: &DisplayListStorage,
+        stack: &LayerStack,
+        band_index: BandIndex,
+        tree: &VisualContextTree,
+        cell_drawing_the_sampled_value: TileCoord,
+    ) {
+        let at_start = tree.with_visual_animation_samples(0);
+        let halfway = tree.with_visual_animation_samples(500_000_000);
+        let halfway_again = tree.with_visual_animation_samples(500_000_000);
+        let turns = counts_and_viewport_tile_hashes_of_samples_keyed_in_turn_under_one_geometry(
+            display_list,
+            stack,
+            band_index,
+            &[&at_start, &halfway, &halfway_again],
+        );
+        let keyed_from_nothing = chunks_placed_counts_and_tile_hashes_of_band_keyed_in_turn(
+            &[(display_list, &halfway, stack)],
+            RasterSpaceIndex::VIEWPORT,
+            band_index,
+        );
+        assert_eq!(turns[1].1, keyed_from_nothing[0].2);
+        assert_eq!(
+            cells_whose_hashes_differ(&turns[0].1, &turns[1].1),
+            [cell_drawing_the_sampled_value]
+        );
+        assert_eq!(turns[1].0.tiles_keyed, 1);
+        assert_eq!(turns[2].0, TileKeyingCounts::default());
+        assert_eq!(turns[2].1, turns[1].1);
+    }
+
     #[test]
     fn a_tile_kept_through_an_animation_sample_reads_the_sampled_background_color_again() {
         use crate::animation_timing::{AnimationEffectTiming, TimeValue};
-        use crate::host::FfiVisualAnimationTargetKind;
         use crate::visual_animation::{VisualAnimation, VisualAnimationKeyframe, VisualAnimationValue};
         let mut tree = tree_with_root_isolation_effect();
         let root = root_context(&tree);
@@ -3507,34 +3730,89 @@ mod tests {
             ),
         ])
         .unwrap();
-        let at_start = tree.with_visual_animation_samples(0);
-        let halfway = tree.with_visual_animation_samples(500_000_000);
-        let stack = stack_of(&display_list, &at_start);
+        let stack = stack_of(&display_list, &tree.with_visual_animation_samples(0));
+        assert_only_the_cell_drawing_the_sampled_value_is_keyed_again(
+            &display_list,
+            &stack,
+            BandIndex(0),
+            &tree,
+            cell_of(animated_box),
+        );
+    }
 
-        let turns = chunks_placed_counts_and_viewport_tile_hashes_of_frames_keyed_in_turn(&[
-            (&display_list, &at_start, &stack),
-            (&display_list, &halfway, &stack),
-        ]);
-        // Nothing moved, so every cell keeps its bin, but the cell of the box is keyed for the color it shows now.
-        let (chunks_placed, counts, hashes) = &turns[1];
-        assert_eq!(*chunks_placed, 0);
-        assert_eq!(counts.cells_binned, 0);
-        assert_eq!(
-            hashes,
-            &viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &halfway, &stack)
-        );
-        let changed: Vec<TileCoord> = turns[0]
-            .2
-            .iter()
-            .zip(hashes)
-            .filter(|(old, new)| old != new)
-            .map(|(old, _)| old.0)
+    // The compositor gives layers of their own to the first effects in paint order whose opacity it animates, up to a
+    // limit, and tiles draw the opacity of the others.
+    #[test]
+    fn a_tile_kept_through_an_animation_sample_reads_the_sampled_opacity_of_an_effect_without_a_layer_again() {
+        use crate::animation_timing::{AnimationEffectTiming, TimeValue};
+        use crate::display_list::layers::planning::MAXIMUM_ANIMATED_NODES_WITH_LAYERS;
+        use crate::visual_animation::{VisualAnimation, VisualAnimationKeyframe, VisualAnimationValue};
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let faded: Vec<ContextRef> = (0..=MAXIMUM_ANIMATED_NODES_WITH_LAYERS)
+            .map(|_| {
+                tree.append_effect_node_under(
+                    root,
+                    EffectNodeData::Effects(EffectsData {
+                        isolation: false,
+                        opacity: 1.0,
+                        blend_mode: CompositingAndBlendingOperator::Normal,
+                        filter: None,
+                        backdrop_filter: None,
+                    }),
+                )
+            })
             .collect();
-        let cell_of_animated_box = TileCoord::new(
-            animated_box.x / TILE_SIZE_IN_DEVICE_PIXELS,
-            animated_box.y / TILE_SIZE_IN_DEVICE_PIXELS,
+        let opacity_at = |offset: f64, opacity: f32| VisualAnimationKeyframe {
+            offset,
+            easing: crate::easing::Easing::default(),
+            value: VisualAnimationValue::Opacity(opacity),
+        };
+        tree.set_visual_animations(vec![VisualAnimation {
+            target_kind: FfiVisualAnimationTargetKind::Opacity,
+            node_indices: faded.iter().map(|context| context.effect.0).collect(),
+            timing: AnimationEffectTiming {
+                iteration_duration: TimeValue::milliseconds(1000.0),
+                ..VisualAnimation::default().timing
+            },
+            keyframes: vec![opacity_at(0.0, 1.0), opacity_at(1.0, 0.2)],
+            ..VisualAnimation::default()
+        }]);
+        let box_without_layer = IntRect::new(600, 520, 20, 20);
+        let mut chunks = vec![chunk_of(fill(VIEWPORT, GREEN), root)];
+        chunks.extend(faded.iter().enumerate().map(|(index, &context)| {
+            let rect = if index == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
+                box_without_layer
+            } else {
+                IntRect::new(10 + 12 * index as i32, 10, 10, 10)
+            };
+            chunk_of(fill(rect, BLUE), context)
+        }));
+        let display_list = DisplayListStorage::of_chunks(chunks).unwrap();
+        let stack = stack_of(&display_list, &tree.with_visual_animation_samples(0));
+        let effect_without_layer = faded[MAXIMUM_ANIMATED_NODES_WITH_LAYERS].effect;
+        let composited_effects = stack.effects_the_compositor_composites();
+        assert_eq!(composited_effects.len(), MAXIMUM_ANIMATED_NODES_WITH_LAYERS);
+        assert!(!composited_effects.contains(&effect_without_layer));
+        let position_of_box_without_layer = ListPosition::new(ChunkIndexInList(faded.len() as u32), 0);
+        let band_of_box_without_layer = BandIndex(
+            stack
+                .bands
+                .iter()
+                .position(|band| {
+                    band.record_spans
+                        .iter()
+                        .any(|span| span.contains(position_of_box_without_layer))
+                })
+                .expect("a band holds the box"),
         );
-        assert_eq!(changed, [cell_of_animated_box]);
+        assert_only_the_cell_drawing_the_sampled_value_is_keyed_again(
+            &display_list,
+            &stack,
+            band_of_box_without_layer,
+            &tree,
+            cell_of(box_without_layer),
+        );
     }
 
     fn band_of_space(stack: &LayerStack, raster_space_index: RasterSpaceIndex) -> BandIndex {
