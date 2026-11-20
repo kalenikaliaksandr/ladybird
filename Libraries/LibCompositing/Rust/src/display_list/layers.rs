@@ -1279,7 +1279,16 @@ impl LayerStack {
         scroll_offsets: &[FloatPoint],
         viewport_rect: IntRect,
     ) -> WindowServerPresentationOfMedia {
-        let placements = self.window_server_placements_of_media(list, tree, scroll_offsets, viewport_rect);
+        let world_of_frame = std::cell::OnceCell::new();
+        let placements = self.window_server_placements_of_media(
+            list,
+            tree,
+            || {
+                world_of_frame
+                    .get_or_init(|| WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity())))
+            },
+            viewport_rect,
+        );
         let composite_offsets = self.composite_offsets(scroll_offsets);
         let shown_by_window_server_by_layer_index = self.layers_the_window_server_shows(&composite_offsets, |layer| {
             matches!(placements.of_layer(layer), Some(Ok(_)))
@@ -1290,12 +1299,14 @@ impl LayerStack {
         }
     }
 
-    /// Works out where the window server could show each canvas and video of the stack under the frame's values.
-    pub fn window_server_placements_of_media(
+    /// Works out where the window server could show each canvas and video of the stack under the frame's values, with
+    /// the world transforms of the tree in the frame that `world_of_frame` gives, which it asks for only where the
+    /// stack holds a canvas or video the window server may show.
+    pub fn window_server_placements_of_media<'world>(
         &self,
         list: &DisplayListStorage,
         tree: &VisualContextTree,
-        scroll_offsets: &[FloatPoint],
+        world_of_frame: impl FnOnce() -> &'world WorldTransforms,
         viewport_rect: IntRect,
     ) -> WindowServerPlacementsOfMedia {
         let window_server_may_show_content =
@@ -1306,7 +1317,7 @@ impl LayerStack {
         if !has_media_the_window_server_may_show {
             return WindowServerPlacementsOfMedia::default();
         }
-        let world_transforms = WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity()));
+        let world_of_frame = world_of_frame();
         let placement_by_layer_index = self
             .layers
             .iter()
@@ -1326,7 +1337,7 @@ impl LayerStack {
                 let (header, payload) = list.record_at(media_record_position);
                 Some(crate::display_list::window_server_placement::window_server_placement(
                     tree,
-                    &world_transforms,
+                    world_of_frame,
                     viewport_rect,
                     run_holding_media,
                     &header,

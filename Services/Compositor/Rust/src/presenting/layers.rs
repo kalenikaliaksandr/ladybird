@@ -24,8 +24,8 @@ use libcompositing_rust::display_list::commands::{
 use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
 use libcompositing_rust::display_list::layers::{
     BandIndex, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, NodeNamesFromIndices,
-    PlacementNodeBand, PlacementNodeIdentity, RasterSpaceAnchorKind, RasterSpaceIndex, SpaceToFrame, StackLayer,
-    WhyListIsOneLayer, WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
+    PlacementNodeBand, PlacementNodeIdentity, RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer,
+    WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpaceGeometry, RasterSpaces, WhatEverySpaceOfTreeShares, raster_scroll_offsets,
@@ -1067,27 +1067,6 @@ fn lists_hold_same_chunks(cached_list: &Rc<DisplayList>, list: &Rc<DisplayList>)
     Rc::ptr_eq(cached_list, list) || cached_list.storage().chunk_names() == list.storage().chunk_names()
 }
 
-/// Per raster space, how the frame composites its rasters, from the anchors' draw matrices in the frame where the stack
-/// has spaces whose anchors the compositor animates.
-fn spaces_to_frame_of(
-    stack: &LayerStack,
-    tree: &VisualContextTree,
-    scroll_offsets: &[FloatPoint],
-    composite_offsets: &[IntPoint],
-) -> Vec<SpaceToFrame> {
-    let has_space_composited_through_transform = stack
-        .spaces
-        .iter()
-        .any(|space| matches!(space.anchor_kind, RasterSpaceAnchorKind::AnimatedTransform { .. }));
-    let world_of_frame = has_space_composited_through_transform
-        .then(|| WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity())));
-    stack.spaces_to_frame(composite_offsets, |anchor| {
-        world_of_frame
-            .as_ref()
-            .map_or(FloatMatrix4x4::identity(), |world| world.draw_matrix(anchor))
-    })
-}
-
 fn compositing_of_layer(
     stack: &LayerStack,
     layer_index: LayerIndex,
@@ -1222,14 +1201,21 @@ impl ContextPresenting {
         let raster_transform = self.raster_transform();
         let geometries = stack_of_frames.geometries_of_spaces(tree, scroll_offsets);
         let stack = stack_of_frames.stack.as_ref();
+        // Built at the first question, as only media the window server may show and spaces whose anchors the
+        // compositor animates ask for it.
+        let world_transforms_of_frame = OnceCell::new();
+        let world_of_frame = || {
+            world_transforms_of_frame
+                .get_or_init(|| WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity())))
+        };
         let window_server_may_show_media = self.why_window_server_shows_no_media_of_this_context(env).is_none();
         let window_server_placements_of_media = if window_server_may_show_media {
-            stack.window_server_placements_of_media(storage, tree, scroll_offsets, viewport_rect)
+            stack.window_server_placements_of_media(storage, tree, world_of_frame, viewport_rect)
         } else {
             WindowServerPlacementsOfMedia::default()
         };
         let composite_offsets = stack.composite_offsets(scroll_offsets);
-        let spaces_to_frame = spaces_to_frame_of(stack, tree, scroll_offsets, &composite_offsets);
+        let spaces_to_frame = stack.spaces_to_frame(&composite_offsets, |anchor| world_of_frame().draw_matrix(anchor));
         let shown_by_window_server_by_layer = if window_server_may_show_media {
             stack.layers_the_window_server_shows(&composite_offsets, |layer_index| {
                 self.why_window_server_does_not_show_media_layer(
