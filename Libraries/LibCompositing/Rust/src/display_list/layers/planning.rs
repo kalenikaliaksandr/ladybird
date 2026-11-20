@@ -20,8 +20,8 @@ use super::{
     LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeNamesFromIndices, NodeOfPlan,
     PaintedLayerOfPlan, PlacementNodeIndex, VisualContextNodeNamer, WhyCompositorCannotCompositeEffect,
     WhyEffectIsComposited, WhyListIsOneLayer, WhyMediaHasNoLayer, WindowServerPresentationOfMedia,
-    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep,
-    effect_is_or_is_inside, media_name, wire,
+    backdrop_filter_read_reach, backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, media_name,
+    wire,
 };
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
@@ -588,8 +588,68 @@ fn why_media_has_no_layer(
     None
 }
 
-fn effect_is_inside(tree: &VisualContextTree, effect: EffectNodeIndex, around: EffectNodeIndex) -> bool {
-    effect != around && effect_is_or_is_inside(tree, effect, around)
+// Per effect node, whether it is or holds a node that `marked_by_effect_index` marks.
+fn effects_at_or_around_marked_effects(tree: &VisualContextTree, mut marked_by_effect_index: Vec<bool>) -> Vec<bool> {
+    let mut live_effects_parents_first = Vec::with_capacity(tree.effect_nodes.len());
+    tree.visit_effect_nodes_parents_first(|index| live_effects_parents_first.push(index));
+    for &index in live_effects_parents_first.iter().rev() {
+        let parent = tree.effect_nodes[index].parent;
+        if marked_by_effect_index[index] && !parent.is_none() {
+            marked_by_effect_index[parent.0 as usize] = true;
+        }
+    }
+    marked_by_effect_index
+}
+
+// Per effect node, whether it is or holds the effect of a run that `marks_run` marks.
+fn effects_at_or_around_marked_runs(
+    list: &DisplayListStorage,
+    tree: &VisualContextTree,
+    marks_run: impl Fn(usize) -> bool,
+) -> Vec<bool> {
+    let mut marked_by_effect_index = vec![false; tree.effect_nodes.len()];
+    for (run_index, run) in list.runs().enumerate() {
+        if !run.context.effect.is_none() && marks_run(run_index) {
+            marked_by_effect_index[run.context.effect.0 as usize] = true;
+        }
+    }
+    effects_at_or_around_marked_effects(tree, marked_by_effect_index)
+}
+
+// Why each effect is composited whatever its layers hold, and the effects that are, in the order they became so.
+struct WhyEffectsAreCompositedRegardlessOfLayerContent {
+    why_by_effect_index: Vec<Option<WhyEffectIsComposited>>,
+    composited_effects: Vec<EffectNodeIndex>,
+}
+
+impl WhyEffectsAreCompositedRegardlessOfLayerContent {
+    fn set(&mut self, effect: EffectNodeIndex, why: WhyEffectIsComposited) {
+        let why_composited = &mut self.why_by_effect_index[effect.0 as usize];
+        if why_composited.is_none() {
+            self.composited_effects.push(effect);
+        }
+        *why_composited = Some(why);
+    }
+
+    fn set_unless_composited(&mut self, effect: EffectNodeIndex, why: WhyEffectIsComposited) {
+        if self.why_by_effect_index[effect.0 as usize].is_none() {
+            self.set(effect, why);
+        }
+    }
+
+    fn mark_effects_around_as_composited(
+        &mut self,
+        tree: &VisualContextTree,
+        mut effect_around: EffectNodeIndex,
+        why: WhyEffectIsComposited,
+    ) {
+        while !effect_around.is_none() && tree.root_isolation_effect != Some(effect_around) {
+            if tree.effect_pushes_layer_at_replay(effect_around) {
+                self.set_unless_composited(effect_around, why);
+            }
+            effect_around = tree.effect_nodes[effect_around.0 as usize].parent;
+        }
+    }
 }
 
 /// Where each part of the list is placed among `spaces`, given the geometry of each of them.
@@ -652,14 +712,28 @@ fn place_list(
                 .then_some(WhyCompositorCannotCompositeEffect::FilterReadsFartherThanTilesAreFollowed)
         })
         .collect();
-    let why_compositor_cannot_composite_effect_or_effects_around = |mut effect: EffectNodeIndex| {
-        while !effect.is_none() && tree.root_isolation_effect != Some(effect) {
-            if let Some(why) = why_compositor_cannot_composite_by_effect_index[effect.0 as usize] {
-                return Some(why);
-            }
-            effect = tree.effect_nodes[effect.0 as usize].parent;
+    // The walk up from an effect stops at the root isolation effect, which holds no reason.
+    let mut why_compositor_cannot_composite_effect_or_effect_around_by_effect_index: Vec<
+        Option<WhyCompositorCannotCompositeEffect>,
+    > = vec![None; tree.effect_nodes.len()];
+    tree.visit_effect_nodes_parents_first(|index| {
+        if tree.root_isolation_effect == Some(EffectNodeIndex(index as u32)) {
+            return;
         }
-        None
+        let parent = tree.effect_nodes[index].parent;
+        why_compositor_cannot_composite_effect_or_effect_around_by_effect_index[index] =
+            why_compositor_cannot_composite_by_effect_index[index].or_else(|| {
+                why_compositor_cannot_composite_effect_or_effect_around_by_effect_index
+                    .get(parent.0 as usize)
+                    .copied()
+                    .flatten()
+            });
+    });
+    let why_compositor_cannot_composite_effect_or_effects_around = |effect: EffectNodeIndex| {
+        why_compositor_cannot_composite_effect_or_effect_around_by_effect_index
+            .get(effect.0 as usize)
+            .copied()
+            .flatten()
     };
     let filters_and_clips = FiltersAndClipsOfList {
         tree,
@@ -791,7 +865,8 @@ fn place_list(
             let paints_within_root_group = match tree.root_isolation_effect {
                 None => true,
                 Some(root_isolation_effect) => (first_run_index..=last_run_index).any(|run_index| {
-                    effect_is_or_is_inside(tree, list.run(run_index as usize).context.effect, root_isolation_effect)
+                    nesting_of_live_effects
+                        .is_or_is_inside(list.run(run_index as usize).context.effect, root_isolation_effect)
                 }),
             };
             PlacedRunGroup {
@@ -900,24 +975,13 @@ fn place_list(
         placed_media.sort_by_key(|media| media.record_span.begin);
     }
 
-    let mut why_composited_regardless_of_layer_content_by_effect_index: Vec<Option<WhyEffectIsComposited>> =
-        vec![None; tree.effect_nodes.len()];
-    let mark_effects_around_as_composited =
-        |why_composited_by_effect_index: &mut Vec<Option<WhyEffectIsComposited>>,
-         mut effect_around: EffectNodeIndex,
-         why: WhyEffectIsComposited| {
-            while !effect_around.is_none() && tree.root_isolation_effect != Some(effect_around) {
-                if tree.effect_pushes_layer_at_replay(effect_around)
-                    && why_composited_by_effect_index[effect_around.0 as usize].is_none()
-                {
-                    why_composited_by_effect_index[effect_around.0 as usize] = Some(why);
-                }
-                effect_around = tree.effect_nodes[effect_around.0 as usize].parent;
-            }
-        };
+    let mut why_composited_regardless_of_layer_content = WhyEffectsAreCompositedRegardlessOfLayerContent {
+        why_by_effect_index: vec![None; tree.effect_nodes.len()],
+        composited_effects: Vec::new(),
+    };
     for media in &placed_media {
-        mark_effects_around_as_composited(
-            &mut why_composited_regardless_of_layer_content_by_effect_index,
+        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
+            tree,
             list.run(media.run_index.0 as usize).context.effect,
             WhyEffectIsComposited::ItHoldsMedia(media.content),
         );
@@ -943,11 +1007,10 @@ fn place_list(
         };
     let mut animated_nodes_with_layers_count = 0;
 
-    let space_holds_placed_content = |space: RasterSpaceIndex| {
-        placed_run_groups
-            .iter()
-            .any(|run_group| run_group.raster_space_index == space)
-    };
+    let mut space_holds_placed_content_by_space_index = vec![false; spaces.len()];
+    for run_group in &placed_run_groups {
+        space_holds_placed_content_by_space_index[run_group.raster_space_index.0] = true;
+    }
     for (index, effect_node) in tree.effect_nodes.iter().enumerate() {
         let effect = EffectNodeIndex(index as u32);
         let Some(space) = tables.animated_space_holding_every_run_of_effect(effect) else {
@@ -955,86 +1018,86 @@ fn place_list(
         };
         let applies_over_animated_transform = swept_reach_in_parent_space_by_space_index[space.0].is_some()
             && !tables.moves_with(effect_node.spatial, space)
-            && space_holds_placed_content(space);
+            && space_holds_placed_content_by_space_index[space.0];
         if !applies_over_animated_transform || !tree.effect_pushes_layer_at_replay(effect) {
             continue;
         }
-        let why_composited = &mut why_composited_regardless_of_layer_content_by_effect_index[index];
-        if why_composited.is_none() {
-            *why_composited = Some(WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates);
-        }
-        mark_effects_around_as_composited(
-            &mut why_composited_regardless_of_layer_content_by_effect_index,
+        why_composited_regardless_of_layer_content.set_unless_composited(
+            effect,
+            WhyEffectIsComposited::ItAppliesOverATransformTheCompositorAnimates,
+        );
+        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
+            tree,
             effect_node.parent,
             WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
         );
     }
 
+    let effect_holds_run_sorted_by_depth_by_effect_index =
+        effects_at_or_around_marked_runs(list, tree, |run_index| run_groups.run_is_sorted_by_depth(run_index));
+    let mut runs_holding_records_blending_with_what_is_below_them = vec![false; list.run_count()];
+    for record in &list.summary().destination_blending_records {
+        runs_holding_records_blending_with_what_is_below_them[record.run_index as usize] = true;
+    }
+    let effect_holds_records_blending_with_what_is_below_them_by_effect_index =
+        effects_at_or_around_marked_runs(list, tree, |run_index| {
+            runs_holding_records_blending_with_what_is_below_them[run_index]
+        });
+    let mut effect_reads_what_is_below_it_by_effect_index = vec![false; tree.effect_nodes.len()];
+    for &effect in &effects_in_paint_order_with_outer_before_inner {
+        effect_reads_what_is_below_it_by_effect_index[effect.0 as usize] = effect_reads_what_is_below_it(effect);
+    }
+    let effect_holds_effect_reading_what_is_below_it_by_effect_index =
+        effects_at_or_around_marked_effects(tree, effect_reads_what_is_below_it_by_effect_index);
     let mut animated_effects_in_paint_order = effects_whose_opacity_or_filter_the_compositor_animates(tree);
     animated_effects_in_paint_order.sort_by_key(|(effect, _)| first_run_index_by_effect_index[effect.0 as usize]);
     for (effect, filter_is_animated) in animated_effects_in_paint_order {
         let first_run_index = first_run_index_by_effect_index[effect.0 as usize];
-        let Some(last_run_index) = last_run_index_by_effect_index[effect.0 as usize] else {
+        if last_run_index_by_effect_index[effect.0 as usize].is_none() {
             continue;
-        };
+        }
         if tree.root_isolation_effect == Some(effect)
             || !matches!(tree.effect_nodes[effect.0 as usize].data, EffectNodeData::Effects(_))
         {
             continue;
         }
-        let run_indices_under_effect = (first_run_index..=last_run_index)
-            .filter(|&run_index| effect_is_or_is_inside(tree, list.run(run_index).context.effect, effect));
-        let why_no_layer =
-            (|| {
-                if filter_is_animated && filter_may_spread_at_some_sample(tree, effect) {
-                    return Some(WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters);
-                }
-                if let Some(why) = why_compositor_cannot_composite_effect_or_effects_around(effect) {
-                    return Some(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
-                }
-                if run_indices_under_effect
-                    .clone()
-                    .any(|run_index| run_groups.run_is_sorted_by_depth(run_index))
-                {
-                    return Some(WhyAnimationHasNoLayer::SortedByDepthInA3DSortingContext);
-                }
-                if list.summary().destination_blending_records.iter().any(|record| {
-                    effect_is_or_is_inside(tree, list.run(record.run_index as usize).context.effect, effect)
-                }) {
-                    return Some(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
-                }
-                if effects_in_paint_order_with_outer_before_inner
-                    .iter()
-                    .any(|&other_effect| {
-                        effect_is_or_is_inside(tree, other_effect, effect)
-                            && effect_reads_what_is_below_it(other_effect)
-                    })
-                {
-                    return Some(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
-                }
-                if canvas_or_video_painted_before_can_show_under(
-                    first_run_index,
-                    space_of_run(first_run_index),
-                    reach_by_effect_index[effect.0 as usize],
-                ) {
-                    return Some(WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo);
-                }
-                if animated_nodes_with_layers_count == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
-                    return Some(WhyAnimationHasNoLayer::MoreAnimationsThanLayersFor);
-                }
-                None
-            })();
+        let why_no_layer = (|| {
+            if filter_is_animated && filter_may_spread_at_some_sample(tree, effect) {
+                return Some(WhyAnimationHasNoLayer::ItsFilterSpreadsWhatItFilters);
+            }
+            if let Some(why) = why_compositor_cannot_composite_effect_or_effects_around(effect) {
+                return Some(WhyAnimationHasNoLayer::InsideAnEffectTheCompositorCannotComposite(why));
+            }
+            if effect_holds_run_sorted_by_depth_by_effect_index[effect.0 as usize] {
+                return Some(WhyAnimationHasNoLayer::SortedByDepthInA3DSortingContext);
+            }
+            if effect_holds_records_blending_with_what_is_below_them_by_effect_index[effect.0 as usize] {
+                return Some(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
+            }
+            if effect_holds_effect_reading_what_is_below_it_by_effect_index[effect.0 as usize] {
+                return Some(WhyAnimationHasNoLayer::ItHoldsAnEffectThatReadsWhatIsBelowIt);
+            }
+            if canvas_or_video_painted_before_can_show_under(
+                first_run_index,
+                space_of_run(first_run_index),
+                reach_by_effect_index[effect.0 as usize],
+            ) {
+                return Some(WhyAnimationHasNoLayer::ItCanShowOverAnEarlierCanvasOrVideo);
+            }
+            if animated_nodes_with_layers_count == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
+                return Some(WhyAnimationHasNoLayer::MoreAnimationsThanLayersFor);
+            }
+            None
+        })();
         if let Some(why_no_layer) = why_no_layer {
             animations_without_layers.push((AnimatedNode::Effect(effect), why_no_layer));
             continue;
         }
         animated_nodes_with_layers_count += 1;
-        let why_composited = &mut why_composited_regardless_of_layer_content_by_effect_index[effect.0 as usize];
-        if why_composited.is_none() {
-            *why_composited = Some(WhyEffectIsComposited::TheCompositorAnimatesIt);
-        }
-        mark_effects_around_as_composited(
-            &mut why_composited_regardless_of_layer_content_by_effect_index,
+        why_composited_regardless_of_layer_content
+            .set_unless_composited(effect, WhyEffectIsComposited::TheCompositorAnimatesIt);
+        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
+            tree,
             tree.effect_nodes[effect.0 as usize].parent,
             WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
         );
@@ -1049,7 +1112,7 @@ fn place_list(
 
     let mut backdrop_read_reach_by_effect_index = vec![Reach::Nothing; tree.effect_nodes.len()];
     let mut backdrop_readers_in_paint_order = Vec::new();
-    let mut backdrop_readers_of_root_group = Vec::new();
+    let mut reads_root_group_by_effect_index = vec![false; tree.effect_nodes.len()];
     for &effect in &effects_in_paint_order_with_outer_before_inner {
         let Some(backdrop_reader) = backdrop_reader_by_effect_index[effect.0 as usize] else {
             continue;
@@ -1114,15 +1177,15 @@ fn place_list(
                 Reach::Within(rect) => Reach::Within(expanded_to_tile_grid(rect)),
                 backdrop_read_reach => backdrop_read_reach,
             };
-            let read_tiles_cut_by_earlier_composited_effect = effects_in_paint_order_with_outer_before_inner
+            let read_tiles_cut_by_earlier_composited_effect = why_composited_regardless_of_layer_content
+                .composited_effects
                 .iter()
                 .any(|&other_effect| {
                     other_effect != effect
-                        && why_composited_regardless_of_layer_content_by_effect_index[other_effect.0 as usize].is_some()
                         && first_run_index_by_effect_index[other_effect.0 as usize]
                             < first_run_index_by_effect_index[effect.0 as usize]
-                        && effect_is_inside(tree, other_effect, backdrop_root)
-                        && !effect_is_inside(tree, effect, other_effect)
+                        && nesting_of_live_effects.is_strictly_inside(other_effect, backdrop_root)
+                        && !nesting_of_live_effects.is_strictly_inside(effect, other_effect)
                         && backdrop_read_tiles.meets(Reach::Within(
                             reach_by_effect_index[other_effect.0 as usize].united(
                                 match backdrop_read_reach_by_effect_index[other_effect.0 as usize] {
@@ -1135,7 +1198,7 @@ fn place_list(
             let read_tiles_cut_by_earlier_media = placed_media.iter().any(|media| {
                 let effect_of_media = list.run(media.run_index.0 as usize).context.effect;
                 (media.run_index.0 as usize) < first_run_index_by_effect_index[effect.0 as usize]
-                    && effect_is_or_is_inside(tree, effect_of_media, backdrop_root)
+                    && nesting_of_live_effects.is_or_is_inside(effect_of_media, backdrop_root)
                     && backdrop_read_tiles.meets(Reach::Within(media.reach))
             });
             (read_tiles_cut_by_earlier_composited_effect || read_tiles_cut_by_earlier_media)
@@ -1145,42 +1208,41 @@ fn place_list(
         };
         backdrop_readers_in_paint_order.push(effect);
         if backdrop_root.is_none() {
-            backdrop_readers_of_root_group.push(effect);
+            reads_root_group_by_effect_index[effect.0 as usize] = true;
         }
         let Some(why_composited) = why_composited else {
             continue;
         };
-        why_composited_regardless_of_layer_content_by_effect_index[effect.0 as usize] = Some(why_composited);
-        mark_effects_around_as_composited(
-            &mut why_composited_regardless_of_layer_content_by_effect_index,
+        why_composited_regardless_of_layer_content.set(effect, why_composited);
+        why_composited_regardless_of_layer_content.mark_effects_around_as_composited(
+            tree,
             reading_effect_node.parent,
             WhyEffectIsComposited::ItHoldsAnEffectTheCompositorComposites,
         );
     }
 
-    let mut placed_effect_index_by_effect_index: Vec<Option<PlacedEffectIndex>> = vec![None; tree.effect_nodes.len()];
+    // Effects come after the effects around them, so the innermost placed effect at or around each is known by then.
+    let mut innermost_placed_effect_at_or_around_by_effect_index: Vec<Option<PlacedEffectIndex>> =
+        vec![None; tree.effect_nodes.len()];
     let mut placed_effects: Vec<PlacedEffect> = Vec::new();
     for &effect in &effects_in_paint_order_with_outer_before_inner {
+        let parent = tree.effect_nodes[effect.0 as usize].parent;
+        let innermost_placed_effect_around = innermost_placed_effect_at_or_around_by_effect_index
+            .get(parent.0 as usize)
+            .copied()
+            .flatten();
+        innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] = innermost_placed_effect_around;
         let why_composited_regardless_of_layer_content =
-            why_composited_regardless_of_layer_content_by_effect_index[effect.0 as usize];
-        let reads_root_group = backdrop_readers_of_root_group.contains(&effect);
+            why_composited_regardless_of_layer_content.why_by_effect_index[effect.0 as usize];
+        let reads_root_group = reads_root_group_by_effect_index[effect.0 as usize];
         if why_composited_regardless_of_layer_content.is_none() && !reads_root_group {
             continue;
         }
-        let mut nearest_placed_effect_around = tree.effect_nodes[effect.0 as usize].parent;
-        while !nearest_placed_effect_around.is_none()
-            && placed_effect_index_by_effect_index[nearest_placed_effect_around.0 as usize].is_none()
-        {
-            nearest_placed_effect_around = tree.effect_nodes[nearest_placed_effect_around.0 as usize].parent;
-        }
-        placed_effect_index_by_effect_index[effect.0 as usize] = Some(PlacedEffectIndex(placed_effects.len()));
+        innermost_placed_effect_at_or_around_by_effect_index[effect.0 as usize] =
+            Some(PlacedEffectIndex(placed_effects.len()));
         placed_effects.push(PlacedEffect {
             effect,
-            placed_effect_around_index: if nearest_placed_effect_around.is_none() {
-                None
-            } else {
-                placed_effect_index_by_effect_index[nearest_placed_effect_around.0 as usize]
-            },
+            placed_effect_around_index: innermost_placed_effect_around,
             run_group_index: run_group_of_effect(effect),
             reach: reach_by_effect_index[effect.0 as usize],
             backdrop_read_reach: backdrop_read_reach_by_effect_index[effect.0 as usize],
@@ -1189,14 +1251,10 @@ fn place_list(
         });
     }
     let innermost_placed_effect_of_run = |run_index: usize| {
-        let mut effect = list.run(run_index).context.effect;
-        while !effect.is_none() {
-            if let Some(placed_effect_index) = placed_effect_index_by_effect_index[effect.0 as usize] {
-                return Some(placed_effect_index);
-            }
-            effect = tree.effect_nodes[effect.0 as usize].parent;
-        }
-        None
+        innermost_placed_effect_at_or_around_by_effect_index
+            .get(list.run(run_index).context.effect.0 as usize)
+            .copied()
+            .flatten()
     };
 
     let mut record_stretches: Vec<PlacedRecordStretch> = Vec::with_capacity(placed_run_groups.len());
@@ -1290,7 +1348,7 @@ fn swept_reach_of_animated_space_in_parent_space(
         .summary()
         .destination_blending_records
         .iter()
-        .any(|record| run_indices_of_space.contains(&(record.run_index as usize)))
+        .any(|record| run_indices_of_space.binary_search(&(record.run_index as usize)).is_ok())
     {
         return Err(WhyAnimationHasNoLayer::ItHoldsRecordsThatBlendWithWhatIsBelowThem);
     }
@@ -1379,6 +1437,7 @@ fn swept_reach_of_animated_space_in_parent_space(
 fn effects_whose_opacity_or_filter_the_compositor_animates(tree: &VisualContextTree) -> Vec<(EffectNodeIndex, bool)> {
     use crate::host::FfiVisualAnimationTargetKind;
     let mut animated_effects: Vec<(EffectNodeIndex, bool)> = Vec::new();
+    let mut position_in_animated_effects_by_effect_index: HashMap<u32, usize> = HashMap::new();
     for animation in tree.visual_animations() {
         let filter_is_animated = match animation.target_kind {
             FfiVisualAnimationTargetKind::Opacity => false,
@@ -1389,9 +1448,14 @@ fn effects_whose_opacity_or_filter_the_compositor_animates(tree: &VisualContextT
             if effect_index as usize >= tree.effect_nodes.len() {
                 continue;
             }
-            match animated_effects.iter_mut().find(|(effect, _)| effect.0 == effect_index) {
-                Some((_, filter_is_animated_already)) => *filter_is_animated_already |= filter_is_animated,
-                None => animated_effects.push((EffectNodeIndex(effect_index), filter_is_animated)),
+            match position_in_animated_effects_by_effect_index.entry(effect_index) {
+                std::collections::hash_map::Entry::Occupied(position) => {
+                    animated_effects[*position.get()].1 |= filter_is_animated;
+                }
+                std::collections::hash_map::Entry::Vacant(position) => {
+                    position.insert(animated_effects.len());
+                    animated_effects.push((EffectNodeIndex(effect_index), filter_is_animated));
+                }
             }
         }
     }
@@ -1754,6 +1818,8 @@ impl StackBeingBuilt<'_> {
         let root_node_index = PlacementNodeIndex(0);
         let mut open_band_by_node_index: Vec<Option<BandBeingBuiltIndex>> = vec![None; self.nodes.len()];
         open_band_by_node_index[root_node_index.0] = Some(self.open_band(root_node_index, RecordStretchIndex(0)));
+        let mut composited_nodes_whose_bands_may_be_open: Vec<PlacementNodeIndex> = Vec::new();
+        let mut node_is_on_path_of_stretch: Vec<bool> = Vec::new();
         for (index, stretch) in placement.record_stretches.iter().enumerate() {
             let stretch_index = RecordStretchIndex(index);
             if stretch.reach.is_empty() {
@@ -1779,14 +1845,23 @@ impl StackBeingBuilt<'_> {
                     !blending_records_find_all_they_read_in_own_layer;
             }
             let path_from_root_to_node_of_stretch = self.path_from_root_to(node_of_stretch);
+            node_is_on_path_of_stretch.resize(self.nodes.len(), false);
+            for node_on_path in &path_from_root_to_node_of_stretch {
+                node_is_on_path_of_stretch[node_on_path.0] = true;
+            }
             // A replay of the list composites an effect anew wherever content outside it is painted, so the bands of
             // its node end there.
-            for &composited_node_index in self.composited_node_by_placed_effect.iter().flatten() {
+            composited_nodes_whose_bands_may_be_open.retain(|node| open_band_by_node_index[node.0].is_some());
+            for index in 0..composited_nodes_whose_bands_may_be_open.len() {
+                let composited_node_index = composited_nodes_whose_bands_may_be_open[index];
                 if open_band_by_node_index[composited_node_index.0].is_some()
-                    && !path_from_root_to_node_of_stretch.contains(&composited_node_index)
+                    && !node_is_on_path_of_stretch[composited_node_index.0]
                 {
                     self.close_bands_of_node_and_nodes_inside(composited_node_index, &mut open_band_by_node_index);
                 }
+            }
+            for node_on_path in &path_from_root_to_node_of_stretch {
+                node_is_on_path_of_stretch[node_on_path.0] = false;
             }
             for depth in 0..path_from_root_to_node_of_stretch.len() {
                 let node_on_path = path_from_root_to_node_of_stretch[depth];
@@ -1809,6 +1884,9 @@ impl StackBeingBuilt<'_> {
                     Some(next_node) if open_band_by_node_index[next_node.0].is_none() => {
                         let new_band_of_next_node = self.open_band(next_node, stretch_index);
                         open_band_by_node_index[next_node.0] = Some(new_band_of_next_node);
+                        if self.nodes[next_node.0].composited_effect.is_some() {
+                            composited_nodes_whose_bands_may_be_open.push(next_node);
+                        }
                         self.bands_being_built[open_band_of_node_on_path.0].barriers.push(
                             BarrierBeingBuilt::NestedNodeBand {
                                 band_being_built_index: new_band_of_next_node,
@@ -2031,22 +2109,16 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     }
     let tree = inputs.tree;
     let run_groups = inputs.list.run_groups(tree);
-    let reads_backdrop_or_is_composited = |effect: EffectNodeIndex| {
-        placement.backdrop_readers_in_paint_order.contains(&effect)
-            || effects_composited_in_plan(plan).any(|composited_effect| composited_effect == effect)
-    };
-    (0..inputs.list.run_count())
-        .filter(|&run_index| run_groups.run_is_sorted_by_depth(run_index))
-        .any(|run_index| {
-            let mut effect = inputs.list.run(run_index).context.effect;
-            while !effect.is_none() {
-                if reads_backdrop_or_is_composited(effect) {
-                    return true;
-                }
-                effect = tree.effect_nodes[effect.0 as usize].parent;
-            }
-            false
-        })
+    let effect_holds_run_sorted_by_depth_by_effect_index =
+        effects_at_or_around_marked_runs(inputs.list, tree, |run_index| {
+            run_groups.run_is_sorted_by_depth(run_index)
+        });
+    placement
+        .backdrop_readers_in_paint_order
+        .iter()
+        .copied()
+        .chain(effects_composited_in_plan(plan))
+        .any(|effect| effect_holds_run_sorted_by_depth_by_effect_index[effect.0 as usize])
 }
 
 // The compositor composites a filter only where its tiles hold all it reads: where the filter shows what it filters

@@ -1564,16 +1564,6 @@ impl LayeringObstacles {
     }
 }
 
-fn effect_is_or_is_inside(tree: &VisualContextTree, mut effect: EffectNodeIndex, ancestor: EffectNodeIndex) -> bool {
-    while !effect.is_none() {
-        if effect == ancestor {
-            return true;
-        }
-        effect = tree.effect_nodes[effect.0 as usize].parent;
-    }
-    false
-}
-
 /// Whether one live effect node of a tree is inside another, without a walk up the tree for each question. Decoding a
 /// tree checks the parents of its live nodes only, so a node that is not live is in no effect and holds none. The
 /// table is worked out at the first question.
