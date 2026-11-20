@@ -64,6 +64,8 @@ const CANVAS_SUBLAYER_IDENTITY_TAG: u64 = 1 << 60;
 const VIDEO_SUBLAYER_IDENTITY_TAG: u64 = 2 << 60;
 const PAINTED_LAYER_SUBLAYER_IDENTITY_TAG: u64 = 3 << 60;
 const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
+// The checks of a plan keep the ordinal of a media layer below the most media layers a plan makes, so it stays clear of
+// the tag.
 const MEDIA_ORDINAL_SHIFT_PAST_CANVAS_AND_VIDEO_IDS: u32 = 44;
 
 struct PooledTile {

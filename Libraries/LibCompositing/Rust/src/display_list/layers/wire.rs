@@ -742,7 +742,7 @@ fn check_composited_effects_nest_as_in_tree(
 fn check_bands(plan: &LayeredPlan, list: &DisplayListStorage) -> Result<(), &'static str> {
     const NOT_ENTERED_ONCE: &str = "the walk of the bands does not enter each band of the stack once";
     let mut bands_left_to_enter = 1usize;
-    let mut media_layer_count = 0;
+    let mut media_of_layers: Vec<(ListPosition, LiveContent, u32)> = Vec::new();
     for (index, band) in plan.bands.iter().enumerate() {
         bands_left_to_enter = bands_left_to_enter.checked_sub(1).ok_or(NOT_ENTERED_ONCE)?;
         if band.placement_node_index.0 >= plan.nodes.len() {
@@ -765,12 +765,18 @@ fn check_bands(plan: &LayeredPlan, list: &DisplayListStorage) -> Result<(), &'st
         for cut in &band.cuts {
             match cut.barrier {
                 BarrierOfPlan::Media {
-                    content, record_span, ..
+                    content,
+                    ordinal,
+                    record_span,
+                    ..
                 } => {
                     if !span_is_run_drawing_content(list, record_span, content) {
                         return Err("a canvas, video or nested context is not a run of the list that draws it");
                     }
-                    media_layer_count += 1;
+                    if media_of_layers.len() == MAXIMUM_MEDIA_LAYER_COUNT {
+                        return Err("the stack holds more canvas, video and nested context layers than a plan makes");
+                    }
+                    media_of_layers.push((record_span.begin, content, ordinal));
                 }
                 BarrierOfPlan::NestedBand => bands_left_to_enter += 1,
             }
@@ -779,8 +785,22 @@ fn check_bands(plan: &LayeredPlan, list: &DisplayListStorage) -> Result<(), &'st
     if bands_left_to_enter != 0 {
         return Err(NOT_ENTERED_ONCE);
     }
-    if media_layer_count > MAXIMUM_MEDIA_LAYER_COUNT {
-        return Err("the stack holds more canvas, video and nested context layers than a plan makes");
+    check_ordinals_of_media(media_of_layers)
+}
+
+// A plan numbers the drawings of a canvas, video or nested context that have layers in paint order: each has as its
+// ordinal how many of them with the same content are painted before it. The window server tells the media apart by
+// their ordinals.
+fn check_ordinals_of_media(mut media_of_layers: Vec<(ListPosition, LiveContent, u32)>) -> Result<(), &'static str> {
+    media_of_layers.sort_unstable_by_key(|(position, _, _)| *position);
+    for (index, (_, content, ordinal)) in media_of_layers.iter().enumerate() {
+        let count_of_same_content_painted_before = media_of_layers[..index]
+            .iter()
+            .filter(|(_, earlier_content, _)| earlier_content == content)
+            .count();
+        if *ordinal as usize != count_of_same_content_painted_before {
+            return Err("a canvas, video or nested context is not numbered by the drawings of it painted before it");
+        }
     }
     Ok(())
 }
@@ -859,7 +879,8 @@ impl LayerStack {
     /// nodes are composited inside different effects that a replay of the list enters, nested as the tree nests them;
     /// bands are of nodes of the stack, and each band but the first holds a span or a cut; bands start at runs of the
     /// list, and spans are of whole runs, in paint order; each canvas, video or nested context with a layer is a run of
-    /// the list that draws it, and the stack holds no more of those than a plan makes; no span is empty and no record
+    /// the list that draws it, numbered by how many drawings of the same content with layers are painted before it,
+    /// and the stack holds no more of those than a plan makes; no span is empty and no record
     /// is in two spans; and the walk of the bands enters each band once. Once the stack is built, the node of a band
     /// that the walk enters at a cut is in the node of the band of that cut, the cuts of each band are in paint order,
     /// and the identities of layers, and so of bands, are unique.
@@ -872,9 +893,9 @@ impl LayerStack {
     ///
     /// The checks leave out what can only make pixels wrong: whether reaches are large enough for what records draw,
     /// which layers can hold content, whether every record is in a span, whether a band starts at its first record,
-    /// whether composite clips are the clips content needs, which ordinal a canvas, video or nested context has, which
-    /// effects must be composited, which spaces hold content that moves within them, and where the window server could
-    /// show media. The list and the tree pass their own checks first.
+    /// whether composite clips are the clips content needs, which effects must be composited, which spaces hold content
+    /// that moves within them, and where the window server could show media. The list and the tree pass their own
+    /// checks first.
     pub fn validated(
         unvalidated: UnvalidatedLayerStack,
         list: &DisplayListStorage,
@@ -2206,6 +2227,22 @@ mod tests {
             ("28: first band of a node in another node", plain_page, |plan| {
                 plan.bands[0].placement_node_index = PlacementNodeIndex(1);
             }),
+            (
+                "29: first drawing of a canvas numbered as if one came before it",
+                page_with_two_canvases,
+                |plan| *first_media_of(plan).1 = 1,
+            ),
+            (
+                "29: second drawing of a canvas numbered past the bits a sublayer keeps for it",
+                page_drawing_one_canvas_twice,
+                |plan| {
+                    let band = band_with_cuts(plan);
+                    let BarrierOfPlan::Media { ordinal, .. } = &mut plan.bands[band].cuts[1].barrier else {
+                        unreachable!()
+                    };
+                    *ordinal = 1 << 16;
+                },
+            ),
         ]
     }
 
