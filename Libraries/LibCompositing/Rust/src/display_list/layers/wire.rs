@@ -10,9 +10,9 @@
 
 use super::{
     BandOfPlan, BarrierOfPlan, COORDINATE_LIMIT_IN_DEVICE_PIXELS, CutOfPlan, LayerContent, LayerIdentity, LayerStack,
-    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan,
-    PlacementNodeIndex, StackLayer, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
-    composited_effects_nest_too_deep,
+    LayeredPlan, LayeringObstacles, MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS,
+    NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex, StackLayer,
+    WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, anchors_of_layer_plans,
 };
 use crate::display_list::commands::{
     CanvasId, CompositorContextId, EffectNodeIndex, ImageFrameResourceId, VideoSinkHandle,
@@ -683,14 +683,19 @@ fn check_nodes(
 }
 
 // A frame composites a layer inside each composited effect around it, and the planner gives a list one layer where they
-// nest deeper.
+// nest deeper than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. Each node comes after the node it is in.
 fn check_nesting_of_composited_effects(nodes: &[NodeOfPlan]) -> Result<(), &'static str> {
-    if composited_effects_nest_too_deep(
-        nodes
-            .iter()
-            .map(|node| (node.parent_index, node.composited_effect.is_some())),
-    ) {
-        return Err("composited effects nest deeper than a plan nests them");
+    let mut nesting_by_node_index: Vec<usize> = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let nesting_around = node
+            .parent_index
+            .and_then(|parent_index| nesting_by_node_index.get(parent_index.0).copied())
+            .unwrap_or(0);
+        let nesting = nesting_around + usize::from(node.composited_effect.is_some());
+        if nesting > MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS {
+            return Err("composited effects nest deeper than a plan nests them");
+        }
+        nesting_by_node_index.push(nesting);
     }
     Ok(())
 }

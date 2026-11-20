@@ -20,7 +20,7 @@ use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
     MAXIMUM_MEDIA_LAYER_COUNT, MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NestingOfLiveEffects, NodeOfPlan,
     PaintedLayerOfPlan, PlacementNodeIndex, WhyCompositorCannotCompositeEffect, WhyListIsOneLayer,
-    backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, media_name,
+    backdrop_reader_by_reading_effect_index, media_name,
 };
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
@@ -1288,8 +1288,6 @@ struct StackBeingBuilt<'a> {
     /// Per placed effect, once decided, the node the compositor composites it in, if it composites it.
     composited_node_once_decided_by_placed_effect: Vec<Option<Option<PlacementNodeIndex>>>,
     composited_effects_around_node_by_node_index: Vec<usize>,
-    composited_effects_nest_too_deep: bool,
-    records_blend_with_what_other_layers_hold_below_them: bool,
 }
 
 impl StackBeingBuilt<'_> {
@@ -1565,7 +1563,7 @@ impl StackBeingBuilt<'_> {
         &mut self,
         stretch: &PlacedRecordStretch,
         open_band_by_node_index: &mut Vec<Option<BandBeingBuiltIndex>>,
-    ) -> PlacementNodeIndex {
+    ) -> Result<PlacementNodeIndex, WhyListIsOneLayer> {
         let mut node_index = self.node_of_run_group[stretch.run_group_index.0];
         for placed_effect_index in self.placed_effects_around_stretch_outermost_first(stretch) {
             let composited_node_index = match self.composited_node_once_decided_by_placed_effect[placed_effect_index.0]
@@ -1581,8 +1579,14 @@ impl StackBeingBuilt<'_> {
                         if self.composited_effects_around_node_by_node_index[node_index.0]
                             >= MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS
                         {
-                            self.composited_effects_nest_too_deep = true;
-                            return node_index;
+                            return Err(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
+                        }
+                        // Media and animations get no layer inside an effect the compositor cannot composite, but an
+                        // effect that reads what is below its layer can still make one composited.
+                        if let Some(why) = self.placement.why_compositor_cannot_composite_by_effect_index
+                            [placed_effect.effect.0 as usize]
+                        {
+                            return Err(WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why));
                         }
                         let draw_and_read_reach = self.draw_and_read_reach_of_placed_effect(placed_effect_index);
                         let composited_node_index =
@@ -1602,10 +1606,10 @@ impl StackBeingBuilt<'_> {
             };
             node_index = composited_node_index;
         }
-        node_index
+        Ok(node_index)
     }
 
-    fn cut_into_bands(&mut self) {
+    fn cut_into_bands(&mut self) -> Result<(), WhyListIsOneLayer> {
         let placement = self.placement;
         let root_node_index = PlacementNodeIndex(0);
         let mut open_band_by_node_index: Vec<Option<BandBeingBuiltIndex>> = vec![None; self.nodes.len()];
@@ -1617,10 +1621,7 @@ impl StackBeingBuilt<'_> {
             if stretch.reach.is_empty() {
                 continue;
             }
-            let node_of_stretch = self.node_of_stretch(stretch, &mut open_band_by_node_index);
-            if self.composited_effects_nest_too_deep {
-                return;
-            }
+            let node_of_stretch = self.node_of_stretch(stretch, &mut open_band_by_node_index)?;
             let reach_read_by_blending_records =
                 placement.run_groups[stretch.run_group_index.0].reach_read_by_records_blending_with_root_group;
             if reach_read_by_blending_records != Reach::Nothing {
@@ -1636,8 +1637,9 @@ impl StackBeingBuilt<'_> {
                     }
                     _ => false,
                 };
-                self.records_blend_with_what_other_layers_hold_below_them |=
-                    !blending_records_find_all_they_read_in_own_layer;
+                if !blending_records_find_all_they_read_in_own_layer {
+                    return Err(WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem);
+                }
             }
             let path_from_root_to_node_of_stretch = self.path_from_root_to(node_of_stretch);
             // A replay of the list composites an effect anew wherever content outside it is painted, so the bands of
@@ -1711,6 +1713,7 @@ impl StackBeingBuilt<'_> {
                     .united(Reach::Within(stretch.reach));
             }
         }
+        Ok(())
     }
 
     // Puts the band into `bands`, and after it the bands nested in it, in the order of a walk that enters a nested band
@@ -1811,8 +1814,8 @@ impl StackBeingBuilt<'_> {
     }
 }
 
-// The plan of the stack, or why the list goes as one layer after all, which the nodes tell before the bands are worked
-// out.
+// The plan of the stack, or the first reason found while the stack is cut into bands why the list goes as one layer
+// after all.
 fn assemble_plan(
     inputs: &LayerStackInputs<'_>,
     placement: &ListPlacement,
@@ -1828,8 +1831,6 @@ fn assemble_plan(
         bands_being_built: Vec::new(),
         composited_node_once_decided_by_placed_effect: vec![None; placement.placed_effects.len()],
         composited_effects_around_node_by_node_index: Vec::new(),
-        composited_effects_nest_too_deep: false,
-        records_blend_with_what_other_layers_hold_below_them: false,
     };
     stack_being_built.find_or_add_node(RasterSpaceIndex::VIEWPORT, Vec::new());
     stack_being_built.node_of_run_group = placement
@@ -1840,15 +1841,15 @@ fn assemble_plan(
         })
         .collect();
     stack_being_built.limit_reach_of_moving_space_nodes_to_content_swept_over_how_they_move();
-    stack_being_built.cut_into_bands();
-    if stack_being_built.composited_effects_nest_too_deep {
-        return Err(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
-    }
-    if stack_being_built.records_blend_with_what_other_layers_hold_below_them {
-        return Err(WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem);
-    }
-    if let Some(why) = why_nodes_go_as_one_layer(inputs, layering_obstacles, placement, &stack_being_built.nodes) {
-        return Err(why);
+    stack_being_built.cut_into_bands()?;
+    if layering_obstacles.sorts_planes_by_depth
+        && contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
+            inputs,
+            placement,
+            &stack_being_built.nodes,
+        )
+    {
+        return Err(WhyListIsOneLayer::SortingContext3D);
     }
     let mut bands = Vec::with_capacity(stack_being_built.bands_being_built.len());
     stack_being_built.emit_band(BandBeingBuiltIndex(0), &mut bands);
@@ -1865,10 +1866,6 @@ fn assemble_plan(
         return Err(WhyListIsOneLayer::PlanHoldsMoreThanCompositorDecodes);
     }
     Ok(plan)
-}
-
-fn effects_composited_in(nodes: &[NodeOfPlan]) -> impl Iterator<Item = EffectNodeIndex> + '_ {
-    nodes.iter().filter_map(|node| node.composited_effect)
 }
 
 // A 3D sorting context that sorts its planes by depth is placed whole into the tiles of one band, which replay it
@@ -1890,43 +1887,8 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
         .backdrop_readers_in_paint_order
         .iter()
         .copied()
-        .chain(effects_composited_in(nodes))
+        .chain(nodes.iter().filter_map(|node| node.composited_effect))
         .any(|effect| effect_holds_run_sorted_by_depth_by_effect_index[effect.0 as usize])
-}
-
-// The compositor composites a filter only where its tiles hold all it reads: where the filter shows what it filters
-// over and around where that is drawn, as the barriers inside it cut its tiles there, and reads no farther past each
-// pixel than tiles are followed past the frame. Media and animations get no layer inside any other filter;
-// an effect that reads what is below its layer can still make one composited.
-fn why_compositor_cannot_composite_effect_of_nodes(
-    placement: &ListPlacement,
-    nodes: &[NodeOfPlan],
-) -> Option<WhyListIsOneLayer> {
-    effects_composited_in(nodes).find_map(|composited_effect| {
-        placement.why_compositor_cannot_composite_by_effect_index[composited_effect.0 as usize]
-            .map(WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited)
-    })
-}
-
-fn why_nodes_go_as_one_layer(
-    inputs: &LayerStackInputs<'_>,
-    layering_obstacles: &LayeringObstacles,
-    placement: &ListPlacement,
-    nodes: &[NodeOfPlan],
-) -> Option<WhyListIsOneLayer> {
-    if composited_effects_nest_too_deep(
-        nodes
-            .iter()
-            .map(|node| (node.parent_index, node.composited_effect.is_some())),
-    ) {
-        return Some(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
-    }
-    if layering_obstacles.sorts_planes_by_depth
-        && contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, placement, nodes)
-    {
-        return Some(WhyListIsOneLayer::SortingContext3D);
-    }
-    why_compositor_cannot_composite_effect_of_nodes(placement, nodes)
 }
 
 /// Works out the layers of a list from where `place_list` placed its parts among `spaces`, whose extents are not filled

@@ -542,23 +542,6 @@ fn innermost_composited_band_at_or_around_each_band(
     innermost_composited_band_by_band_index
 }
 
-/// Whether the composited effects of `nodes`, given as the node each is in and whether it is composited, nest deeper
-/// than `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`. Each node comes after the node it is in.
-fn composited_effects_nest_too_deep(nodes: impl Iterator<Item = (Option<PlacementNodeIndex>, bool)>) -> bool {
-    let mut nesting_by_node_index: Vec<usize> = Vec::new();
-    for (parent_index, is_composited) in nodes {
-        let nesting_around = parent_index
-            .and_then(|parent_index| nesting_by_node_index.get(parent_index.0).copied())
-            .unwrap_or(0);
-        let nesting = nesting_around + usize::from(is_composited);
-        if nesting > MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS {
-            return true;
-        }
-        nesting_by_node_index.push(nesting);
-    }
-    false
-}
-
 fn index_of_layer_with_identity(layers: &[StackLayer]) -> HashMap<LayerIdentity, LayerIndex> {
     let mut index_by_identity = HashMap::with_capacity(layers.len());
     for (layer_index, layer) in layers.iter().enumerate() {
