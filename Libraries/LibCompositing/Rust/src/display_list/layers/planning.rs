@@ -495,7 +495,6 @@ pub struct PlacedMedia {
 /// holds for every sample of the animations of the tree.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListPlacement {
-    pub layering_obstacles: LayeringObstacles,
     pub run_groups: Vec<PlacedRunGroup>,
     pub record_stretches: Vec<PlacedRecordStretch>,
     /// In paint order.
@@ -1352,7 +1351,6 @@ fn place_list(
     }
 
     ListPlacement {
-        layering_obstacles: LayeringObstacles::of_with_nesting_of_live_effects(list, tree, nesting_of_live_effects),
         run_groups: placed_run_groups,
         record_stretches,
         placed_media,
@@ -2142,9 +2140,6 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
     placement: &ListPlacement,
     plan: &LayeredPlan,
 ) -> bool {
-    if !placement.layering_obstacles.sorts_planes_by_depth {
-        return false;
-    }
     let tree = inputs.tree;
     let run_groups = inputs.list.run_groups(tree);
     let mut marks = [effects_of_marked_runs(inputs.list, tree, |run_index| {
@@ -2176,6 +2171,7 @@ fn why_compositor_cannot_composite_effect_of_plan(
 
 fn why_plan_goes_as_one_layer(
     inputs: &LayerStackInputs<'_>,
+    layering_obstacles: &LayeringObstacles,
     placement: &ListPlacement,
     plan: &LayeredPlan,
 ) -> Option<WhyListIsOneLayer> {
@@ -2186,7 +2182,9 @@ fn why_plan_goes_as_one_layer(
     ) {
         return Some(WhyListIsOneLayer::CompositedEffectsNestTooDeep);
     }
-    if contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, placement, plan) {
+    if layering_obstacles.sorts_planes_by_depth
+        && contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(inputs, placement, plan)
+    {
         return Some(WhyListIsOneLayer::SortingContext3D);
     }
     why_compositor_cannot_composite_effect_of_plan(placement, plan)
@@ -2230,14 +2228,13 @@ fn build_layer_stack(
     inputs: &LayerStackInputs<'_>,
     placement: ListPlacement,
     spaces: Vec<RasterSpace>,
+    layering_obstacles: LayeringObstacles,
     nesting_of_live_effects: &NestingOfLiveEffects<'_>,
 ) -> PlannedLayers {
-    let layering_obstacles = placement.layering_obstacles;
-    let why_list_is_one_layer = match why_list_cannot_be_layered(inputs, &layering_obstacles) {
-        Some(why) => why,
-        None => match assemble_plan_unless_records_blend_with_other_layers(&placement, &spaces) {
-            None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
-            Some((plan, notes_of_composited_effects)) => match why_plan_goes_as_one_layer(inputs, &placement, &plan) {
+    let why_list_is_one_layer = match assemble_plan_unless_records_blend_with_other_layers(&placement, &spaces) {
+        None => WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
+        Some((plan, notes_of_composited_effects)) => {
+            match why_plan_goes_as_one_layer(inputs, &layering_obstacles, &placement, &plan) {
                 Some(why) => why,
                 None => match LayerStack::of_plan_passing_checks(
                     plan,
@@ -2266,9 +2263,18 @@ fn build_layer_stack(
                         WhyListIsOneLayer::PlanFailsChecksOfCompositor
                     }
                 },
-            },
-        },
+            }
+        }
     };
+    one_layer(inputs, why_list_is_one_layer, layering_obstacles, placement)
+}
+
+fn one_layer(
+    inputs: &LayerStackInputs<'_>,
+    why_list_is_one_layer: WhyListIsOneLayer,
+    layering_obstacles: LayeringObstacles,
+    placement: ListPlacement,
+) -> PlannedLayers {
     let mut stack = LayerStack::single_layer(
         inputs.viewport_rect,
         inputs.list.whole_span(),
@@ -2326,6 +2332,12 @@ fn plan_layer_stack_at_anchors(
     inputs: &LayerStackInputs<'_>,
     anchors_of_tree: &RasterSpaceAnchorsOfTree,
 ) -> PlannedLayers {
+    let nesting_of_live_effects = NestingOfLiveEffects::of(inputs.tree);
+    let layering_obstacles =
+        LayeringObstacles::of_with_nesting_of_live_effects(inputs.list, inputs.tree, &nesting_of_live_effects);
+    if let Some(why) = why_list_cannot_be_layered(inputs, &layering_obstacles) {
+        return one_layer(inputs, why, layering_obstacles, ListPlacement::default());
+    }
     let (spaces, geometries) = spaces_with_geometries(
         inputs.tree,
         anchors_of_tree,
@@ -2333,9 +2345,14 @@ fn plan_layer_stack_at_anchors(
         inputs.viewport_rect,
     );
     let spaces_of_stack = spaces.spaces().to_vec();
-    let nesting_of_live_effects = NestingOfLiveEffects::of(inputs.tree);
     let placement = place_list(inputs, spaces, &geometries, &nesting_of_live_effects);
-    build_layer_stack(inputs, placement, spaces_of_stack, &nesting_of_live_effects)
+    build_layer_stack(
+        inputs,
+        placement,
+        spaces_of_stack,
+        layering_obstacles,
+        &nesting_of_live_effects,
+    )
 }
 
 /// What a plan of the layers of a list is made from, all of which WebContent publishes: the list, the tree, the viewport
