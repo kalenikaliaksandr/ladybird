@@ -3219,6 +3219,12 @@ mod tests {
         }
     }
 
+    const NO_FRAME_STATE: FrameStateReadByReplay<'static> = FrameStateReadByReplay {
+        scrollbars: &[],
+        time_ns: 0,
+        live_content: &NoLiveContentChanges,
+    };
+
     fn tree_with_root_isolation_effect() -> VisualContextTree {
         let mut tree = VisualContextTree::create(TransformData {
             matrix: FloatMatrix4x4::identity(),
@@ -3316,25 +3322,6 @@ mod tests {
         })
         .stack;
         assert_eq!(stack.why_list_is_one_layer, None);
-        let list_keying = TileKeyingOfList::new(
-            &display_list,
-            &tree,
-            &stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(
-            &tree,
-            &spaces,
-            RasterSpaceIndex::VIEWPORT,
-            &[],
-            FloatMatrix4x4::identity(),
-        );
-        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let band = BandIndex(
             stack
                 .bands
@@ -3343,16 +3330,8 @@ mod tests {
                 .unwrap(),
         );
         let mut band_tile_keys = BandTileKeys::default();
-        raster_space.bind_band(&mut band_tile_keys, &stack, band);
-        raster_space.key_shown_tiles(
-            &mut band_tile_keys,
-            &stack,
-            band,
-            raster_settings_for_tests,
-            VIEWPORT,
-            VIEWPORT,
-            None,
-        );
+        let frames = [(&*display_list, &tree, &stack)];
+        key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, band);
         let tile_with_masked_content = band_tile_keys
             .tiles_within(TileCoord::new(0, 0).cell_rect())
             .find(|tile| {
@@ -3393,63 +3372,50 @@ mod tests {
         .stack
     }
 
+    fn geometry_of_space(
+        tree: &VisualContextTree,
+        stack: &LayerStack,
+        raster_space_index: RasterSpaceIndex,
+    ) -> RasterSpaceGeometry {
+        let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
+        RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity())
+    }
+
+    // Keys the tiles of the band within `shown_rect`, and forgets those outside it.
+    fn key_band(
+        raster_space: &TileKeyingOfRasterSpace<'_>,
+        band_tile_keys: &mut BandTileKeys,
+        stack: &LayerStack,
+        band_index: BandIndex,
+        shown_rect: IntRect,
+    ) -> TileKeyingCounts {
+        raster_space.key_shown_tiles(
+            band_tile_keys,
+            stack,
+            band_index,
+            raster_settings_for_tests,
+            shown_rect,
+            shown_rect,
+            None,
+        )
+    }
+
+    fn tiles_within(band_tile_keys: &BandTileKeys, rect: IntRect) -> Vec<(TileCoord, LayerIndex, ContentHash)> {
+        band_tile_keys
+            .tiles_within(rect)
+            .map(|tile| (tile.coord, tile.layer_index, tile.content_hash))
+            .collect()
+    }
+
     fn viewport_tile_hashes_of_only_band_keyed_from_nothing(
         display_list: &DisplayListStorage,
         tree: &VisualContextTree,
         stack: &LayerStack,
     ) -> Vec<(TileCoord, LayerIndex, ContentHash)> {
-        let list_keying = TileKeyingOfList::new(
-            display_list,
-            tree,
-            stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(
-            tree,
-            &spaces,
-            RasterSpaceIndex::VIEWPORT,
-            &[],
-            FloatMatrix4x4::identity(),
-        );
-        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let frames = [(display_list, tree, stack)];
         let mut band_tile_keys = BandTileKeys::default();
-        raster_space.bind_band(&mut band_tile_keys, stack, BandIndex(0));
-        raster_space.key_shown_tiles(
-            &mut band_tile_keys,
-            stack,
-            BandIndex(0),
-            raster_settings_for_tests,
-            VIEWPORT,
-            VIEWPORT,
-            None,
-        );
-        viewport_tile_hashes(&band_tile_keys)
-    }
-
-    fn viewport_tile_hashes(band_tile_keys: &BandTileKeys) -> Vec<(TileCoord, LayerIndex, ContentHash)> {
-        band_tile_keys
-            .tiles_within(VIEWPORT)
-            .map(|tile| (tile.coord, tile.layer_index, tile.content_hash))
-            .collect()
-    }
-
-    fn chunks_placed_counts_and_viewport_tile_hashes_of_frames_keyed_in_turn(
-        frames: &[(&DisplayListStorage, &VisualContextTree, &LayerStack)],
-    ) -> Vec<(u64, TileKeyingCounts, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
-        chunks_placed_counts_and_tile_hashes_of_band_keyed_in_turn(frames, RasterSpaceIndex::VIEWPORT, BandIndex(0))
-    }
-
-    fn chunks_placed_counts_and_tile_hashes_of_band_keyed_in_turn(
-        frames: &[(&DisplayListStorage, &VisualContextTree, &LayerStack)],
-        raster_space_index: RasterSpaceIndex,
-        band_index: BandIndex,
-    ) -> Vec<(u64, TileKeyingCounts, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
-        key_band_in_frames_in_turn(&mut BandTileKeys::default(), frames, raster_space_index, band_index)
+        key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
+        tiles_within(&band_tile_keys, VIEWPORT)
     }
 
     // Each frame binds the band again under a geometry of its own.
@@ -3462,34 +3428,15 @@ mod tests {
         frames
             .iter()
             .map(|&(display_list, tree, stack)| {
-                let list_keying = TileKeyingOfList::new(
-                    display_list,
-                    tree,
-                    stack,
-                    FrameStateReadByReplay {
-                        scrollbars: &[],
-                        time_ns: 0,
-                        live_content: &NoLiveContentChanges,
-                    },
-                );
-                let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
-                let geometry =
-                    RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
+                let list_keying = TileKeyingOfList::new(display_list, tree, stack, NO_FRAME_STATE);
+                let geometry = geometry_of_space(tree, stack, raster_space_index);
                 let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
                 raster_space.bind_band(band_tile_keys, stack, band_index);
-                let counts = raster_space.key_shown_tiles(
-                    band_tile_keys,
-                    stack,
-                    band_index,
-                    raster_settings_for_tests,
-                    VIEWPORT,
-                    VIEWPORT,
-                    None,
-                );
+                let counts = key_band(&raster_space, band_tile_keys, stack, band_index, VIEWPORT);
                 (
                     raster_space.chunks_placed(),
                     counts,
-                    viewport_tile_hashes(band_tile_keys),
+                    tiles_within(band_tile_keys, VIEWPORT),
                 )
             })
             .collect()
@@ -3571,10 +3518,12 @@ mod tests {
         assert_eq!(stack.nodes.len(), 1);
         assert_eq!(stack_of(&display_list, &halfway).layers, stack.layers);
 
-        let turns = chunks_placed_counts_and_viewport_tile_hashes_of_frames_keyed_in_turn(&[
-            (&display_list, &at_start, &stack),
-            (&display_list, &halfway, &stack),
-        ]);
+        let turns = key_band_in_frames_in_turn(
+            &mut BandTileKeys::default(),
+            &[(&display_list, &at_start, &stack), (&display_list, &halfway, &stack)],
+            RasterSpaceIndex::VIEWPORT,
+            BandIndex(0),
+        );
         assert_eq!(turns[0].0, 3);
         // Only the chunk under the moving node is placed again, and only the cells the box leaves and enters are binned
         // again.
@@ -3595,17 +3544,11 @@ mod tests {
         let stack = stack_of(&display_list, &at_start);
         let animated_space = RasterSpaceIndex(1);
         assert_eq!(stack.spaces[animated_space.0].anchor, moving_node);
-        let band_of_animated_space = BandIndex(
-            stack
-                .bands
-                .iter()
-                .position(|band| stack.nodes[band.placement_node_index.0].raster_space_index == animated_space)
-                .expect("the moving box has a band in its space"),
-        );
-        let turns = chunks_placed_counts_and_tile_hashes_of_band_keyed_in_turn(
+        let turns = key_band_in_frames_in_turn(
+            &mut BandTileKeys::default(),
             &[(&display_list, &at_start, &stack), (&display_list, &halfway, &stack)],
             animated_space,
-            band_of_animated_space,
+            band_of_space(&stack, animated_space),
         );
         assert_eq!(turns[0].0, 1);
         let (chunks_placed, counts, hashes) = &turns[1];
@@ -3624,38 +3567,19 @@ mod tests {
     ) -> Vec<(TileKeyingCounts, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
         let raster_space_index = stack.nodes[stack.bands[band_index.0].placement_node_index.0].raster_space_index;
         assert!(!stack.space_holds_content_that_moves_within_it(raster_space_index));
-        let spaces = RasterSpaces::of_spaces(samples[0], stack.spaces.clone());
-        let geometry =
-            RasterSpaceGeometry::new(samples[0], &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
+        let geometry = geometry_of_space(samples[0], stack, raster_space_index);
         let mut band_tile_keys = BandTileKeys::default();
         samples
             .iter()
             .enumerate()
             .map(|(frame_index, tree)| {
-                let list_keying = TileKeyingOfList::new(
-                    display_list,
-                    tree,
-                    stack,
-                    FrameStateReadByReplay {
-                        scrollbars: &[],
-                        time_ns: 0,
-                        live_content: &NoLiveContentChanges,
-                    },
-                );
+                let list_keying = TileKeyingOfList::new(display_list, tree, stack, NO_FRAME_STATE);
                 let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
                 if frame_index == 0 {
                     raster_space.bind_band(&mut band_tile_keys, stack, band_index);
                 }
-                let counts = raster_space.key_shown_tiles(
-                    &mut band_tile_keys,
-                    stack,
-                    band_index,
-                    raster_settings_for_tests,
-                    VIEWPORT,
-                    VIEWPORT,
-                    None,
-                );
-                (counts, viewport_tile_hashes(&band_tile_keys))
+                let counts = key_band(&raster_space, &mut band_tile_keys, stack, band_index, VIEWPORT);
+                (counts, tiles_within(&band_tile_keys, VIEWPORT))
             })
             .collect()
     }
@@ -3694,7 +3618,8 @@ mod tests {
             band_index,
             &[&at_start, &halfway, &halfway_again],
         );
-        let keyed_from_nothing = chunks_placed_counts_and_tile_hashes_of_band_keyed_in_turn(
+        let keyed_from_nothing = key_band_in_frames_in_turn(
+            &mut BandTileKeys::default(),
             &[(display_list, &halfway, stack)],
             RasterSpaceIndex::VIEWPORT,
             band_index,
@@ -3858,43 +3783,16 @@ mod tests {
         shown_rects: &[IntRect],
     ) -> (BandTileKeys, Vec<TileKeyingCounts>) {
         let (display_list, tree, stack) = frame;
-        let list_keying = TileKeyingOfList::new(
-            display_list,
-            tree,
-            stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
+        let list_keying = TileKeyingOfList::new(display_list, tree, stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(tree, stack, raster_space_index);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let mut band_tile_keys = BandTileKeys::default();
         raster_space.bind_band(&mut band_tile_keys, stack, band_index);
         let counts = shown_rects
             .iter()
-            .map(|&shown_rect| {
-                raster_space.key_shown_tiles(
-                    &mut band_tile_keys,
-                    stack,
-                    band_index,
-                    raster_settings_for_tests,
-                    shown_rect,
-                    shown_rect,
-                    None,
-                )
-            })
+            .map(|&shown_rect| key_band(&raster_space, &mut band_tile_keys, stack, band_index, shown_rect))
             .collect();
         (band_tile_keys, counts)
-    }
-
-    fn tiles_within(band_tile_keys: &BandTileKeys, rect: IntRect) -> Vec<(TileCoord, LayerIndex, ContentHash)> {
-        band_tile_keys
-            .tiles_within(rect)
-            .map(|tile| (tile.coord, tile.layer_index, tile.content_hash))
-            .collect()
     }
 
     fn viewport_filled_with_green() -> (VisualContextTree, Arc<DisplayListStorage>) {
@@ -3921,8 +3819,7 @@ mod tests {
         )
     }
 
-    // A run that the held ranges skip, runs that a held range begins or ends inside, a run that holds no record, and a
-    // held range over several runs.
+    // A run that the held ranges skip, and a held range over several runs.
     #[test]
     fn held_runs_are_found_by_binary_search_of_the_held_ranges() {
         let run = |offset: u32, size: u32| DisplayListCommandRun {
@@ -3979,24 +3876,8 @@ mod tests {
         }
         let display_list = DisplayListStorage::of_builder(&list.builder);
         let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
-        let list_keying = TileKeyingOfList::new(
-            &display_list,
-            &tree,
-            &stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(
-            &tree,
-            &spaces,
-            RasterSpaceIndex::VIEWPORT,
-            &[],
-            FloatMatrix4x4::identity(),
-        );
+        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let placement = raster_space.placement_of_runs_of_chunk(ChunkIndexInList(0), &[RunIndexInChunk(0)]);
         let most_cells_listed =
@@ -4040,38 +3921,13 @@ mod tests {
         let display_list =
             DisplayListStorage::of_builder(&TestList::default().with(fill(VIEWPORT, GREEN), context).builder);
         let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
-        let list_keying = TileKeyingOfList::new(
-            &display_list,
-            &tree,
-            &stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(
-            &tree,
-            &spaces,
-            RasterSpaceIndex::VIEWPORT,
-            &[],
-            FloatMatrix4x4::identity(),
-        );
+        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let mut band_tile_keys = BandTileKeys::default();
         raster_space.bind_band(&mut band_tile_keys, &stack, BandIndex(0));
-        raster_space.key_shown_tiles(
-            &mut band_tile_keys,
-            &stack,
-            BandIndex(0),
-            raster_settings_for_tests,
-            VIEWPORT,
-            VIEWPORT,
-            None,
-        );
-        let tiles = viewport_tile_hashes(&band_tile_keys);
-        assert_eq!(tiles.len(), 4);
+        key_band(&raster_space, &mut band_tile_keys, &stack, BandIndex(0), VIEWPORT);
+        assert_eq!(tiles_within(&band_tile_keys, VIEWPORT).len(), 4);
         assert_ne!(raster_space.content_hash_of_composited_effect(context.effect), 0);
     }
 
@@ -4123,24 +3979,8 @@ mod tests {
             .with(fill(region_past_extent_limit, BLUE), frosted);
         let display_list = DisplayListStorage::of_builder(&list.builder);
         let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
-        let list_keying = TileKeyingOfList::new(
-            &display_list,
-            &tree,
-            &stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &NoLiveContentChanges,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(
-            &tree,
-            &spaces,
-            RasterSpaceIndex::VIEWPORT,
-            &[],
-            FloatMatrix4x4::identity(),
-        );
+        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let backdrop_read = raster_space.backdrop_read_in_layer(frosted.effect, display_list.whole_span().begin);
         let edges_fit_in_int_rect = |reach: Reach<IntRect>| match reach {
@@ -4240,31 +4080,6 @@ mod tests {
             assert!(band_tile_keys.cells.is_empty());
             assert_eq!(counts[0], TileKeyingCounts::default());
         }
-    }
-
-    #[test]
-    fn the_tiles_within_a_rect_of_far_more_cells_than_a_band_holds_are_the_tiles_it_holds_there() {
-        let (tree, display_list) = viewport_filled_with_green();
-        let stack = stack_of(&display_list, &tree);
-        let (band_tile_keys, _) = band_tile_keys_after_frames_showing(
-            (&display_list, &tree, &stack),
-            RasterSpaceIndex::VIEWPORT,
-            BandIndex(0),
-            &[VIEWPORT],
-        );
-        let tiles_within_viewport = tiles_within(&band_tile_keys, VIEWPORT);
-        assert_eq!(tiles_within_viewport.len(), 4);
-        let huge_rect = viewport_in_space_scaled_by(1.0e-4);
-        assert_eq!(tiles_within(&band_tile_keys, huge_rect), tiles_within_viewport);
-        let tall_rect_over_first_column = IntRect::new(0, huge_rect.y, 1, huge_rect.height);
-        assert_eq!(
-            tiles_within(&band_tile_keys, tall_rect_over_first_column),
-            tiles_within_viewport
-                .iter()
-                .copied()
-                .filter(|(coord, _, _)| coord.column == 0)
-                .collect::<Vec<_>>()
-        );
     }
 
     fn span_from_run_to_end_of_list(display_list: &DisplayListStorage, chunk_index: u32, run_index: usize) -> ListSpan {
@@ -4477,10 +4292,15 @@ mod tests {
             Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
         );
 
-        let turns = chunks_placed_counts_and_viewport_tile_hashes_of_frames_keyed_in_turn(&[
-            (&display_list, &tree, &every_tile_replays_every_record),
-            (&display_list, &tree, &tiles_replay_what_reaches_them),
-        ]);
+        let turns = key_band_in_frames_in_turn(
+            &mut BandTileKeys::default(),
+            &[
+                (&display_list, &tree, &every_tile_replays_every_record),
+                (&display_list, &tree, &tiles_replay_what_reaches_them),
+            ],
+            RasterSpaceIndex::VIEWPORT,
+            BandIndex(0),
+        );
         assert_eq!(
             turns[1].2,
             viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &tree, &tiles_replay_what_reaches_them)
