@@ -3755,6 +3755,27 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_holds_for_a_tree_that_differs_only_in_what_the_main_thread_keeps_of_its_nodes() {
+        let (tree, _, document) = tree_with_document_scroll();
+        let list = TestList::new().with(fill(IntRect::new(0, 0, 800, 2600)), document);
+        let storage = DisplayListStorage::of_builder(&list.builder);
+        let mut tree_of_other_paintable = tree.clone();
+        let SpatialData::Scroll(scroll) = &mut tree_of_other_paintable.spatial_nodes[document.spatial.0 as usize].data
+        else {
+            unreachable!("the document scrolls");
+        };
+        scroll.state_slot = 3;
+        scroll.owner_paintable = NodeSlotId::new(5, 1);
+        let inputs = InputsOfLayerPlan::new(storage.clone(), Arc::new(tree), &[], VIEWPORT);
+        assert!(inputs.plan_alike_as(&InputsOfLayerPlan::new(
+            storage,
+            Arc::new(tree_of_other_paintable),
+            &[],
+            VIEWPORT
+        )));
+    }
+
+    #[test]
     fn a_plan_holds_for_inputs_that_differ_only_in_what_it_does_not_read() {
         let (mut tree, _, document) = tree_with_document_scroll();
         let scroller = tree.append_spatial(

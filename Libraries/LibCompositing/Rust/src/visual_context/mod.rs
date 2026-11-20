@@ -341,6 +341,22 @@ impl SpatialData {
     pub fn is_scroll_like(&self) -> bool {
         matches!(self, Self::Scroll(_) | Self::Sticky(_))
     }
+
+    /// Whether the node is what `other` is, but for the scroll state slot and the paintable that the main thread keeps
+    /// of a scroll node or a sticky box.
+    fn has_same_content_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Scroll(_), Self::Scroll(_)) => true,
+            (Self::Sticky(sticky), Self::Sticky(other_sticky)) => {
+                StickyData {
+                    state_slot: other_sticky.state_slot,
+                    owner_paintable: other_sticky.owner_paintable,
+                    ..*sticky
+                } == *other_sticky
+            }
+            _ => self == other,
+        }
+    }
 }
 
 impl ClipNodeData {
@@ -979,17 +995,22 @@ impl VisualContextTree {
     }
 
     /// Whether the tree is what `other` is in everything but which copy it is, so that whatever is worked out of one
-    /// holds for the other.
+    /// holds for the other. What only the main thread reads is left out: which slots are free, and the scroll state
+    /// slots and the paintables of scroll nodes and sticky boxes, which a tree from another process does not carry.
     pub fn has_same_content_as(&self, other: &Self) -> bool {
         self.structural_epoch == other.structural_epoch
             && self.animation_samples_taken_from_copy == other.animation_samples_taken_from_copy
             && self.root_isolation_effect == other.root_isolation_effect
-            && self.spatial_nodes == other.spatial_nodes
+            && self.spatial_nodes.len() == other.spatial_nodes.len()
+            && self
+                .spatial_nodes
+                .iter()
+                .zip(&other.spatial_nodes)
+                .all(|(node, other_node)| {
+                    node.parent == other_node.parent && node.data.has_same_content_as(&other_node.data)
+                })
             && self.clip_nodes == other.clip_nodes
             && self.effect_nodes == other.effect_nodes
-            && self.spatial_slots == other.spatial_slots
-            && self.clip_slots == other.clip_slots
-            && self.effect_slots == other.effect_slots
             && self.sampled_background_color_by_effect_index == other.sampled_background_color_by_effect_index
             && self.visual_animations == other.visual_animations
             && self.compositor_scroll_table == other.compositor_scroll_table
