@@ -2323,6 +2323,19 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .any(|record| record.frame_state_read_flags != 0)
     }
 
+    /// Which effects tiles draw and which values the compositor animates depend on the tree, so a tile kept as its band
+    /// is bound again works this out again.
+    fn note_what_replay_items_of_tile_read(&self, bound_band: &BandBoundToListAndGeometry, tile: &mut KeyedTile) {
+        tile.reads_frame_state = tile
+            .replay_items_in_paint_order
+            .iter()
+            .any(|&item| self.item_reads_frame_state(bound_band, item));
+        tile.reads_sampled_values = tile
+            .replay_items_in_paint_order
+            .iter()
+            .any(|&item| self.item_reads_sampled_values(bound_band, item));
+    }
+
     /// Whether the item draws a value that the compositor's animations take at the frame's sample: a sampled background
     /// color, or the sampled opacity or filter of an effect that tiles draw.
     fn item_reads_sampled_values(&self, bound_band: &BandBoundToListAndGeometry, item: TileReplayItem) -> bool {
@@ -3016,6 +3029,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     }
                     *item = item_in_list;
                 }
+                self.note_what_replay_items_of_tile_read(bound_band, tile);
             }
             true
         });
@@ -3219,12 +3233,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         });
                 let replay_items_in_paint_order: Vec<TileReplayItem> =
                     items_of_layer.into_iter().map(|(_, item, _)| item).collect();
-                let reads_frame_state = replay_items_in_paint_order
-                    .iter()
-                    .any(|&item| self.item_reads_frame_state(bound_band, item));
-                let reads_sampled_values = replay_items_in_paint_order
-                    .iter()
-                    .any(|&item| self.item_reads_sampled_values(bound_band, item));
                 let mut tile = KeyedTile {
                     layer_index,
                     coord,
@@ -3235,10 +3243,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     count_of_cell_cuts_below_layer,
                     replay_items_in_paint_order,
                     raster_settings_hash: raster_settings_hash_by_layer[layer_index.0],
-                    reads_frame_state,
-                    reads_sampled_values,
+                    reads_frame_state: false,
+                    reads_sampled_values: false,
                     frame_edge_backdrop_blurs_mirror_at,
                 };
+                self.note_what_replay_items_of_tile_read(bound_band, &mut tile);
                 tile.content_hash = self.content_hash_of_tile(bound_band, &tile, near_area.as_mut());
                 tiles.push(tile);
                 counts.tiles_keyed += 1;
@@ -3708,6 +3717,92 @@ mod tests {
             &tree,
             cell_of(box_without_layer),
         );
+    }
+
+    // A new tree can start an animation of the opacity of an effect without a layer at the value the effect had, so a
+    // cell kept as its band is bound to that tree draws a sampled value that it did not draw before.
+    #[test]
+    fn a_cell_kept_as_its_band_is_bound_to_a_tree_that_animates_what_it_draws_reads_the_sampled_values_again() {
+        use crate::display_list::layers::planning::MAXIMUM_ANIMATED_NODES_WITH_LAYERS;
+        use crate::visual_animation::VisualAnimation;
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
+        let faded: Vec<ContextRef> = (0..=MAXIMUM_ANIMATED_NODES_WITH_LAYERS)
+            .map(|_| tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal)))
+            .collect();
+        let animation_of_effects = |effects: &[ContextRef]| VisualAnimation {
+            node_indices: effects.iter().map(|context| context.effect.0).collect(),
+            ..opacity_animation_of(faded[0].effect, 1.0, 0.2)
+        };
+        let mut tree_animating_every_effect = tree.clone();
+        tree.set_visual_animations(vec![animation_of_effects(&faded[..MAXIMUM_ANIMATED_NODES_WITH_LAYERS])]);
+        tree_animating_every_effect.set_visual_animations(vec![animation_of_effects(&faded)]);
+        let box_without_layer = IntRect::new(600, 520, 20, 20);
+        let mut chunks = vec![chunk_of(fill(VIEWPORT, GREEN), root)];
+        chunks.extend(faded.iter().enumerate().map(|(index, &context)| {
+            let rect = if index == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
+                box_without_layer
+            } else {
+                IntRect::new(10 + 12 * index as i32, 10, 10, 10)
+            };
+            chunk_of(fill(rect, BLUE), context)
+        }));
+        let display_list = DisplayListStorage::of_chunks(chunks).unwrap();
+        let without_animation_of_box = tree.with_visual_animation_samples(0);
+        let at_start = tree_animating_every_effect.with_visual_animation_samples(0);
+        let halfway = tree_animating_every_effect.with_visual_animation_samples(500_000_000);
+        let stack_without_animation_of_box = stack_of(&display_list, &without_animation_of_box);
+        let stack = stack_of(&display_list, &at_start);
+        assert_eq!(stack.composited_effects.len(), MAXIMUM_ANIMATED_NODES_WITH_LAYERS);
+        let position_of_box_without_layer = ListPosition::new(ChunkIndexInList(faded.len() as u32), 0);
+        let band_of_box_without_layer = BandIndex(
+            stack
+                .bands
+                .iter()
+                .position(|band| {
+                    band.record_spans
+                        .iter()
+                        .any(|span| span.contains(position_of_box_without_layer))
+                })
+                .expect("a band holds the box"),
+        );
+        assert_eq!(
+            stack_without_animation_of_box.bands[band_of_box_without_layer.0],
+            stack.bands[band_of_box_without_layer.0]
+        );
+
+        let mut band_tile_keys = BandTileKeys::default();
+        let turns = key_band_in_frames_in_turn(
+            &mut band_tile_keys,
+            &[
+                (
+                    &*display_list,
+                    &without_animation_of_box,
+                    &stack_without_animation_of_box,
+                ),
+                (&*display_list, &at_start, &stack),
+            ],
+            RasterSpaceIndex::VIEWPORT,
+            band_of_box_without_layer,
+        );
+        assert_eq!(turns[1].1.cells_binned, 0);
+        // A sample keeps the geometry and the binding of the band.
+        let geometry = geometry_of_space(&at_start, &stack, RasterSpaceIndex::VIEWPORT);
+        let list_keying_halfway = TileKeyingOfList::new(&display_list, &halfway, &stack, NO_FRAME_STATE);
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying_halfway, &geometry);
+        key_band(
+            &raster_space,
+            &mut band_tile_keys,
+            &stack,
+            band_of_box_without_layer,
+            VIEWPORT,
+        );
+        let keyed_from_nothing = key_band_in_frames_in_turn(
+            &mut BandTileKeys::default(),
+            &[(&*display_list, &halfway, &stack)],
+            RasterSpaceIndex::VIEWPORT,
+            band_of_box_without_layer,
+        );
+        assert_eq!(tiles_within(&band_tile_keys, VIEWPORT), keyed_from_nothing[0].2);
     }
 
     fn band_of_space(stack: &LayerStack, raster_space_index: RasterSpaceIndex) -> BandIndex {
