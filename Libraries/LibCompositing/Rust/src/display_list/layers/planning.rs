@@ -25,8 +25,8 @@ use super::{
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
-    KeyframeFiltersOfEffects, backdrop_filter_read_reach, filter_may_spread_at_some_sample,
-    filter_read_reach_in_device_pixels, nearest_effects_spreading_at_some_sample, outermost_effects_with_filters,
+    FiltersOfEffects, KeyframeFiltersOfEffects, backdrop_filter_read_reach, filter_may_spread_at_some_sample,
+    filter_read_reach_in_device_pixels,
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
@@ -417,18 +417,11 @@ fn place_list(
 ) -> (ListPlacement, Vec<Option<IntRect>>, Vec<bool>) {
     let tree = inputs.tree;
     // Placing decides for the filter that the tree holds and for each filter that an animation can give the effect.
-    let nearest_spreading_effects = nearest_effects_spreading_at_some_sample(tree);
-    let content_is_spread_by_filters = nearest_spreading_effects.iter().any(|effect| !effect.is_none());
-    let outermost_effects_with_filters_at_some_sample = if content_is_spread_by_filters {
-        outermost_effects_with_filters(tree, true)
-    } else {
-        Vec::new()
-    };
+    let filters_at_some_sample = FiltersOfEffects::of(tree, None, true);
     let filters_and_clips = FiltersAndClipsOfList {
         tree,
-        nearest_spreading_effects: &nearest_spreading_effects,
+        filters: &filters_at_some_sample,
         effect_clips: inputs.list.effect_clip_plan(tree),
-        outermost_effects_with_filters: &outermost_effects_with_filters_at_some_sample,
     };
     let placing = ListBeingPlaced::new(inputs, spaces, geometries, nesting_of_live_effects, filters_and_clips);
     let (runs, mut animations_without_layers) = placing.place_run_groups();

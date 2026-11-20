@@ -17,10 +17,7 @@ use crate::display_list::commands::{
     VISUAL_VIEWPORT_NODE_INDEX,
 };
 use crate::display_list::effect_clip_plan::EffectClipPlan;
-use crate::display_list::effect_geometry::{
-    Extent, FiltersInsideInnermostCompositedEffects, changed_extent_through_filters,
-    changed_extent_through_filters_inside,
-};
+use crate::display_list::effect_geometry::{Extent, FiltersOfEffects, changed_extent_through_filters};
 use crate::display_list::reach::Reach;
 use crate::visual_context::queries::TreeCullingScratch;
 use crate::visual_context::world_transforms::translation_on_whole_device_pixels;
@@ -839,32 +836,28 @@ pub(crate) fn is_finite_rect(rect: FloatRect) -> bool {
 #[derive(Clone, Copy)]
 pub struct FiltersAndClipsOfList<'a> {
     pub tree: &'a VisualContextTree,
-    /// What `nearest_spreading_effects` gives for the tree, or where `follows_filters_of_every_sample` holds, what
-    /// `nearest_effects_spreading_at_some_sample` gives.
-    pub nearest_spreading_effects: &'a [EffectNodeIndex],
+    /// The filters of the whole effect chain of each effect: of every sample of the animations of the tree, as placing
+    /// follows them, or those the tree holds, as keying the tiles of a frame follows them.
+    pub filters: &'a FiltersOfEffects,
     pub effect_clips: &'a EffectClipPlan,
-    /// What `outermost_effects_with_filters` gives for the tree, counting the filters an animation gives an effect
-    /// where placing follows them at every sample, as placing does, rather than only the filters the tree holds, as
-    /// keying the tiles of a frame does.
-    pub outermost_effects_with_filters: &'a [EffectNodeIndex],
 }
 
 impl FiltersAndClipsOfList<'_> {
     /// The clip that bounds how far the filters that content of `context` is drawn through spread it: the clip outside
     /// every such filter, or the clip of the context where no filter spreads it.
     pub(crate) fn clip_bounding_filter_spread(&self, context: ContextRef) -> ClipNodeIndex {
-        let is_spread_by_filters =
-            !context.effect.is_none() && !self.nearest_spreading_effects[context.effect.0 as usize].is_none();
-        if !is_spread_by_filters {
-            return context.clip;
-        }
-        let outermost_effect_with_filter = self.outermost_effects_with_filters[context.effect.0 as usize];
-        if outermost_effect_with_filter.is_none() {
-            context.clip
-        } else {
-            self.effect_clips.output_clip(outermost_effect_with_filter)
-        }
+        clip_bounding_spread_of_filters(self.filters, self.effect_clips, context)
     }
+}
+
+fn clip_bounding_spread_of_filters(
+    filters: &FiltersOfEffects,
+    effect_clips: &EffectClipPlan,
+    context: ContextRef,
+) -> ClipNodeIndex {
+    filters
+        .effect_bounding_spread_of(context.effect)
+        .map_or(context.clip, |effect| effect_clips.output_clip(effect))
 }
 
 /// What `bounds_by_clip` holds for `clip`, or none for no clip.
@@ -1024,7 +1017,7 @@ impl RasterSpaceGeometry {
         }
         let (space_of_extent, extent) = changed_extent_through_filters(
             list.tree,
-            list.nearest_spreading_effects,
+            list.filters,
             context.spatial,
             drawn_within,
             context.effect,
@@ -1052,7 +1045,7 @@ impl RasterSpaceGeometry {
     pub fn reach_of_content_inside_composited_effect(
         &self,
         list: &FiltersAndClipsOfList<'_>,
-        filters_inside_composited_effects: &FiltersInsideInnermostCompositedEffects,
+        filters_inside_composited_effects: &FiltersOfEffects,
         drawn_within: FloatRect,
         context: ContextRef,
         composited_effect: EffectNodeIndex,
@@ -1062,7 +1055,7 @@ impl RasterSpaceGeometry {
         if self.shows_nothing_of(drawn_within, context) {
             return Reach::Nothing;
         }
-        let (space_of_extent, extent) = changed_extent_through_filters_inside(
+        let (space_of_extent, extent) = changed_extent_through_filters(
             list.tree,
             filters_inside_composited_effects,
             context.spatial,
@@ -1073,9 +1066,8 @@ impl RasterSpaceGeometry {
         let Some(bounds) = self.bounds_where_extent_lands(space_of_extent, extent, context.spatial) else {
             return Reach::Nothing;
         };
-        let clip_bounding_filter_spread = filters_inside_composited_effects
-            .effect_bounding_spread_of(context.effect)
-            .map_or(context.clip, |effect| list.effect_clips.output_clip(effect));
+        let clip_bounding_filter_spread =
+            clip_bounding_spread_of_filters(filters_inside_composited_effects, list.effect_clips, context);
         let clip_composited_effect_is_entered_within = list
             .effect_clips
             .output_clip_if_participating(composited_effect)

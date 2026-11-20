@@ -23,9 +23,8 @@ use super::commands::{
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{
-    FiltersInsideInnermostCompositedEffects, LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, backdrop_filter_read_reach,
-    filter_read_reach_in_device_pixels, nearest_effects_at_or_above_where, nearest_spreading_effects,
-    outermost_effects_with_filters, spreading_filter_of,
+    FiltersOfEffects, LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, backdrop_filter_read_reach,
+    filter_read_reach_in_device_pixels, nearest_effects_at_or_above_where, spreading_filter_of,
 };
 use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack};
 use super::nested_records::{
@@ -332,9 +331,8 @@ pub struct TileKeyingOfList<'a> {
     effect_clips: &'a EffectClipPlan,
     tree: &'a VisualContextTree,
     frame_state: FrameStateReadByReplay<'a>,
-    nearest_spreading_effects: Vec<EffectNodeIndex>,
-    outermost_effects_with_filters: Vec<EffectNodeIndex>,
-    filters_inside_composited_effects: FiltersInsideInnermostCompositedEffects,
+    filters_of_effects: FiltersOfEffects,
+    filters_inside_composited_effects: FiltersOfEffects,
     replays_every_record_into_every_tile: bool,
     tree_sorts_planes_by_depth: bool,
     one_layer_list_cannot_tell_which_records_show_in_tile: bool,
@@ -440,8 +438,7 @@ impl<'a> TileKeyingOfList<'a> {
         }
         let innermost_composited_effect_by_effect_index =
             nearest_effects_at_or_above_where(tree, |effect, _| is_composited_by_effect_index[effect.0 as usize]);
-        let nearest_spreading_effects = nearest_spreading_effects(tree);
-        let content_is_spread_by_filters = nearest_spreading_effects.iter().any(|effect| !effect.is_none());
+        let filters_of_effects = FiltersOfEffects::of(tree, None, false);
         let one_layer_list_cannot_tell_which_records_show_in_tile =
             stack.replays_whole_list() && layering_obstacles.sorts_planes_by_depth;
         Self {
@@ -450,19 +447,14 @@ impl<'a> TileKeyingOfList<'a> {
             effect_clips: display_list.effect_clip_plan(tree),
             tree,
             frame_state,
-            outermost_effects_with_filters: if content_is_spread_by_filters {
-                outermost_effects_with_filters(tree, false)
-            } else {
-                Vec::new()
-            },
-            filters_inside_composited_effects: if content_is_spread_by_filters
+            filters_inside_composited_effects: if filters_of_effects.spread_content()
                 && is_composited_by_effect_index.contains(&true)
             {
-                FiltersInsideInnermostCompositedEffects::of(tree, &innermost_composited_effect_by_effect_index)
+                FiltersOfEffects::of(tree, Some(&innermost_composited_effect_by_effect_index), false)
             } else {
-                FiltersInsideInnermostCompositedEffects::default()
+                FiltersOfEffects::default()
             },
-            nearest_spreading_effects,
+            filters_of_effects,
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
                 || one_layer_list_cannot_tell_which_records_show_in_tile,
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
@@ -1351,16 +1343,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let list = self.list;
         let filters_and_clips = FiltersAndClipsOfList {
             tree: list.tree,
-            nearest_spreading_effects: &list.nearest_spreading_effects,
+            filters: &list.filters_of_effects,
             effect_clips: list.effect_clips,
-            outermost_effects_with_filters: &list.outermost_effects_with_filters,
         };
         let composited_effect = if context.effect.is_none() {
             EffectNodeIndex::NONE
         } else {
             list.innermost_composited_effect_by_effect_index[context.effect.0 as usize]
         };
-        if composited_effect.is_none() || list.nearest_spreading_effects[composited_effect.0 as usize].is_none() {
+        if composited_effect.is_none()
+            || list
+                .filters_of_effects
+                .nearest_spreading_effect_at_or_above(composited_effect)
+                .is_none()
+        {
             return self.geometry.reach_of_content(&filters_and_clips, rect, context);
         }
         self.geometry.reach_of_content_inside_composited_effect(
@@ -1864,8 +1860,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     ) -> PlacedRecordRange {
         let table = chunk.record_table();
         let context = chunk.runs()[run_index.0 as usize].context;
-        let is_spread_by_filters =
-            !context.effect.is_none() && !self.list.nearest_spreading_effects[context.effect.0 as usize].is_none();
+        let is_spread_by_filters = !self
+            .list
+            .filters_of_effects
+            .nearest_spreading_effect_at_or_above(context.effect)
+            .is_none();
         let is_one_record = (record_indices.start.0..record_indices.end.0).len() == 1;
         PlacedRecordRange {
             run_index,

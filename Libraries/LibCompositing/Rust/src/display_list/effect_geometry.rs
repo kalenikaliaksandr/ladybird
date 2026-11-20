@@ -250,17 +250,6 @@ impl KeyframeFiltersOfEffects {
     }
 }
 
-/// Per effect, the nearest effect at or above it whose filter can spread content outside its
-/// bounds, or `EffectNodeIndex::NONE`.
-pub fn nearest_spreading_effects(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
-    nearest_effects_at_or_above_where(tree, |_, node| spreading_filter_of(node).is_some())
-}
-
-/// As `nearest_spreading_effects`, for some sample of the animations of the tree.
-pub fn nearest_effects_spreading_at_some_sample(tree: &VisualContextTree) -> Vec<EffectNodeIndex> {
-    nearest_effects_at_or_above_where(tree, |effect, _| filter_may_spread_at_some_sample(tree, effect))
-}
-
 /// Per effect, the nearest effect at or above it for which `holds` holds, or `EffectNodeIndex::NONE`.
 pub(crate) fn nearest_effects_at_or_above_where(
     tree: &VisualContextTree,
@@ -280,53 +269,35 @@ pub(crate) fn nearest_effects_at_or_above_where(
     nearest
 }
 
-/// Per effect, the outermost effect at or above it that holds a filter or a backdrop filter, or where
-/// `counts_animated_filters` holds, whose filter an animation of the tree animates, or `EffectNodeIndex::NONE`.
-pub fn outermost_effects_with_filters(tree: &VisualContextTree, counts_animated_filters: bool) -> Vec<EffectNodeIndex> {
-    let mut outermost = vec![EffectNodeIndex::NONE; tree.effect_nodes.len()];
-    tree.visit_effect_nodes_parents_first(|index| {
-        let node = &tree.effect_nodes[index];
-        let effect = EffectNodeIndex(index as u32);
-        let outermost_above = outermost
-            .get(node.parent.0 as usize)
-            .copied()
-            .unwrap_or(EffectNodeIndex::NONE);
-        let holds_filter = matches!(&node.data, EffectNodeData::Effects(effects)
-            if effects.filter.is_some() || effects.backdrop_filter.is_some())
-            || (counts_animated_filters
-                && matches!(node.data, EffectNodeData::Effects(_))
-                && tree.effect_filter_is_animated(effect));
-        outermost[index] = if !outermost_above.is_none() {
-            outermost_above
-        } else if holds_filter {
-            effect
-        } else {
-            EffectNodeIndex::NONE
-        };
-    });
-    outermost
-}
-
-/// Per effect, the effects at and above it that a raster of content inside the innermost composited effect at or above
-/// it draws the filters of: the nearest of them whose filter spreads its content, and, where any does, the outermost
-/// of them that holds a filter or a backdrop filter, whose output clip bounds how far they spread it. A tree without
-/// composited effects or filters that spread needs none of it.
+/// Per effect, the effects at and above it whose filters a raster of content under it draws: the nearest of them whose
+/// filter spreads its content, and, where any does, the outermost of them that holds a filter or a backdrop filter,
+/// whose output clip bounds how far they spread it.
 #[derive(Default)]
-pub struct FiltersInsideInnermostCompositedEffects {
+pub struct FiltersOfEffects {
     nearest_spreading_effect_by_effect_index: Vec<EffectNodeIndex>,
     outermost_effect_with_filter_if_spread_by_effect_index: Vec<EffectNodeIndex>,
 }
 
-impl FiltersInsideInnermostCompositedEffects {
-    pub fn of(tree: &VisualContextTree, innermost_composited_effect_by_effect_index: &[EffectNodeIndex]) -> Self {
+impl FiltersOfEffects {
+    /// With `innermost_composited_effect_by_effect_index`, only the filters inside the innermost composited effect at or
+    /// above each effect, which a raster leaves out with the effects around it. With `at_some_sample`, the filters of
+    /// every sample of the animations of the tree: a filter that may spread at some sample spreads, and an effect whose
+    /// filter an animation animates holds a filter.
+    pub fn of(
+        tree: &VisualContextTree,
+        innermost_composited_effect_by_effect_index: Option<&[EffectNodeIndex]>,
+        at_some_sample: bool,
+    ) -> Self {
         let effect_count = tree.effect_nodes.len();
         let mut nearest_spreading_effect_by_effect_index = vec![EffectNodeIndex::NONE; effect_count];
         let mut outermost_effect_with_filter_by_effect_index = vec![EffectNodeIndex::NONE; effect_count];
-        let mut is_spread_by_effect_index = vec![false; effect_count];
         tree.visit_effect_nodes_parents_first(|index| {
             let node = &tree.effect_nodes[index];
             let effect = EffectNodeIndex(index as u32);
-            let innermost_composited_effect = innermost_composited_effect_by_effect_index[index];
+            let innermost_composited_effect = innermost_composited_effect_by_effect_index
+                .map_or(EffectNodeIndex::NONE, |innermost_composited_effects| {
+                    innermost_composited_effects[index]
+                });
             if innermost_composited_effect == effect {
                 return;
             }
@@ -339,9 +310,16 @@ impl FiltersInsideInnermostCompositedEffects {
                     EffectNodeIndex::NONE
                 }
             };
-            let spreads = spreading_filter_of(node).is_some();
+            let spreads = if at_some_sample {
+                filter_may_spread_at_some_sample(tree, effect)
+            } else {
+                spreading_filter_of(node).is_some()
+            };
             let holds_filter = matches!(&node.data, EffectNodeData::Effects(effects)
-                if effects.filter.is_some() || effects.backdrop_filter.is_some());
+                if effects.filter.is_some() || effects.backdrop_filter.is_some())
+                || (at_some_sample
+                    && matches!(node.data, EffectNodeData::Effects(_))
+                    && tree.effect_filter_is_animated(effect));
             nearest_spreading_effect_by_effect_index[index] = if spreads {
                 effect
             } else {
@@ -355,13 +333,17 @@ impl FiltersInsideInnermostCompositedEffects {
             } else {
                 EffectNodeIndex::NONE
             };
-            is_spread_by_effect_index[index] = spreads
-                || (parent_is_inside_same_composited_effect && is_spread_by_effect_index[node.parent.0 as usize]);
         });
         let outermost_effect_with_filter_if_spread_by_effect_index = outermost_effect_with_filter_by_effect_index
             .into_iter()
-            .zip(is_spread_by_effect_index)
-            .map(|(outermost, is_spread)| if is_spread { outermost } else { EffectNodeIndex::NONE })
+            .zip(&nearest_spreading_effect_by_effect_index)
+            .map(|(outermost, nearest_spreading)| {
+                if nearest_spreading.is_none() {
+                    EffectNodeIndex::NONE
+                } else {
+                    outermost
+                }
+            })
             .collect();
         Self {
             nearest_spreading_effect_by_effect_index,
@@ -376,6 +358,13 @@ impl FiltersInsideInnermostCompositedEffects {
             .unwrap_or(EffectNodeIndex::NONE)
     }
 
+    /// Whether a filter spreads the content of any effect.
+    pub(crate) fn spread_content(&self) -> bool {
+        self.nearest_spreading_effect_by_effect_index
+            .iter()
+            .any(|effect| !effect.is_none())
+    }
+
     /// The effect whose output clip bounds how far the filters at and above `effect` spread its content, if any does.
     pub(crate) fn effect_bounding_spread_of(&self, effect: EffectNodeIndex) -> Option<EffectNodeIndex> {
         self.outermost_effect_with_filter_if_spread_by_effect_index
@@ -385,42 +374,12 @@ impl FiltersInsideInnermostCompositedEffects {
     }
 }
 
-/// Where a change to content drawn within `rect` in `space` under `effect` can show once every
-/// filter above it has spread it, in the space of the outermost of those filters. Changes to
-/// separate parts of the content can be followed one at a time and united.
+/// Where a change to content drawn within `rect` in `space` under `effect` can show once every filter of `filters` above
+/// it has spread it, in the space of the outermost of those filters. Changes to separate parts of the content can be
+/// followed one at a time and united.
 pub fn changed_extent_through_filters(
     tree: &VisualContextTree,
-    nearest_spreading_effects: &[EffectNodeIndex],
-    space: SpatialNodeIndex,
-    rect: FloatRect,
-    effect: EffectNodeIndex,
-    world: &WorldTransforms,
-) -> (SpatialNodeIndex, Extent) {
-    let nearest_spreading_effect_at_or_above = |effect: EffectNodeIndex| {
-        if effect.is_none() {
-            EffectNodeIndex::NONE
-        } else {
-            nearest_spreading_effects[effect.0 as usize]
-        }
-    };
-    let mut space = space;
-    let mut extent = Extent::Within(rect);
-    let mut effect = nearest_spreading_effect_at_or_above(effect);
-    while !effect.is_none() && extent != Extent::Anywhere {
-        let node = &tree.effect_nodes[effect.0 as usize];
-        extent =
-            output_extent_of_content_change(node, extent_mapped_between_spaces(extent, world, space, node.spatial));
-        space = node.spatial;
-        effect = nearest_spreading_effect_at_or_above(node.parent);
-    }
-    (space, extent)
-}
-
-/// As `changed_extent_through_filters`, following only the filters inside the innermost composited effect at or above
-/// `effect`, which a raster leaves out with the effects around it.
-pub fn changed_extent_through_filters_inside(
-    tree: &VisualContextTree,
-    filters_inside_composited_effects: &FiltersInsideInnermostCompositedEffects,
+    filters: &FiltersOfEffects,
     space: SpatialNodeIndex,
     rect: FloatRect,
     effect: EffectNodeIndex,
@@ -428,13 +387,13 @@ pub fn changed_extent_through_filters_inside(
 ) -> (SpatialNodeIndex, Extent) {
     let mut space = space;
     let mut extent = Extent::Within(rect);
-    let mut effect = filters_inside_composited_effects.nearest_spreading_effect_at_or_above(effect);
+    let mut effect = filters.nearest_spreading_effect_at_or_above(effect);
     while !effect.is_none() && extent != Extent::Anywhere {
         let node = &tree.effect_nodes[effect.0 as usize];
         extent =
             output_extent_of_content_change(node, extent_mapped_between_spaces(extent, world, space, node.spatial));
         space = node.spatial;
-        effect = filters_inside_composited_effects.nearest_spreading_effect_at_or_above(node.parent);
+        effect = filters.nearest_spreading_effect_at_or_above(node.parent);
     }
     (space, extent)
 }
@@ -688,17 +647,20 @@ mod tests {
             scaled,
         );
         let plain = effect(&mut tree, None, EffectNodeIndex::NONE, VISUAL_VIEWPORT_NODE_INDEX);
-        let nearest = nearest_spreading_effects(&tree);
-        assert_eq!(nearest[opacity.0 as usize], blur);
-        assert_eq!(nearest[plain.0 as usize], EffectNodeIndex::NONE);
+        let filters = FiltersOfEffects::of(&tree, None, false);
+        assert_eq!(filters.nearest_spreading_effect_at_or_above(opacity), blur);
+        assert_eq!(
+            filters.nearest_spreading_effect_at_or_above(plain),
+            EffectNodeIndex::NONE
+        );
         let content = FloatRect::new(10.0, 20.0, 30.0, 40.0);
         let world = WorldTransforms::new(&tree, &[], Some(FloatMatrix4x4::identity()));
         assert_eq!(
-            changed_extent_through_filters(&tree, &nearest, scaled, content, shadow, &world),
+            changed_extent_through_filters(&tree, &filters, scaled, content, shadow, &world),
             (VISUAL_VIEWPORT_NODE_INDEX, within(-10.0, 10.0, 120.0, 160.0))
         );
         assert_eq!(
-            changed_extent_through_filters(&tree, &nearest, scaled, content, plain, &world),
+            changed_extent_through_filters(&tree, &filters, scaled, content, plain, &world),
             (scaled, Extent::Within(content))
         );
     }
