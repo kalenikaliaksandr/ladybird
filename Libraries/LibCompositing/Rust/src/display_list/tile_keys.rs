@@ -26,7 +26,7 @@ use super::effect_geometry::{
     FiltersInsideInnermostCompositedEffects, nearest_effects_at_or_above_where, nearest_spreading_effects,
     outermost_effects_with_filters, spreading_filter_of,
 };
-use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack};
+use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack, backdrop_filter_read_reach};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
 };
@@ -1551,25 +1551,18 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             effect,
         };
         let region_reach = self.reach_of_content_within(region_in_effect_space, backdrop_context);
-        let effect_to_device = self.geometry.world.draw_matrix(node.spatial);
-        let read_reach_in_device_pixels =
-            filter_read_reach_in_device_pixels(&backdrop_filter.filter, &effect_to_device);
-        let region_in_device_pixels = read_reach_in_device_pixels
-            .map(|_| {
-                self.geometry
-                    .world
-                    .map_rect_to_root(node.spatial, region_in_effect_space)
-            })
-            .filter(|rect| is_finite_rect(*rect))
-            .map(enclosing_int_rect_within_extent_limit);
-        let backdrop_read_reach = match (region_in_device_pixels, read_reach_in_device_pixels) {
-            (Some(region), Some(read_reach)) => {
-                Reach::Within(region.inflated_edges(read_reach, read_reach, read_reach, read_reach))
-            }
-            _ => Reach::Anywhere,
-        };
+        let region_in_device_pixels = Some(
+            self.geometry
+                .world
+                .map_rect_to_root(node.spatial, region_in_effect_space),
+        )
+        .filter(|rect| is_finite_rect(*rect))
+        .map(enclosing_int_rect_within_extent_limit);
+        let read_reach_in_device_pixels = region_in_device_pixels.and_then(|_| {
+            filter_read_reach_in_device_pixels(&backdrop_filter.filter, &self.geometry.world.draw_matrix(node.spatial))
+        });
         let spread_past_region_in_device_pixels = match (region_reach, region_in_device_pixels) {
-            (Reach::Within(spread), Some(region)) => [
+            (Reach::Within(spread), Some(region)) if read_reach_in_device_pixels.is_some() => [
                 region.x - spread.x,
                 spread.right() - region.right(),
                 region.y - spread.y,
@@ -1579,25 +1572,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .fold(0, i32::max),
             _ => 0,
         };
-        let mirroring_blur_region = libgfx_rust::filter::Filter::serialized_has_mirroring_blur(&backdrop_filter.filter)
-            .then(|| {
-                Some(
-                    self.geometry
-                        .world
-                        .map_rect_to_root(node.spatial, region_in_effect_space),
-                )
-                .filter(|rect| is_finite_rect(*rect))
-                .map_or(Reach::Anywhere, |rect| {
-                    Reach::Within(enclosing_int_rect_within_extent_limit(rect))
-                })
-            });
         BackdropReadInLayer {
             first_record_position,
             region_reach,
-            backdrop_read_reach,
-            read_reach_in_device_pixels: read_reach_in_device_pixels.filter(|_| region_in_device_pixels.is_some()),
+            backdrop_read_reach: backdrop_filter_read_reach(tree, self.geometry, effect),
+            read_reach_in_device_pixels,
             spread_past_region_in_device_pixels,
-            mirroring_blur_region,
+            mirroring_blur_region: libgfx_rust::filter::Filter::serialized_has_mirroring_blur(&backdrop_filter.filter)
+                .then(|| region_in_device_pixels.map_or(Reach::Anywhere, Reach::Within)),
         }
     }
 
