@@ -342,6 +342,7 @@ impl Encode for WhyListIsOneLayer {
             WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(_) => 6,
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => 7,
             WhyListIsOneLayer::CompositedEffectsNestTooDeep => 8,
+            WhyListIsOneLayer::PlanShowsTooManyTiles => 9,
         };
         encoder.encode(&kind)?;
         if let WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(why) = self {
@@ -365,6 +366,7 @@ impl Decode for WhyListIsOneLayer {
             6 => WhyListIsOneLayer::EffectTheCompositorCannotCompositeIsComposited(decoder.decode()?),
             7 => WhyListIsOneLayer::FrameIsNotDrawnAsPlanned,
             8 => WhyListIsOneLayer::CompositedEffectsNestTooDeep,
+            9 => WhyListIsOneLayer::PlanShowsTooManyTiles,
             _ => return Err(DecodeError::InvalidValue("WhyListIsOneLayer")),
         })
     }
@@ -1896,6 +1898,7 @@ mod tests {
             WhyListIsOneLayer::RecordsBlendWithWhatOtherLayersHoldBelowThem,
             WhyListIsOneLayer::CompositedEffectsNestTooDeep,
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned,
+            WhyListIsOneLayer::PlanShowsTooManyTiles,
         ] {
             round_trip(why);
         }

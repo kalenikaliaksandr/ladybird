@@ -67,6 +67,11 @@ const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
 // the tag.
 const MEDIA_ORDINAL_SHIFT_PAST_CANVAS_AND_VIDEO_IDS: u32 = 44;
 
+// How many pixels of tiles with surfaces a frame drawn with a plan may show, per pixel of the viewport. The layers of a
+// page show two or three viewports of tiles. A frame whose plan shows more is drawn as one layer, which shows about one
+// viewport of them.
+const MAXIMUM_TILE_PIXELS_OF_PLAN_PER_VIEWPORT_PIXEL: u64 = 16;
+
 // Growing damage over what composited effects read takes a pass over them for each one it newly reaches. Past this many
 // passes, the damage grows over all they read, which holds what more passes would add.
 const MAXIMUM_PASSES_GROWING_DAMAGE_OVER_WHAT_COMPOSITED_EFFECTS_READ: usize = 8;
@@ -708,6 +713,9 @@ pub struct ContextLayers {
     compositor_overlays_rect: IntRect,
     next_presentable_surface_pool: u32,
     content_hash_by_composited_node_of_latest_frame: HashMap<PlacementNodeIdentity, ContentHash>,
+    /// The plan whose frames show more tiles than a frame may, which frames draw as one layer until another plan comes.
+    /// The address of its stack is kept from being taken by the stack of another plan.
+    plan_showing_too_many_tiles: Option<Weak<LayerStack>>,
 }
 
 impl ContextLayers {
@@ -739,6 +747,34 @@ impl ContextLayers {
         }
     }
 
+    /// Whether frames draw `layer_plan` as one layer, as a frame drawn with it showed more tiles than a frame may.
+    fn plan_shows_too_many_tiles(&self, layer_plan: &ReceivedLayerPlan) -> bool {
+        self.plan_showing_too_many_tiles
+            .as_ref()
+            .is_some_and(|stack| std::ptr::eq(stack.as_ptr(), Rc::as_ptr(&layer_plan.stack)))
+    }
+
+    /// Whether the frame, drawn with the plan of the stack it took, shows more pixels of tiles with surfaces than a
+    /// frame may. Then later frames with the plan are drawn as one layer too.
+    fn plan_of_frame_shows_too_many_tiles(&mut self, tile_state: &FrameTileState) -> bool {
+        let Some(layer_plan) = self
+            .stack_of_frames
+            .as_ref()
+            .and_then(|stack_of_frames| stack_of_frames.layer_plan.as_ref())
+        else {
+            return false;
+        };
+        let viewport_pixel_count =
+            tile_state.viewport_rect.width.max(0) as u64 * tile_state.viewport_rect.height.max(0) as u64;
+        if tile_pixels_with_surfaces_shown(tile_state)
+            <= MAXIMUM_TILE_PIXELS_OF_PLAN_PER_VIEWPORT_PIXEL * viewport_pixel_count
+        {
+            return false;
+        }
+        self.plan_showing_too_many_tiles = Some(Rc::downgrade(&layer_plan.stack));
+        true
+    }
+
     /// The stack of one layer that replays the whole list, for a frame that is not drawn as a plan was made for, with
     /// what of the list and the tree keeps its tiles from replaying only the records that reach them, as a plan of one
     /// layer has.
@@ -747,6 +783,7 @@ impl ContextLayers {
         display_list: &Rc<DisplayList>,
         tree: &VisualContextTree,
         viewport_rect: IntRect,
+        why_list_is_one_layer: WhyListIsOneLayer,
     ) -> LayerStack {
         let obstacles = match &self.layering_obstacles_of_frames_not_drawn_as_planned {
             Some(of_list_and_tree)
@@ -768,7 +805,7 @@ impl ContextLayers {
         let mut stack = LayerStack::single_layer(
             viewport_rect,
             display_list.storage().whole_span(),
-            Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            Some(why_list_is_one_layer),
         );
         stack.layering_obstacles = obstacles;
         stack
@@ -1045,6 +1082,17 @@ fn composited_filter_read_reach_by_layer(
             )
         })
     })
+}
+
+fn tile_pixels_with_surfaces_shown(tile_state: &FrameTileState) -> u64 {
+    tile_state
+        .shown_tiles_by_layer
+        .iter()
+        .flatten()
+        .flat_map(|shown| &shown.tiles)
+        .filter(|tile| !matches!(tile.coverage, TileCoverage::OneColor(_)))
+        .map(|tile| tile.part_of_cell_needed.width.max(0) as u64 * tile.part_of_cell_needed.height.max(0) as u64)
+        .sum()
 }
 
 fn raster_cause_of(
@@ -1631,11 +1679,18 @@ impl ContextPresenting {
         // that scales them or shifts them by a fraction lacks, as does a viewport of another size. So only a stack of
         // one layer, in the viewport's space, is drawn under a raster transform other than identity, and what
         // composites the spaces and effects of a plan does not apply the raster transform.
-        let layer_plan = frame.frame_inputs.layer_plan.as_ref().filter(|layer_plan| {
+        let plan_drawn_as_made_for = frame.frame_inputs.layer_plan.as_ref().filter(|layer_plan| {
             raster_transform == FloatMatrix4x4::identity() && layer_plan.viewport_rect == viewport_rect
         });
-        let one_layer =
-            |layers: &mut ContextLayers| layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect);
+        let layer_plan = plan_drawn_as_made_for.filter(|layer_plan| !self.layers.plan_shows_too_many_tiles(layer_plan));
+        let why_list_is_one_layer = if plan_drawn_as_made_for.is_some() {
+            WhyListIsOneLayer::PlanShowsTooManyTiles
+        } else {
+            WhyListIsOneLayer::FrameIsNotDrawnAsPlanned
+        };
+        let one_layer = |layers: &mut ContextLayers| {
+            layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect, why_list_is_one_layer)
+        };
         let stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
         let stack = stack.as_ref();
         self.layers.window_server_placements_of_media =
@@ -1677,6 +1732,9 @@ impl ContextPresenting {
     /// whatever its content hash, as when the frame draws content that the list does not name. What a frame is made to
     /// repaint otherwise leaves the tiles as they are: it is either drawn over the layers by the compositor, as its
     /// scroll bars are, or told by the content hashes of the tiles that hold it, as a caret's blink is.
+    ///
+    /// A frame drawn with a plan that shows more tiles than a frame may is drawn as one layer instead, and `layer_update`
+    /// becomes that of one layer.
     pub(super) fn prepare_frame_tile_state(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -1690,6 +1748,26 @@ impl ContextPresenting {
             self.layers
                 .invalidate_every_tile_and_media_replay(&layer_update.compositing_of_layers);
         }
+        let stale_rect = self.prepare_tile_state_of_frame(env, frame, live_content, layer_update, viewport_rect);
+        let plan_shows_too_many_tiles = layer_update
+            .tile_state
+            .as_ref()
+            .is_some_and(|tile_state| self.layers.plan_of_frame_shows_too_many_tiles(tile_state));
+        if !plan_shows_too_many_tiles {
+            return stale_rect;
+        }
+        *layer_update = self.layer_update_for(env, frame, viewport_rect, live_content);
+        self.prepare_tile_state_of_frame(env, frame, live_content, layer_update, viewport_rect)
+    }
+
+    fn prepare_tile_state_of_frame(
+        &mut self,
+        env: &PresentingEnvironment<'_>,
+        frame: &FrameToPaint<'_>,
+        live_content: &LiveContent,
+        layer_update: &mut LayerUpdate,
+        viewport_rect: IntRect,
+    ) -> IntRect {
         self.with_stack_of_frames(|this, stack_of_frames| {
             let (stale_rect, band_tile_keys_by_band) = this.prepare_frame_tile_state_of_stack(
                 env,
@@ -3495,7 +3573,8 @@ mod tests {
         let (tree, display_list) = planes_sorted_by_depth();
         assert!(tree.may_sort_planes_by_depth());
         let mut layers = ContextLayers::default();
-        let stack = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT);
+        let not_as_planned = WhyListIsOneLayer::FrameIsNotDrawnAsPlanned;
+        let stack = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT, not_as_planned);
         let list_keying = TileKeyingOfList::new(
             display_list.storage(),
             &tree,
@@ -3551,14 +3630,15 @@ mod tests {
             .expect("the obstacles of the list and the tree are kept")
             .obstacles
             .mask_declared_under_effects_its_mask_is_not_under = true;
-        let stack_of_next_frame = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT);
+        let stack_of_next_frame = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT, not_as_planned);
         assert!(
             stack_of_next_frame
                 .layering_obstacles
                 .mask_declared_under_effects_its_mask_is_not_under
         );
         let another_tree = Arc::new((*tree).clone());
-        let stack_of_another_tree = layers.one_layer_stack_of_frame(&display_list, &another_tree, VIEWPORT);
+        let stack_of_another_tree =
+            layers.one_layer_stack_of_frame(&display_list, &another_tree, VIEWPORT, not_as_planned);
         assert_eq!(stack_of_another_tree.layering_obstacles, obstacles_of_list_and_tree);
     }
 
@@ -3671,6 +3751,67 @@ mod tests {
             tile,
             &[IntRect::new(0, 0, 300, 512), IntRect::new(200, 0, 312, 512)]
         ));
+    }
+
+    fn tile_state_showing(tiles: impl IntoIterator<Item = (IntRect, TileCoverage)>) -> FrameTileState {
+        FrameTileState {
+            viewport_rect: VIEWPORT,
+            shown_tiles_by_layer: vec![Some(ShownTilesOfLayer {
+                band_index: BandIndex(0),
+                tiles: tiles
+                    .into_iter()
+                    .map(|(part_of_cell_needed, coverage)| TileShownInFrame {
+                        coord: TileCoord::new(0, 0),
+                        content_hash: 1,
+                        part_of_cell_needed,
+                        cuts: BarrierCutsOfCell::BitPerCut(0),
+                        raster_margin_in_device_pixels: Some(0),
+                        coverage,
+                    })
+                    .collect(),
+            })],
+            ..FrameTileState::default()
+        }
+    }
+
+    // A stack of many layers that each hold a translucent fill of the whole viewport.
+    #[test]
+    fn a_plan_whose_frame_shows_more_tiles_than_a_frame_may_is_drawn_as_one_layer_until_another_plan_comes() {
+        let tree = tree_of_viewport();
+        let display_list = empty_display_list(&tree);
+        let identity = FloatMatrix4x4::identity();
+        let plan = ReceivedLayerPlan {
+            viewport_rect: VIEWPORT,
+            stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
+            leaves_out_scroll_offset_of_node: Rc::default(),
+            note_lines: Rc::default(),
+        };
+        let plan_received_again = ReceivedLayerPlan {
+            stack: Rc::new((*plan.stack).clone()),
+            ..plan.clone()
+        };
+        let viewports_most = MAXIMUM_TILE_PIXELS_OF_PLAN_PER_VIEWPORT_PIXEL as usize;
+        let viewports_of_tiles =
+            |count: usize, coverage: TileCoverage| std::iter::repeat_n((VIEWPORT, coverage), count);
+        let mut layers = ContextLayers::default();
+        layers.take_stack_of_frame(
+            Some(&plan),
+            |_| unreachable!("a frame drawn with a plan takes its stack"),
+            identity,
+        );
+        let at_most = tile_state_showing(viewports_of_tiles(viewports_most, TileCoverage::Unknown).chain(
+            viewports_of_tiles(viewports_most, TileCoverage::OneColor(Color::from_rgb(0, 128, 0))),
+        ));
+        assert!(!layers.plan_of_frame_shows_too_many_tiles(&at_most));
+        assert!(!layers.plan_shows_too_many_tiles(&plan));
+        let past_most = tile_state_showing(viewports_of_tiles(viewports_most + 1, TileCoverage::Opaque));
+        assert!(layers.plan_of_frame_shows_too_many_tiles(&past_most));
+        assert!(layers.plan_shows_too_many_tiles(&plan));
+        assert!(!layers.plan_shows_too_many_tiles(&plan_received_again));
+
+        // A frame of one layer shows about one viewport of tiles, and is drawn as one layer whatever it shows.
+        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
+        assert!(!layers.plan_of_frame_shows_too_many_tiles(&past_most));
     }
 
     // A frame can find no store to be painted into once it took its stack.

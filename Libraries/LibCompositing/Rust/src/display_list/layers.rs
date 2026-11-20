@@ -156,6 +156,8 @@ pub enum WhyListIsOneLayer {
     /// The frame draws the list otherwise than a plan of its layers is made for, as through a raster transform or a
     /// visual viewport transform the plan does not know.
     FrameIsNotDrawnAsPlanned,
+    /// A frame drawn as the plan was made for shows more tiles than the compositor holds for a frame.
+    PlanShowsTooManyTiles,
 }
 
 impl std::fmt::Display for WhyListIsOneLayer {
@@ -181,6 +183,7 @@ impl std::fmt::Display for WhyListIsOneLayer {
                 );
             }
             WhyListIsOneLayer::FrameIsNotDrawnAsPlanned => "frame is not drawn as the plan was made for",
+            WhyListIsOneLayer::PlanShowsTooManyTiles => "plan shows more tiles than a frame holds",
         })
     }
 }

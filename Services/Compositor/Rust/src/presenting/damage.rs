@@ -283,8 +283,6 @@ impl ContextPresenting {
         let forced_damage_rect =
             self.raster_rect_of(forced_damage_rect.united(scrolled_compositor_scrollbars.intersected(viewport_rect)));
         let invalidates_every_tile = changes.repaints_everything;
-        let composites_layers_like_last_frame = self.painted_frame.is_some()
-            && self.layers.compositing_of_latest_frame() == layer_update.compositing_of_layers.as_slice();
         let stale_rect = self.prepare_frame_tile_state(
             env,
             frame,
@@ -293,6 +291,8 @@ impl ContextPresenting {
             raster_rect,
             invalidates_every_tile,
         );
+        let composites_layers_like_last_frame = self.painted_frame.is_some()
+            && self.layers.compositing_of_latest_frame() == layer_update.compositing_of_layers.as_slice();
         let damage_of_layers_moved_by_animated_transforms = (self.painted_frame.is_some()
             && !composites_layers_like_last_frame)
             .then(|| self.damage_of_layers_moved_by_animated_transforms(&layer_update, raster_rect))
