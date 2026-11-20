@@ -17,13 +17,15 @@
 //! layer below the cut and those painted after it into the layer above the cut. Elsewhere it cuts nothing.
 
 use crate::display_list::commands::{EffectNodeIndex, SpatialNodeIndex};
-use crate::display_list::effect_geometry::filter_may_spread_at_some_sample;
+use crate::display_list::effect_geometry::{
+    LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, filter_may_spread_at_some_sample,
+};
 pub use crate::display_list::placement::{
     CompositeClip, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex, RunGroupIndex, raster_space_anchors,
 };
 use crate::display_list::placement::{
-    EXTENT_LIMIT_IN_DEVICE_PIXELS, RasterSpaceGeometry, enclosing_int_rect_within_extent_limit, is_finite_rect,
-    space_and_ancestors_below_viewport, spatial_nodes_that_move_on_their_own,
+    EXTENT_LIMIT_IN_DEVICE_PIXELS, enclosing_int_rect_within_extent_limit, space_and_ancestors_below_viewport,
+    spatial_nodes_that_move_on_their_own,
 };
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan};
@@ -55,7 +57,7 @@ pub const MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS: usize = 32;
 /// The farthest that the filters of the effects a frame composites around a layer read past each pixel of it, summed, in
 /// device pixels. A frame keys the tiles of a layer that far past what it shows, and a larger sum is cut to this.
 pub const LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS: i32 =
-    4 * crate::display_list::tile_keys::LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32;
+    4 * LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32;
 
 pub(crate) fn media_name(content: LiveContent) -> &'static str {
     match content {
@@ -1581,40 +1583,6 @@ fn mask_declarations_are_on_effect_chains_of_their_masks(
             || nesting_of_live_effects.is_or_is_inside(declaration_effect, mask_effect)
             || nesting_of_live_effects.is_or_is_inside(mask_effect, declaration_effect)
     })
-}
-
-/// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
-/// past it.
-pub fn backdrop_filter_read_reach(
-    tree: &VisualContextTree,
-    geometry: &RasterSpaceGeometry,
-    effect: EffectNodeIndex,
-) -> Reach<IntRect> {
-    let effect_node = &tree.effect_nodes[effect.0 as usize];
-    let EffectNodeData::Effects(effects) = &effect_node.data else {
-        return Reach::Anywhere;
-    };
-    let Some(backdrop) = &effects.backdrop_filter else {
-        return Reach::Anywhere;
-    };
-    let effect_to_device = geometry.world.draw_matrix(effect_node.spatial);
-    let Some(read_reach_in_device_pixels) =
-        crate::display_list::tile_keys::filter_read_reach_in_device_pixels(&backdrop.filter, &effect_to_device)
-    else {
-        return Reach::Anywhere;
-    };
-    let backdrop_region = geometry
-        .world
-        .map_rect_to_root(effect_node.spatial, backdrop.region.to_float());
-    if !is_finite_rect(backdrop_region) {
-        return Reach::Anywhere;
-    }
-    Reach::Within(enclosing_int_rect_within_extent_limit(backdrop_region).inflated_edges(
-        read_reach_in_device_pixels,
-        read_reach_in_device_pixels,
-        read_reach_in_device_pixels,
-        read_reach_in_device_pixels,
-    ))
 }
 
 fn anchors_of_layer_plans(tree: &VisualContextTree) -> Vec<SpatialNodeIndex> {

@@ -22,15 +22,12 @@ use super::commands::{
     SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
-pub use super::effect_geometry::composited_filter_read_reach_in_device_pixels;
 use super::effect_geometry::{
-    FiltersInsideInnermostCompositedEffects, nearest_effects_at_or_above_where, nearest_spreading_effects,
+    FiltersInsideInnermostCompositedEffects, LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, backdrop_filter_read_reach,
+    filter_read_reach_in_device_pixels, nearest_effects_at_or_above_where, nearest_spreading_effects,
     outermost_effects_with_filters, spreading_filter_of,
 };
-pub(crate) use super::effect_geometry::{
-    LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, filter_read_reach_in_device_pixels,
-};
-use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack, backdrop_filter_read_reach};
+use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
 };
@@ -1383,14 +1380,6 @@ const CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES: ContentHash = 1;
 // reaches too many cells to follow one by one does.
 const CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES: u64 = 4096;
 const CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE: u64 = 16;
-
-/// Whether a backdrop filter reads nothing past each pixel, or only through blurs that mirror at the edge of what they
-/// read, so that what it reads past the edge of the frame does not show.
-pub(crate) fn backdrop_filter_reads_nothing_past_mirrored_edge(filter: &[u8]) -> bool {
-    let probe = FloatRect::new(0.0, 0.0, 1.0, 1.0);
-    let reads_past_each_pixel = crate::filter_bytes::changed_output_bounds(filter, probe) != Some(probe);
-    !reads_past_each_pixel || libgfx_rust::filter::Filter::serialized_has_mirroring_blur(filter)
-}
 
 impl<'a> TileKeyingOfRasterSpace<'a> {
     pub fn new(list: &'a TileKeyingOfList<'a>, geometry: &'a RasterSpaceGeometry) -> Self {

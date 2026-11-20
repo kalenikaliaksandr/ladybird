@@ -18,14 +18,14 @@
 use super::{
     BandOfPlan, BarrierCut, BarrierOfPlan, CutOfPlan, LayerIndex, LayerStack, LayeredPlan, LayeringObstacles,
     MAXIMUM_MEDIA_LAYER_COUNT, NestingOfLiveEffects, NodeOfPlan, PaintedLayerOfPlan, PlacementNodeIndex,
-    WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, backdrop_filter_read_reach,
-    backdrop_reader_by_reading_effect_index, composited_effects_nest_too_deep, media_name,
+    WhyCompositorCannotCompositeEffect, WhyListIsOneLayer, backdrop_reader_by_reading_effect_index,
+    composited_effects_nest_too_deep, media_name,
 };
 use crate::display_list::animated_transform_spaces::{effect_reads_below_it, spatial_nodes_under_transform_animations};
 use crate::display_list::commands::{DisplayListCommandType, EffectNodeIndex, SpatialNodeIndex};
 use crate::display_list::effect_geometry::{
-    KeyframeFiltersOfEffects, filter_may_spread_at_some_sample, nearest_effects_spreading_at_some_sample,
-    outermost_effects_with_filters,
+    KeyframeFiltersOfEffects, backdrop_filter_read_reach, filter_may_spread_at_some_sample,
+    filter_read_reach_in_device_pixels, nearest_effects_spreading_at_some_sample, outermost_effects_with_filters,
 };
 use crate::display_list::placement::{
     CompositeClip, FiltersAndClipsOfList, RasterSpace, RasterSpaceAnchorKind, RasterSpaceGeometry, RasterSpaceIndex,
@@ -36,7 +36,7 @@ use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, R
 use crate::display_list::summary::{IndexedRecord, LiveContent};
 use crate::display_list::tiles::{TileCoord, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
 use crate::visual_context::{EffectNodeData, VisualContextTree};
-use libgfx_rust::{FloatPoint, IntRect};
+use libgfx_rust::{FloatPoint, FloatRect, IntRect};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -436,6 +436,14 @@ impl WhyEffectsAreCompositedRegardlessOfLayerContent {
             effect_around = tree.effect_nodes[effect_around.0 as usize].parent;
         }
     }
+}
+
+/// Whether a backdrop filter reads nothing past each pixel, or only through blurs that mirror at the edge of what they
+/// read, so that what it reads past the edge of the frame does not show.
+fn backdrop_filter_reads_nothing_past_mirrored_edge(filter: &[u8]) -> bool {
+    let probe = FloatRect::new(0.0, 0.0, 1.0, 1.0);
+    let reads_past_each_pixel = crate::filter_bytes::changed_output_bounds(filter, probe) != Some(probe);
+    !reads_past_each_pixel || libgfx_rust::filter::Filter::serialized_has_mirroring_blur(filter)
 }
 
 /// Where each part of the list is placed among `spaces`, given the geometry of each of them.
@@ -936,7 +944,7 @@ fn place_list(
                 {
                     Reach::Anywhere
                 } else if run_group.moves_within_space {
-                    crate::display_list::tile_keys::filter_read_reach_in_device_pixels(
+                    filter_read_reach_in_device_pixels(
                         &backdrop_filter.filter,
                         &geometry.raster.world.draw_matrix(effect_node.spatial),
                     )
@@ -953,9 +961,7 @@ fn place_list(
                 };
                 (
                     backdrop_read_reach,
-                    crate::display_list::tile_keys::backdrop_filter_reads_nothing_past_mirrored_edge(
-                        &backdrop_filter.filter,
-                    ),
+                    backdrop_filter_reads_nothing_past_mirrored_edge(&backdrop_filter.filter),
                 )
             }
             None => (Reach::Within(reach_of_effect), true),

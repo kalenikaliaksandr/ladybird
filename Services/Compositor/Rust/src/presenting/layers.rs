@@ -21,11 +21,13 @@ use crate::raster_host::{
 use libcompositing_rust::display_list::commands::{
     CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle,
 };
-use libcompositing_rust::display_list::effect_geometry::spreading_filter_of;
+use libcompositing_rust::display_list::effect_geometry::{
+    backdrop_filter_read_reach, composited_filter_read_reach_in_device_pixels, spreading_filter_of,
+};
 use libcompositing_rust::display_list::layers::{
     BandIndex, LayerContent, LayerIdentity, LayerIndex, LayerStack, LayeringObstacles, NodeNamesFromIndices,
     PlacementNodeBand, PlacementNodeIdentity, RasterSpaceIndex, SpaceToFrame, StackLayer, WhyListIsOneLayer,
-    WindowServerPlacementsOfMedia, backdrop_filter_read_reach,
+    WindowServerPlacementsOfMedia,
 };
 use libcompositing_rust::display_list::placement::{
     RasterSpaceGeometry, RasterSpaces, WhatEverySpaceOfTreeShares, raster_scroll_offsets,
@@ -36,7 +38,7 @@ use libcompositing_rust::display_list::storage::ChunkName;
 use libcompositing_rust::display_list::summary::LiveContent as LiveMedia;
 use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
-    TileKeyingOfList, TileKeyingOfRasterSpace, composited_filter_read_reach_in_device_pixels,
+    TileKeyingOfList, TileKeyingOfRasterSpace,
 };
 use libcompositing_rust::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
 use libcompositing_rust::display_list::window_server_placement::{

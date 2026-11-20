@@ -14,7 +14,7 @@ use super::raster_spaces_for_placing::{
 use crate::display_list::animated_transform_spaces::spatial_nodes_under_transform_animations;
 use crate::display_list::chunks::ReachOutsideRunContext;
 use crate::display_list::commands::{ClipMode, ContextRef, DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
-use crate::display_list::layers::backdrop_filter_read_reach;
+use crate::display_list::effect_geometry::backdrop_filter_read_reach;
 use crate::display_list::placement::{
     CompositeClip, EXTENT_LIMIT_IN_DEVICE_PIXELS, RasterSpace, RasterSpaceAnchorKind, RasterSpaceIndex,
     space_and_ancestors_below_viewport, space_is_ancestor_or_self, translation_if_only_translates,

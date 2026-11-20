@@ -2489,7 +2489,7 @@ mod tests {
         for composited in &stack.composited_effects {
             let space_index = stack.nodes[composited.placement_node_index.0].raster_space_index;
             tile_keying_by_space[space_index.0].content_hash_of_composited_effect(composited.effect);
-            crate::display_list::layers::backdrop_filter_read_reach(
+            crate::display_list::effect_geometry::backdrop_filter_read_reach(
                 frame_tree,
                 &geometries[space_index.0],
                 composited.effect,

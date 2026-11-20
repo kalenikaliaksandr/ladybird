@@ -13,14 +13,16 @@
 
 use crate::display_list::animated_transform_spaces::easing_stays_within_unit_interval;
 use crate::display_list::commands::{DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex};
-use crate::display_list::placement::ANTIALIASING_MARGIN_IN_DEVICE_PIXELS;
+use crate::display_list::placement::{
+    ANTIALIASING_MARGIN_IN_DEVICE_PIXELS, RasterSpaceGeometry, enclosing_int_rect_within_extent_limit, is_finite_rect,
+};
 use crate::display_list::reach::Reach;
 use crate::filter_bytes::{self, filter_functions_graph};
 use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_animation::VisualAnimationValue;
 use crate::visual_context::{EffectNode, EffectNodeData, VisualContextTree, WorldTransforms};
 use libgfx_rust::filter::Filter;
-use libgfx_rust::{FloatMatrix4x4, FloatRect};
+use libgfx_rust::{FloatMatrix4x4, FloatRect, IntRect};
 use std::collections::HashMap;
 
 /// Where content lies in an effect's space. It reaches anywhere through a filter that paints everywhere or through a
@@ -57,6 +59,39 @@ pub(crate) fn filter_read_reach_in_device_pixels(filter: &[u8], effect_to_device
 pub fn composited_filter_read_reach_in_device_pixels(filter: &[u8], effect_to_device: &FloatMatrix4x4) -> i32 {
     filter_read_reach_in_device_pixels(filter, effect_to_device)
         .unwrap_or(LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS as i32)
+}
+
+/// Where a backdrop filter reads, in the raster coordinates of the space: its region, and how far its filter reaches
+/// past it.
+pub fn backdrop_filter_read_reach(
+    tree: &VisualContextTree,
+    geometry: &RasterSpaceGeometry,
+    effect: EffectNodeIndex,
+) -> Reach<IntRect> {
+    let effect_node = &tree.effect_nodes[effect.0 as usize];
+    let EffectNodeData::Effects(effects) = &effect_node.data else {
+        return Reach::Anywhere;
+    };
+    let Some(backdrop) = &effects.backdrop_filter else {
+        return Reach::Anywhere;
+    };
+    let effect_to_device = geometry.world.draw_matrix(effect_node.spatial);
+    let Some(read_reach_in_device_pixels) = filter_read_reach_in_device_pixels(&backdrop.filter, &effect_to_device)
+    else {
+        return Reach::Anywhere;
+    };
+    let backdrop_region = geometry
+        .world
+        .map_rect_to_root(effect_node.spatial, backdrop.region.to_float());
+    if !is_finite_rect(backdrop_region) {
+        return Reach::Anywhere;
+    }
+    Reach::Within(enclosing_int_rect_within_extent_limit(backdrop_region).inflated_edges(
+        read_reach_in_device_pixels,
+        read_reach_in_device_pixels,
+        read_reach_in_device_pixels,
+        read_reach_in_device_pixels,
+    ))
 }
 
 fn extent_mapped_between_spaces(
