@@ -832,14 +832,9 @@ enum TileReplayItem {
         chunk_index: ChunkIndexInList,
         range_index: PlacedRecordRangeIndex,
     },
-    // A record that no placed record range of the band holds, replayed for the mask content it declares.
-    MaskDeclarationRecord {
-        chunk_index: ChunkIndexInList,
-        record_index: RecordIndexInChunk,
-        begin_offset: u32,
-        end_offset: u32,
-    },
-    SpanReplayedInEveryTile {
+    // The records of a span of a chunk: one that every tile replays, or a record that no placed record range of the band
+    // holds, replayed for the mask content it declares.
+    RecordSpan {
         chunk_index: ChunkIndexInList,
         begin_offset: u32,
         end_offset: u32,
@@ -849,9 +844,9 @@ enum TileReplayItem {
 impl TileReplayItem {
     fn chunk_index(&self) -> ChunkIndexInList {
         match *self {
-            TileReplayItem::PlacedRecordRange { chunk_index, .. }
-            | TileReplayItem::MaskDeclarationRecord { chunk_index, .. }
-            | TileReplayItem::SpanReplayedInEveryTile { chunk_index, .. } => chunk_index,
+            TileReplayItem::PlacedRecordRange { chunk_index, .. } | TileReplayItem::RecordSpan { chunk_index, .. } => {
+                chunk_index
+            }
         }
     }
 
@@ -861,22 +856,11 @@ impl TileReplayItem {
                 chunk_index,
                 range_index,
             },
-            TileReplayItem::MaskDeclarationRecord {
-                record_index,
+            TileReplayItem::RecordSpan {
                 begin_offset,
                 end_offset,
                 ..
-            } => TileReplayItem::MaskDeclarationRecord {
-                chunk_index,
-                record_index,
-                begin_offset,
-                end_offset,
-            },
-            TileReplayItem::SpanReplayedInEveryTile {
-                begin_offset,
-                end_offset,
-                ..
-            } => TileReplayItem::SpanReplayedInEveryTile {
+            } => TileReplayItem::RecordSpan {
                 chunk_index,
                 begin_offset,
                 end_offset,
@@ -1023,13 +1007,7 @@ impl BandBoundToListAndGeometry {
                 let range = self.placed_record_range(chunk_index, range_index);
                 (chunk_index, range.begin_offset, range.end_offset)
             }
-            TileReplayItem::MaskDeclarationRecord {
-                chunk_index,
-                begin_offset,
-                end_offset,
-                ..
-            }
-            | TileReplayItem::SpanReplayedInEveryTile {
+            TileReplayItem::RecordSpan {
                 chunk_index,
                 begin_offset,
                 end_offset,
@@ -2276,14 +2254,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 };
                 (content_hash, range.first_record_index..range.end_record_index)
             }
-            TileReplayItem::MaskDeclarationRecord { record_index, .. } => (
-                self.content_hash_of_records_without_frame_state(
-                    chunk,
-                    record_index..RecordIndexInChunk(record_index.0 + 1),
-                ),
-                record_index..RecordIndexInChunk(record_index.0 + 1),
-            ),
-            TileReplayItem::SpanReplayedInEveryTile {
+            TileReplayItem::RecordSpan {
                 begin_offset,
                 end_offset,
                 ..
@@ -2323,10 +2294,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let range = bound_band.placed_record_range(chunk_index, range_index);
                 range.first_record_index..range.end_record_index
             }
-            TileReplayItem::MaskDeclarationRecord { record_index, .. } => {
-                record_index..RecordIndexInChunk(record_index.0 + 1)
-            }
-            TileReplayItem::SpanReplayedInEveryTile {
+            TileReplayItem::RecordSpan {
                 begin_offset,
                 end_offset,
                 ..
@@ -2585,9 +2553,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     ) -> TileReplayItem {
         let table = self.list.display_list.chunk(chunk_index).record_table();
         let record = table.record(record_index);
-        let record_alone = TileReplayItem::MaskDeclarationRecord {
+        let record_alone = TileReplayItem::RecordSpan {
             chunk_index,
-            record_index,
             begin_offset: record.offset,
             end_offset: record.end_offset,
         };
@@ -2649,7 +2616,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     held_offset_ranges.iter().map(|&(begin_offset, end_offset)| {
                         (
                             ListPosition::new(*chunk_index, begin_offset),
-                            TileReplayItem::SpanReplayedInEveryTile {
+                            TileReplayItem::RecordSpan {
                                 chunk_index: *chunk_index,
                                 begin_offset,
                                 end_offset,
@@ -2689,9 +2656,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     .start;
                 items_replayed_in_every_tile.push((
                     declaration_position,
-                    TileReplayItem::MaskDeclarationRecord {
+                    TileReplayItem::RecordSpan {
                         chunk_index: declaration_position.chunk_index,
-                        record_index,
                         begin_offset: declaration_position.offset,
                         end_offset: table.record(record_index).end_offset,
                     },
