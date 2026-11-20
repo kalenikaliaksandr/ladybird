@@ -611,8 +611,12 @@ fn post_resources_ahead(
 }
 
 impl Presenting<'_> {
-    /// Hands `frame` to the compositor, or drops it while the compositor cannot be reached.
+    /// Hands `frame` to the compositor, or drops it while the compositor cannot be reached or where its context was
+    /// destroyed.
     fn post_frame(&mut self, frame: CompositorFrame) {
+        if self.context_was_destroyed(frame.context_id) {
+            return;
+        }
         let Some((poster, sent_display_list_chunks)) = self.poster_and_sent_display_list_chunks() else {
             return;
         };
