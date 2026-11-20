@@ -251,8 +251,9 @@ pub struct DisplayListStorage {
     // Lists replay against trees of one structural epoch only, so one plan serves every replay.
     effect_clip_plan: OnceLock<EffectClipPlan>,
     // One epoch fixes the tree structure run groups follow, but transforms decide which 3D sorting contexts sort their
-    // planes by depth.
-    cached_run_groups: Mutex<Option<Arc<RunGroups>>>,
+    // planes by depth. Every sample of a tree sorts the same contexts, so the groups are kept with the copy of the tree
+    // without the samples of the compositor's animations that they were found to hold for.
+    cached_run_groups: Mutex<Option<(u64, Arc<RunGroups>)>>,
     summary: OnceLock<DisplayListSummary>,
 }
 
@@ -462,13 +463,20 @@ impl DisplayListStorage {
 
     pub fn run_groups(&self, tree: &VisualContextTree) -> Arc<RunGroups> {
         let mut cached_run_groups = self.cached_run_groups.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(run_groups) = cached_run_groups.as_ref()
-            && run_groups.match_depth_sorting_roots(&tree.roots_of_contexts_sorting_planes_by_depth())
+        let tree_copy_without_animation_samples = tree.copy_without_animation_samples();
+        if let Some((tree_copy, run_groups)) = cached_run_groups.as_mut()
+            && (*tree_copy == tree_copy_without_animation_samples
+                || run_groups.match_depth_sorting_roots(&tree.roots_of_contexts_sorting_planes_by_depth()))
         {
+            *tree_copy = tree_copy_without_animation_samples;
             return run_groups.clone();
         }
         cached_run_groups
-            .insert(Arc::new(RunGroups::new(tree, self.runs())))
+            .insert((
+                tree_copy_without_animation_samples,
+                Arc::new(RunGroups::new(tree, self.runs())),
+            ))
+            .1
             .clone()
     }
 
