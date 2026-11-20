@@ -696,7 +696,7 @@ impl SentDisplayListChunks {
             .map(|chunk| {
                 self.list_chunks
                     .entry(chunk.id)
-                    .or_insert_with(|| Arc::new(ListChunk::copied(&chunk.records, &chunk.runs, 0)))
+                    .or_insert_with(|| Arc::new(ListChunk::of_chunk_made_in_this_process(chunk)))
                     .clone()
             })
             .collect();

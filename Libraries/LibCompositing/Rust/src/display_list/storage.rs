@@ -7,7 +7,7 @@
 //! A display list as the chunks it is cut into, in paint order: chunks another process sent that passed validation, or
 //! the chunks of a recording this process made, with the visual context tree it was recorded against.
 
-use super::builder::{HEADER_SIZE, RecordedDisplayList, for_each_command, read_header};
+use super::builder::{COMMAND_ALIGNMENT, HEADER_SIZE, RecordedDisplayList, for_each_command, read_header};
 use super::chunks::{
     Chunk, ChunkId, DisplayListChunk, TopLevelRecordReachingOutsideRunContext, chunk_id, chunks_of,
     top_level_records_reaching_outside_run_context,
@@ -104,13 +104,21 @@ pub struct ChunkName {
     pub occurrence: u32,
 }
 
+enum RecordsAndRuns {
+    Copied {
+        records: AlignedBytes,
+        runs: Vec<DisplayListCommandRun>,
+    },
+    // Only where the records start on a boundary that every command struct may start on.
+    SharedWith(Arc<Chunk>),
+}
+
 /// A chunk that display lists hold, named by what it holds: its records in memory aligned for every command struct,
 /// and its runs, which name the records by their offsets from where the chunk starts. Every list that names a chunk
 /// shares it, and what is known of the chunk alone is worked out once, for all of them.
 pub struct ListChunk {
     pub id: ChunkId,
-    records: AlignedBytes,
-    runs: Vec<DisplayListCommandRun>,
+    records_and_runs: RecordsAndRuns,
     records_reaching_outside_run_context: OnceLock<Vec<TopLevelRecordReachingOutsideRunContext>>,
     summary: OnceLock<DisplayListSummary>,
     record_table: OnceLock<RecordTable>,
@@ -118,11 +126,10 @@ pub struct ListChunk {
 }
 
 impl ListChunk {
-    fn new(records: AlignedBytes, runs: Vec<DisplayListCommandRun>) -> Self {
+    fn new(id: ChunkId, records_and_runs: RecordsAndRuns) -> Self {
         Self {
-            id: chunk_id(records.as_slice(), &runs, 0),
-            records,
-            runs,
+            id,
+            records_and_runs,
             records_reaching_outside_run_context: OnceLock::new(),
             summary: OnceLock::new(),
             record_table: OnceLock::new(),
@@ -130,9 +137,16 @@ impl ListChunk {
         }
     }
 
+    fn named_copy(records: AlignedBytes, runs: Vec<DisplayListCommandRun>) -> Self {
+        Self::new(
+            chunk_id(records.as_slice(), &runs, 0),
+            RecordsAndRuns::Copied { records, runs },
+        )
+    }
+
     /// The chunk of a copy of `records`, which `runs` name by their offsets from `chunk_start`.
     pub fn copied(records: &[u8], runs: &[DisplayListCommandRun], chunk_start: u32) -> Self {
-        Self::new(
+        Self::named_copy(
             AlignedBytes::copied(records),
             runs.iter()
                 .map(|run| DisplayListCommandRun {
@@ -143,17 +157,38 @@ impl ListChunk {
         )
     }
 
+    /// The chunk of `chunk`, which this process made, with its id. It shares the records and runs of `chunk`, or holds
+    /// a copy of them where the records do not start on a boundary that every command struct may start on.
+    pub fn of_chunk_made_in_this_process(chunk: &Arc<Chunk>) -> Self {
+        if !chunk.records.as_ptr().addr().is_multiple_of(COMMAND_ALIGNMENT) {
+            return Self::new(
+                chunk.id,
+                RecordsAndRuns::Copied {
+                    records: AlignedBytes::copied(&chunk.records),
+                    runs: chunk.runs.clone(),
+                },
+            );
+        }
+        Self::new(chunk.id, RecordsAndRuns::SharedWith(chunk.clone()))
+    }
+
     pub fn records(&self) -> &[u8] {
-        self.records.as_slice()
+        match &self.records_and_runs {
+            RecordsAndRuns::Copied { records, .. } => records.as_slice(),
+            RecordsAndRuns::SharedWith(chunk) => &chunk.records,
+        }
     }
 
     pub fn runs(&self) -> &[DisplayListCommandRun] {
-        &self.runs
+        match &self.records_and_runs {
+            RecordsAndRuns::Copied { runs, .. } => runs,
+            RecordsAndRuns::SharedWith(chunk) => &chunk.runs,
+        }
     }
 
     pub fn records_reaching_outside_run_context(&self) -> &[TopLevelRecordReachingOutsideRunContext] {
         self.records_reaching_outside_run_context
-            .get_or_init(|| top_level_records_reaching_outside_run_context(self.records(), &self.runs))
+            .get_or_init(|| top_level_records_reaching_outside_run_context(self.records(), self.runs()))
     }
 
     pub fn summary(&self) -> &DisplayListSummary {
@@ -630,7 +665,7 @@ pub unsafe fn receive_packed_chunks_from_shared_memory(
             }
         }
         let runs = validate_tape(records.as_slice(), &packed_runs)?;
-        chunks.push(ListChunk::new(records, runs));
+        chunks.push(ListChunk::named_copy(records, runs));
         offset = end;
     }
     if offset != packed_size_in_bytes {
@@ -767,6 +802,25 @@ mod tests {
         // Sizes that leave bytes over or claim more than the buffer holds are refused.
         assert!(receive_packed_chunks(&packed, &sizes[..1]).is_err());
         assert!(receive_packed_chunks(&packed[..packed.len() - 8], &sizes).is_err());
+    }
+
+    #[test]
+    fn a_chunk_made_in_this_process_keeps_its_id_and_its_records_stay_aligned() {
+        let mut builder = DisplayListBuilder::new();
+        builder.append(&fill_rect(0), &[], ContextRef::default());
+        builder.append(&fill_rect(10), &[], ContextRef::default());
+        let chunk = Arc::new(builder.take_chunk());
+        let list_chunk = ListChunk::of_chunk_made_in_this_process(&chunk);
+        let copy = ListChunk::copied(&chunk.records, &chunk.runs, 0);
+        assert_eq!(list_chunk.id, copy.id);
+        assert_eq!(list_chunk.records(), copy.records());
+        assert_eq!(list_chunk.runs(), copy.runs());
+        assert_eq!(list_chunk.summary(), copy.summary());
+        assert!(list_chunk.records().as_ptr().addr().is_multiple_of(COMMAND_ALIGNMENT));
+        // Records that start where every command struct may are shared, not copied.
+        if chunk.records.as_ptr().addr().is_multiple_of(COMMAND_ALIGNMENT) {
+            assert_eq!(list_chunk.records().as_ptr(), chunk.records.as_ptr());
+        }
     }
 
     #[test]
