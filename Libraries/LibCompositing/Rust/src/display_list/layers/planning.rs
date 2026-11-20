@@ -51,7 +51,7 @@ use raster_spaces_for_placing::{
     spaces_with_geometries,
 };
 
-/// How many effects and subtrees the compositor animates get layers of their own, first in paint order.
+/// How many effects whose opacity or filter the compositor animates get layers of their own, first in paint order.
 pub const MAXIMUM_ANIMATED_NODES_WITH_LAYERS: usize = 32;
 
 /// A node whose values the compositor animates: a spatial node it transforms, or an effect node whose opacity or
@@ -196,7 +196,7 @@ fn root_isolation_effect_is_plain_group(tree: &VisualContextTree) -> bool {
 }
 
 /// Why a list cannot be layered at all.
-pub fn why_list_cannot_be_layered(
+fn why_list_cannot_be_layered(
     inputs: &LayerStackInputs<'_>,
     layering_obstacles: &LayeringObstacles,
 ) -> Option<WhyListIsOneLayer> {
@@ -1892,10 +1892,10 @@ fn contexts_sorting_planes_by_depth_hold_effects_that_read_or_are_composited(
 /// Works out the layers of a list from where `place_list` placed its parts among `spaces`, whose extents are not filled
 /// in.
 ///
-/// Nothing limits how many layers a stack holds past the spaces a tree offers, which are limited before the list is
-/// placed: the layers an effect the compositor composites or a canvas, video or nested context needs cannot be given
-/// up without drawing the list wrong, and a layer holds tiles only where its content reaches, which the pool of tiles
-/// gives back.
+/// A plan of more nodes, bands, cuts or spans than the compositor decodes, or of composited effects nested deeper than
+/// `MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS`, gives the list one layer. Within those limits no layer that an effect the
+/// compositor composites or a canvas, video or nested context needs is given up, as that would draw the list wrong,
+/// and a layer holds tiles only where its content reaches, which the pool of tiles gives back.
 ///
 /// A plan of more layers that fails the checks the compositor runs on a plan it receives is a bug of the planner. A
 /// build with debug assertions panics on it, and other builds give the list one layer.
