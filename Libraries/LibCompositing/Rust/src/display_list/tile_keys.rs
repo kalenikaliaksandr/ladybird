@@ -37,7 +37,10 @@ use super::storage::{
     ChunkIndexInList, ChunkName, DisplayListStorage, ListChunk, ListPosition, ListSpan, RunIndexInChunk,
 };
 use super::summary::{LiveContent, command_blend, live_content_of};
-use super::tiles::{TileCoord, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
+use super::tiles::{
+    CellRange, TileCoord, entries_within, for_each_entry_within, reaches_too_many_cells_to_follow_one_by_one,
+    tile_coords_touching,
+};
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
 use crate::visual_context::{
     ClipData, ClipNode, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
@@ -48,7 +51,7 @@ use libgfx_rust::{
     enclosing_int_rect,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
@@ -917,24 +920,24 @@ impl BandBoundToListAndGeometry {
             if held_chunk.reach_of_held_records.part_of(cells_area).is_empty() {
                 continue;
             }
-            let mut note_cell = |coord: TileCoord| {
-                if let Some(held_chunks) = held_chunks_by_cell.get_mut(&coord)
-                    && held_chunks.last() != Some(&held_chunk_index)
-                {
+            let note_cell = |held_chunks: &mut Vec<usize>| {
+                if held_chunks.last() != Some(&held_chunk_index) {
                     held_chunks.push(held_chunk_index);
                 }
             };
             if held_chunk.uses_listed_reached_cells {
                 for coord in &held_chunk.placement.listed_reached_cells {
-                    note_cell(*coord);
+                    if let Some(held_chunks) = held_chunks_by_cell.get_mut(coord) {
+                        note_cell(held_chunks);
+                    }
                 }
             }
-            let reach_past_listed_cells_in_area = held_chunk.reach_past_listed_cells.part_of(cells_area);
-            if !reach_past_listed_cells_in_area.is_empty() {
-                for coord in tile_coords_touching(reach_past_listed_cells_in_area) {
-                    note_cell(coord);
-                }
-            }
+            // The cells looked at can lie far apart, with many more cells between them than they are.
+            for_each_entry_within(
+                &mut held_chunks_by_cell,
+                CellRange::touched_by(held_chunk.reach_past_listed_cells.part_of(cells_area)),
+                |_, held_chunks| note_cell(held_chunks),
+            );
         }
         held_chunks_by_cell
     }
@@ -982,6 +985,10 @@ impl BandBoundToListAndGeometry {
 #[derive(Default)]
 pub struct BandTileKeys {
     cells: BTreeMap<TileCoord, CellOfBandTiles>,
+    /// The cells where the band holds tiles at every cell it can hold something in, as the latest frame keyed them.
+    /// Only the cells where the band can hold something have an entry in `cells`, so a frame that shows no cell outside
+    /// these looks for no cell to key.
+    cells_looked_at: CellRange,
     bound_band: Option<BandBoundToListAndGeometry>,
     frame_state_hash: ContentHash,
     // Frame state such as a sampled background color or the space of an inline clip depends on the bound tree and
@@ -1007,9 +1014,10 @@ impl BandTileKeys {
             .find(|tile| tile.layer_index == layer)
     }
 
-    /// The keyed tiles within `rect`, by row and then by layer.
+    /// The keyed tiles within `rect`, by row and then by layer. A rect of any size costs no more than the cells the
+    /// band holds.
     pub fn tiles_within(&self, rect: IntRect) -> impl Iterator<Item = &KeyedTile> {
-        tile_coords_touching(rect).flat_map(|coord| self.cells.get(&coord).into_iter().flat_map(|cell| &cell.tiles))
+        entries_within(&self.cells, CellRange::touched_by(rect)).flat_map(|(_, cell)| &cell.tiles)
     }
 
     pub fn record_spans_of_tiles<'a>(&self, tiles: impl IntoIterator<Item = &'a KeyedTile>) -> Vec<ListSpan> {
@@ -1033,6 +1041,124 @@ impl BandTileKeys {
         }
         merged
     }
+}
+
+/// The most cells that one band keys in a frame. A frame keys only the cells where the band can hold something and
+/// that the frame shows. A viewport of a real size shows content at a sane scale in far fewer cells. A transform that
+/// the compositor animates can show large content at a small part of the scale it is rastered at, and then the frame
+/// shows many more cells of it. This bounds the work and the tiles of the band in such a frame: it keys only the cells
+/// nearest to the middle of the shown rect, and shows nothing in the others.
+pub const MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME: usize = 4096;
+
+/// The cells of `shown_rect` that a band keys in a frame: those where it can hold something and holds no tiles yet.
+/// The band can hold the base layer and items replayed into every tile at every cell, and the records of a held chunk
+/// where the chunk reaches. Where those are more than `MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME` cells, the band keys
+/// only those nearest to the middle of `shown_rect`, and forgets its tiles at all other cells.
+fn coords_to_key(
+    cells: &mut BTreeMap<TileCoord, CellOfBandTiles>,
+    cells_looked_at: &mut CellRange,
+    bound_band: &BandBoundToListAndGeometry,
+    holds_base_layer: bool,
+    shown_rect: IntRect,
+) -> Vec<TileCoord> {
+    let shown_cells = CellRange::touched_by(shown_rect);
+    if cells_looked_at.contains_range(shown_cells) {
+        return Vec::new();
+    }
+    // The band of the base layer is in a space that an offset maps to the frame, so it shows about the cells of the
+    // viewport. The budget holds a received stack that says otherwise.
+    let mut ranges_of_content: Vec<CellRange> = if holds_base_layer || bound_band.items_replayed_in_every_tile.is_some()
+    {
+        vec![shown_cells]
+    } else {
+        bound_band
+            .held_chunks
+            .iter()
+            .map(|held_chunk| CellRange::touched_by(held_chunk.reach_of_held_records.part_of(shown_rect)))
+            .filter(|range| !range.is_empty())
+            .collect()
+    };
+    ranges_of_content.sort_unstable();
+    ranges_of_content.dedup();
+    let coords_of_content = match coords_within_ranges_up_to(&ranges_of_content, MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME)
+    {
+        Some(coords_of_content) => {
+            *cells_looked_at = shown_cells;
+            coords_of_content
+        }
+        None => {
+            let middle = TileCoord::of_pixel(
+                shown_rect.x + shown_rect.width / 2,
+                shown_rect.y + shown_rect.height / 2,
+            );
+            let window = window_within_budget(
+                &ranges_of_content,
+                shown_cells,
+                middle,
+                MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME,
+            );
+            cells.retain(|coord, _| window.contains(*coord));
+            *cells_looked_at = window.intersected(shown_cells);
+            ranges_of_content
+                .iter()
+                .flat_map(|range| range.intersected(window).coords())
+                .collect()
+        }
+    };
+    coords_of_content
+        .into_iter()
+        .filter(|coord| !cells.contains_key(coord))
+        .collect()
+}
+
+/// The cells of `ranges`, row by row, or none where they are more than `limit`. It visits at most `limit` cells of a
+/// range, and stops when it has found more than `limit`.
+fn coords_within_ranges_up_to(ranges: &[CellRange], limit: usize) -> Option<BTreeSet<TileCoord>> {
+    let mut coords = BTreeSet::new();
+    for range in ranges {
+        if range.cell_count() > limit as u64 {
+            return None;
+        }
+        coords.extend(range.coords());
+        if coords.len() > limit {
+            return None;
+        }
+    }
+    Some(coords)
+}
+
+/// The largest window of cells around `middle` where `ranges` hold at most `budget` cells, or no cell where the ranges
+/// hold more at `middle` alone. The ranges lie within `shown_cells` and hold more than `budget` cells there. A cell of
+/// two ranges counts twice, so ranges that overlap can make the window hold fewer cells than `budget`.
+fn window_within_budget(ranges: &[CellRange], shown_cells: CellRange, middle: TileCoord, budget: usize) -> CellRange {
+    let cells_of_ranges_within = |distance: i32| -> u64 {
+        let window = CellRange::around(middle, distance);
+        ranges.iter().map(|range| range.intersected(window).cell_count()).sum()
+    };
+    if cells_of_ranges_within(0) > budget as u64 {
+        return CellRange::NONE;
+    }
+    // The window at the distance to the farthest shown cell holds every range whole.
+    let mut distance_within_budget = 0;
+    let mut distance_past_budget = [
+        shown_cells.last_row - middle.row,
+        middle.row - shown_cells.first_row,
+        shown_cells.last_column - middle.column,
+        middle.column - shown_cells.first_column,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0)
+    .max(1);
+    while distance_past_budget - distance_within_budget > 1 {
+        let distance = distance_within_budget + (distance_past_budget - distance_within_budget) / 2;
+        if cells_of_ranges_within(distance) <= budget as u64 {
+            distance_within_budget = distance;
+        } else {
+            distance_past_budget = distance;
+        }
+    }
+    CellRange::around(middle, distance_within_budget)
 }
 
 struct LazyContentHashesPerNode {
@@ -2601,6 +2727,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     pub fn bind_band(&self, band_tile_keys: &mut BandTileKeys, stack: &LayerStack, band_index: BandIndex) {
         let bound_band = self.bind_band_to_list_and_geometry(stack, band_index);
         band_tile_keys.replays_whole_list = stack.replays_whole_list() && self.list.tree_sorts_planes_by_depth;
+        // Chunks of the new binding can reach cells that held nothing, and cells whose bin changed are forgotten.
+        band_tile_keys.cells_looked_at = CellRange::NONE;
         let Some(previous_bound_band) = band_tile_keys.bound_band.replace(bound_band) else {
             band_tile_keys.cells.clear();
             return;
@@ -2659,6 +2787,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     /// their replay items read, the raster settings of their layer, or the edge of `frame` that their backdrop blurs
     /// mirror at changed, and those outside `kept_rect` are forgotten. `frame` is where the frame is in the band's
     /// space, where that is not the frame's own. The band is bound to the list and the geometry of the frame.
+    ///
+    /// Only the cells where the band can hold something are keyed, at most `MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME` of
+    /// them, so the work and the tiles of a frame have a bound whatever rect of the space the frame shows.
     #[allow(clippy::too_many_arguments)]
     pub fn key_shown_tiles(
         &self,
@@ -2682,10 +2813,21 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         band_tile_keys
             .cells
             .retain(|coord, _| !coord.cell_rect().intersected(kept_rect).is_empty());
+        band_tile_keys.cells_looked_at = band_tile_keys
+            .cells_looked_at
+            .intersected(CellRange::touched_by(kept_rect));
         let bound_band = band_tile_keys
             .bound_band
             .as_ref()
             .expect("a band is bound before its tiles are keyed");
+        let base_layer = (stack.base_layer == band.layer_below_all_cuts).then_some(stack.base_layer);
+        let new_coords = coords_to_key(
+            &mut band_tile_keys.cells,
+            &mut band_tile_keys.cells_looked_at,
+            bound_band,
+            base_layer.is_some(),
+            shown_rect,
+        );
 
         let mut counts = TileKeyingCounts::default();
         let frame_state_changed = band_tile_keys.frame_state_hash != list.frame_state_hash
@@ -2708,9 +2850,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             }
         }
 
-        let new_coords: Vec<TileCoord> = tile_coords_touching(shown_rect)
-            .filter(|coord| !band_tile_keys.cells.contains_key(coord))
-            .collect();
         if new_coords.is_empty() {
             return counts;
         }
@@ -2728,10 +2867,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             if reach_in_new_cells.is_empty() {
                 return;
             }
-            for coord in tile_coords_touching(reach_in_new_cells) {
-                let Some(bin) = bins.get_mut(&coord) else {
-                    continue;
-                };
+            // The new cells can lie far apart, with many more cells between them than they are.
+            for_each_entry_within(&mut bins, CellRange::touched_by(reach_in_new_cells), |coord, bin| {
                 let layer_index = band.layer_of_record_in_cell(paint_position, coord.cell_rect());
                 // A frame composites only the base layer and the layers the stack says can hold content. A stretch and
                 // a placed record range both take their reach from `RasterSpaceGeometry::reach_of_content`, the
@@ -2739,7 +2876,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 // space's extent lets it show. A stack from another process can say otherwise, which only leaves out
                 // what the item draws there.
                 if layer_index != stack.base_layer && !stack.layers[layer_index.0].may_hold_content {
-                    continue;
+                    return;
                 }
                 let items_of_layer = match bin
                     .iter_mut()
@@ -2756,7 +2893,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     let span = bound_band.span_of(mask_declaration);
                     items_of_layer.push((span.begin, mask_declaration, bound_band.reach_of_item(mask_declaration)));
                 }
-            }
+            });
         };
         match &bound_band.items_replayed_in_every_tile {
             Some(items_replayed_in_every_tile) => {
@@ -2776,7 +2913,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 
         let held_chunks_reaching_cells =
             bound_band.held_chunks_reaching_cells_in_paint_order(new_coords.iter().copied());
-        let base_layer = (stack.base_layer == band.layer_below_all_cuts).then_some(stack.base_layer);
         for (coord, mut bin) in bins {
             if let Some(base_layer) = base_layer
                 && !bin.iter().any(|(layer_index, _)| *layer_index == base_layer)
@@ -2856,12 +2992,12 @@ mod tests {
     use crate::display_list::commands::{
         CanvasId, DeclareMaskContent, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
-    use crate::display_list::layers::LayerStack;
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
+    use crate::display_list::layers::{LayerStack, SpaceToFrame};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
-    use libgfx_rust::CompositingAndBlendingOperator;
+    use libgfx_rust::{AffineTransform, CompositingAndBlendingOperator};
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
     const RED: Color = Color::from_rgb(255, 0, 0);
@@ -3342,5 +3478,185 @@ mod tests {
             animated_box.y / TILE_SIZE_IN_DEVICE_PIXELS,
         );
         assert_eq!(changed, [cell_of_animated_box]);
+    }
+
+    fn band_of_space(stack: &LayerStack, raster_space_index: RasterSpaceIndex) -> BandIndex {
+        BandIndex(
+            stack
+                .bands
+                .iter()
+                .position(|band| stack.nodes[band.placement_node_index.0].raster_space_index == raster_space_index)
+                .expect("the space has a band"),
+        )
+    }
+
+    // The rect of the space that the viewport shows through a transform that scales the space by `scale`.
+    fn viewport_in_space_scaled_by(scale: f32) -> IntRect {
+        SpaceToFrame::Transform(AffineTransform::new(scale, 0.0, 0.0, scale, 0.0, 0.0)).rect_in_space(VIEWPORT)
+    }
+
+    fn band_tile_keys_after_frames_showing(
+        frame: (&DisplayListStorage, &VisualContextTree, &LayerStack),
+        raster_space_index: RasterSpaceIndex,
+        band_index: BandIndex,
+        shown_rects: &[IntRect],
+    ) -> (BandTileKeys, Vec<TileKeyingCounts>) {
+        let (display_list, tree, stack) = frame;
+        let list_keying = TileKeyingOfList::new(
+            display_list,
+            tree,
+            stack,
+            FrameStateReadByReplay {
+                scrollbars: &[],
+                time_ns: 0,
+                live_content: &NoLiveContentChanges,
+            },
+        );
+        let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
+        let geometry = RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let mut band_tile_keys = BandTileKeys::default();
+        raster_space.bind_band(&mut band_tile_keys, stack, band_index);
+        let counts = shown_rects
+            .iter()
+            .map(|&shown_rect| {
+                raster_space.key_shown_tiles(
+                    &mut band_tile_keys,
+                    stack,
+                    band_index,
+                    raster_settings_for_tests,
+                    shown_rect,
+                    shown_rect,
+                    None,
+                )
+            })
+            .collect();
+        (band_tile_keys, counts)
+    }
+
+    fn tiles_within(band_tile_keys: &BandTileKeys, rect: IntRect) -> Vec<(TileCoord, LayerIndex, ContentHash)> {
+        band_tile_keys
+            .tiles_within(rect)
+            .map(|tile| (tile.coord, tile.layer_index, tile.content_hash))
+            .collect()
+    }
+
+    fn viewport_filled_with_green() -> (VisualContextTree, Arc<DisplayListStorage>) {
+        let tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let display_list = DisplayListStorage::of_chunks(vec![chunk_of(fill(VIEWPORT, GREEN), root)]).unwrap();
+        (tree, display_list)
+    }
+
+    // A box that the compositor scales up from nothing shows at a tiny part of its raster scale at first.
+    #[test]
+    fn a_band_shown_at_a_tiny_part_of_its_raster_scale_keys_only_the_cells_its_content_reaches() {
+        let (tree, display_list, _) = sliding_box_tree_and_list(false);
+        let at_start = tree.with_visual_animation_samples(0);
+        let stack = stack_of(&display_list, &at_start);
+        let animated_space = RasterSpaceIndex(1);
+        let band = band_of_space(&stack, animated_space);
+        let shown_rect = viewport_in_space_scaled_by(1.0e-4);
+        assert!(CellRange::touched_by(shown_rect).cell_count() > 100_000_000);
+
+        let frame = (&*display_list, &at_start, &stack);
+        let (keyed_at_tiny_scale, counts) =
+            band_tile_keys_after_frames_showing(frame, animated_space, band, &[shown_rect, shown_rect]);
+        let tiles = tiles_within(&keyed_at_tiny_scale, shown_rect);
+        let (keyed_at_raster_scale, _) = band_tile_keys_after_frames_showing(frame, animated_space, band, &[VIEWPORT]);
+        assert!(!tiles.is_empty());
+        assert_eq!(tiles, tiles_within(&keyed_at_raster_scale, VIEWPORT));
+        let mut cells_of_tiles: Vec<TileCoord> = tiles.iter().map(|(coord, _, _)| *coord).collect();
+        cells_of_tiles.dedup();
+        assert!(keyed_at_tiny_scale.cells.keys().copied().eq(cells_of_tiles));
+        // A frame that shows the same rect again looks for no cell to key.
+        assert_eq!(counts[1], TileKeyingCounts::default());
+    }
+
+    #[test]
+    fn a_band_keys_at_most_the_budget_of_cells_nearest_to_the_middle_of_what_it_shows() {
+        let (tree, display_list) = viewport_filled_with_green();
+        let stack = stack_of(&display_list, &tree);
+        assert_eq!(stack.base_layer, stack.bands[0].layer_below_all_cuts);
+        // The band of the base layer holds a tile at every cell it shows.
+        let shown_rect = viewport_in_space_scaled_by(1.0e-4);
+        let moved_shown_rect = shown_rect.translated(10 * TILE_SIZE_IN_DEVICE_PIXELS, 0);
+        let (band_tile_keys, counts) = band_tile_keys_after_frames_showing(
+            (&display_list, &tree, &stack),
+            RasterSpaceIndex::VIEWPORT,
+            BandIndex(0),
+            &[shown_rect, shown_rect, moved_shown_rect],
+        );
+        let middle_of = |rect: IntRect| TileCoord::of_pixel(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        assert!(
+            counts
+                .iter()
+                .all(|counts| counts.tiles_keyed <= MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME)
+        );
+        assert!(counts[0].tiles_keyed > MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME / 2);
+        assert_eq!(counts[1], TileKeyingCounts::default());
+        // Moving the window by ten columns keys the cells it now holds and forgets those it left.
+        let window = CellRange::around(middle_of(moved_shown_rect), 31);
+        assert_eq!(window.cell_count(), 63 * 63);
+        assert_eq!(counts[2].tiles_keyed, 10 * 63);
+        assert!(
+            band_tile_keys
+                .cells
+                .keys()
+                .copied()
+                .eq(window.coords().collect::<BTreeSet<_>>())
+        );
+        assert_eq!(
+            tiles_within(&band_tile_keys, moved_shown_rect).len(),
+            window.cell_count() as usize
+        );
+    }
+
+    #[test]
+    fn a_space_whose_transform_is_not_finite_or_has_no_inverse_keys_nothing() {
+        let (tree, display_list) = viewport_filled_with_green();
+        let stack = stack_of(&display_list, &tree);
+        for transform in [
+            AffineTransform::new(f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0),
+            AffineTransform::new(1.0, 0.0, 0.0, 1.0, 0.0, f32::INFINITY),
+            AffineTransform::new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            AffineTransform::new(1.0e-30, 0.0, 0.0, 1.0e-30, 0.0, 0.0),
+        ] {
+            let shown_rect = SpaceToFrame::Transform(transform).rect_in_space(VIEWPORT);
+            assert_eq!(shown_rect, IntRect::default());
+            let (band_tile_keys, counts) = band_tile_keys_after_frames_showing(
+                (&display_list, &tree, &stack),
+                RasterSpaceIndex::VIEWPORT,
+                BandIndex(0),
+                &[shown_rect],
+            );
+            assert!(band_tile_keys.cells.is_empty());
+            assert_eq!(counts[0], TileKeyingCounts::default());
+        }
+    }
+
+    #[test]
+    fn the_tiles_within_a_rect_of_far_more_cells_than_a_band_holds_are_the_tiles_it_holds_there() {
+        let (tree, display_list) = viewport_filled_with_green();
+        let stack = stack_of(&display_list, &tree);
+        let (band_tile_keys, _) = band_tile_keys_after_frames_showing(
+            (&display_list, &tree, &stack),
+            RasterSpaceIndex::VIEWPORT,
+            BandIndex(0),
+            &[VIEWPORT],
+        );
+        let tiles_within_viewport = tiles_within(&band_tile_keys, VIEWPORT);
+        assert_eq!(tiles_within_viewport.len(), 4);
+        let huge_rect = viewport_in_space_scaled_by(1.0e-4);
+        assert_eq!(tiles_within(&band_tile_keys, huge_rect), tiles_within_viewport);
+        let tall_rect_over_first_column = IntRect::new(0, huge_rect.y, 1, huge_rect.height);
+        assert_eq!(
+            tiles_within(&band_tile_keys, tall_rect_over_first_column),
+            tiles_within_viewport
+                .iter()
+                .copied()
+                .filter(|(coord, _, _)| coord.column == 0)
+                .collect::<Vec<_>>()
+        );
     }
 }

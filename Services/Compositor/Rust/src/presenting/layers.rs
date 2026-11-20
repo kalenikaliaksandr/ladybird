@@ -40,7 +40,7 @@ use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
     TileKeyingOfList, TileKeyingOfRasterSpace, composited_filter_read_reach_in_device_pixels,
 };
-use libcompositing_rust::display_list::tiles::{TileCoord, tile_coords_touching};
+use libcompositing_rust::display_list::tiles::{CellRange, TileCoord, entries_within};
 use libcompositing_rust::display_list::window_server_placement::{
     WhyWindowServerCannotShowMedia, WindowServerPlacement,
 };
@@ -1010,12 +1010,10 @@ fn draws_of_held_tiles_reaching_into<'a>(
 ) -> Vec<TileDraw<'a>> {
     let mut draws = Vec::new();
     let mut one_color_fills = Vec::new();
+    // A transform can map the area to many more cells than the layer holds tiles at.
     let area_in_layer_space = compositing.space_to_frame.rect_in_space(area_in_frame);
-    for coord in tile_coords_touching(area_in_layer_space) {
-        let Some(tile) = held_tiles
-            .get(&coord)
-            .and_then(|content_hash| tile_pool.get(content_hash))
-        else {
+    for (_, content_hash) in entries_within(held_tiles, CellRange::touched_by(area_in_layer_space)) {
+        let Some(tile) = tile_pool.get(content_hash) else {
             continue;
         };
         if compositing
@@ -2934,7 +2932,7 @@ mod tests {
     use libcompositing_rust::display_list::builder::DisplayListBuilder;
     use libcompositing_rust::display_list::storage::DisplayListStorage;
     use libcompositing_rust::visual_context::{TransformData, TransformDataRole};
-    use libgfx_rust::FloatRect;
+    use libgfx_rust::{AffineTransform, FloatRect};
     use std::sync::Arc;
 
     const VIEWPORT: IntRect = IntRect::new(0, 0, 800, 600);
@@ -3216,5 +3214,90 @@ mod tests {
         layers.take_stack_of_frame(None, || one_layer_of(&display_list, resized_viewport), scaled_twice());
         let scaled = layers.stack_of_frames.as_ref().expect("the frame took a stack");
         assert!(scaled.geometry_by_space.iter().all(Option::is_none));
+    }
+
+    fn layer_composited_through(transform: AffineTransform) -> LayerCompositingInFrame {
+        LayerCompositingInFrame {
+            layer_index: LayerIndex(1),
+            identity: LayerIdentity::Painted {
+                node: PlacementNodeIdentity(1),
+                band_ordinal_in_node: 0,
+                above_barrier: None,
+            },
+            space_to_frame: SpaceToFrame::Transform(transform),
+            composite_clip: None,
+            rounded_composite_clips: Rc::new([]),
+            shown_by_window_server: false,
+        }
+    }
+
+    fn one_color_tiles_at(coords: &[TileCoord]) -> (BTreeMap<TileCoord, ContentHash>, TilePool) {
+        let held_tiles: BTreeMap<TileCoord, ContentHash> = coords
+            .iter()
+            .enumerate()
+            .map(|(index, coord)| (*coord, index as ContentHash + 1))
+            .collect();
+        let tile_pool: TilePool = held_tiles
+            .iter()
+            .map(|(coord, content_hash)| {
+                (
+                    *content_hash,
+                    PooledTile {
+                        // A color of its own, so that no two tiles join into one fill.
+                        pixels: TilePixels::OneColor(Color::from_rgb(0, 128, *content_hash as u8)),
+                        held_part_of_cell: coord.cell_rect(),
+                        holds_current_pixels: true,
+                        last_held_at: MonotonicTime::default(),
+                    },
+                )
+            })
+            .collect();
+        (held_tiles, tile_pool)
+    }
+
+    fn rects_of_draws(draws: &[TileDraw<'_>]) -> Vec<IntRect> {
+        draws
+            .iter()
+            .map(|draw| match draw {
+                TileDraw::TileSurface {
+                    rect_in_layer_space, ..
+                }
+                | TileDraw::FillOfJoinedOneColorTiles {
+                    rect_in_layer_space, ..
+                } => *rect_in_layer_space,
+            })
+            .collect()
+    }
+
+    // A box that the compositor scales up from nothing shows at a tiny part of its raster scale at first.
+    #[test]
+    fn a_layer_shown_at_a_tiny_scale_draws_its_held_tiles_without_visiting_every_cell_the_viewport_maps_to() {
+        let tiny_scale = 1.0e-5;
+        let layer = layer_composited_through(AffineTransform::new(tiny_scale, 0.0, 0.0, tiny_scale, 400.0, 300.0));
+        let shown_rect = layer.rect_shown_in_layer_space(VIEWPORT, 0);
+        assert!(CellRange::touched_by(shown_rect).cell_count() > 1_000_000_000);
+        let held_cells = [TileCoord::new(-1, -1), TileCoord::new(0, 0), TileCoord::new(3, 0)];
+        let (held_tiles, tile_pool) = one_color_tiles_at(&held_cells);
+        let draws = draws_of_held_tiles_reaching_into(&held_tiles, &tile_pool, &layer, VIEWPORT);
+        assert_eq!(rects_of_draws(&draws), held_cells.map(TileCoord::cell_rect));
+    }
+
+    #[test]
+    fn a_layer_whose_transform_is_not_finite_or_has_no_inverse_shows_nothing() {
+        let (held_tiles, tile_pool) = one_color_tiles_at(&[TileCoord::new(0, 0)]);
+        for transform in [
+            AffineTransform::new(f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0),
+            AffineTransform::new(1.0, 0.0, 0.0, 1.0, f32::INFINITY, 0.0),
+            AffineTransform::new(0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            AffineTransform::new(1.0e-30, 0.0, 0.0, 1.0e-30, 0.0, 0.0),
+        ] {
+            let layer = layer_composited_through(transform);
+            assert_eq!(layer.rect_shown_in_layer_space(VIEWPORT, 0), IntRect::default());
+            assert_eq!(
+                layer.rect_in_frame(TileCoord::new(0, 0).cell_rect(), VIEWPORT),
+                IntRect::default()
+            );
+            assert!(draws_of_held_tiles_reaching_into(&held_tiles, &tile_pool, &layer, VIEWPORT).is_empty());
+        }
     }
 }

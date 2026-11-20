@@ -237,9 +237,10 @@ impl SpaceToFrame {
         match self {
             SpaceToFrame::Offset(offset) => rect_in_space.translated(offset.x, offset.y),
             SpaceToFrame::Transform(_) if rect_in_space.is_empty() => IntRect::default(),
-            SpaceToFrame::Transform(transform) => {
-                enclosing_int_rect_within_extent_limit(transform.map_rect(rect_in_space.to_float()))
-            }
+            SpaceToFrame::Transform(transform) => transform_and_inverse_that_show_space(transform)
+                .map_or(IntRect::default(), |(transform, _)| {
+                    enclosing_int_rect_within_extent_limit(transform.map_rect(rect_in_space.to_float()))
+                }),
         }
     }
 
@@ -248,11 +249,20 @@ impl SpaceToFrame {
         match self {
             SpaceToFrame::Offset(offset) => rect_in_frame.translated(-offset.x, -offset.y),
             SpaceToFrame::Transform(_) if rect_in_frame.is_empty() => IntRect::default(),
-            SpaceToFrame::Transform(transform) => transform.inverse().map_or(IntRect::default(), |inverse| {
-                enclosing_int_rect_within_extent_limit(inverse.map_rect(rect_in_frame.to_float()))
-            }),
+            SpaceToFrame::Transform(transform) => transform_and_inverse_that_show_space(transform)
+                .map_or(IntRect::default(), |(_, inverse)| {
+                    enclosing_int_rect_within_extent_limit(inverse.map_rect(rect_in_frame.to_float()))
+                }),
         }
     }
+}
+
+/// A transform of a space and its inverse, or none for a transform that shows nothing of the space: one with a value
+/// that is not finite, or one without an inverse of finite values.
+fn transform_and_inverse_that_show_space(transform: AffineTransform) -> Option<(AffineTransform, AffineTransform)> {
+    let is_finite = |transform: AffineTransform| transform.values.iter().all(|value| value.is_finite());
+    let inverse = transform.inverse()?;
+    (is_finite(transform) && is_finite(inverse)).then_some((transform, inverse))
 }
 
 /// The index of a node in `LayerStack::nodes`.
