@@ -714,23 +714,27 @@ impl ContextPresenting {
                 None => return,
             },
         };
+        // The surface comes first, so that a frame that cannot be painted does not work out its layers.
+        let raster_size = self.raster_size();
+        let (surface, holds_earlier_frame) = match self.surface_drawn_by_parent.take() {
+            Some(surface) if env.raster.surface_size(&surface) == raster_size => (surface, true),
+            _ => {
+                let Some(surface) = env.raster.create_surface(raster_size, None, false) else {
+                    return;
+                };
+                (surface, false)
+            }
+        };
         let live_content = self.live_content(env, display_list);
         let frame = FrameToPaint {
             display_list,
             frame_inputs: &frame_inputs,
         };
         let mut frame_damage = self.frame_damage_for(env, &pending_frame, &frame, &live_content);
-        let raster_size = self.raster_size();
-        let (surface, repaint_rect) = match self.surface_drawn_by_parent.take() {
-            Some(surface) if env.raster.surface_size(&surface) == raster_size => {
-                (surface, frame_damage.rect_in_raster_device_pixels)
-            }
-            _ => {
-                let Some(surface) = env.raster.create_surface(raster_size, None, false) else {
-                    return;
-                };
-                (surface, rect_of_size(raster_size))
-            }
+        let repaint_rect = if holds_earlier_frame {
+            frame_damage.rect_in_raster_device_pixels
+        } else {
+            rect_of_size(raster_size)
         };
         let _ = self.paint_layered_frame(
             env,
