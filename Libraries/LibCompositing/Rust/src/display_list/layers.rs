@@ -347,17 +347,6 @@ impl<'a> CutsOfCell<'a> {
         (layer, count_of_cuts_below)
     }
 
-    /// The layer of the band above the first `cut_count` of the barriers that cut the tile, or none where fewer cut it.
-    pub fn layer_above_first_cuts(&self, cut_count: usize) -> Option<LayerIndex> {
-        match cut_count {
-            0 => Some(self.band.layer_below_all_cuts),
-            cut_count => self
-                .cut_indices
-                .get(cut_count - 1)
-                .map(|&cut_index| self.band.cuts[cut_index as usize].layer_above_cut),
-        }
-    }
-
     /// Which barriers cut the tile: tiles that answer alike place every record alike.
     pub fn barrier_cuts(&self) -> BarrierCutsOfCell {
         if self.band.cuts.len() <= u64::BITS as usize {

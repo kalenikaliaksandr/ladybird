@@ -2300,9 +2300,8 @@ mod tests {
                     let cell = crate::display_list::tiles::TileCoord::new(column, row).cell_rect();
                     let cuts_of_cell = CutsOfCell::of(band, cell);
                     for &position in &record_positions {
-                        let (layer, count_of_cuts_below) = cuts_of_cell.layer_of_record(position);
+                        let (layer, _) = cuts_of_cell.layer_of_record(position);
                         assert_eq!(layer, band.layer_of_record_in_cell(position, cell), "{name}");
-                        assert_eq!(cuts_of_cell.layer_above_first_cuts(count_of_cuts_below), Some(layer));
                     }
                 }
             }

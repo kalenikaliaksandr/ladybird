@@ -9,8 +9,8 @@
 //! A tile's content hash covers what it holds: the records of the band that can show in it, as the geometry of the
 //! band's raster space places their visual contexts, and the frame state those records read. A chunk is placed once for
 //! each placement of the contexts of its runs, and the placement is cached on the chunk for every list that names it. A
-//! tile is binned once and keeps its bin, and with it its content hash, for as long as the chunks that can reach it and
-//! the barriers that cut it stay as they are and in the same order, whatever happens elsewhere in the list.
+//! band bound to another list or geometry bins its tiles again, and a tile that holds what it held before gets the
+//! content hash it had before.
 
 use super::builder::{
     HEADER_SIZE, bounding_rect_computed_from_payload, for_each_command, has_inline_clip_in_its_own_space,
@@ -37,14 +37,9 @@ use super::placement::{
 };
 use super::reach::Reach;
 use super::replay::{ScrollbarShownByFrame, caret_is_visible_at_time, scrollbar_shown_by_frame};
-use super::storage::{
-    ChunkIndexInList, ChunkName, DisplayListStorage, ListChunk, ListPosition, ListSpan, RunIndexInChunk,
-};
+use super::storage::{ChunkIndexInList, DisplayListStorage, ListChunk, ListPosition, ListSpan, RunIndexInChunk};
 use super::summary::{LiveContent, command_blend, live_content_of};
-use super::tiles::{
-    CellRange, TileCoord, entries_within, for_each_entry_within, reaches_too_many_cells_to_follow_one_by_one,
-    tile_coords_touching, tile_count_touching,
-};
+use super::tiles::{CellRange, TileCoord, entries_within, for_each_entry_within};
 use super::window_server_placement::RoundedRect;
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
 use crate::host::FfiVisualAnimationTargetKind;
@@ -149,24 +144,6 @@ impl ContentHasher {
             self.write_i32(corner.horizontal_radius);
             self.write_i32(corner.vertical_radius);
         }
-    }
-
-    fn write_reach(&mut self, reach: Reach<IntRect>) {
-        match reach {
-            Reach::Nothing => self.write_u32(0),
-            Reach::Within(rect) => {
-                self.write_u32(1);
-                self.write_int_rect(rect);
-            }
-            Reach::Anywhere => self.write_u32(2),
-        }
-    }
-
-    fn write_chunk_name(&mut self, name: ChunkName) {
-        self.write_u64(name.id.0[0]);
-        self.write_u64(name.id.0[1]);
-        self.write_u32(name.occurrence);
-        self.write_u64(name.copy_number);
     }
 
     fn finish(&self) -> ContentHash {
@@ -364,8 +341,6 @@ pub struct TileKeyingOfList<'a> {
     frame_state_hash: ContentHash,
     sampled_values_tiles_draw: SampledValuesTilesDraw,
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
-    /// The chunks of the list by name, once a band that keeps its cells across bindings looks them up.
-    chunk_index_by_name: OnceCell<HashMap<ChunkName, ChunkIndexInList>>,
     /// Per effect, the nearest effect at or around it that the compositor composites or that is not a plain group,
     /// once the coverage of a tile asks.
     nearest_composited_or_not_plain_effect_by_effect_index: OnceCell<Vec<EffectNodeIndex>>,
@@ -503,7 +478,6 @@ impl<'a> TileKeyingOfList<'a> {
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
             sampled_values_tiles_draw: SampledValuesTilesDraw::of(tree, &innermost_composited_effect_by_effect_index),
             innermost_composited_effect_by_effect_index,
-            chunk_index_by_name: OnceCell::new(),
             nearest_composited_or_not_plain_effect_by_effect_index: OnceCell::new(),
             nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell::new(),
         }
@@ -912,8 +886,6 @@ pub struct ChunkPlacedInRasterSpace {
     placement_inputs_hash: ContentHash,
     record_ranges: Vec<PlacedRecordRange>,
     ranges_of_each_run: Vec<PlacedRecordRangesOfRun>,
-    listed_reached_cells: Vec<TileCoord>,
-    reach_past_listed_cells: Reach<IntRect>,
 }
 
 impl ChunkPlacedInRasterSpace {
@@ -945,24 +917,6 @@ impl TileReplayItem {
             }
         }
     }
-
-    fn with_chunk_index(self, chunk_index: ChunkIndexInList) -> Self {
-        match self {
-            TileReplayItem::PlacedRecordRange { range_index, .. } => TileReplayItem::PlacedRecordRange {
-                chunk_index,
-                range_index,
-            },
-            TileReplayItem::RecordSpan {
-                begin_offset,
-                end_offset,
-                ..
-            } => TileReplayItem::RecordSpan {
-                chunk_index,
-                begin_offset,
-                end_offset,
-            },
-        }
-    }
 }
 
 /// A tile of a layer of a band, with the hash of what it holds, the replay items of the band replayed into it, and how
@@ -977,18 +931,11 @@ pub struct KeyedTile {
     pub cuts: BarrierCutsOfCell,
     /// The part of the tile's cell that what it holds can reach.
     pub content_bounds: IntRect,
-    // Names the layer in any stack whose band cuts the cell alike.
-    count_of_cell_cuts_below_layer: usize,
     replay_items_in_paint_order: Vec<TileReplayItem>,
     raster_settings_hash: ContentHash,
     reads_frame_state: bool,
     reads_sampled_values: bool,
     frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
-}
-
-struct CellOfBandTiles {
-    binning_inputs_hash: ContentHash,
-    tiles: Vec<KeyedTile>,
 }
 
 /// A chunk that the spans of a band hold runs of. The spans hold whole runs.
@@ -997,8 +944,6 @@ struct ChunkHeldByBand {
     placement: Arc<ChunkPlacedInRasterSpace>,
     held_run_indices: Vec<RunIndexInChunk>,
     reach_of_held_records: Reach<IntRect>,
-    reach_past_listed_cells: Reach<IntRect>,
-    binning_inputs_hash: ContentHash,
 }
 
 struct RunReplayedWholeWhereverRunGroupShows {
@@ -1016,14 +961,12 @@ struct DeclaredMaskAroundRunReplayedWhole {
 }
 
 struct BandBoundToListAndGeometry {
-    chunk_names: Arc<[ChunkName]>,
     /// In the order of their chunks, as the spans of a band are in paint order.
     held_chunks: Vec<ChunkHeldByBand>,
     runs_replayed_whole: HashMap<(ChunkIndexInList, RunIndexInChunk), RunReplayedWholeWhereverRunGroupShows>,
     declared_masks_around_runs_replayed_whole: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole>,
     backdrop_reads: BackdropReadsOfBand,
     items_replayed_in_every_tile: Option<Vec<(ListPosition, TileReplayItem)>>,
-    binning_inputs_hash_beyond_held_chunks: ContentHash,
 }
 
 impl BandBoundToListAndGeometry {
@@ -1045,41 +988,6 @@ impl BandBoundToListAndGeometry {
         range_index: PlacedRecordRangeIndex,
     ) -> &PlacedRecordRange {
         &self.held_chunk(chunk_index).placement.record_ranges[range_index.0 as usize]
-    }
-
-    /// Whether `item`, which names a chunk of the list the band is bound to, replays what `item_before` replayed under
-    /// `bound_before`. A record range of a chunk the band does not hold, or one that covers other records of the chunk,
-    /// does not. A cell is binned by the chunks that reach it, so this tells of the mask declarations replayed with a
-    /// run, whose chunks need not reach the cell.
-    fn replays_records_that_item_replayed(
-        &self,
-        item: TileReplayItem,
-        bound_before: &BandBoundToListAndGeometry,
-        item_before: TileReplayItem,
-    ) -> bool {
-        let (
-            TileReplayItem::PlacedRecordRange {
-                chunk_index,
-                range_index,
-            },
-            TileReplayItem::PlacedRecordRange {
-                chunk_index: chunk_index_before,
-                ..
-            },
-        ) = (item, item_before)
-        else {
-            // Other items name their records by where they are in the chunk, which every chunk of one name holds alike.
-            return true;
-        };
-        let Some(range) = self
-            .held_chunk_if_held(chunk_index)
-            .and_then(|held_chunk| held_chunk.placement.record_ranges.get(range_index.0 as usize))
-        else {
-            return false;
-        };
-        let range_before = bound_before.placed_record_range(chunk_index_before, range_index);
-        range.first_record_index == range_before.first_record_index
-            && range.end_record_index == range_before.end_record_index
     }
 
     fn reach_of_item(&self, item: TileReplayItem) -> Reach<IntRect> {
@@ -1121,85 +1029,14 @@ impl BandBoundToListAndGeometry {
             end: ListPosition::new(chunk_index, end_offset),
         }
     }
-
-    fn held_chunks_reaching_cells_in_paint_order(
-        &self,
-        coords: impl IntoIterator<Item = TileCoord>,
-    ) -> BTreeMap<TileCoord, Vec<usize>> {
-        let mut held_chunks_by_cell: BTreeMap<TileCoord, Vec<usize>> =
-            coords.into_iter().map(|coord| (coord, Vec::new())).collect();
-        let cells_area = held_chunks_by_cell
-            .keys()
-            .fold(IntRect::default(), |area, coord| area.united(coord.cell_rect()));
-        let placements_list_cells_held_records_reach = self.backdrop_reads.is_empty();
-        for (held_chunk_index, held_chunk) in self.held_chunks.iter().enumerate() {
-            if held_chunk.reach_of_held_records.part_of(cells_area).is_empty() {
-                continue;
-            }
-            let note_cell = |held_chunks: &mut Vec<usize>| {
-                if held_chunks.last() != Some(&held_chunk_index) {
-                    held_chunks.push(held_chunk_index);
-                }
-            };
-            if placements_list_cells_held_records_reach {
-                for coord in &held_chunk.placement.listed_reached_cells {
-                    if let Some(held_chunks) = held_chunks_by_cell.get_mut(coord) {
-                        note_cell(held_chunks);
-                    }
-                }
-            }
-            // The cells looked at can lie far apart, with many more cells between them than they are.
-            for_each_entry_within(
-                &mut held_chunks_by_cell,
-                CellRange::touched_by(held_chunk.reach_past_listed_cells.part_of(cells_area)),
-                |_, held_chunks| note_cell(held_chunks),
-            );
-        }
-        held_chunks_by_cell
-    }
-
-    fn binning_inputs_hash_of_cell(
-        &self,
-        cuts_of_cell: &CutsOfCell<'_>,
-        held_chunks_reaching_cell: &[usize],
-    ) -> ContentHash {
-        let mut hasher = ContentHasher::new();
-        let mut cuts = cuts_of_cell.cuts().peekable();
-        // The layer of a replay item depends only on which cuts are painted before it, so a cut is hashed by where it
-        // is among the chunks that reach the cell, and by its offset where it is in one of those. Which barrier a cut
-        // is does not matter, as tiles name their layers by how many of the cell's cuts are below them, and a cut
-        // painted after every chunk that reaches the cell has nothing above it there.
-        let write_cut = |hasher: &mut ContentHasher, offset_in_chunk_reaching_cell: Option<u32>| {
-            hasher.write_u32(2);
-            hasher.write_u32(offset_in_chunk_reaching_cell.unwrap_or(u32::MAX));
-        };
-        for &held_chunk_index in held_chunks_reaching_cell {
-            let held_chunk = &self.held_chunks[held_chunk_index];
-            while cuts
-                .next_if(|cut| cut.barrier_first_record_position.chunk_index < held_chunk.chunk_index)
-                .is_some()
-            {
-                write_cut(&mut hasher, None);
-            }
-            hasher.write_u32(1);
-            hasher.write_content_hash(held_chunk.binning_inputs_hash);
-            while let Some(cut) =
-                cuts.next_if(|cut| cut.barrier_first_record_position.chunk_index == held_chunk.chunk_index)
-            {
-                write_cut(&mut hasher, Some(cut.barrier_first_record_position.offset));
-            }
-        }
-        hasher.finish()
-    }
 }
 
-/// What the tiles of the layers of one band hold, kept from frame to frame, from list to list and from stack to stack:
-/// the tiles keyed so far, binned against the list, the geometry and the band of the stack they are bound to. A tile is
-/// binned again only where a chunk that can reach it or a barrier that cuts it changed, and keyed again only where
-/// the frame state it reads or the raster settings of its layer changed.
+/// What the tiles of the layers of one band hold, kept from frame to frame while the band is bound to one list and one
+/// geometry: the tiles keyed so far, binned against the list, the geometry and the band of the stack they are bound to.
+/// A tile is keyed again only where the frame state it reads or the raster settings of its layer changed.
 #[derive(Default)]
 pub struct BandTileKeys {
-    cells: BTreeMap<TileCoord, CellOfBandTiles>,
+    cells: BTreeMap<TileCoord, Vec<KeyedTile>>,
     /// The cells where the band holds tiles at every cell it can hold something in, as the latest frame keyed them.
     /// Only the cells where the band can hold something have an entry in `cells`, so a frame that shows no cell outside
     /// these looks for no cell to key.
@@ -1222,17 +1059,13 @@ pub struct TileKeyingCounts {
 
 impl BandTileKeys {
     pub fn tile(&self, coord: TileCoord, layer: LayerIndex) -> Option<&KeyedTile> {
-        self.cells
-            .get(&coord)?
-            .tiles
-            .iter()
-            .find(|tile| tile.layer_index == layer)
+        self.cells.get(&coord)?.iter().find(|tile| tile.layer_index == layer)
     }
 
     /// The keyed tiles within `rect`, by row and then by layer. A rect of any size costs no more than the cells the
     /// band holds.
     pub fn tiles_within(&self, rect: IntRect) -> impl Iterator<Item = &KeyedTile> {
-        entries_within(&self.cells, CellRange::touched_by(rect)).flat_map(|(_, cell)| &cell.tiles)
+        entries_within(&self.cells, CellRange::touched_by(rect)).flat_map(|(_, tiles)| tiles)
     }
 
     pub fn record_spans_of_tiles<'a>(&self, tiles: impl IntoIterator<Item = &'a KeyedTile>) -> Vec<ListSpan> {
@@ -1296,7 +1129,7 @@ fn offset_is_held(held_offset_ranges: &[(u32, u32)], offset: u32) -> bool {
 /// where the chunk reaches. Where those are more than `MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME` cells, the band keys
 /// only those nearest to the middle of `shown_rect`, and forgets its tiles at all other cells.
 fn coords_to_key(
-    cells: &mut BTreeMap<TileCoord, CellOfBandTiles>,
+    cells: &mut BTreeMap<TileCoord, Vec<KeyedTile>>,
     cells_looked_at: &mut CellRange,
     bound_band: &BandBoundToListAndGeometry,
     holds_base_layer: bool,
@@ -1481,12 +1314,6 @@ pub struct TileKeyingOfRasterSpace<'a> {
 }
 
 const CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES: ContentHash = 1;
-
-// The most cells that a placement of a chunk lists one by one: a few viewports of them, and some for each record range
-// it bins. The reach of the ranges past that goes into the reach past the listed cells, as the reach of a range that
-// reaches too many cells to follow one by one does.
-const CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES: u64 = 4096;
-const CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE: u64 = 16;
 
 impl<'a> TileKeyingOfRasterSpace<'a> {
     pub fn new(list: &'a TileKeyingOfList<'a>, geometry: &'a RasterSpaceGeometry) -> Self {
@@ -2188,39 +2015,10 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 whole_run_range_index,
             };
         }
-        let binned_range_count: u64 = ranges_of_each_run
-            .iter()
-            .map(|ranges_of_run| {
-                let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
-                u64::from(end_binned_range_index.0 - first_binned_range_index.0)
-            })
-            .sum();
-        let most_cells_listed =
-            CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES + CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE * binned_range_count;
-        let mut listed_reached_cells = Vec::new();
-        let mut reach_past_listed_cells = Reach::Nothing;
-        for ranges_of_run in &ranges_of_each_run {
-            let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
-            for range in &record_ranges[first_binned_range_index.0 as usize..end_binned_range_index.0 as usize] {
-                match range.reach {
-                    Reach::Within(rect)
-                        if !reaches_too_many_cells_to_follow_one_by_one(rect)
-                            && listed_reached_cells.len() as u64 + tile_count_touching(rect) <= most_cells_listed =>
-                    {
-                        listed_reached_cells.extend(tile_coords_touching(rect));
-                    }
-                    reach => reach_past_listed_cells = reach_past_listed_cells.united(reach),
-                }
-            }
-        }
-        listed_reached_cells.sort_unstable();
-        listed_reached_cells.dedup();
         ChunkPlacedInRasterSpace {
             placement_inputs_hash,
             record_ranges,
             ranges_of_each_run,
-            listed_reached_cells,
-            reach_past_listed_cells,
         }
     }
 
@@ -2376,8 +2174,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .any(|record| record.frame_state_read_flags != 0)
     }
 
-    /// Which effects tiles draw and which values the compositor animates depend on the tree, so a tile kept as its band
-    /// is bound again works this out again.
     fn note_what_replay_items_of_tile_read(&self, bound_band: &BandBoundToListAndGeometry, tile: &mut KeyedTile) {
         tile.reads_frame_state = tile
             .replay_items_in_paint_order
@@ -2687,12 +2483,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
         }
-        let mut band_binning_inputs_hasher = ContentHasher::new();
-        band_binning_inputs_hasher.write_bool(stack.base_layer == band.layer_below_all_cuts);
-        // A binding that replays every record into every tile holds no chunks, so each of its cells is binned as a cell
-        // that no chunk reaches. The cells of such a binding hold every record of the band.
-        band_binning_inputs_hasher.write_bool(list.replays_every_record_into_every_tile);
-        let chunk_names = display_list.chunk_names();
         if list.replays_every_record_into_every_tile {
             let mut items_replayed_in_every_tile: Vec<(ListPosition, TileReplayItem)> = held_offset_ranges_by_chunk
                 .iter()
@@ -2748,13 +2538,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 ));
             }
             return BandBoundToListAndGeometry {
-                chunk_names,
                 held_chunks: Vec::new(),
                 runs_replayed_whole: HashMap::new(),
                 declared_masks_around_runs_replayed_whole: HashMap::new(),
                 backdrop_reads: BackdropReadsOfBand::new(Vec::new()),
                 items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
-                binning_inputs_hash_beyond_held_chunks: band_binning_inputs_hasher.finish(),
             };
         }
 
@@ -2768,8 +2556,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 placement,
                 held_run_indices,
                 reach_of_held_records: Reach::Nothing,
-                reach_past_listed_cells: Reach::Nothing,
-                binning_inputs_hash: 0,
             });
         }
         debug_assert!(
@@ -2805,15 +2591,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             }
         }
         let backdrop_reads = BackdropReadsOfBand::new(backdrop_reads_in_paint_order);
-        for backdrop_read in &backdrop_reads.reads_in_paint_order {
-            let position = backdrop_read.first_record_position;
-            band_binning_inputs_hasher.write_chunk_name(chunk_names[position.chunk_index.0 as usize]);
-            band_binning_inputs_hasher.write_u32(position.offset);
-            band_binning_inputs_hasher.write_reach(backdrop_read.region_reach);
-            band_binning_inputs_hasher.write_reach(backdrop_read.backdrop_read_reach);
-            band_binning_inputs_hasher.write_i32(backdrop_read.read_reach_in_device_pixels.unwrap_or(-1));
-            band_binning_inputs_hasher.write_i32(backdrop_read.spread_past_region_in_device_pixels);
-        }
 
         // A mask or a depth sort reads every run of its run group, so those runs replay whole wherever any of them
         // shows.
@@ -2866,13 +2643,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             }
         }
         let mut bound_band = BandBoundToListAndGeometry {
-            chunk_names,
             held_chunks,
             runs_replayed_whole,
             declared_masks_around_runs_replayed_whole: HashMap::new(),
             backdrop_reads,
             items_replayed_in_every_tile: None,
-            binning_inputs_hash_beyond_held_chunks: 0,
         };
 
         let mask_declarations = &display_list.summary().mask_declarations;
@@ -2897,7 +2672,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             // Each declared mask is looked at once, and every run inside it shares the chain of declared masks from it
             // out.
             let mut declared_masks: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole> = HashMap::new();
-            let mut chain_hash_by_declared_mask: HashMap<EffectNodeIndex, ContentHash> = HashMap::new();
             let mut innermost_declared_masks_of_runs = Vec::new();
             let mut declared_masks_not_looked_at = Vec::new();
             let mut declared_items_of_mask = HashSet::new();
@@ -2915,14 +2689,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     declared_masks_not_looked_at.push(mask);
                     mask = nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
                 }
-                // The masks are looked at from the outermost in, so that the chain hash of the mask around each one is
-                // known.
-                for &mask in declared_masks_not_looked_at.iter().rev() {
+                for &mask in &declared_masks_not_looked_at {
                     let next_declared_mask_around =
                         nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
                     let mut declarations: Vec<(ListPosition, TileReplayItem, Reach<IntRect>)> = Vec::new();
                     declared_items_of_mask.clear();
-                    let mut chain_hasher = ContentHasher::new();
                     for &declaration_position in &declaration_positions_by_mask[&mask] {
                         let table = display_list.chunk(declaration_position.chunk_index).record_table();
                         let record_index = table
@@ -2936,23 +2707,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         if !declared_items_of_mask.insert(item) {
                             continue;
                         }
-                        chain_hasher.write_chunk_name(bound_band.chunk_names[item.chunk_index().0 as usize]);
-                        chain_hasher.write_content_hash(self.content_hash_of_replay_item(
-                            &bound_band,
-                            item,
-                            false,
-                            false,
-                            None,
-                        ));
                         declarations.push((bound_band.span_of(item).begin, item, bound_band.reach_of_item(item)));
                     }
-                    chain_hasher.write_content_hash(
-                        chain_hash_by_declared_mask
-                            .get(&next_declared_mask_around)
-                            .copied()
-                            .unwrap_or(0),
-                    );
-                    chain_hash_by_declared_mask.insert(mask, chain_hasher.finish());
                     declared_masks.insert(
                         mask,
                         DeclaredMaskAroundRunReplayedWhole {
@@ -2962,11 +2718,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     );
                 }
             }
-            innermost_declared_masks_of_runs.sort_unstable_by_key(|(run, _)| *run);
             for (run, innermost_declared_mask_around) in innermost_declared_masks_of_runs {
-                if let Some(&chain_hash) = chain_hash_by_declared_mask.get(&innermost_declared_mask_around) {
-                    band_binning_inputs_hasher.write_content_hash(chain_hash);
-                }
                 bound_band
                     .runs_replayed_whole
                     .get_mut(&run)
@@ -2980,15 +2732,10 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             let held_chunk = &bound_band.held_chunks[held_chunk_index];
             let mut reach_of_runs_replayed_whole = Reach::Nothing;
             let mut reach_of_runs_binned_range_by_range = Reach::Nothing;
-            let mut chunk_binning_inputs_hasher = ContentHasher::new();
-            chunk_binning_inputs_hasher.write_chunk_name(bound_band.chunk_names[held_chunk.chunk_index.0 as usize]);
-            chunk_binning_inputs_hasher.write_content_hash(held_chunk.placement.placement_inputs_hash);
             for &run_index in &held_chunk.held_run_indices {
                 match bound_band.runs_replayed_whole.get(&(held_chunk.chunk_index, run_index)) {
                     Some(run_replayed_whole) => {
                         reach_of_runs_replayed_whole = reach_of_runs_replayed_whole.united(run_replayed_whole.reach);
-                        chunk_binning_inputs_hasher.write_u32(run_index.0);
-                        chunk_binning_inputs_hasher.write_reach(run_replayed_whole.reach);
                     }
                     None => {
                         reach_of_runs_binned_range_by_range = reach_of_runs_binned_range_by_range.united(
@@ -2998,24 +2745,18 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
             // A backdrop filter can extend content painted before it past the cells that content reaches.
-            let reach_past_listed_cells = if bound_band.backdrop_reads.is_empty() {
-                reach_of_runs_replayed_whole.united(held_chunk.placement.reach_past_listed_cells)
-            } else {
+            if !bound_band.backdrop_reads.is_empty() {
                 let first_held_offset = held_chunk.held_run_indices.first().map_or(0, |run_index| {
                     display_list.chunk(held_chunk.chunk_index).runs()[run_index.0 as usize].offset
                 });
-                reach_of_runs_replayed_whole.united(bound_band.backdrop_reads.reach_extended_through_reads(
+                reach_of_runs_binned_range_by_range = bound_band.backdrop_reads.reach_extended_through_reads(
                     reach_of_runs_binned_range_by_range,
                     ListPosition::new(held_chunk.chunk_index, first_held_offset),
-                ))
-            };
-            let chunk_binning_inputs_hash = chunk_binning_inputs_hasher.finish();
-            let held_chunk = &mut bound_band.held_chunks[held_chunk_index];
-            held_chunk.reach_of_held_records = reach_past_listed_cells.united(reach_of_runs_binned_range_by_range);
-            held_chunk.reach_past_listed_cells = reach_past_listed_cells;
-            held_chunk.binning_inputs_hash = chunk_binning_inputs_hash;
+                );
+            }
+            bound_band.held_chunks[held_chunk_index].reach_of_held_records =
+                reach_of_runs_replayed_whole.united(reach_of_runs_binned_range_by_range);
         }
-        bound_band.binning_inputs_hash_beyond_held_chunks = band_binning_inputs_hasher.finish();
         bound_band
     }
 
@@ -3059,71 +2800,15 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         }
     }
 
-    /// Binds the tiles of `band_index` to the list and the geometry of the frame and to the band in `stack`. A tile
-    /// keyed before keeps its bin and its content hash where the chunks that can reach it and the barriers that cut it
-    /// are as they were, in the same order, whatever barriers they are, and is forgotten otherwise.
+    /// Binds the tiles of `band_index` to the list and the geometry of the frame and to the band in `stack`, with no
+    /// tile keyed yet.
     pub fn bind_band(&self, band_tile_keys: &mut BandTileKeys, stack: &LayerStack, band_index: BandIndex) {
-        let bound_band = self.bind_band_to_list_and_geometry(stack, band_index);
+        band_tile_keys.bound_band = Some(self.bind_band_to_list_and_geometry(stack, band_index));
         band_tile_keys.replays_whole_list = self.list.one_layer_list_cannot_tell_which_records_show_in_tile;
-        // Chunks of the new binding can reach cells that held nothing, and cells whose bin changed are forgotten.
+        band_tile_keys.cells.clear();
         band_tile_keys.cells_looked_at = CellRange::NONE;
         band_tile_keys.frame_state_hash = None;
         band_tile_keys.sampled_values_hash = None;
-        let Some(previous_bound_band) = band_tile_keys.bound_band.replace(bound_band) else {
-            band_tile_keys.cells.clear();
-            return;
-        };
-        let bound_band = band_tile_keys.bound_band.as_ref().expect("the band was just bound");
-        if band_tile_keys.cells.is_empty() {
-            return;
-        }
-        if bound_band.binning_inputs_hash_beyond_held_chunks
-            != previous_bound_band.binning_inputs_hash_beyond_held_chunks
-            || bound_band.items_replayed_in_every_tile.is_some()
-        {
-            band_tile_keys.cells.clear();
-            return;
-        }
-        let band = &stack.bands[band_index.0];
-        let held_chunks_reaching_cells =
-            bound_band.held_chunks_reaching_cells_in_paint_order(band_tile_keys.cells.keys().copied());
-        let chunk_index_by_name = self.list.chunk_index_by_name.get_or_init(|| {
-            bound_band
-                .chunk_names
-                .iter()
-                .enumerate()
-                .map(|(chunk_index, name)| (*name, ChunkIndexInList(chunk_index as u32)))
-                .collect()
-        });
-        band_tile_keys.cells.retain(|coord, cell| {
-            let cuts_of_cell = CutsOfCell::of(band, coord.cell_rect());
-            let binning_inputs_hash =
-                bound_band.binning_inputs_hash_of_cell(&cuts_of_cell, &held_chunks_reaching_cells[coord]);
-            if binning_inputs_hash != cell.binning_inputs_hash {
-                return false;
-            }
-            let barrier_cuts = cuts_of_cell.barrier_cuts();
-            for tile in &mut cell.tiles {
-                let Some(layer_index) = cuts_of_cell.layer_above_first_cuts(tile.count_of_cell_cuts_below_layer) else {
-                    return false;
-                };
-                tile.layer_index = layer_index;
-                tile.cuts = barrier_cuts.clone();
-                for item in &mut tile.replay_items_in_paint_order {
-                    let chunk_name = previous_bound_band.chunk_names[item.chunk_index().0 as usize];
-                    let Some(&chunk_index) = chunk_index_by_name.get(&chunk_name) else {
-                        return false;
-                    };
-                    let item_in_list = item.with_chunk_index(chunk_index);
-                    if !bound_band.replays_records_that_item_replayed(item_in_list, &previous_bound_band, *item) {
-                        return false;
-                    }
-                    *item = item_in_list;
-                }
-                self.note_what_replay_items_of_tile_read(bound_band, tile);
-            }
-            true
-        });
     }
 
     /// Keys the tiles of the layers of `band_index` within `shown_rect` that are not keyed yet: each replay item of the
@@ -3175,16 +2860,15 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .sampled_values_hash
             .replace(list.sampled_values_tiles_draw.hash)
             != Some(list.sampled_values_tiles_draw.hash);
-        for (coord, cell) in &mut band_tile_keys.cells {
+        for (coord, tiles) in &mut band_tile_keys.cells {
             let frame_edge_backdrop_blurs_mirror_at = bound_band
                 .backdrop_reads
                 .frame_edge_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
             // The tiles of a cell are keyed together, with one raster margin.
-            let mut near_area = cell
-                .tiles
+            let mut near_area = tiles
                 .first()
                 .and_then(|tile| ContentHashesNearArea::of_cell(*coord, tile.raster_margin_in_device_pixels));
-            for tile in &mut cell.tiles {
+            for tile in tiles {
                 let raster_settings_hash = raster_settings_hash_by_layer[tile.layer_index.0];
                 if (frame_state_changed && tile.reads_frame_state)
                     || (sampled_values_changed && tile.reads_sampled_values)
@@ -3205,11 +2889,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let new_cells_area = new_coords
             .iter()
             .fold(IntRect::default(), |cells, coord| cells.united(coord.cell_rect()));
-        // Per layer that items go into in the cell, with how many of the cuts of the cell are below it, the items, and the
-        // declared masks whose declarations those items hold.
+        // Per layer that items go into in the cell, the items, and the declared masks whose declarations those items hold.
         type ItemsOfLayerInCell = (
             LayerIndex,
-            usize,
             Vec<(ListPosition, TileReplayItem, Reach<IntRect>)>,
             HashSet<EffectNodeIndex>,
         );
@@ -3255,14 +2937,13 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let position_of_layer = match bin.position_of_layer_by_count_of_cuts_below[count_of_cuts_below] {
                     Some(position) => position,
                     None => {
-                        bin.items_by_layer
-                            .push((layer_index, count_of_cuts_below, Vec::new(), HashSet::new()));
+                        bin.items_by_layer.push((layer_index, Vec::new(), HashSet::new()));
                         let position = bin.items_by_layer.len() - 1;
                         bin.position_of_layer_by_count_of_cuts_below[count_of_cuts_below] = Some(position);
                         position
                     }
                 };
-                let (_, _, items_of_layer, declared_masks_of_layer) = &mut bin.items_by_layer[position_of_layer];
+                let (_, items_of_layer, declared_masks_of_layer) = &mut bin.items_by_layer[position_of_layer];
                 items_of_layer.push((paint_position, item, reach));
                 // Where the layer holds the declarations of a mask, it holds those of the masks around it too.
                 let mut mask = innermost_declared_mask_around_item;
@@ -3289,8 +2970,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             }
         }
 
-        let held_chunks_reaching_cells =
-            bound_band.held_chunks_reaching_cells_in_paint_order(new_coords.iter().copied());
         for (coord, bin) in bins {
             let BinOfCell {
                 cuts: cuts_of_cell,
@@ -3299,9 +2978,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             } = bin;
             // The base layer is the band's layer below all cuts.
             if let Some(base_layer) = base_layer
-                && !bin.iter().any(|(layer_index, _, _, _)| *layer_index == base_layer)
+                && !bin.iter().any(|(layer_index, _, _)| *layer_index == base_layer)
             {
-                bin.push((base_layer, 0, Vec::new(), HashSet::new()));
+                bin.push((base_layer, Vec::new(), HashSet::new()));
             }
             let cell = coord.cell_rect();
             let raster_margin_in_device_pixels = bound_band.backdrop_reads.raster_margin_of_cell(cell);
@@ -3311,7 +2990,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 .backdrop_reads
                 .frame_edge_blurs_of_cell_mirror_at(cell, frame);
             let mut tiles = Vec::with_capacity(bin.len());
-            for (layer_index, count_of_cell_cuts_below_layer, mut items_of_layer, _) in bin {
+            for (layer_index, mut items_of_layer, _) in bin {
                 items_of_layer.sort_unstable_by_key(|(paint_position, item, _)| (*paint_position, *item));
                 items_of_layer.dedup_by_key(|(_, item, _)| *item);
                 let content_bounds =
@@ -3331,7 +3010,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     raster_margin_in_device_pixels,
                     cuts: cuts.clone(),
                     content_bounds,
-                    count_of_cell_cuts_below_layer,
                     replay_items_in_paint_order,
                     raster_settings_hash: raster_settings_hash_by_layer[layer_index.0],
                     reads_frame_state: false,
@@ -3347,15 +3025,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             if band_holds_something_in_cell {
                 counts.cells_binned += 1;
             }
-            let binning_inputs_hash =
-                bound_band.binning_inputs_hash_of_cell(&cuts_of_cell, &held_chunks_reaching_cells[&coord]);
-            band_tile_keys.cells.insert(
-                coord,
-                CellOfBandTiles {
-                    binning_inputs_hash,
-                    tiles,
-                },
-            );
+            band_tile_keys.cells.insert(coord, tiles);
         }
         counts
     }
@@ -3366,7 +3036,7 @@ mod tests {
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{DeclareMaskContent, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
-    use crate::display_list::layers::{LayerStack, LayeringObstacles, SpaceToFrame, WhyListIsOneLayer};
+    use crate::display_list::layers::{LayerStack, LayeringObstacles, SpaceToFrame};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, animation_of, chunk_of, effects, fill, frosted_glass,
@@ -3601,11 +3271,9 @@ mod tests {
             BandIndex(0),
         );
         assert_eq!(turns[0].0, 3);
-        // Only the chunk under the moving node is placed again, and only the cells the box leaves and enters are binned
-        // again.
-        let (chunks_placed, counts, hashes) = &turns[1];
+        // Only the chunk under the moving node is placed again.
+        let (chunks_placed, _, hashes) = &turns[1];
         assert_eq!(*chunks_placed, 1);
-        assert_eq!(counts.cells_binned, 2);
         assert_eq!(
             hashes,
             &viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &halfway, &stack)
@@ -3627,9 +3295,8 @@ mod tests {
             band_of_space(&stack, animated_space),
         );
         assert_eq!(turns[0].0, 1);
-        let (chunks_placed, counts, hashes) = &turns[1];
+        let (chunks_placed, _, hashes) = &turns[1];
         assert_eq!(*chunks_placed, 0);
-        assert_eq!(counts.cells_binned, 0);
         assert_eq!(hashes, &turns[0].2);
     }
 
@@ -3810,92 +3477,6 @@ mod tests {
         );
     }
 
-    // A new tree can start an animation of the opacity of an effect without a layer at the value the effect had, so a
-    // cell kept as its band is bound to that tree draws a sampled value that it did not draw before.
-    #[test]
-    fn a_cell_kept_as_its_band_is_bound_to_a_tree_that_animates_what_it_draws_reads_the_sampled_values_again() {
-        use crate::display_list::layers::planning::MAXIMUM_ANIMATED_NODES_WITH_LAYERS;
-        use crate::visual_animation::VisualAnimation;
-        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
-        let faded: Vec<ContextRef> = (0..=MAXIMUM_ANIMATED_NODES_WITH_LAYERS)
-            .map(|_| tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal)))
-            .collect();
-        let animation_of_effects = |effects: &[ContextRef]| VisualAnimation {
-            node_indices: effects.iter().map(|context| context.effect.0).collect(),
-            ..opacity_animation_of(faded[0].effect, 1.0, 0.2)
-        };
-        let mut tree_animating_every_effect = tree.clone();
-        tree.set_visual_animations(vec![animation_of_effects(&faded[..MAXIMUM_ANIMATED_NODES_WITH_LAYERS])]);
-        tree_animating_every_effect.set_visual_animations(vec![animation_of_effects(&faded)]);
-        let box_without_layer = IntRect::new(600, 520, 20, 20);
-        let mut chunks = vec![chunk_of(fill(VIEWPORT, GREEN), root)];
-        chunks.extend(faded.iter().enumerate().map(|(index, &context)| {
-            let rect = if index == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
-                box_without_layer
-            } else {
-                IntRect::new(10 + 12 * index as i32, 10, 10, 10)
-            };
-            chunk_of(fill(rect, BLUE), context)
-        }));
-        let display_list = DisplayListStorage::of_chunks(chunks).unwrap();
-        let without_animation_of_box = tree.with_visual_animation_samples(0);
-        let at_start = tree_animating_every_effect.with_visual_animation_samples(0);
-        let halfway = tree_animating_every_effect.with_visual_animation_samples(500_000_000);
-        let stack_without_animation_of_box = stack_of(&display_list, &without_animation_of_box);
-        let stack = stack_of(&display_list, &at_start);
-        assert_eq!(stack.composited_effects.len(), MAXIMUM_ANIMATED_NODES_WITH_LAYERS);
-        let position_of_box_without_layer = ListPosition::new(ChunkIndexInList(faded.len() as u32), 0);
-        let band_of_box_without_layer = BandIndex(
-            stack
-                .bands
-                .iter()
-                .position(|band| {
-                    band.record_spans
-                        .iter()
-                        .any(|span| span.contains(position_of_box_without_layer))
-                })
-                .expect("a band holds the box"),
-        );
-        assert_eq!(
-            stack_without_animation_of_box.bands[band_of_box_without_layer.0],
-            stack.bands[band_of_box_without_layer.0]
-        );
-
-        let mut band_tile_keys = BandTileKeys::default();
-        let turns = key_band_in_frames_in_turn(
-            &mut band_tile_keys,
-            &[
-                (
-                    &*display_list,
-                    &without_animation_of_box,
-                    &stack_without_animation_of_box,
-                ),
-                (&*display_list, &at_start, &stack),
-            ],
-            RasterSpaceIndex::VIEWPORT,
-            band_of_box_without_layer,
-        );
-        assert_eq!(turns[1].1.cells_binned, 0);
-        // A sample keeps the geometry and the binding of the band.
-        let geometry = geometry_of_space(&at_start, &stack, RasterSpaceIndex::VIEWPORT);
-        let list_keying_halfway = TileKeyingOfList::new(&display_list, &halfway, &stack, NO_FRAME_STATE);
-        let raster_space = TileKeyingOfRasterSpace::new(&list_keying_halfway, &geometry);
-        key_band(
-            &raster_space,
-            &mut band_tile_keys,
-            &stack,
-            band_of_box_without_layer,
-            VIEWPORT,
-        );
-        let keyed_from_nothing = key_band_in_frames_in_turn(
-            &mut BandTileKeys::default(),
-            &[(&*display_list, &halfway, &stack)],
-            RasterSpaceIndex::VIEWPORT,
-            band_of_box_without_layer,
-        );
-        assert_eq!(tiles_within(&band_tile_keys, VIEWPORT), keyed_from_nothing[0].2);
-    }
-
     // A tree from another process can nest plain effects as deep as it likes, each clipped by a chain of clips as deep.
     #[test]
     fn the_coverage_of_a_tile_under_deeply_nested_effects_and_clips_holds_what_its_fills_draw() {
@@ -4017,42 +3598,6 @@ mod tests {
                     .any(|&(begin, end)| begin <= offset && offset < end)
             );
         }
-    }
-
-    // A chunk from another process can hold many records that each reach many cells.
-    #[test]
-    fn a_placement_lists_cells_one_by_one_up_to_a_bound_and_reaches_past_them_after() {
-        let (tree, root) = tree_with_root_isolation_effect(1.0);
-        let cells_per_fill = 32;
-        let fill_size = cells_per_fill * crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
-        let fill_count = 10;
-        let fills: Vec<IntRect> = (0..fill_count)
-            .map(|index| IntRect::new(0, index * fill_size, fill_size, fill_size))
-            .collect();
-        let mut list = ListOfOneChunk::default();
-        for &rect in &fills {
-            list = list.with(fill(rect, GREEN), root);
-        }
-        let display_list = DisplayListStorage::of_builder(&list.builder);
-        let stack = LayerStack::one_layer_replaying_whole_list(
-            VIEWPORT,
-            display_list.whole_span(),
-            None,
-            LayeringObstacles::default(),
-        );
-        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
-        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
-        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
-        let placement = raster_space.placement_of_runs_of_chunk(ChunkIndexInList(0), &[RunIndexInChunk(0)]);
-        let most_cells_listed =
-            CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES + CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE * fill_count as u64;
-        assert!(placement.listed_reached_cells.len() as u64 <= most_cells_listed);
-        assert!(placement.listed_reached_cells.contains(&TileCoord::new(0, 0)));
-        let Reach::Within(reach_past_listed_cells) = placement.reach_past_listed_cells else {
-            panic!("the fills past the bound reach past the listed cells");
-        };
-        assert!(reach_past_listed_cells.contains_rect(fills[fill_count as usize - 1]));
-        assert!(reach_past_listed_cells.intersected(fills[0]).is_empty());
     }
 
     // A tree from another process can chain clips and effects as deep as it holds nodes.
@@ -4348,11 +3893,10 @@ mod tests {
         }
     }
 
-    // A second plan for one list can leave the declaration of a mask's content out of the band of what the mask holds,
-    // or put other runs of the chunk of the declaration in, where those draw away from the cells the masked content
-    // reaches.
+    // A band of what a mask holds can hold the declaration of the mask's content, leave it out, or also hold other runs
+    // of the chunk of the declaration, which draw away from the cells the masked content reaches.
     #[test]
-    fn a_cell_kept_when_its_band_is_bound_again_names_only_record_ranges_the_band_holds_now() {
+    fn a_tile_of_masked_content_replays_the_declaration_of_its_mask_and_no_other_run_of_its_chunk() {
         use crate::visual_context::{MaskData, MaskLayerOrigin};
         let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let masked = tree.append_effect_node_under(
@@ -4411,35 +3955,16 @@ mod tests {
         both_runs_and_masked_box.bands[0].record_spans = vec![display_list.whole_span()];
 
         let cell_of_masked_box = TileCoord::new(0, 0);
-        for second_stack in [&masked_box_alone, &both_runs_and_masked_box] {
+        for stack in [
+            &declaration_and_masked_box,
+            &masked_box_alone,
+            &both_runs_and_masked_box,
+        ] {
             let mut band_tile_keys = BandTileKeys::default();
-            let frames = [(&*display_list, &tree, &declaration_and_masked_box)];
+            let frames = [(&*display_list, &tree, stack)];
             key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
-            let tile_of_masked_box = band_tile_keys
-                .tile(cell_of_masked_box, LayerIndex(0))
-                .expect("the masked box has a tile");
-            assert!(
-                tile_of_masked_box
-                    .replay_items_in_paint_order
-                    .iter()
-                    .any(|item| matches!(
-                        item,
-                        TileReplayItem::PlacedRecordRange {
-                            chunk_index: ChunkIndexInList(0),
-                            ..
-                        }
-                    ))
-            );
-
-            let frames = [(&*display_list, &tree, second_stack)];
-            let turns =
-                key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
             let spans_of_masked_box =
                 band_tile_keys.record_spans_of_tiles(band_tile_keys.tile(cell_of_masked_box, LayerIndex(0)));
-            assert_eq!(
-                turns[0].2,
-                viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &tree, second_stack)
-            );
             let declaration_position = ListPosition::new(
                 ChunkIndexInList(0),
                 display_list.chunk(ChunkIndexInList(0)).runs()[1].offset,
@@ -4452,126 +3977,5 @@ mod tests {
             );
             assert!(!spans_of_masked_box.iter().any(|span| span.contains(first_box_position)));
         }
-    }
-
-    // An id is a hash that another process can make two chunks share. A cell keeps what it replays of a mask declaration
-    // whose chunk its band does not hold by the name of that chunk and the bytes of the declaration, wherever the
-    // declaration is in the chunk.
-    #[test]
-    fn a_cell_is_keyed_again_where_a_chunk_of_its_name_holds_other_bytes() {
-        use crate::visual_context::{MaskData, MaskLayerOrigin};
-        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
-        let masked = tree.append_effect_node_under(
-            root,
-            EffectNodeData::Mask(MaskData {
-                rect: IntRect::new(0, 0, 100, 100),
-                kind: libgfx_rust::MaskKind::Alpha,
-                origin: MaskLayerOrigin::CssMaskLayers,
-                masks_backdrop: false,
-            }),
-        );
-        let isolated = tree.append_effect_node_under(
-            root,
-            EffectNodeData::Effects(EffectsData {
-                isolation: true,
-                opacity: 1.0,
-                blend_mode: CompositingAndBlendingOperator::Normal,
-                filter: None,
-                backdrop_filter: None,
-            }),
-        );
-        let chunk_declaring_mask_content = |after_box: bool| {
-            let mut builder = DisplayListBuilder::new();
-            if after_box {
-                builder.append(&fill(IntRect::new(700, 300, 50, 50), GREEN), &[], isolated);
-            }
-            let declaration = builder.begin_group::<DeclareMaskContent>(Vec::new());
-            builder.append(&fill(IntRect::new(600, 0, 50, 50), RED), &[], root);
-            let content = builder.group_content_span(&declaration);
-            builder.finish_group(
-                declaration,
-                &DeclareMaskContent {
-                    rect: IntRect::new(600, 0, 100, 100),
-                    effect: masked.effect,
-                    content,
-                },
-                root,
-            );
-            ListChunk::copied(builder.bytes(), builder.command_runs(), 0)
-        };
-        let declaration_after_box = Arc::new(chunk_declaring_mask_content(true));
-        let mut declaration_alone_under_same_id = chunk_declaring_mask_content(false);
-        declaration_alone_under_same_id.id = declaration_after_box.id;
-        let masked_box = chunk_of(fill(IntRect::new(10, 10, 80, 80), BLUE), masked);
-        let first_list = DisplayListStorage::of_chunks(vec![declaration_after_box, masked_box.clone()]).unwrap();
-        let second_list =
-            DisplayListStorage::of_chunks(vec![Arc::new(declaration_alone_under_same_id), masked_box]).unwrap();
-        let mut masked_box_alone = LayerStack::one_layer_replaying_whole_list(
-            VIEWPORT,
-            first_list.whole_span(),
-            None,
-            LayeringObstacles::default(),
-        );
-        masked_box_alone.bands[0].record_spans = vec![span_from_run_to_end_of_list(&first_list, 1, 0)];
-
-        let cell_of_masked_box = TileCoord::new(0, 0);
-        let mut band_tile_keys = BandTileKeys::default();
-        let frames = [
-            (&*first_list, &tree, &masked_box_alone),
-            (&*second_list, &tree, &masked_box_alone),
-        ];
-        key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
-        let mut band_tile_keys_of_second_list = BandTileKeys::default();
-        key_band_in_frames_in_turn(
-            &mut band_tile_keys_of_second_list,
-            &frames[1..],
-            RasterSpaceIndex::VIEWPORT,
-            BandIndex(0),
-        );
-        assert_eq!(
-            band_tile_keys.record_spans_of_tiles(band_tile_keys.tile(cell_of_masked_box, LayerIndex(0))),
-            band_tile_keys_of_second_list
-                .record_spans_of_tiles(band_tile_keys_of_second_list.tile(cell_of_masked_box, LayerIndex(0)))
-        );
-    }
-
-    // A plan of one layer for a list in a 3D sorting context replays every record into every tile, and a frame drawn
-    // at a pinch then replays the same list as one layer of the compositor's own.
-    #[test]
-    fn a_cell_keyed_while_every_tile_replays_every_record_is_keyed_again_once_tiles_replay_what_reaches_them() {
-        let (tree, root) = tree_with_root_isolation_effect(1.0);
-        let display_list =
-            DisplayListStorage::of_chunks(vec![chunk_of(fill(IntRect::new(0, 0, 100, 100), GREEN), root)]).unwrap();
-        let mut every_tile_replays_every_record = LayerStack::one_layer_replaying_whole_list(
-            VIEWPORT,
-            display_list.whole_span(),
-            Some(WhyListIsOneLayer::SortingContext3D),
-            LayeringObstacles::default(),
-        );
-        every_tile_replays_every_record.layering_obstacles = LayeringObstacles {
-            sorts_planes_by_depth: true,
-            mask_declared_under_effects_its_mask_is_not_under: false,
-        };
-        let tiles_replay_what_reaches_them = LayerStack::one_layer_replaying_whole_list(
-            VIEWPORT,
-            display_list.whole_span(),
-            Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
-            LayeringObstacles::default(),
-        );
-
-        let turns = key_band_in_frames_in_turn(
-            &mut BandTileKeys::default(),
-            &[
-                (&display_list, &tree, &every_tile_replays_every_record),
-                (&display_list, &tree, &tiles_replay_what_reaches_them),
-            ],
-            RasterSpaceIndex::VIEWPORT,
-            BandIndex(0),
-        );
-        assert_eq!(
-            turns[1].2,
-            viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &tree, &tiles_replay_what_reaches_them)
-        );
-        assert_eq!(turns[1].1.tiles_keyed, 4);
     }
 }
