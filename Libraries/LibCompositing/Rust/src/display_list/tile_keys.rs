@@ -1411,7 +1411,9 @@ pub struct TileKeyingOfRasterSpace<'a> {
     spatial_content_hashes: LazyContentHashesPerNode,
     clip_content_hashes: LazyContentHashesPerNode,
     effect_content_hashes_by_scope: [LazyContentHashesPerNode; 3],
-    cached_filter_read_reach_in_device_pixels_by_composited_effect: RefCell<HashMap<u32, Option<i32>>>,
+    /// Per effect, once worked out, how far past each pixel its filter and the filters around it read, in device
+    /// pixels, or none where that is not known.
+    read_reach_of_filters_at_and_around_by_effect_index: RefCell<Vec<Option<Option<i32>>>>,
     rastered_bounds_of_clips_by_first_and_end_clip: RefCell<HashMap<(ClipNodeIndex, ClipNodeIndex), Option<FloatRect>>>,
     clips_without_rastered_bounds: RefCell<Vec<ClipNodeIndex>>,
     chunks_placed: Cell<u64>,
@@ -1476,7 +1478,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 LazyContentHashesPerNode::new(tree.effect_nodes.len()),
                 LazyContentHashesPerNode::new(tree.effect_nodes.len()),
             ],
-            cached_filter_read_reach_in_device_pixels_by_composited_effect: RefCell::new(HashMap::new()),
+            read_reach_of_filters_at_and_around_by_effect_index: RefCell::new(Vec::new()),
             rastered_bounds_of_clips_by_first_and_end_clip: RefCell::new(HashMap::new()),
             clips_without_rastered_bounds: RefCell::new(Vec::new()),
             chunks_placed: Cell::new(0),
@@ -1523,32 +1525,37 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         )
     }
 
+    // Walks up to the first effect whose read reach is known, and then down, each effect's read reach worked out from its
+    // parent's, so that the walks of all composited effects pass each effect once.
     fn read_reach_in_device_pixels_of_filters_at_and_around(&self, composited_effect: EffectNodeIndex) -> Option<i32> {
-        if let Some(&cached_read_reach) = self
-            .cached_filter_read_reach_in_device_pixels_by_composited_effect
-            .borrow()
-            .get(&composited_effect.0)
-        {
-            return cached_read_reach;
-        }
         let tree = self.list.tree;
+        let mut known_read_reach_by_effect_index =
+            self.read_reach_of_filters_at_and_around_by_effect_index.borrow_mut();
+        if known_read_reach_by_effect_index.is_empty() {
+            known_read_reach_by_effect_index.resize(tree.effect_nodes.len(), None);
+        }
+        let mut effects_to_work_out = Vec::new();
         let mut read_reach = Some(0i32);
         let mut effect = composited_effect;
-        while !effect.is_none() && read_reach.is_some() {
+        while !effect.is_none() {
+            if let Some(known_read_reach) = known_read_reach_by_effect_index[effect.0 as usize] {
+                read_reach = known_read_reach;
+                break;
+            }
+            effects_to_work_out.push(effect);
+            effect = tree.effect_nodes[effect.0 as usize].parent;
+        }
+        for &effect in effects_to_work_out.iter().rev() {
             let node = &tree.effect_nodes[effect.0 as usize];
             if let Some(filter) = spreading_filter_of(node) {
-                read_reach = read_reach
-                    .zip(filter_read_reach_in_device_pixels(
-                        filter,
-                        &self.geometry.world.draw_matrix(node.spatial),
-                    ))
-                    .map(|(sum, filter_read_reach)| sum.saturating_add(filter_read_reach));
+                read_reach = read_reach.and_then(|sum| {
+                    let filter_read_reach =
+                        filter_read_reach_in_device_pixels(filter, &self.geometry.world.draw_matrix(node.spatial))?;
+                    Some(sum.saturating_add(filter_read_reach))
+                });
             }
-            effect = node.parent;
+            known_read_reach_by_effect_index[effect.0 as usize] = Some(read_reach);
         }
-        self.cached_filter_read_reach_in_device_pixels_by_composited_effect
-            .borrow_mut()
-            .insert(composited_effect.0, read_reach);
         read_reach
     }
 
