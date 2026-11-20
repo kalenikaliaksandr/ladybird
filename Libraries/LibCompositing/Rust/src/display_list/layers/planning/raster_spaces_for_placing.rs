@@ -233,7 +233,7 @@ impl RasterSpaceGeometryForPlacing {
         viewport_rect: IntRect,
         what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
     ) -> Self {
-        let raster = RasterSpaceGeometry::new_with_what_every_space_of_tree_shares(
+        let raster = RasterSpaceGeometry::new(
             tree,
             &spaces.raster_spaces,
             space,

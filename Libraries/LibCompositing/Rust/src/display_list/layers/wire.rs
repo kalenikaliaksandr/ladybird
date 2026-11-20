@@ -931,7 +931,7 @@ mod tests {
         BandIndex, CutsOfCell, LARGEST_SUMMED_READ_REACH_OF_COMPOSITED_FILTERS_IN_DEVICE_PIXELS, LayerIndex,
         MAXIMUM_NESTING_OF_COMPOSITED_EFFECTS, NodeNamesFromIndices, WindowServerPresentationOfMedia,
     };
-    use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry};
+    use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry, WhatEverySpaceOfTreeShares};
     use crate::display_list::storage::ListChunk;
     use crate::display_list::tile_keys::{
         BandTileKeys, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileKeyingOfList,
@@ -2441,6 +2441,7 @@ mod tests {
             },
         );
         let raster_spaces = RasterSpaces::of_spaces(frame_tree, stack.spaces.clone());
+        let what_every_space_of_tree_shares = WhatEverySpaceOfTreeShares::of(frame_tree);
         let geometries: Vec<RasterSpaceGeometry> = (0..stack.spaces.len())
             .map(|space_index| {
                 RasterSpaceGeometry::new(
@@ -2449,6 +2450,7 @@ mod tests {
                     RasterSpaceIndex(space_index),
                     &scroll_offsets,
                     FloatMatrix4x4::identity(),
+                    &what_every_space_of_tree_shares,
                 )
             })
             .collect();

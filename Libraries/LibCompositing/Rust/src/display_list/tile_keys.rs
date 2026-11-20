@@ -3181,7 +3181,7 @@ mod tests {
     };
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
     use crate::display_list::layers::{LayerStack, LayeringObstacles, SpaceToFrame, WhyListIsOneLayer};
-    use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};
+    use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::{AffineTransform, CompositingAndBlendingOperator};
@@ -3367,7 +3367,14 @@ mod tests {
         raster_space_index: RasterSpaceIndex,
     ) -> RasterSpaceGeometry {
         let spaces = RasterSpaces::of_spaces(tree, stack.spaces.clone());
-        RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity())
+        RasterSpaceGeometry::new(
+            tree,
+            &spaces,
+            raster_space_index,
+            &[],
+            FloatMatrix4x4::identity(),
+            &WhatEverySpaceOfTreeShares::of(tree),
+        )
     }
 
     // Keys the tiles of the band within `shown_rect`, and forgets those outside it.
@@ -3864,7 +3871,12 @@ mod tests {
             list = list.with(fill(rect, GREEN), root);
         }
         let display_list = DisplayListStorage::of_builder(&list.builder);
-        let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+        let stack = LayerStack::one_layer_replaying_whole_list(
+            VIEWPORT,
+            display_list.whole_span(),
+            None,
+            LayeringObstacles::default(),
+        );
         let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
         let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
@@ -3909,7 +3921,12 @@ mod tests {
         }
         let display_list =
             DisplayListStorage::of_builder(&TestList::default().with(fill(VIEWPORT, GREEN), context).builder);
-        let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+        let stack = LayerStack::one_layer_replaying_whole_list(
+            VIEWPORT,
+            display_list.whole_span(),
+            None,
+            LayeringObstacles::default(),
+        );
         let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
         let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
@@ -3967,7 +3984,12 @@ mod tests {
             .with(fill(VIEWPORT, GREEN), root)
             .with(fill(region_past_extent_limit, BLUE), frosted);
         let display_list = DisplayListStorage::of_builder(&list.builder);
-        let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+        let stack = LayerStack::one_layer_replaying_whole_list(
+            VIEWPORT,
+            display_list.whole_span(),
+            None,
+            LayeringObstacles::default(),
+        );
         let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
         let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
@@ -4128,7 +4150,12 @@ mod tests {
         ])
         .unwrap();
         let declaration_and_masked_box = {
-            let mut stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+            let mut stack = LayerStack::one_layer_replaying_whole_list(
+                VIEWPORT,
+                display_list.whole_span(),
+                None,
+                LayeringObstacles::default(),
+            );
             stack.bands[0].record_spans = vec![span_from_run_to_end_of_list(&display_list, 0, 1)];
             stack
         };
@@ -4234,7 +4261,12 @@ mod tests {
         let first_list = DisplayListStorage::of_chunks(vec![declaration_after_box, masked_box.clone()]).unwrap();
         let second_list =
             DisplayListStorage::of_chunks(vec![Arc::new(declaration_alone_under_same_id), masked_box]).unwrap();
-        let mut masked_box_alone = LayerStack::single_layer(VIEWPORT, first_list.whole_span(), None);
+        let mut masked_box_alone = LayerStack::one_layer_replaying_whole_list(
+            VIEWPORT,
+            first_list.whole_span(),
+            None,
+            LayeringObstacles::default(),
+        );
         masked_box_alone.bands[0].record_spans = vec![span_from_run_to_end_of_list(&first_list, 1, 0)];
 
         let cell_of_masked_box = TileCoord::new(0, 0);
@@ -4266,19 +4298,21 @@ mod tests {
         let root = root_context(&tree);
         let display_list =
             DisplayListStorage::of_chunks(vec![chunk_of(fill(IntRect::new(0, 0, 100, 100), GREEN), root)]).unwrap();
-        let mut every_tile_replays_every_record = LayerStack::single_layer(
+        let mut every_tile_replays_every_record = LayerStack::one_layer_replaying_whole_list(
             VIEWPORT,
             display_list.whole_span(),
             Some(WhyListIsOneLayer::SortingContext3D),
+            LayeringObstacles::default(),
         );
         every_tile_replays_every_record.layering_obstacles = LayeringObstacles {
             sorts_planes_by_depth: true,
             mask_declared_under_effects_its_mask_is_not_under: false,
         };
-        let tiles_replay_what_reaches_them = LayerStack::single_layer(
+        let tiles_replay_what_reaches_them = LayerStack::one_layer_replaying_whole_list(
             VIEWPORT,
             display_list.whole_span(),
             Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            LayeringObstacles::default(),
         );
 
         let turns = key_band_in_frames_in_turn(

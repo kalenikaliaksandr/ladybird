@@ -536,7 +536,7 @@ impl StackOfFrames {
                 .get_or_insert_with(|| RasterSpaces::of_spaces(tree, stack.spaces.clone()));
             let what_every_space_of_tree_shares =
                 what_every_space_of_tree_shares.get_or_insert_with(|| WhatEverySpaceOfTreeShares::of(tree));
-            let geometry = Rc::new(RasterSpaceGeometry::new_with_what_every_space_of_tree_shares(
+            let geometry = Rc::new(RasterSpaceGeometry::new(
                 tree,
                 raster_spaces,
                 raster_space_index,
@@ -2578,6 +2578,7 @@ mod tests {
             RasterSpaceIndex::VIEWPORT,
             &[],
             FloatMatrix4x4::identity(),
+            &WhatEverySpaceOfTreeShares::of(&tree),
         );
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let white = Color::from_rgb(255, 255, 255);

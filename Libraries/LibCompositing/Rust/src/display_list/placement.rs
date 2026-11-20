@@ -927,24 +927,6 @@ impl RasterSpaceGeometry {
         space: RasterSpaceIndex,
         scroll_offsets: &[FloatPoint],
         viewport_to_raster_transform: FloatMatrix4x4,
-    ) -> Self {
-        Self::new_with_what_every_space_of_tree_shares(
-            tree,
-            spaces,
-            space,
-            scroll_offsets,
-            viewport_to_raster_transform,
-            &WhatEverySpaceOfTreeShares::of(tree),
-        )
-    }
-
-    /// As `new`, given what the geometries of every space of `tree` share.
-    pub fn new_with_what_every_space_of_tree_shares(
-        tree: &VisualContextTree,
-        spaces: &RasterSpaces,
-        space: RasterSpaceIndex,
-        scroll_offsets: &[FloatPoint],
-        viewport_to_raster_transform: FloatMatrix4x4,
         what_every_space_of_tree_shares: &Rc<WhatEverySpaceOfTreeShares>,
     ) -> Self {
         debug_assert!(viewport_to_raster_transform == FloatMatrix4x4::identity() || spaces.len() == 1);

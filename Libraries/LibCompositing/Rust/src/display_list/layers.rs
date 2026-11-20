@@ -764,20 +764,6 @@ impl LayerStack {
         .with_lookups()
     }
 
-    #[cfg(test)]
-    pub fn single_layer(
-        viewport_rect: IntRect,
-        whole_list_span: ListSpan,
-        why_list_is_one_layer: Option<WhyListIsOneLayer>,
-    ) -> Self {
-        Self::one_layer_replaying_whole_list(
-            viewport_rect,
-            whole_list_span,
-            why_list_is_one_layer,
-            LayeringObstacles::default(),
-        )
-    }
-
     // The lookups that the methods read, built from what the stack holds. Every index the stack holds must be in range.
     fn with_lookups(mut self) -> Self {
         self.index_of_layer_with_identity = index_of_layer_with_identity(&self.layers);
