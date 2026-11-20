@@ -449,6 +449,8 @@ impl ContextPresenting {
         })
     }
 
+    /// What a parent that draws the context tells its frames apart by: it changes with each frame queued, and each time
+    /// a frame cannot be painted into the surface the parent draws.
     pub fn frame_generation(&self) -> u64 {
         self.frame_generation
     }
@@ -720,6 +722,9 @@ impl ContextPresenting {
             Some(surface) if env.raster.surface_size(&surface) == raster_size => (surface, true),
             _ => {
                 let Some(surface) = env.raster.create_surface(raster_size, None, false) else {
+                    // The parent draws nothing of the context into the tiles it rasters now. A new generation makes
+                    // the next frame of the parent key those tiles again, and so paint the context again.
+                    self.frame_generation += 1;
                     return;
                 };
                 (surface, false)

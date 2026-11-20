@@ -2335,6 +2335,11 @@ impl ContextPresenting {
                 .cached_layer_by_identity
                 .get(&base_layer_compositing.identity)
             {
+                // The base layer replaces what is below it, and nothing is below it outside its composite clip. The
+                // planner clips no base layer, but a plan from WebContent can.
+                if base_layer_compositing.composite_clip.is_some() {
+                    raster.clear(surface, frame.surface_clear_color());
+                }
                 copy_held_tiles_into(
                     raster,
                     surface,
