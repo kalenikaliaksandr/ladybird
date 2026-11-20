@@ -26,16 +26,23 @@ fn transform_animations_of(tree: &VisualContextTree) -> impl Iterator<Item = &Vi
         .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Transform)
 }
 
+/// The nodes whose transform the compositor animates that `is_root` takes.
+pub(crate) fn roots_of_transform_animations(
+    tree: &VisualContextTree,
+    is_root: impl Fn(SpatialNodeIndex) -> bool,
+) -> impl Iterator<Item = SpatialNodeIndex> {
+    transform_animations_of(tree)
+        .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
+        .filter(move |&node| is_root(node))
+}
+
 /// Per spatial node, whether it is or is under a node whose transform the compositor animates that `is_root` takes, or
 /// empty where it takes none.
 pub(crate) fn spatial_nodes_under_transform_animations(
     tree: &VisualContextTree,
     is_root: impl Fn(SpatialNodeIndex) -> bool,
 ) -> Vec<bool> {
-    let roots: Vec<SpatialNodeIndex> = transform_animations_of(tree)
-        .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
-        .filter(|&node| is_root(node))
-        .collect();
+    let roots: Vec<SpatialNodeIndex> = roots_of_transform_animations(tree, is_root).collect();
     if roots.is_empty() {
         return Vec::new();
     }

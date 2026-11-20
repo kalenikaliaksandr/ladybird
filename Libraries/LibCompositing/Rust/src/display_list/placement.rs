@@ -10,7 +10,7 @@
 //! together because they hold whole group effects.
 
 use crate::display_list::animated_transform_spaces::{
-    MAXIMUM_ANIMATED_TRANSFORM_SPACE_COUNT, animated_transform_anchors, raster_scale_of,
+    MAXIMUM_ANIMATED_TRANSFORM_SPACE_COUNT, animated_transform_anchors, raster_scale_of, roots_of_transform_animations,
 };
 use crate::display_list::commands::{
     ClipMode, ClipNodeIndex, ContextRef, DisplayListCommandRun, EffectNodeIndex, SpatialNodeIndex,
@@ -22,7 +22,6 @@ use crate::display_list::effect_geometry::{
     changed_extent_through_filters_inside,
 };
 use crate::display_list::reach::Reach;
-use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::queries::TreeCullingScratch;
 use crate::visual_context::world_transforms::translation_on_whole_device_pixels;
 use crate::visual_context::{
@@ -289,13 +288,8 @@ pub(crate) fn spatial_nodes_that_move_on_their_own_relative_to_spaces_at(
     anchors: Option<&[SpatialNodeIndex]>,
 ) -> Vec<bool> {
     let is_anchor = |node: SpatialNodeIndex| anchors.is_some_and(|anchors| anchors.contains(&node));
-    let mut roots_of_subtrees_moving_on_their_own: Vec<SpatialNodeIndex> = tree
-        .visual_animations()
-        .iter()
-        .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Transform)
-        .flat_map(|animation| animation.node_indices.iter().map(|&index| SpatialNodeIndex(index)))
-        .filter(|&node| !is_anchor(node))
-        .collect();
+    let mut roots_of_subtrees_moving_on_their_own: Vec<SpatialNodeIndex> =
+        roots_of_transform_animations(tree, |node| !is_anchor(node)).collect();
     if let Some(anchors) = anchors {
         roots_of_subtrees_moving_on_their_own.extend(compositor_scrolled_nodes_without_own_space(tree, anchors));
     }
@@ -753,17 +747,6 @@ impl RasterSpaces {
             spaces.push(space);
         }
         spaces
-    }
-
-    pub fn with_other_extents(mut self, spaces_at_same_anchors: Vec<RasterSpace>) -> Self {
-        debug_assert!(
-            self.spaces
-                .iter()
-                .map(|space| space.anchor)
-                .eq(spaces_at_same_anchors.iter().map(|space| space.anchor))
-        );
-        self.spaces = spaces_at_same_anchors;
-        self
     }
 
     /// The given spaces, which a tree offers, and the deepest of them each spatial node of the tree moves with.
