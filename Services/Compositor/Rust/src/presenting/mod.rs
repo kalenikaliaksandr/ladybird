@@ -838,10 +838,7 @@ impl ContextPresenting {
 
     /// The surface that holds the frame on screen as a whole, with what the window server shows above the store
     /// composited into it, and the size of the frame in it.
-    pub fn presented_frame_for_snapshot(
-        &mut self,
-        env: &PresentingEnvironment<'_>,
-    ) -> Option<(SurfaceHandle, IntSize)> {
+    pub fn presented_frame_for_snapshot(&self, env: &PresentingEnvironment<'_>) -> Option<(SurfaceHandle, IntSize)> {
         let source = self.surface_of_presented_frame_with_window_server_layers_composited_in(env)?;
         let source_size = env.raster.surface_size(&source);
         let frame_size = IntSize {
@@ -855,12 +852,14 @@ impl ContextPresenting {
     }
 
     fn surface_of_presented_frame_with_window_server_layers_composited_in(
-        &mut self,
+        &self,
         env: &PresentingEnvironment<'_>,
     ) -> Option<SurfaceHandle> {
         let mut source = self.latest_rendered_surface.clone()?;
-        if self.layers.window_server_shows_media()
-            && let Some(painted_frame) = self.painted_frame.take()
+        if let Some(painted_frame) = self
+            .painted_frame
+            .as_ref()
+            .filter(|painted_frame| painted_frame.layers.shown_by_window_server())
         {
             let source_size = env.raster.surface_size(&source);
             let composited = env.raster.create_surface(source_size, Some(&source), false);
@@ -876,11 +875,16 @@ impl ContextPresenting {
                     nested_contexts: &NoCompositedContexts,
                     ..*env
                 };
-                self.composite_layers_shown_by_window_server(&snapshot_env, &composited, &frame, source_rect);
+                self.composite_layers_shown_by_window_server(
+                    &snapshot_env,
+                    &composited,
+                    &frame,
+                    source_rect,
+                    &painted_frame.layers,
+                );
                 self.paint_overlays(&snapshot_env, &composited, &painted_frame.frame_inputs, true);
                 source = composited;
             }
-            self.painted_frame = Some(painted_frame);
         }
         Some(source)
     }

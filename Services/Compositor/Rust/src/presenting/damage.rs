@@ -6,7 +6,7 @@
 
 //! What a frame repaints of the frame painted before it, and of what each backing store holds.
 
-use super::layers::LayerUpdate;
+use super::layers::{LayerUpdate, PaintedLayers};
 use super::{ContextPresenting, FrameToPaint, PresentingEnvironment, rect_of_size};
 use crate::frame_inputs::FrameInputs;
 use crate::host::PendingFrame;
@@ -17,11 +17,12 @@ use libgfx_rust::{IntRect, IntSize};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-/// The frame painted last: its display list and inputs, and the version of each live content it drew, which comparing
-/// lists cannot see change.
+/// The frame painted last: its display list and inputs, what it did with its layers, and the version of each live
+/// content it drew, which comparing lists cannot see change.
 pub struct PaintedFrame {
     pub display_list: Rc<DisplayList>,
     pub frame_inputs: FrameInputs,
+    pub layers: PaintedLayers,
     pub viewport_size: IntSize,
     allows_lcd_text: bool,
     canvas_content_generations: HashMap<u64, u64>,
@@ -141,7 +142,7 @@ impl ContextPresenting {
         layer_update: LayerUpdate,
     ) {
         let allows_lcd_text = layer_update.frame_allows_lcd_text;
-        self.commit_layer_update(env, layer_update);
+        let layers = self.commit_layer_update(env, layer_update);
         let canvas_generation = |id: u64| {
             live_content
                 .canvases
@@ -169,6 +170,7 @@ impl ContextPresenting {
         self.painted_frame = Some(PaintedFrame {
             display_list: display_list.clone(),
             frame_inputs,
+            layers,
             viewport_size: IntSize {
                 width: viewport_rect.width,
                 height: viewport_rect.height,
@@ -294,11 +296,8 @@ impl ContextPresenting {
         });
         let forced_damage_rect =
             self.raster_rect_of(forced_damage_rect.united(scrolled_compositor_scrollbars.intersected(viewport_rect)));
-        let damage_of_layers_moved_by_animated_transforms = self
-            .painted_frame
-            .is_some()
-            .then(|| self.damage_of_layers_moved_by_animated_transforms(&layer_update, raster_rect))
-            .flatten();
+        let damage_of_layers_moved_by_animated_transforms =
+            self.damage_of_layers_moved_by_animated_transforms(&layer_update, raster_rect);
         let repaints_everything = invalidates_every_tile
             || damage_of_layers_moved_by_animated_transforms.is_none()
             || self.layer_overlay.repaints_everything();
