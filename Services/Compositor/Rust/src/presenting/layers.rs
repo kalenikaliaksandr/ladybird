@@ -67,6 +67,14 @@ const COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY: u64 = 4 << 60;
 // the tag.
 const MEDIA_ORDINAL_SHIFT_PAST_CANVAS_AND_VIDEO_IDS: u32 = 44;
 
+// Growing damage over what composited effects read takes a pass over them for each one it newly reaches. Past this many
+// passes, the damage grows over all they read, which holds what more passes would add.
+const MAXIMUM_PASSES_GROWING_DAMAGE_OVER_WHAT_COMPOSITED_EFFECTS_READ: usize = 8;
+// A tile below is tested against the opaque rects of the layers above, and against at most this many parts of it left
+// uncovered. Past either bound, tiles are not hidden but drawn, which is right, only slower.
+const MAXIMUM_OPAQUE_RECTS_HIDING_TILES_BELOW: usize = 128;
+const MAXIMUM_UNCOVERED_PARTS_OF_TILE: usize = 64;
+
 struct PooledTile {
     pixels: TilePixels,
     held_part_of_cell: IntRect,
@@ -497,7 +505,7 @@ impl LayerUpdate {
     /// The damage grown over all that a composited effect reads wherever it reaches that, as compositing the effect
     /// reads what is composited below it, which the frame painted before holds only under what it composited above.
     pub fn damage_grown_over_what_composited_effects_read(&self, mut damage: IntRect) -> IntRect {
-        loop {
+        for _ in 0..MAXIMUM_PASSES_GROWING_DAMAGE_OVER_WHAT_COMPOSITED_EFFECTS_READ {
             let mut grew = false;
             for &read_reach in &self.read_reaches_of_composited_effects_in_frame {
                 if !read_reach.intersected(damage).is_empty() && !damage.contains_rect(read_reach) {
@@ -509,6 +517,9 @@ impl LayerUpdate {
                 return damage;
             }
         }
+        self.read_reaches_of_composited_effects_in_frame
+            .iter()
+            .fold(damage, |damage, &read_reach| damage.united(read_reach))
     }
 }
 
@@ -1154,6 +1165,9 @@ fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> boo
     }
     let mut uncovered_parts = vec![rect];
     for &cover in covering_rects {
+        if cover.intersected(rect).is_empty() {
+            continue;
+        }
         uncovered_parts = uncovered_parts
             .into_iter()
             .flat_map(|part| {
@@ -1180,6 +1194,9 @@ fn rect_is_covered_by_union_of(rect: IntRect, covering_rects: &[IntRect]) -> boo
         if uncovered_parts.is_empty() {
             return true;
         }
+        if uncovered_parts.len() > MAXIMUM_UNCOVERED_PARTS_OF_TILE {
+            return false;
+        }
     }
     uncovered_parts.is_empty()
 }
@@ -1197,6 +1214,9 @@ fn hide_tiles_covered_by_opaque_tiles_above(
     let mut opaque_rects_in_frame_above: Vec<IntRect> = Vec::new();
     let mut hidden_tile_count = 0;
     for compositing in compositing_of_layers.iter().rev() {
+        if opaque_rects_in_frame_above.len() > MAXIMUM_OPAQUE_RECTS_HIDING_TILES_BELOW {
+            break;
+        }
         let layer_index = compositing.layer_index;
         let layer = &stack_of_frames.stack.layers[layer_index.0];
         if !matches!(layer.content, LayerContent::Painted { .. }) {
@@ -3594,6 +3614,63 @@ mod tests {
         .expect("only an animated transform moved the layer");
         assert!(damage.contains_rect(latest.rect_in_frame(long_label, VIEWPORT)));
         assert!(damage.contains_rect(current.rect_in_frame(short_label, VIEWPORT)));
+    }
+
+    fn layer_update_with_read_reaches(read_reaches_of_composited_effects_in_frame: Vec<IntRect>) -> LayerUpdate {
+        LayerUpdate {
+            tile_state: None,
+            composite_offsets: Vec::new(),
+            spaces_to_frame: Vec::new(),
+            compositing_of_layers: Vec::new(),
+            read_reaches_of_composited_effects_in_frame,
+        }
+    }
+
+    // Composited effects whose reads overlap in a chain, listed from the far end of the chain, so that each pass over
+    // them grows the damage by one more.
+    #[test]
+    fn damage_grows_over_a_long_chain_of_what_composited_effects_read_in_a_bounded_number_of_passes() {
+        let chain_of_reads = |length: i32| -> Vec<IntRect> {
+            (0..length)
+                .rev()
+                .map(|index| IntRect::new(10 + index * 10, 0, 15, 10))
+                .collect()
+        };
+        let damage = IntRect::new(0, 0, 12, 10);
+        let read_apart = IntRect::new(500, 500, 10, 10);
+        let mut short_chain = chain_of_reads(3);
+        short_chain.push(read_apart);
+        let grown = layer_update_with_read_reaches(short_chain).damage_grown_over_what_composited_effects_read(damage);
+        assert_eq!(grown, IntRect::new(0, 0, 45, 10));
+
+        let length = 4 * MAXIMUM_PASSES_GROWING_DAMAGE_OVER_WHAT_COMPOSITED_EFFECTS_READ as i32;
+        let long_chain = chain_of_reads(length);
+        let grown =
+            layer_update_with_read_reaches(long_chain.clone()).damage_grown_over_what_composited_effects_read(damage);
+        assert!(long_chain.iter().all(|read| grown.contains_rect(*read)));
+        assert!(
+            layer_update_with_read_reaches(long_chain).damage_grown_over_what_composited_effects_read(read_apart)
+                == read_apart
+        );
+    }
+
+    // The squares of a checkerboard, light ones first, as layers above would leave them, split what they leave of a
+    // tile into many parts before the dark ones cover the rest.
+    #[test]
+    fn a_tile_that_rects_cover_only_after_splitting_it_into_many_parts_is_not_hidden() {
+        let tile = IntRect::new(0, 0, 512, 512);
+        let squares_of_color = |color: i32| {
+            (0..32)
+                .flat_map(|row| (0..32).map(move |column| (row, column)))
+                .filter(move |(row, column)| (row + column) % 2 == color)
+                .map(|(row, column)| IntRect::new(column * 16, row * 16, 16, 16))
+        };
+        let checkerboard: Vec<IntRect> = squares_of_color(0).chain(squares_of_color(1)).collect();
+        assert!(!rect_is_covered_by_union_of(tile, &checkerboard));
+        assert!(rect_is_covered_by_union_of(
+            tile,
+            &[IntRect::new(0, 0, 300, 512), IntRect::new(200, 0, 312, 512)]
+        ));
     }
 
     // A frame can find no store to be painted into once it took its stack.

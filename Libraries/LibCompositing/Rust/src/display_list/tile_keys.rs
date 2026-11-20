@@ -39,7 +39,7 @@ use super::storage::{
 use super::summary::{LiveContent, command_blend, live_content_of};
 use super::tiles::{
     CellRange, TileCoord, entries_within, for_each_entry_within, reaches_too_many_cells_to_follow_one_by_one,
-    tile_coords_touching,
+    tile_coords_touching, tile_count_touching,
 };
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
 use crate::host::FfiVisualAnimationTargetKind;
@@ -1397,6 +1397,12 @@ pub struct TileKeyingOfRasterSpace<'a> {
 
 const CONTENT_HASH_OF_EFFECT_LEFT_OUT_OF_TILES: ContentHash = 1;
 
+// The most cells that a placement of a chunk lists one by one: a few viewports of them, and some for each record range
+// it bins. The reach of the ranges past that goes into the reach past the listed cells, as the reach of a range that
+// reaches too many cells to follow one by one does.
+const CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES: u64 = 4096;
+const CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE: u64 = 16;
+
 /// Whether a backdrop filter reads nothing past each pixel, or only through blurs that mirror at the edge of what they
 /// read, so that what it reads past the edge of the frame does not show.
 pub(crate) fn backdrop_filter_reads_nothing_past_mirrored_edge(filter: &[u8]) -> bool {
@@ -2159,13 +2165,25 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 whole_run_range_index,
             };
         }
+        let binned_range_count: u64 = ranges_of_each_run
+            .iter()
+            .map(|ranges_of_run| {
+                let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
+                u64::from(end_binned_range_index.0 - first_binned_range_index.0)
+            })
+            .sum();
+        let most_cells_listed =
+            CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES + CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE * binned_range_count;
         let mut listed_reached_cells = Vec::new();
         let mut reach_past_listed_cells = Reach::Nothing;
         for ranges_of_run in &ranges_of_each_run {
             let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
             for range in &record_ranges[first_binned_range_index.0 as usize..end_binned_range_index.0 as usize] {
                 match range.reach {
-                    Reach::Within(rect) if !reaches_too_many_cells_to_follow_one_by_one(rect) => {
+                    Reach::Within(rect)
+                        if !reaches_too_many_cells_to_follow_one_by_one(rect)
+                            && listed_reached_cells.len() as u64 + tile_count_touching(rect) <= most_cells_listed =>
+                    {
                         listed_reached_cells.extend(tile_coords_touching(rect));
                     }
                     reach => reach_past_listed_cells = reach_past_listed_cells.united(reach),
@@ -4019,6 +4037,54 @@ mod tests {
                     .any(|&(begin, end)| begin <= offset && offset < end)
             );
         }
+    }
+
+    // A chunk from another process can hold many records that each reach many cells.
+    #[test]
+    fn a_placement_lists_cells_one_by_one_up_to_a_bound_and_reaches_past_them_after() {
+        let tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let cells_per_fill = 32;
+        let fill_size = cells_per_fill * crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
+        let fill_count = 10;
+        let fills: Vec<IntRect> = (0..fill_count)
+            .map(|index| IntRect::new(0, index * fill_size, fill_size, fill_size))
+            .collect();
+        let mut list = TestList::default();
+        for &rect in &fills {
+            list = list.with(fill(rect, GREEN), root);
+        }
+        let display_list = DisplayListStorage::of_builder(&list.builder);
+        let stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+        let list_keying = TileKeyingOfList::new(
+            &display_list,
+            &tree,
+            &stack,
+            FrameStateReadByReplay {
+                scrollbars: &[],
+                time_ns: 0,
+                live_content: &NoLiveContentChanges,
+            },
+        );
+        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
+        let geometry = RasterSpaceGeometry::new(
+            &tree,
+            &spaces,
+            RasterSpaceIndex::VIEWPORT,
+            &[],
+            FloatMatrix4x4::identity(),
+        );
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let placement = raster_space.placement_of_runs_of_chunk(ChunkIndexInList(0), &[RunIndexInChunk(0)]);
+        let most_cells_listed =
+            CELLS_A_PLACEMENT_LISTS_PAST_ITS_RANGES + CELLS_A_PLACEMENT_LISTS_PER_BINNED_RANGE * fill_count as u64;
+        assert!(placement.listed_reached_cells.len() as u64 <= most_cells_listed);
+        assert!(placement.listed_reached_cells.contains(&TileCoord::new(0, 0)));
+        let Reach::Within(reach_past_listed_cells) = placement.reach_past_listed_cells else {
+            panic!("the fills past the bound reach past the listed cells");
+        };
+        assert!(reach_past_listed_cells.contains_rect(fills[fill_count as usize - 1]));
+        assert!(reach_past_listed_cells.intersected(fills[0]).is_empty());
     }
 
     // A tree from another process can chain clips and effects as deep as it holds nodes.
