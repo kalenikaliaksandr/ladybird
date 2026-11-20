@@ -770,19 +770,23 @@ impl SentDisplayListChunks {
         ))
     }
 
-    /// A new plan of the layers the compositor holds a plan of, where `scroll_state` or `viewport_rect` changed what
-    /// that plan reads. A scroll state without a plan keeps the plan the compositor holds, and a display list or a tree
-    /// without one leaves it with none.
+    /// A new plan of the layers the compositor holds a plan of, where `scroll_state` or `viewport_rect_of_frame`, the
+    /// rect the frame is presented within if it is presented, changed what that plan reads. A scroll state without a
+    /// plan keeps the plan the compositor holds, and a display list or a tree without one leaves it with none. The
+    /// compositor draws a frame within a viewport it takes no plan within as one layer, so such a frame gets no plan.
     fn layer_plan_for_scroll_state(
         &self,
         scroll_state: &ScrollStateSnapshot,
-        viewport_rect: Option<IntRect>,
+        viewport_rect_of_frame: Option<IntRect>,
     ) -> Option<LayerPlanSent> {
         let held = self.held_layer_plan()?;
-        let inputs = held.inputs.with_scroll_offsets_and_viewport_rect(
-            scroll_state.device_offsets(),
-            viewport_rect.unwrap_or(held.inputs.viewport_rect()),
-        );
+        let viewport_rect = viewport_rect_of_frame.unwrap_or(held.inputs.viewport_rect());
+        if !compositor_takes_plans_within(viewport_rect) {
+            return None;
+        }
+        let inputs = held
+            .inputs
+            .with_scroll_offsets_and_viewport_rect(scroll_state.device_offsets(), viewport_rect);
         (!held.inputs.plan_alike_as(&inputs)).then(|| layer_plan_made_from(held.plan.display_list_id, inputs))
     }
 }
@@ -818,9 +822,10 @@ fn post_frame_through(
     } = frame;
     // A plan is made for the rect the compositor rasters the frame within: at the origin, at the size of the viewport the
     // frame is presented in.
-    let viewport_rect_of_layer_plans = present_viewport_rect
-        .map(|viewport_rect| IntRect::new(0, 0, viewport_rect.width, viewport_rect.height))
-        .filter(|viewport_rect| compositor_takes_plans_within(*viewport_rect));
+    let viewport_rect_of_frame =
+        present_viewport_rect.map(|viewport_rect| IntRect::new(0, 0, viewport_rect.width, viewport_rect.height));
+    let viewport_rect_of_layer_plans =
+        viewport_rect_of_frame.filter(|viewport_rect| compositor_takes_plans_within(*viewport_rect));
     let sent = sent_display_list_chunks.entry(context_id).or_default();
     if let Some(update) = display_list_update {
         if !post_resources_ahead(poster, context_id, &update.resources) {
@@ -906,7 +911,7 @@ fn post_frame_through(
         }
     }
     if let Some(update) = scroll_state_update {
-        let layer_plan = sent.layer_plan_for_scroll_state(&update.scroll_state, viewport_rect_of_layer_plans);
+        let layer_plan = sent.layer_plan_for_scroll_state(&update.scroll_state, viewport_rect_of_frame);
         let message = UpdateScrollState {
             context_id,
             scroll_state: update.scroll_state,
@@ -1015,4 +1020,59 @@ pub extern "C" fn navigable_presenter_last_keyboard_scroll_state_generation(
     };
     *out = generation;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::painting::display_list::builder::DisplayListBuilder;
+    use crate::painting::display_list::commands::{ContextRef, EffectNodeIndex, FillRect};
+    use libgfx_rust::{Color, CompositingAndBlendingOperator};
+
+    // A window can be dragged larger than the viewports the compositor takes plans within.
+    #[test]
+    fn a_frame_presented_within_a_viewport_the_compositor_takes_no_plan_within_gets_no_plan_for_its_scroll_state() {
+        let mut builder = DisplayListBuilder::new();
+        builder.append(
+            &FillRect {
+                rect: IntRect::new(0, 0, 800, 600),
+                color: Color::from_rgb(0, 128, 0),
+                compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
+                background_color_animation_effect: EffectNodeIndex::NONE,
+            },
+            &[],
+            ContextRef::default(),
+        );
+        let list = DisplayListStorage::of_chunks(vec![Arc::new(ListChunk::copied(
+            builder.bytes(),
+            builder.command_runs(),
+            0,
+        ))])
+        .unwrap();
+        let tree = Arc::new(VisualContextTree::create_identity());
+        let viewport_rect = IntRect::new(0, 0, 800, 600);
+        let sent = SentDisplayListChunks {
+            held_list: Some(DisplayListSent {
+                display_list_id: 1,
+                recorded_structural_epoch: tree.structural_epoch,
+                list: list.clone(),
+                layer_plan: Some(layer_plan_made_from(
+                    1,
+                    InputsOfLayerPlan::new(list, tree, &[], viewport_rect),
+                )),
+            }),
+            ..SentDisplayListChunks::default()
+        };
+        let scroll_state = ScrollStateSnapshot::default();
+        assert!(
+            sent.layer_plan_for_scroll_state(&scroll_state, Some(IntRect::new(0, 0, 800, 500)))
+                .is_some()
+        );
+        let viewport_past_the_limit = IntRect::new(0, 0, i32::MAX, 600);
+        assert!(!compositor_takes_plans_within(viewport_past_the_limit));
+        assert!(
+            sent.layer_plan_for_scroll_state(&scroll_state, Some(viewport_past_the_limit))
+                .is_none()
+        );
+    }
 }
