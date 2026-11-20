@@ -24,6 +24,7 @@ use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
 use std::rc::Rc;
+use std::sync::Arc;
 
 const ANCHOR_TRANSLATION_ROUNDING_OVERSHOOT_IN_DEVICE_PIXELS: i32 = 1;
 
@@ -128,7 +129,7 @@ fn extent_of_space(
 #[derive(Debug)]
 pub(super) struct RasterSpaceAnchorsOfTree {
     pub(super) anchors: Vec<SpatialNodeIndex>,
-    spatial_node_moves_on_its_own: Vec<bool>,
+    spatial_node_moves_on_its_own: Arc<[bool]>,
     pub(super) leaves_out_scroll_offset_of_node: Vec<bool>,
 }
 
@@ -144,7 +145,7 @@ impl RasterSpaceAnchorsOfTree {
                 spatial_node_moves_on_its_own.clone(),
             ),
             anchors,
-            spatial_node_moves_on_its_own,
+            spatial_node_moves_on_its_own: spatial_node_moves_on_its_own.into(),
         }
     }
 }
@@ -155,7 +156,7 @@ impl RasterSpaceAnchorsOfTree {
 #[derive(Debug)]
 pub(super) struct RasterSpacesForPlacing {
     raster_spaces: RasterSpaces,
-    spatial_node_moves_on_its_own: Vec<bool>,
+    spatial_node_moves_on_its_own: Arc<[bool]>,
     effect_node_spread_moves_on_its_own: Vec<bool>,
 }
 
