@@ -858,6 +858,47 @@ impl BandBoundToListAndGeometry {
         &self.held_chunk(chunk_index).placement.record_ranges[range_index.0 as usize]
     }
 
+    /// Whether `item`, which names a chunk of the list the band is bound to, replays what `item_before` replayed under
+    /// `bound_before`. A record range of a chunk the band does not hold, or one that covers other records of the chunk,
+    /// does not. A cell is binned by the chunks that reach it, so this tells of the mask declarations replayed with a
+    /// run, whose chunks need not reach the cell.
+    fn replays_records_that_item_replayed(
+        &self,
+        item: TileReplayItem,
+        bound_before: &BandBoundToListAndGeometry,
+        item_before: TileReplayItem,
+    ) -> bool {
+        let (
+            TileReplayItem::PlacedRecordRange {
+                chunk_index,
+                range_index,
+            },
+            TileReplayItem::PlacedRecordRange {
+                chunk_index: chunk_index_before,
+                ..
+            },
+        ) = (item, item_before)
+        else {
+            // Other items name their records by where they are in the chunk, which every chunk of one name holds alike.
+            return true;
+        };
+        let Some(range) = self
+            .held_chunk_index_by_chunk_index
+            .get(&chunk_index)
+            .and_then(|&held_chunk_index| {
+                self.held_chunks[held_chunk_index]
+                    .placement
+                    .record_ranges
+                    .get(range_index.0 as usize)
+            })
+        else {
+            return false;
+        };
+        let range_before = bound_before.placed_record_range(chunk_index_before, range_index);
+        range.first_record_index == range_before.first_record_index
+            && range.end_record_index == range_before.end_record_index
+    }
+
     fn reach_of_item(&self, item: TileReplayItem) -> Reach<IntRect> {
         let TileReplayItem::PlacedRecordRange {
             chunk_index,
@@ -2774,7 +2815,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     let Some(&chunk_index) = chunk_index_by_name.get(&chunk_name) else {
                         return false;
                     };
-                    *item = item.with_chunk_index(chunk_index);
+                    let item_in_list = item.with_chunk_index(chunk_index);
+                    if !bound_band.replays_records_that_item_replayed(item_in_list, &previous_bound_band, *item) {
+                        return false;
+                    }
+                    *item = item_in_list;
                 }
             }
             true
@@ -3251,7 +3296,16 @@ mod tests {
         raster_space_index: RasterSpaceIndex,
         band_index: BandIndex,
     ) -> Vec<(u64, TileKeyingCounts, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
-        let mut band_tile_keys = BandTileKeys::default();
+        key_band_in_frames_in_turn(&mut BandTileKeys::default(), frames, raster_space_index, band_index)
+    }
+
+    // Each frame binds the band again under a geometry of its own.
+    fn key_band_in_frames_in_turn(
+        band_tile_keys: &mut BandTileKeys,
+        frames: &[(&DisplayListStorage, &VisualContextTree, &LayerStack)],
+        raster_space_index: RasterSpaceIndex,
+        band_index: BandIndex,
+    ) -> Vec<(u64, TileKeyingCounts, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
         frames
             .iter()
             .map(|&(display_list, tree, stack)| {
@@ -3269,9 +3323,9 @@ mod tests {
                 let geometry =
                     RasterSpaceGeometry::new(tree, &spaces, raster_space_index, &[], FloatMatrix4x4::identity());
                 let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
-                raster_space.bind_band(&mut band_tile_keys, stack, band_index);
+                raster_space.bind_band(band_tile_keys, stack, band_index);
                 let counts = raster_space.key_shown_tiles(
-                    &mut band_tile_keys,
+                    band_tile_keys,
                     stack,
                     band_index,
                     raster_settings_for_tests,
@@ -3282,7 +3336,7 @@ mod tests {
                 (
                     raster_space.chunks_placed(),
                     counts,
-                    viewport_tile_hashes(&band_tile_keys),
+                    viewport_tile_hashes(band_tile_keys),
                 )
             })
             .collect()
@@ -3658,5 +3712,115 @@ mod tests {
                 .filter(|(coord, _, _)| coord.column == 0)
                 .collect::<Vec<_>>()
         );
+    }
+
+    fn span_from_run_to_end_of_list(display_list: &DisplayListStorage, chunk_index: u32, run_index: usize) -> ListSpan {
+        let chunk_index = ChunkIndexInList(chunk_index);
+        ListSpan {
+            begin: ListPosition::new(chunk_index, display_list.chunk(chunk_index).runs()[run_index].offset),
+            end: display_list.whole_span().end,
+        }
+    }
+
+    // A second plan for one list can leave the declaration of a mask's content out of the band of what the mask holds,
+    // or put other runs of the chunk of the declaration in, where those draw away from the cells the masked content
+    // reaches.
+    #[test]
+    fn a_cell_kept_when_its_band_is_bound_again_names_only_record_ranges_the_band_holds_now() {
+        use crate::visual_context::{MaskData, MaskLayerOrigin};
+        let mut tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let masked = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Mask(MaskData {
+                rect: IntRect::new(0, 0, 100, 100),
+                kind: libgfx_rust::MaskKind::Alpha,
+                origin: MaskLayerOrigin::CssMaskLayers,
+                masks_backdrop: false,
+            }),
+        );
+        let isolated = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Effects(EffectsData {
+                isolation: true,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: None,
+            }),
+        );
+        // The first run of the first chunk is a box, and the second the declaration, which both draw in the cell to the
+        // right of the cell of the masked box.
+        let mut builder = DisplayListBuilder::new();
+        builder.append(&fill(IntRect::new(700, 300, 50, 50), GREEN), &[], isolated);
+        let declaration = builder.begin_group::<DeclareMaskContent>(Vec::new());
+        builder.append(&fill(IntRect::new(600, 0, 50, 50), RED), &[], root);
+        let content = builder.group_content_span(&declaration);
+        builder.finish_group(
+            declaration,
+            &DeclareMaskContent {
+                rect: IntRect::new(600, 0, 100, 100),
+                effect: masked.effect,
+                content,
+            },
+            root,
+        );
+        let display_list = DisplayListStorage::of_chunks(vec![
+            Arc::new(ListChunk::copied(builder.bytes(), builder.command_runs(), 0)),
+            chunk_of(fill(IntRect::new(10, 10, 80, 80), BLUE), masked),
+        ])
+        .unwrap();
+        let declaration_and_masked_box = {
+            let mut stack = LayerStack::single_layer(VIEWPORT, display_list.whole_span(), None);
+            stack.bands[0].record_spans = vec![span_from_run_to_end_of_list(&display_list, 0, 1)];
+            stack
+        };
+        let mut masked_box_alone = declaration_and_masked_box.clone();
+        masked_box_alone.bands[0].record_spans = vec![span_from_run_to_end_of_list(&display_list, 1, 0)];
+        let mut both_runs_and_masked_box = declaration_and_masked_box.clone();
+        both_runs_and_masked_box.bands[0].record_spans = vec![display_list.whole_span()];
+
+        let cell_of_masked_box = TileCoord::new(0, 0);
+        for second_stack in [&masked_box_alone, &both_runs_and_masked_box] {
+            let mut band_tile_keys = BandTileKeys::default();
+            let frames = [(&*display_list, &tree, &declaration_and_masked_box)];
+            key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
+            let tile_of_masked_box = band_tile_keys
+                .tile(cell_of_masked_box, LayerIndex(0))
+                .expect("the masked box has a tile");
+            assert!(
+                tile_of_masked_box
+                    .replay_items_in_paint_order
+                    .iter()
+                    .any(|item| matches!(
+                        item,
+                        TileReplayItem::PlacedRecordRange {
+                            chunk_index: ChunkIndexInList(0),
+                            ..
+                        }
+                    ))
+            );
+
+            let frames = [(&*display_list, &tree, second_stack)];
+            let turns =
+                key_band_in_frames_in_turn(&mut band_tile_keys, &frames, RasterSpaceIndex::VIEWPORT, BandIndex(0));
+            let spans_of_masked_box =
+                band_tile_keys.record_spans_of_tiles(band_tile_keys.tile(cell_of_masked_box, LayerIndex(0)));
+            assert_eq!(
+                turns[0].2,
+                viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &tree, second_stack)
+            );
+            let declaration_position = ListPosition::new(
+                ChunkIndexInList(0),
+                display_list.chunk(ChunkIndexInList(0)).runs()[1].offset,
+            );
+            let first_box_position = ListPosition::new(ChunkIndexInList(0), 0);
+            assert!(
+                spans_of_masked_box
+                    .iter()
+                    .any(|span| span.contains(declaration_position))
+            );
+            assert!(!spans_of_masked_box.iter().any(|span| span.contains(first_box_position)));
+        }
     }
 }
