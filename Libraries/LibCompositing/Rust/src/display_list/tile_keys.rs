@@ -2539,17 +2539,19 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 range_index: ranges_of_run.whole_run_range_index,
             };
         }
+        // The binned ranges of a run are in the order of their records and apart.
         let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
-        (first_binned_range_index.0..end_binned_range_index.0)
-            .map(PlacedRecordRangeIndex)
-            .find(|&range_index| {
-                let range = &held_chunk.placement.record_ranges[range_index.0 as usize];
-                range.first_record_index <= record_index && record_index < range.end_record_index
-            })
-            .map_or(record_alone, |range_index| TileReplayItem::PlacedRecordRange {
+        let binned_ranges =
+            &held_chunk.placement.record_ranges[first_binned_range_index.0 as usize..end_binned_range_index.0 as usize];
+        let position_among_binned_ranges =
+            binned_ranges.partition_point(|range| range.end_record_index <= record_index);
+        match binned_ranges.get(position_among_binned_ranges) {
+            Some(range) if range.first_record_index <= record_index => TileReplayItem::PlacedRecordRange {
                 chunk_index,
-                range_index,
-            })
+                range_index: PlacedRecordRangeIndex(first_binned_range_index.0 + position_among_binned_ranges as u32),
+            },
+            _ => record_alone,
+        }
     }
 
     fn bind_band_to_list_and_geometry(&self, stack: &LayerStack, band_index: BandIndex) -> BandBoundToListAndGeometry {
