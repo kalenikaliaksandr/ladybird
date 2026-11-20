@@ -46,6 +46,7 @@ use libcompositing_rust::display_list::window_server_placement::{
 use libcompositing_rust::fast_hash::fast_hasher;
 use libcompositing_rust::scrolling::DisplayList;
 use libcompositing_rust::time::{Duration, MonotonicTime};
+use libcompositing_rust::visual_context::queries::TreeCullingScratch;
 use libcompositing_rust::visual_context::{VisualContextTree, WorldTransforms};
 use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, IntPoint, IntRect, IntSize, ScalingMode};
 use std::cell::OnceCell;
@@ -577,6 +578,7 @@ impl StackOfFrames {
     ) -> Vec<Rc<RasterSpaceGeometry>> {
         let stack = &self.stack;
         let mut geometries = Vec::with_capacity(stack.spaces.len());
+        let mut what_every_space_of_tree_shares: Option<(Vec<u32>, TreeCullingScratch)> = None;
         for (space_index, cached_geometry) in self.geometry_by_space.iter_mut().enumerate() {
             let raster_space_index = RasterSpaceIndex(space_index);
             // What reads the geometry of a space of a plan that holds nothing that moves within it reads no value the
@@ -615,12 +617,19 @@ impl StackOfFrames {
             let raster_spaces = self
                 .raster_spaces
                 .get_or_insert_with(|| RasterSpaces::of_spaces(tree, stack.spaces.clone()));
-            let geometry = Rc::new(RasterSpaceGeometry::new(
+            let (spatial_dependency_order, culling) = what_every_space_of_tree_shares.get_or_insert_with(|| {
+                let mut culling = TreeCullingScratch::default();
+                tree.fill_culling_scratch(&mut culling);
+                (tree.spatial_dependency_order(), culling)
+            });
+            let geometry = Rc::new(RasterSpaceGeometry::new_with_what_every_space_of_tree_shares(
                 tree,
                 raster_spaces,
                 raster_space_index,
                 scroll_offsets,
                 self.viewport_to_raster_transform,
+                spatial_dependency_order,
+                culling.clone(),
             ));
             *cached_geometry = Some(CachedRasterSpaceGeometry {
                 tree_copy_number: tree.copy.number(),
