@@ -2394,6 +2394,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         }
         let mut band_binning_inputs_hasher = ContentHasher::new();
         band_binning_inputs_hasher.write_bool(stack.base_layer == band.layer_below_all_cuts);
+        // A binding that replays every record into every tile holds no chunks, so each of its cells is binned as a cell
+        // that no chunk reaches. The cells of such a binding hold every record of the band.
+        band_binning_inputs_hasher.write_bool(list.replays_every_record_into_every_tile);
         let chunk_names = display_list.chunk_names();
         if list.replays_every_record_into_every_tile {
             let mut items_replayed_in_every_tile: Vec<(ListPosition, TileReplayItem)> = held_offset_ranges_by_chunk
@@ -3038,7 +3041,7 @@ mod tests {
         CanvasId, DeclareMaskContent, DisplayListCommand, FillRect, VISUAL_VIEWPORT_NODE_INDEX,
     };
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
-    use crate::display_list::layers::{LayerStack, SpaceToFrame};
+    use crate::display_list::layers::{LayerStack, LayeringObstacles, SpaceToFrame, WhyListIsOneLayer};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces};
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
@@ -3822,5 +3825,39 @@ mod tests {
             );
             assert!(!spans_of_masked_box.iter().any(|span| span.contains(first_box_position)));
         }
+    }
+
+    // A plan of one layer for a list in a 3D sorting context replays every record into every tile, and a frame drawn
+    // at a pinch then replays the same list as one layer of the compositor's own.
+    #[test]
+    fn a_cell_keyed_while_every_tile_replays_every_record_is_keyed_again_once_tiles_replay_what_reaches_them() {
+        let tree = tree_with_root_isolation_effect();
+        let root = root_context(&tree);
+        let display_list =
+            DisplayListStorage::of_chunks(vec![chunk_of(fill(IntRect::new(0, 0, 100, 100), GREEN), root)]).unwrap();
+        let mut every_tile_replays_every_record = LayerStack::single_layer(
+            VIEWPORT,
+            display_list.whole_span(),
+            Some(WhyListIsOneLayer::SortingContext3D),
+        );
+        every_tile_replays_every_record.layering_obstacles = LayeringObstacles {
+            sorts_planes_by_depth: true,
+            mask_declared_under_effects_its_mask_is_not_under: false,
+        };
+        let tiles_replay_what_reaches_them = LayerStack::single_layer(
+            VIEWPORT,
+            display_list.whole_span(),
+            Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+        );
+
+        let turns = chunks_placed_counts_and_viewport_tile_hashes_of_frames_keyed_in_turn(&[
+            (&display_list, &tree, &every_tile_replays_every_record),
+            (&display_list, &tree, &tiles_replay_what_reaches_them),
+        ]);
+        assert_eq!(
+            turns[1].2,
+            viewport_tile_hashes_of_only_band_keyed_from_nothing(&display_list, &tree, &tiles_replay_what_reaches_them)
+        );
+        assert_eq!(turns[1].1.tiles_keyed, 4);
     }
 }
