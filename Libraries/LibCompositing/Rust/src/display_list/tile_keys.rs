@@ -1951,9 +1951,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 for width in [top_width, right_width, bottom_width, left_width] {
                     hasher.write_i32(width);
                 }
+                let (Some(unfilled_inner_x), Some(unfilled_inner_y)) =
+                    (ring.rect.x.checked_add(left_width), ring.rect.y.checked_add(top_width))
+                else {
+                    return None;
+                };
                 let unfilled_inner_rect = IntRect::new(
-                    ring.rect.x + left_width,
-                    ring.rect.y + top_width,
+                    unfilled_inner_x,
+                    unfilled_inner_y,
                     ring.rect.width - left_width - right_width,
                     ring.rect.height - top_width - bottom_width,
                 );
@@ -3327,6 +3332,36 @@ mod tests {
                 (counts, tiles_within(&band_tile_keys, VIEWPORT))
             })
             .collect()
+    }
+
+    #[test]
+    fn a_ring_whose_inner_edges_lie_past_the_coordinate_range_is_no_device_aligned_fill() {
+        let (tree, root) = tree_with_root_isolation_effect(1.0);
+        let near_the_limit = i32::MAX - 100;
+        let list = ListOfOneChunk::default().with(
+            FillRoundedRectRing {
+                rect: IntRect::new(near_the_limit, near_the_limit, 200, 200),
+                corner_radii: CornerRadii::default(),
+                top_width: 150,
+                right_width: 10,
+                bottom_width: 10,
+                left_width: 150,
+                color: GREEN,
+            },
+            root,
+        );
+        let display_list = DisplayListStorage::of_builder(&list.builder);
+        let stack = stack_of(&display_list, &tree);
+        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let chunk = display_list.chunk(ChunkIndexInList(0));
+        let ring_record = chunk.record_table().record(RecordIndexInChunk(0));
+        assert!(
+            raster_space
+                .device_aligned_fill_of_record(chunk, ring_record, root)
+                .is_none()
+        );
     }
 
     struct CanvasesAtGeneration(u64);
