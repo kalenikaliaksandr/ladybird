@@ -809,11 +809,12 @@ impl ContentHashesNearArea {
     }
 }
 
+/// The ranges of a run: those it is binned as, from `first_binned_range_index` up to the range of the whole run.
 #[derive(Clone, Copy, Debug, Default)]
 struct PlacedRecordRangesOfRun {
-    first_and_end_binned_range_index: (PlacedRecordRangeIndex, PlacedRecordRangeIndex),
-    reach_of_binned_ranges: Reach<IntRect>,
+    first_binned_range_index: PlacedRecordRangeIndex,
     whole_run_range_index: PlacedRecordRangeIndex,
+    reach_of_binned_ranges: Reach<IntRect>,
 }
 
 /// What the records of a chunk hold in one raster space, as the geometry of the space places the visual contexts of
@@ -1952,13 +1953,12 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     }
                 }
             }
-            let end_binned_range_index = PlacedRecordRangeIndex(record_ranges.len() as u32);
-            let whole_run_range_index = end_binned_range_index;
+            let whole_run_range_index = PlacedRecordRangeIndex(record_ranges.len() as u32);
             record_ranges.push(self.place_record_range(chunk, run_index, record_indices_of_run, run_reach));
             ranges_of_each_run[run_index.0 as usize] = PlacedRecordRangesOfRun {
-                first_and_end_binned_range_index: (first_binned_range_index, end_binned_range_index),
-                reach_of_binned_ranges,
+                first_binned_range_index,
                 whole_run_range_index,
+                reach_of_binned_ranges,
             };
         }
         ChunkPlacedInRasterSpace {
@@ -2333,9 +2333,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             };
         }
         // The binned ranges of a run are in the order of their records and apart.
-        let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
-        let binned_ranges =
-            &held_chunk.placement.record_ranges[first_binned_range_index.0 as usize..end_binned_range_index.0 as usize];
+        let first_binned_range_index = ranges_of_run.first_binned_range_index;
+        let binned_ranges = &held_chunk.placement.record_ranges
+            [first_binned_range_index.0 as usize..ranges_of_run.whole_run_range_index.0 as usize];
         let position_among_binned_ranges =
             binned_ranges.partition_point(|range| range.end_record_index <= record_index);
         match binned_ranges.get(position_among_binned_ranges) {
@@ -2681,8 +2681,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 );
                 continue;
             }
-            let (first_binned_range_index, end_binned_range_index) = ranges_of_run.first_and_end_binned_range_index;
-            for range_index in (first_binned_range_index.0..end_binned_range_index.0).map(PlacedRecordRangeIndex) {
+            for range_index in (ranges_of_run.first_binned_range_index.0..ranges_of_run.whole_run_range_index.0)
+                .map(PlacedRecordRangeIndex)
+            {
                 let range = &held_chunk.placement.record_ranges[range_index.0 as usize];
                 let paint_position = ListPosition::new(held_chunk.chunk_index, range.begin_offset);
                 visit(
