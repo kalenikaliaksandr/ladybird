@@ -2286,7 +2286,7 @@ mod tests {
     use super::*;
     use crate::display_list::commands::{CanvasId, ContextRef};
     use crate::display_list::layers::{
-        LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
+        CutsOfCell, LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
     };
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, VIEWPORT, animation_of, canvas, effects, fill, frosted_glass, opacity_animation_of,
@@ -3367,12 +3367,13 @@ mod tests {
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
         // The label and the spinner of the toolbar are in different cells, and the card covers both of them.
         let label = IntRect::new(10, 110, 100, 30);
+        let card = IntRect::new(0, 100, 800, 50);
         assert!(TILE_SIZE_IN_DEVICE_PIXELS < 650);
         let list = ListOfOneChunk::default()
             .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(fill(label, GREEN), toolbar)
             .with(fill(IntRect::new(650, 105, 40, 40), GREEN), spinner)
-            .with(fill(IntRect::new(0, 100, 800, 50), GREEN), document);
+            .with(fill(card, GREEN), document);
         let planned = list.planned(&tree, &[]);
         assert_eq!(
             space_names(&planned.stack),
@@ -3384,11 +3385,33 @@ mod tests {
             ]
         );
         let storage = DisplayListStorage::of_builder(&list.builder);
-        let layers_of_card = planned.layers_of_record(storage.span_of_run(3).begin);
+        let card_position = storage.span_of_run(3).begin;
+        let layers_of_card = planned.layers_of_record(card_position);
         assert_eq!(
             layers_of_card.len(),
             1,
             "the card goes into one layer in every cell: {layers_of_card:?}"
+        );
+        let band_of_card = planned
+            .stack
+            .bands
+            .iter()
+            .find(|band| band.record_spans.iter().any(|span| span.contains(card_position)))
+            .expect("a band holds the card");
+        let layers_tile_keying_puts_card_into_by_cell: Vec<LayerIndex> = CellRange::touched_by(card)
+            .coords()
+            .map(|coord| {
+                CutsOfCell::of(band_of_card, coord.cell_rect())
+                    .layer_of_record(card_position)
+                    .0
+            })
+            .collect();
+        assert!(
+            layers_tile_keying_puts_card_into_by_cell
+                .iter()
+                .all(|&layer| layer == layers_of_card[0]),
+            "tile keying puts the card into the layer the planner marks in every cell: \
+             {layers_tile_keying_puts_card_into_by_cell:?}"
         );
         let layer_of_card = &planned.stack.layers[layers_of_card[0].0];
         assert!(matches!(
