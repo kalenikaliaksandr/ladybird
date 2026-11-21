@@ -2324,6 +2324,14 @@ mod tests {
         let at_start = list.planned(&tree.with_visual_animation_samples(0), &[]);
         let halfway = list.planned(&tree.with_visual_animation_samples(500_000_000), &[]);
         assert_eq!(at_start.placement, halfway.placement);
+        assert_eq!(
+            at_start.stack.swept_reach_in_parent_space_by_space_index,
+            halfway.stack.swept_reach_in_parent_space_by_space_index
+        );
+        assert_eq!(
+            at_start.stack.tiles_hold_content_moving_within_space_by_space_index,
+            halfway.stack.tiles_hold_content_moving_within_space_by_space_index
+        );
         // Wherever the animation takes the box, it can go over the canvas, so it sits above it.
         assert_eq!(
             kinds_of_layers_from_base_up_that_may_hold_content(&halfway.stack),
