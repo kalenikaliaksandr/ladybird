@@ -2652,13 +2652,13 @@ mod tests {
         }
     }
 
-    // The tiles keyed in each frame of the band that holds the record of `run_index`, under one geometry, as the
-    // canvases of the list are at a new generation in each frame.
-    fn tiles_keyed_in_frames_with_a_new_canvas_generation(
+    // How many tiles each frame keys of the band that holds the record of `run_index`, under one geometry, as the
+    // canvases of the list are at a new generation in each frame, and the tiles of the band in the viewport after it.
+    fn tiles_keyed_and_kept_in_frames_with_a_new_canvas_generation(
         list: &ListOfOneChunk,
         tree: &VisualContextTree,
         run_index: usize,
-    ) -> Vec<usize> {
+    ) -> Vec<(usize, Vec<(TileCoord, LayerIndex, ContentHash)>)> {
         let display_list = DisplayListStorage::of_builder(&list.builder);
         let stack = stack_of(&display_list, tree);
         let position = display_list.span_of_run(run_index).begin;
@@ -2683,7 +2683,8 @@ mod tests {
                 let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
                 let band_tile_keys = band_tile_keys_bound_in_first_frame
                     .get_or_insert_with(|| raster_space.bind_band(&stack, band_index));
-                key_band(&raster_space, band_tile_keys, &stack, band_index, VIEWPORT).tiles_keyed
+                let tiles_keyed = key_band(&raster_space, band_tile_keys, &stack, band_index, VIEWPORT).tiles_keyed;
+                (tiles_keyed, tiles_within(band_tile_keys, VIEWPORT))
             })
             .collect()
     }
@@ -2702,9 +2703,10 @@ mod tests {
                 .iter()
                 .any(|layer| matches!(layer.identity, LayerIdentity::Media { .. }))
         );
-        let tiles_keyed = tiles_keyed_in_frames_with_a_new_canvas_generation(&list_with_canvas_in_own_layer, &tree, 0);
-        assert!(tiles_keyed[0] > 0);
-        assert_eq!(tiles_keyed[1..], [0, 0]);
+        let frames =
+            tiles_keyed_and_kept_in_frames_with_a_new_canvas_generation(&list_with_canvas_in_own_layer, &tree, 0);
+        assert!(frames[0].0 > 0);
+        assert_eq!([frames[1].0, frames[2].0], [0, 0]);
 
         let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let moved_by_filter = tree.append_effect_node_under(
@@ -2734,9 +2736,18 @@ mod tests {
                 .iter()
                 .any(|layer| matches!(layer.identity, LayerIdentity::Media { .. }))
         );
-        let tiles_keyed = tiles_keyed_in_frames_with_a_new_canvas_generation(&list_with_canvas_in_filter, &tree, 1);
-        assert!(tiles_keyed[0] > 0);
-        assert_eq!(tiles_keyed[1..], [tiles_keyed[0], tiles_keyed[0]]);
+        let frames = tiles_keyed_and_kept_in_frames_with_a_new_canvas_generation(&list_with_canvas_in_filter, &tree, 1);
+        assert!(frames[0].0 > 0);
+        assert_eq!([frames[1].0, frames[2].0], [frames[0].0, frames[0].0]);
+        let cell_drawing_the_canvas = cell_of(canvas_rect);
+        assert_eq!(
+            cells_whose_hashes_differ(&frames[0].1, &frames[1].1),
+            [cell_drawing_the_canvas]
+        );
+        assert_eq!(
+            cells_whose_hashes_differ(&frames[1].1, &frames[2].1),
+            [cell_drawing_the_canvas]
+        );
     }
 
     fn cells_whose_hashes_differ(
