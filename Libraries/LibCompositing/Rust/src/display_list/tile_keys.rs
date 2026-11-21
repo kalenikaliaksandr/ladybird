@@ -2930,12 +2930,12 @@ mod tests {
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{DeclareMaskContent, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
-    use crate::display_list::layers::{LayerIdentity, LayerStack, LayeringObstacles, SpaceToFrame};
+    use crate::display_list::layers::{LayerIdentity, LayerStack, LayeringObstacles, SpaceToFrame, WhyListIsOneLayer};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, animation_of, canvas, chunk_of, effects, fill, frosted_glass,
-        opacity_animation_of, raster_settings_hash_by_layer, transform_animation_of, tree_with_document_scroll,
-        tree_with_root_isolation_effect,
+        opacity_animation_of, raster_settings_hash_by_layer, transform, transform_animation_of,
+        tree_with_document_scroll, tree_with_root_isolation_effect,
     };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::host::FfiVisualAnimationTargetKind;
@@ -3488,6 +3488,60 @@ mod tests {
     }
 
     // A tree from another process can nest plain effects as deep as it likes, each clipped by a chain of clips as deep.
+    // A red plane in front of a blue plane that covers the viewport, though the red plane comes first in the list, as
+    // `transform-style: preserve-3d` and `translateZ()` make them, drawn as one layer.
+    #[test]
+    fn the_tiles_of_one_layer_over_planes_sorted_by_depth_replay_the_whole_list_and_have_no_coverage_known() {
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
+        let context_root = tree.append_spatial(
+            SpatialData::Transform(TransformData {
+                establishes_sorting_context: true,
+                ..transform(VIEWPORT.to_float())
+            }),
+            viewport.spatial,
+        );
+        let mut plane_at = |matrix: FloatMatrix4x4| ContextRef {
+            spatial: tree.append_spatial(
+                SpatialData::Transform(TransformData {
+                    matrix,
+                    sorting_context_root_index: Some(context_root),
+                    ..transform(VIEWPORT.to_float())
+                }),
+                context_root,
+            ),
+            ..viewport
+        };
+        let mut moved_forward = FloatMatrix4x4::identity();
+        moved_forward.elements[2][3] = 10.0;
+        let red_plane = plane_at(moved_forward);
+        let blue_plane = plane_at(FloatMatrix4x4::identity());
+        let display_list = ListOfOneChunk::default()
+            .with(fill(VIEWPORT, RED), red_plane)
+            .with(fill(VIEWPORT, BLUE), blue_plane)
+            .storage();
+        let stack = LayerStack::one_layer_replaying_whole_list(
+            VIEWPORT,
+            display_list.whole_span(),
+            Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
+            LayeringObstacles::of(&display_list, &tree),
+        );
+        assert!(one_layer_list_cannot_tell_which_records_show_in_tile(&stack));
+        let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
+        let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
+        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+        let mut band_tile_keys = raster_space.bind_band(&stack, BandIndex(0));
+        key_band(&raster_space, &mut band_tile_keys, &stack, BandIndex(0), VIEWPORT);
+        // Walked in list order from the opaque clear color, the blue fill would cover what the red plane draws.
+        let tile = band_tile_keys
+            .tile(TileCoord::new(0, 0), stack.base_layer)
+            .expect("the base layer holds a tile at every shown cell");
+        let white = Color::from_rgb(255, 255, 255);
+        assert_eq!(
+            raster_space.coverage_of_tile(&band_tile_keys, tile, tile.coord.cell_rect(), white),
+            TileCoverage::Unknown
+        );
+    }
+
     #[test]
     fn the_coverage_of_a_tile_under_deeply_nested_effects_and_clips_holds_what_its_fills_draw() {
         use crate::visual_context::VisualContextNodeSink;

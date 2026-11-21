@@ -1703,7 +1703,6 @@ impl ContextPresenting {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presenting::NoCompositedContexts;
     use libcompositing_rust::display_list::builder::DisplayListBuilder;
     use libcompositing_rust::display_list::commands::{
         ContextRef, EffectNodeIndex, FillRect, SpatialNodeIndex, VISUAL_VIEWPORT_NODE_INDEX,
@@ -1902,62 +1901,11 @@ mod tests {
 
     // A frame is not drawn as planned at a pinch, at a resize, or under the raster transform of a nested context.
     #[test]
-    fn the_tiles_of_a_frame_not_drawn_as_planned_show_planes_sorted_by_depth() {
+    fn frames_not_drawn_as_planned_look_at_a_list_and_a_tree_once_for_what_keeps_tiles_from_replaying_part_of_it() {
         let (tree, display_list) = planes_sorted_by_depth();
-        assert!(tree.may_sort_planes_by_depth());
         let mut layers = ContextLayers::default();
         let not_as_planned = WhyListIsOneLayer::FrameIsNotDrawnAsPlanned;
         let stack = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT, not_as_planned);
-        let no_live_content = LiveContentVersionsOfFrame {
-            live_content: &LiveContent::default(),
-            nested_contexts: &NoCompositedContexts,
-        };
-        let list_keying = TileKeyingOfList::new(
-            display_list.storage(),
-            &tree,
-            &stack,
-            FrameStateReadByReplay {
-                scrollbars: &[],
-                time_ns: 0,
-                live_content: &no_live_content,
-            },
-        );
-        let spaces = RasterSpaces::of_spaces(&tree, stack.spaces.clone());
-        let geometry = RasterSpaceGeometry::new(
-            &tree,
-            &spaces,
-            RasterSpaceIndex::VIEWPORT,
-            &[],
-            FloatMatrix4x4::identity(),
-            &WhatEverySpaceOfTreeShares::of(&tree),
-        );
-        let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
-        let white = Color::from_rgb(255, 255, 255);
-        let mut band_tile_keys = raster_space.bind_band(&stack, BandIndex(0));
-        raster_space.key_shown_tiles(
-            &mut band_tile_keys,
-            &stack,
-            BandIndex(0),
-            &[LayerRasterSettings {
-                raster_space_identity: 0,
-                clear_color: white,
-                root_group_color: Color::TRANSPARENT,
-                viewport_to_raster_transform: FloatMatrix4x4::identity(),
-                allows_lcd_text: false,
-            }
-            .content_hash()],
-            VIEWPORT,
-            VIEWPORT,
-            None,
-        );
-        // Walked in list order from the opaque clear color, the blue fill would cover what the red plane draws.
-        let tile = band_tile_keys
-            .tile(TileCoord::new(0, 0), stack.base_layer)
-            .expect("the base layer holds a tile at every shown cell");
-        assert_eq!(
-            raster_space.coverage_of_tile(&band_tile_keys, tile, tile.coord.cell_rect(), white),
-            TileCoverage::Unknown
-        );
         assert!(one_layer_list_cannot_tell_which_records_show_in_tile(&stack));
 
         // The list and the tree are looked at once for the frames that draw them.
