@@ -926,7 +926,7 @@ mod tests {
         opacity_animation_of, raster_settings_hash_by_layer, scroll_node, scroll_record, spinning, transform,
         tree_with_document_scroller, tree_with_root_isolation_effect,
     };
-    use crate::display_list::tile_keys::{BandTileKeys, TileKeyingOfList, TileKeyingOfRasterSpace};
+    use crate::display_list::tile_keys::{TileKeyingOfList, TileKeyingOfRasterSpace};
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
     use crate::visual_context::{CompositorScrollTable, EffectNodeData, EffectsData, SpatialData, StickyData};
@@ -2261,9 +2261,8 @@ mod tests {
                 .composite_clip_of_layer_in_viewport(band.layer_below_all_cuts, &composite_offsets)
                 .map_or(VIEWPORT, |clip| VIEWPORT.intersected(clip));
             let shown_rect = spaces_to_frame[space_index.0].rect_in_space(shown_in_viewport);
-            let mut band_tile_keys = BandTileKeys::default();
+            let mut band_tile_keys = tile_keying.bind_band(stack, band_index);
             for _ in 0..2 {
-                tile_keying.bind_band(&mut band_tile_keys, stack, band_index);
                 tile_keying.key_shown_tiles(
                     &mut band_tile_keys,
                     stack,

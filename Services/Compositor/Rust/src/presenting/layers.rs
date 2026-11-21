@@ -162,18 +162,9 @@ impl LayerCompositingInFrame {
 }
 
 /// The tile keys of a band of the stack of frames, and the geometry they were bound with besides the list of the stack.
-#[derive(Default)]
 struct BandTileKeysOfFrame {
-    geometry_bound_with: Option<Rc<RasterSpaceGeometry>>,
+    geometry: Rc<RasterSpaceGeometry>,
     tile_keys: BandTileKeys,
-}
-
-impl BandTileKeysOfFrame {
-    fn bound_geometry(&self) -> &RasterSpaceGeometry {
-        self.geometry_bound_with
-            .as_ref()
-            .expect("the tile keys of a band of a frame are bound")
-    }
 }
 
 /// What a frame paints of its layers: where it composites them, the tiles it shows of each, and the media and composited
@@ -241,7 +232,8 @@ struct StackOfFrames {
     /// With the copy of the tree without the samples of the compositor's animations it was worked out of, as it reads
     /// no sample.
     what_every_space_of_tree_shares: Option<(u64, Rc<WhatEverySpaceOfTreeShares>)>,
-    /// By band index, the tile keys of the bands as the latest frame drawn with the stack keyed its tiles, painted or not.
+    /// By band index, the tile keys of the bands as the latest frame drawn with the stack keyed its tiles, painted or not,
+    /// or none for a band no frame has bound yet.
     band_tile_keys: Vec<Option<BandTileKeysOfFrame>>,
     /// What the layers overlay calls the layers whose names it shows, worked out by the first frame that shows each.
     names_of_layers_for_overlay: RefCell<HashMap<LayerIndex, Rc<str>>>,
@@ -274,9 +266,7 @@ impl StackOfFrames {
         };
         Self {
             layer_plan,
-            band_tile_keys: (0..stack.bands.len())
-                .map(|_| Some(BandTileKeysOfFrame::default()))
-                .collect(),
+            band_tile_keys: (0..stack.bands.len()).map(|_| None).collect(),
             stack,
             display_list: Rc::downgrade(display_list),
             viewport_to_raster_transform,
@@ -1061,7 +1051,6 @@ impl ContextPresenting {
             })
             .collect();
 
-        let mut band_tile_keys_by_band = std::mem::take(&mut stack_of_frames.band_tile_keys);
         let composited_filter_read_reach_by_layer = composited_filter_read_reach_by_layer(stack, tree, &geometries);
         let mut work_counts = FrameWorkCounts::default();
         let mut shown_tiles_by_layer: Vec<Vec<TileShownInFrame>> =
@@ -1073,7 +1062,6 @@ impl ContextPresenting {
         let mut frame_shows_too_many_tiles = false;
         for (band_position, band) in stack.bands.iter().enumerate() {
             let band_index = BandIndex(band_position);
-            let band_tile_keys_of_latest_frame = band_tile_keys_by_band[band_position].take();
             if !stack.band_has_layer_at_or_above_base_layer(band_index) {
                 continue;
             }
@@ -1084,18 +1072,17 @@ impl ContextPresenting {
             let composited_filter_read_reach = composited_filter_read_reach_by_layer[band.layer_below_all_cuts.0];
             let shown_rect = compositing_of_layer_below_all_cuts
                 .rect_shown_in_layer_space(viewport_rect, composited_filter_read_reach);
-            let mut band_tile_keys =
-                band_tile_keys_of_latest_frame.expect("a band at or above the base layer keeps its tile keys");
             // Frames drawn with one stack draw one list, so the tile keys of the band are bound to the list and the band
             // of the frame.
-            let still_bound_to_same_geometry = band_tile_keys
-                .geometry_bound_with
-                .as_ref()
-                .is_some_and(|geometry| Rc::ptr_eq(geometry, &geometries[raster_space_index.0]));
-            if !still_bound_to_same_geometry {
-                tile_keying.bind_band(&mut band_tile_keys.tile_keys, stack, band_index);
-                band_tile_keys.geometry_bound_with = Some(geometries[raster_space_index.0].clone());
-            }
+            let geometry = &geometries[raster_space_index.0];
+            let band_tile_keys_slot = &mut stack_of_frames.band_tile_keys[band_position];
+            let band_tile_keys = match band_tile_keys_slot {
+                Some(band_tile_keys) if Rc::ptr_eq(&band_tile_keys.geometry, geometry) => band_tile_keys,
+                _ => band_tile_keys_slot.insert(BandTileKeysOfFrame {
+                    geometry: geometry.clone(),
+                    tile_keys: tile_keying.bind_band(stack, band_index),
+                }),
+            };
             let keying_counts = tile_keying.key_shown_tiles(
                 &mut band_tile_keys.tile_keys,
                 stack,
@@ -1159,13 +1146,10 @@ impl ContextPresenting {
                     coverage,
                 });
             }
-            band_tile_keys_by_band[band_position] = Some(band_tile_keys);
             if frame_shows_too_many_tiles {
                 break;
             }
         }
-        // The frame paints its tiles from the stack, which keeps the tile keys where the frame is not painted.
-        stack_of_frames.band_tile_keys = band_tile_keys_by_band;
         if frame_shows_too_many_tiles {
             return None;
         }
@@ -1480,7 +1464,7 @@ impl ContextPresenting {
                 let band_tile_keys = stack_of_frames.band_tile_keys[layer.band_index.0]
                     .as_ref()
                     .expect("a band with shown tiles has tile keys");
-                let geometry = band_tile_keys.bound_geometry();
+                let geometry = &band_tile_keys.geometry;
                 let record_spans = band_tile_keys
                     .tile_keys
                     .record_spans_of_tiles(tiles_replayed.iter().map(|tile| {
@@ -1955,8 +1939,7 @@ mod tests {
         );
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
         let white = Color::from_rgb(255, 255, 255);
-        let mut band_tile_keys = BandTileKeys::default();
-        raster_space.bind_band(&mut band_tile_keys, &stack, BandIndex(0));
+        let mut band_tile_keys = raster_space.bind_band(&stack, BandIndex(0));
         raster_space.key_shown_tiles(
             &mut band_tile_keys,
             &stack,
