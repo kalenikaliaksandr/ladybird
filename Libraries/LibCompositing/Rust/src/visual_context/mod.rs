@@ -1472,8 +1472,9 @@ impl VisualContextTree {
 
     /// Per spatial node, the root of the outermost 3D sorting context around the content of the node, where some
     /// plane of that context or of one inside it leaves the plane of its context at some sample of the animations of
-    /// the tree, so that the content is sorted by depth with the rest of the context. Every sample of the tree has the
-    /// same roots.
+    /// the tree, so that the content is sorted by depth with the rest of the context. The samples of the tree have the
+    /// same roots, unless a transform animation animates a plane whose matrix in the tree leaves the plane of its
+    /// context while the values of the animation stay in it.
     pub fn roots_of_contexts_sorting_planes_by_depth(&self) -> Vec<Option<SpatialNodeIndex>> {
         let mut root_of_outermost_context: Vec<Option<SpatialNodeIndex>> = vec![None; self.spatial_nodes.len()];
         if !self.may_sort_planes_by_depth() {

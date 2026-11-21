@@ -143,6 +143,19 @@ impl VisualContextTree {
             .unwrap_or(false)
     }
 
+    /// Whether a transform animation of the tree animates a plane of a 3D sorting context, whose samples can hold the
+    /// plane in the plane of its context where the tree turns it out of it, or the other way around.
+    pub fn transform_animation_animates_plane_of_sorting_context(&self) -> bool {
+        self.visual_animations
+            .iter()
+            .filter(|animation| animation.target_kind == FfiVisualAnimationTargetKind::Transform)
+            .flat_map(|animation| animation.node_indices.iter())
+            .any(|&node_index| {
+                matches!(self.spatial_nodes.get(node_index as usize).map(|node| &node.data),
+                    Some(SpatialData::Transform(transform)) if transform.sorting_context_root_index.is_some())
+            })
+    }
+
     pub fn shared_visual_animations(&self) -> std::sync::Arc<[VisualAnimation]> {
         self.visual_animations.clone()
     }

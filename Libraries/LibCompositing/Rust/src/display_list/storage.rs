@@ -251,8 +251,9 @@ pub struct DisplayListStorage {
     // Lists replay against trees of one structural epoch only, so one plan serves every replay.
     effect_clip_plan: OnceLock<EffectClipPlan>,
     // One epoch fixes the tree structure run groups follow, but transforms decide which 3D sorting contexts sort their
-    // planes by depth. Every sample of a tree sorts the same contexts, so the groups are kept with the copy of the tree
-    // without the samples of the compositor's animations that they were found to hold for.
+    // planes by depth. The samples of a tree sort the same contexts unless a transform animation animates a plane of
+    // one, so the groups are kept with the copy of the tree without the samples of the compositor's animations that
+    // they were found to hold for, and found to hold again only for the samples of such an animation.
     cached_run_groups: Mutex<Option<(u64, Arc<RunGroups>)>>,
     summary: OnceLock<DisplayListSummary>,
 }
@@ -465,7 +466,8 @@ impl DisplayListStorage {
         let mut cached_run_groups = self.cached_run_groups.lock().unwrap_or_else(PoisonError::into_inner);
         let tree_copy_without_animation_samples = tree.copy_without_animation_samples();
         if let Some((tree_copy, run_groups)) = cached_run_groups.as_mut()
-            && (*tree_copy == tree_copy_without_animation_samples
+            && ((*tree_copy == tree_copy_without_animation_samples
+                && !tree.transform_animation_animates_plane_of_sorting_context())
                 || run_groups.match_depth_sorting_roots(&tree.roots_of_contexts_sorting_planes_by_depth()))
         {
             *tree_copy = tree_copy_without_animation_samples;
@@ -870,5 +872,60 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn a_plane_the_tree_turns_out_of_its_context_is_sorted_by_depth_in_a_sample_its_planar_animation_leaves_alone() {
+        use crate::animation_timing::TimeValue;
+        use crate::display_list::test_fixtures::{
+            GREEN, ListOfOneChunk, fill, transform, transform_animation_of, tree_with_root_isolation_effect,
+        };
+        use crate::host::FfiVisualAnimationTransformOperationKind;
+        use crate::visual_context::{SpatialData, TransformData};
+
+        let element = IntRect::new(50, 50, 100, 100);
+        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
+        let context_root = tree.append_spatial(
+            SpatialData::Transform(TransformData {
+                establishes_sorting_context: true,
+                ..transform(element.to_float())
+            }),
+            viewport.spatial,
+        );
+        let turned_plane = tree.append_spatial(
+            SpatialData::Transform(TransformData {
+                matrix: libgfx_rust::rotation_matrix([0.0, 1.0, 0.0], 30f32.to_radians()),
+                sorting_context_root_index: Some(context_root),
+                ..transform(element.to_float())
+            }),
+            context_root,
+        );
+        let mut slide_in_the_plane = transform_animation_of(
+            turned_plane,
+            FfiVisualAnimationTransformOperationKind::TranslateX,
+            0.0,
+            100.0,
+        );
+        slide_in_the_plane.timing.start_delay = TimeValue::milliseconds(200.0);
+        slide_in_the_plane.timing.iteration_count = 1.0;
+        tree.set_visual_animations(vec![slide_in_the_plane]);
+        let storage = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 200, 200), GREEN), viewport)
+            .with(
+                fill(element, GREEN),
+                ContextRef {
+                    spatial: turned_plane,
+                    ..viewport
+                },
+            )
+            .storage();
+
+        let sliding = tree.with_visual_animation_samples(450_000_000);
+        assert!(!sliding.sorts_planes_by_depth());
+        assert!(!storage.run_groups(&sliding).run_is_sorted_by_depth(1));
+
+        let before_the_slide = tree.with_visual_animation_samples(0);
+        assert!(before_the_slide.sorts_planes_by_depth());
+        assert!(storage.run_groups(&before_the_slide).run_is_sorted_by_depth(1));
     }
 }
