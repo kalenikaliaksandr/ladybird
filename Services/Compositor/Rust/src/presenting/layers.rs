@@ -36,7 +36,7 @@ use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::{CompositeClipsOfRaster, ReplaySelection};
 use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
-    TileKeyingOfList, TileKeyingOfRasterSpace,
+    TileKeyingOfList, TileKeyingOfRasterSpace, one_layer_list_cannot_tell_which_records_show_in_tile,
 };
 use libcompositing_rust::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
 use libcompositing_rust::scrolling::DisplayList;
@@ -1443,6 +1443,7 @@ impl ContextPresenting {
             .as_ref()
             .expect("a frame with layers has a stack");
         let stack = stack_of_frames.stack.as_ref();
+        let tiles_replay_the_whole_list = one_layer_list_cannot_tell_which_records_show_in_tile(stack);
         let mut rects_painted_straight = Vec::new();
         for compositing in &layer_update.layers.compositing_of_layers {
             let layer_index = compositing.layer_index;
@@ -1465,16 +1466,18 @@ impl ContextPresenting {
                     .as_ref()
                     .expect("a band with shown tiles has tile keys");
                 let geometry = &band_tile_keys.geometry;
-                let record_spans = band_tile_keys
-                    .tile_keys
-                    .record_spans_of_tiles(tiles_replayed.iter().map(|tile| {
-                        band_tile_keys
-                            .tile_keys
-                            .tile(tile.coord, layer_index)
-                            .expect("a shown tile is keyed")
-                    }));
+                let record_spans = (!tiles_replay_the_whole_list).then(|| {
+                    band_tile_keys
+                        .tile_keys
+                        .record_spans_of_tiles(tiles_replayed.iter().map(|tile| {
+                            band_tile_keys
+                                .tile_keys
+                                .tile(tile.coord, layer_index)
+                                .expect("a shown tile is keyed")
+                        }))
+                });
                 let selection = ReplaySelection {
-                    record_spans: (!band_tile_keys.tile_keys.replays_whole_list).then_some(&record_spans[..]),
+                    record_spans: record_spans.as_deref(),
                     clips_left_to_composite: (!geometry.clips_left_to_composite.is_empty())
                         .then_some(&geometry.clips_left_to_composite[..]),
                     composited_effect: stack.nodes[layer.placement_node_index.0].composited_effect,
@@ -1964,7 +1967,7 @@ mod tests {
             raster_space.coverage_of_tile(&band_tile_keys, tile, tile.coord.cell_rect(), white),
             TileCoverage::Unknown
         );
-        assert!(band_tile_keys.replays_whole_list);
+        assert!(one_layer_list_cannot_tell_which_records_show_in_tile(&stack));
 
         // The list and the tree are looked at once for the frames that draw them.
         let obstacles_of_list_and_tree = stack.layering_obstacles;

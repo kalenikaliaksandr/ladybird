@@ -355,7 +355,6 @@ pub struct TileKeyingOfList<'a> {
     filters_inside_composited_effects: FiltersOfEffects,
     replays_every_record_into_every_tile: bool,
     tree_sorts_planes_by_depth: bool,
-    one_layer_list_cannot_tell_which_records_show_in_tile: bool,
     frame_state_hash: ContentHash,
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
     /// Per effect, the nearest effect at or around it that the compositor composites or that is not a plain group,
@@ -364,6 +363,12 @@ pub struct TileKeyingOfList<'a> {
     /// Per effect, the nearest effect at or around it that the compositor composites or whose blend mode can lower the
     /// alpha of what is below it, once the coverage of a tile asks.
     nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell<Vec<EffectNodeIndex>>,
+}
+
+/// Whether every tile of `stack` replays the whole list: a stack of one layer whose tree sorts planes by depth cannot
+/// tell which records show in a tile.
+pub fn one_layer_list_cannot_tell_which_records_show_in_tile(stack: &LayerStack) -> bool {
+    stack.replays_whole_list() && stack.layering_obstacles.sorts_planes_by_depth
 }
 
 impl<'a> TileKeyingOfList<'a> {
@@ -383,8 +388,6 @@ impl<'a> TileKeyingOfList<'a> {
         let innermost_composited_effect_by_effect_index =
             nearest_effects_at_or_above_where(tree, |effect, _| is_composited_by_effect_index[effect.0 as usize]);
         let filters_of_effects = FiltersOfEffects::of(tree, None, false);
-        let one_layer_list_cannot_tell_which_records_show_in_tile =
-            stack.replays_whole_list() && layering_obstacles.sorts_planes_by_depth;
         Self {
             display_list,
             run_groups,
@@ -400,9 +403,8 @@ impl<'a> TileKeyingOfList<'a> {
             },
             filters_of_effects,
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
-                || one_layer_list_cannot_tell_which_records_show_in_tile,
+                || one_layer_list_cannot_tell_which_records_show_in_tile(stack),
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
-            one_layer_list_cannot_tell_which_records_show_in_tile,
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
             innermost_composited_effect_by_effect_index,
             nearest_composited_or_not_plain_effect_by_effect_index: OnceCell::new(),
@@ -977,7 +979,6 @@ pub struct BandTileKeys {
     cells_looked_at: CellRange,
     bound_band: BandBoundToListAndGeometry,
     values_of_frame_tiles_were_keyed_with: Option<ValuesOfFrameThatTilesOfBandRead>,
-    pub replays_whole_list: bool,
 }
 
 /// What the tiles of a band read of a frame besides the records they replay. A frame keys every tile of the band again
@@ -2700,7 +2701,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             cells_looked_at: CellRange::NONE,
             bound_band: self.bind_band_to_list_and_geometry(stack, band_index),
             values_of_frame_tiles_were_keyed_with: None,
-            replays_whole_list: self.list.one_layer_list_cannot_tell_which_records_show_in_tile,
         }
     }
 
