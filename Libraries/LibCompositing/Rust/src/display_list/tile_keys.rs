@@ -2833,25 +2833,42 @@ mod tests {
         );
     }
 
+    struct ListWithBoxWhoseAnimatedOpacityHasNoLayer {
+        display_list: Arc<DisplayListStorage>,
+        stack: LayerStack,
+        effect_without_layer: EffectNodeIndex,
+        band_of_box_without_layer: BandIndex,
+    }
+
+    const BOX_WHOSE_ANIMATED_OPACITY_HAS_NO_LAYER: IntRect = IntRect::new(600, 550, 20, 20);
+
     // The compositor gives layers of their own to the first effects in paint order whose opacity it animates, up to a
-    // limit, and tiles draw the opacity of the others.
-    #[test]
-    fn a_tile_kept_through_an_animation_sample_reads_the_sampled_opacity_of_an_effect_without_a_layer_again() {
+    // limit, and tiles draw the opacity of the others. The box of the last one is inside `around_box_without_layer`.
+    fn list_with_a_box_whose_animated_opacity_has_no_layer(
+        tree: &mut VisualContextTree,
+        root: ContextRef,
+        around_box_without_layer: ContextRef,
+    ) -> ListWithBoxWhoseAnimatedOpacityHasNoLayer {
         use crate::display_list::layers::planning::MAXIMUM_ANIMATED_NODES_WITH_LAYERS;
         use crate::visual_animation::VisualAnimation;
-        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
         let faded: Vec<ContextRef> = (0..=MAXIMUM_ANIMATED_NODES_WITH_LAYERS)
-            .map(|_| tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal)))
+            .map(|index| {
+                let parent = if index == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
+                    around_box_without_layer
+                } else {
+                    root
+                };
+                tree.append_effect_node_under(parent, effects(1.0, CompositingAndBlendingOperator::Normal))
+            })
             .collect();
         tree.set_visual_animations(vec![VisualAnimation {
             node_indices: faded.iter().map(|context| context.effect.0).collect(),
             ..opacity_animation_of(faded[0].effect, 1.0, 0.2)
         }]);
-        let box_without_layer = IntRect::new(600, 520, 20, 20);
         let mut chunks = vec![chunk_of(fill(VIEWPORT, GREEN), root)];
         chunks.extend(faded.iter().enumerate().map(|(index, &context)| {
             let rect = if index == MAXIMUM_ANIMATED_NODES_WITH_LAYERS {
-                box_without_layer
+                BOX_WHOSE_ANIMATED_OPACITY_HAS_NO_LAYER
             } else {
                 IntRect::new(10 + 12 * index as i32, 10, 10, 10)
             };
@@ -2879,12 +2896,113 @@ mod tests {
                 })
                 .expect("a band holds the box"),
         );
+        ListWithBoxWhoseAnimatedOpacityHasNoLayer {
+            display_list,
+            stack,
+            effect_without_layer,
+            band_of_box_without_layer,
+        }
+    }
+
+    #[test]
+    fn a_tile_kept_through_an_animation_sample_reads_the_sampled_opacity_of_an_effect_without_a_layer_again() {
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
+        let list = list_with_a_box_whose_animated_opacity_has_no_layer(&mut tree, root, root);
+        assert_only_the_cell_drawing_the_sampled_value_gets_a_new_hash(
+            &list.display_list,
+            &list.stack,
+            list.band_of_box_without_layer,
+            &tree,
+            cell_of(BOX_WHOSE_ANIMATED_OPACITY_HAS_NO_LAYER),
+        );
+    }
+
+    #[test]
+    fn a_kept_tile_reads_the_sampled_opacity_of_an_effect_without_a_layer_inside_a_blur_again() {
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
+        let blurred = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: Some(Arc::new(libgfx_rust::filter::Filter::blur(4.0, 4.0, None).serialize())),
+                backdrop_filter: None,
+            }),
+        );
+        let list = list_with_a_box_whose_animated_opacity_has_no_layer(&mut tree, root, blurred);
+        let list_keying = TileKeyingOfList::new(&list.display_list, &tree, &list.stack, NO_FRAME_STATE);
+        assert_eq!(
+            list_keying
+                .filters_of_effects
+                .nearest_spreading_effect_at_or_above(list.effect_without_layer),
+            blurred.effect
+        );
+        assert_only_the_cell_drawing_the_sampled_value_gets_a_new_hash(
+            &list.display_list,
+            &list.stack,
+            list.band_of_box_without_layer,
+            &tree,
+            cell_of(BOX_WHOSE_ANIMATED_OPACITY_HAS_NO_LAYER),
+        );
+    }
+
+    // An effect that holds a backdrop filter gets no layer for the animation of its opacity.
+    #[test]
+    fn a_kept_tile_with_no_raster_margin_known_reads_the_sampled_opacity_of_an_effect_without_a_layer_again() {
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
+        let faded = tree.append_effect_node_under(root, effects(1.0, CompositingAndBlendingOperator::Normal));
+        tree.set_visual_animations(vec![opacity_animation_of(faded.effect, 1.0, 0.2)]);
+        let region_of_glass = IntRect::new(590, 540, 40, 40);
+        let blur_radius_past_largest_raster_margin = LARGEST_RASTER_MARGIN_IN_DEVICE_PIXELS as f32;
+        let glass = tree.append_effect_node_under(
+            faded,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: None,
+                backdrop_filter: Some(crate::visual_context::BackdropFilterData {
+                    filter: Arc::new(
+                        libgfx_rust::filter::Filter::blur(
+                            blur_radius_past_largest_raster_margin,
+                            blur_radius_past_largest_raster_margin,
+                            None,
+                        )
+                        .serialize(),
+                    ),
+                    region: region_of_glass,
+                    corner_radii: CornerRadii::default(),
+                }),
+            }),
+        );
+        let display_list = DisplayListStorage::of_chunks(vec![
+            chunk_of(fill(VIEWPORT, GREEN), root),
+            chunk_of(fill(BOX_WHOSE_ANIMATED_OPACITY_HAS_NO_LAYER, BLUE), faded),
+            chunk_of(fill(region_of_glass, BLUE), glass),
+        ])
+        .unwrap();
+        let stack = stack_of(&display_list, &tree.with_visual_animation_samples(0));
+        assert!(stack.composited_effects.is_empty());
+        let (band_tile_keys, _) = band_tile_keys_after_frames_showing(
+            (&display_list, &tree, &stack),
+            RasterSpaceIndex::VIEWPORT,
+            BandIndex(0),
+            &[VIEWPORT],
+        );
+        let cell_of_box = cell_of(BOX_WHOSE_ANIMATED_OPACITY_HAS_NO_LAYER);
+        assert_eq!(
+            band_tile_keys
+                .tile(cell_of_box, stack.base_layer)
+                .map(|tile| tile.raster_margin_in_device_pixels),
+            Some(None)
+        );
         assert_only_the_cell_drawing_the_sampled_value_gets_a_new_hash(
             &display_list,
             &stack,
-            band_of_box_without_layer,
+            BandIndex(0),
             &tree,
-            cell_of(box_without_layer),
+            cell_of_box,
         );
     }
 
