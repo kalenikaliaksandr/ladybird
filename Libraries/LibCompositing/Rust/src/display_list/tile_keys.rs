@@ -2267,36 +2267,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         coverage
     }
 
-    fn content_hash_of_tile(
-        &self,
-        bound_band: &BandBoundToListAndGeometry,
-        tile: &KeyedTile,
-        raster_settings_hash: ContentHash,
-        frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
-        mut near_area: Option<&mut ContentHashesNearArea>,
-    ) -> ContentHash {
-        let mut hasher = ContentHasher::new();
-        hasher.write_content_hash(raster_settings_hash);
-        hasher.write_i32(tile.coord.column);
-        hasher.write_i32(tile.coord.row);
-        hasher.write_bool(self.list.replays_every_record_into_every_tile);
-        match frame_edge_backdrop_blurs_mirror_at {
-            Some(frame) => hasher.write_int_rect(frame),
-            None => hasher.write_u32(0),
-        }
-        for &item in &tile.replay_items_in_paint_order {
-            hasher.write_content_hash(self.content_hash_of_replay_item(bound_band, item, near_area.as_deref_mut()));
-            // Depth-sorted planes replay in an order their sorting context decides.
-            if self.list.tree_sorts_planes_by_depth
-                && let Some(root) = self.root_of_context_sorting_item_by_depth(bound_band, item)
-            {
-                hasher.write_u32(1);
-                hasher.write_u32(root.map_or(u32::MAX, |root| root.0));
-            }
-        }
-        hasher.finish()
-    }
-
     fn item_replaying_record(
         &self,
         bound_band: &BandBoundToListAndGeometry,
@@ -2723,12 +2693,11 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             .cells_looked_at
             .intersected(CellRange::touched_by(kept_rect));
         let bound_band = &band_tile_keys.bound_band;
-        let base_layer = (stack.base_layer == band.layer_below_all_cuts).then_some(stack.base_layer);
         let new_coords = coords_to_key(
             &mut band_tile_keys.cells,
             &mut band_tile_keys.cells_looked_at,
             bound_band,
-            base_layer.is_some(),
+            stack.base_layer == band.layer_below_all_cuts,
             shown_rect,
         );
 
@@ -2753,29 +2722,38 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             != Some(values_of_frame)
         {
             for (coord, tiles) in &mut band_tile_keys.cells {
-                let frame_edge_backdrop_blurs_mirror_at = bound_band
-                    .backdrop_reads
-                    .frame_edge_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
-                // The tiles of a cell are keyed together, with one raster margin.
-                let mut near_area = tiles
-                    .first()
-                    .and_then(|tile| ContentHashesNearArea::of_cell(*coord, tile.raster_margin_in_device_pixels));
-                for tile in tiles {
-                    tile.content_hash = self.content_hash_of_tile(
-                        bound_band,
-                        tile,
-                        raster_settings_hash_by_layer[tile.layer_index.0],
-                        frame_edge_backdrop_blurs_mirror_at,
-                        near_area.as_mut(),
-                    );
-                    counts.tiles_keyed += 1;
-                }
+                counts.tiles_keyed +=
+                    self.key_tiles_of_cell(bound_band, *coord, tiles, raster_settings_hash_by_layer, frame);
             }
         }
 
         if new_coords.is_empty() {
             return counts;
         }
+        for (coord, mut tiles) in self.bin_new_cells(bound_band, stack, band_index, &new_coords) {
+            counts.tiles_keyed +=
+                self.key_tiles_of_cell(bound_band, coord, &mut tiles, raster_settings_hash_by_layer, frame);
+            let band_holds_something_in_cell = !tiles.is_empty();
+            if band_holds_something_in_cell {
+                counts.cells_binned += 1;
+            }
+            band_tile_keys.cells.insert(coord, tiles);
+        }
+        counts
+    }
+
+    /// The tiles of the band at each of `new_coords`, not hashed yet: each replay item of the band that reaches a cell
+    /// goes into the layer of the band its paint position falls in there, and the base layer, if it is the band's layer
+    /// below all cuts, holds every cell.
+    fn bin_new_cells(
+        &self,
+        bound_band: &BandBoundToListAndGeometry,
+        stack: &LayerStack,
+        band_index: BandIndex,
+        new_coords: &[TileCoord],
+    ) -> Vec<(TileCoord, Vec<KeyedTile>)> {
+        let band = &stack.bands[band_index.0];
+        let base_layer = (stack.base_layer == band.layer_below_all_cuts).then_some(stack.base_layer);
         let new_cells_area = new_coords
             .iter()
             .fold(IntRect::default(), |cells, coord| cells.united(coord.cell_rect()));
@@ -2860,65 +2838,90 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             }
         }
 
-        for (coord, bin) in bins {
-            let BinOfCell {
-                cuts: cuts_of_cell,
-                items_by_layer: mut bin,
-                ..
-            } = bin;
-            // The base layer is the band's layer below all cuts.
-            if let Some(base_layer) = base_layer
-                && !bin.iter().any(|(layer_index, _, _)| *layer_index == base_layer)
-            {
-                bin.push((base_layer, Vec::new(), HashSet::new()));
+        bins.into_iter()
+            .map(|(coord, bin)| {
+                let BinOfCell {
+                    cuts: cuts_of_cell,
+                    items_by_layer: mut bin,
+                    ..
+                } = bin;
+                // The base layer is the band's layer below all cuts.
+                if let Some(base_layer) = base_layer
+                    && !bin.iter().any(|(layer_index, _, _)| *layer_index == base_layer)
+                {
+                    bin.push((base_layer, Vec::new(), HashSet::new()));
+                }
+                let cell = coord.cell_rect();
+                let raster_margin_in_device_pixels = bound_band.backdrop_reads.raster_margin_of_cell(cell);
+                let cuts = cuts_of_cell.barrier_cuts();
+                let tiles = bin
+                    .into_iter()
+                    .map(|(layer_index, mut items_of_layer, _)| {
+                        items_of_layer.sort_unstable_by_key(|(paint_position, item, _)| (*paint_position, *item));
+                        items_of_layer.dedup_by_key(|(_, item, _)| *item);
+                        let content_bounds =
+                            items_of_layer
+                                .iter()
+                                .fold(IntRect::default(), |bounds, (_, _, reach)| match reach {
+                                    Reach::Within(rect) => bounds.united(rect.intersected(cell)),
+                                    Reach::Anywhere => cell,
+                                    Reach::Nothing => bounds,
+                                });
+                        KeyedTile {
+                            layer_index,
+                            coord,
+                            content_hash: 0,
+                            raster_margin_in_device_pixels,
+                            cuts: cuts.clone(),
+                            content_bounds,
+                            replay_items_in_paint_order: items_of_layer.into_iter().map(|(_, item, _)| item).collect(),
+                        }
+                    })
+                    .collect();
+                (coord, tiles)
+            })
+            .collect()
+    }
+
+    /// Hashes the tiles of the cell at `coord`, which are keyed together with one raster margin, and returns how many it
+    /// hashed.
+    fn key_tiles_of_cell(
+        &self,
+        bound_band: &BandBoundToListAndGeometry,
+        coord: TileCoord,
+        tiles: &mut [KeyedTile],
+        raster_settings_hash_by_layer: &[ContentHash],
+        frame: Option<IntRect>,
+    ) -> usize {
+        let frame_edge_backdrop_blurs_mirror_at = bound_band
+            .backdrop_reads
+            .frame_edge_blurs_of_cell_mirror_at(coord.cell_rect(), frame);
+        let mut near_area = tiles
+            .first()
+            .and_then(|tile| ContentHashesNearArea::of_cell(coord, tile.raster_margin_in_device_pixels));
+        for tile in tiles.iter_mut() {
+            let mut hasher = ContentHasher::new();
+            hasher.write_content_hash(raster_settings_hash_by_layer[tile.layer_index.0]);
+            hasher.write_i32(coord.column);
+            hasher.write_i32(coord.row);
+            hasher.write_bool(self.list.replays_every_record_into_every_tile);
+            match frame_edge_backdrop_blurs_mirror_at {
+                Some(frame) => hasher.write_int_rect(frame),
+                None => hasher.write_u32(0),
             }
-            let cell = coord.cell_rect();
-            let raster_margin_in_device_pixels = bound_band.backdrop_reads.raster_margin_of_cell(cell);
-            let mut near_area = ContentHashesNearArea::of_cell(coord, raster_margin_in_device_pixels);
-            let cuts = cuts_of_cell.barrier_cuts();
-            let frame_edge_backdrop_blurs_mirror_at = bound_band
-                .backdrop_reads
-                .frame_edge_blurs_of_cell_mirror_at(cell, frame);
-            let mut tiles = Vec::with_capacity(bin.len());
-            for (layer_index, mut items_of_layer, _) in bin {
-                items_of_layer.sort_unstable_by_key(|(paint_position, item, _)| (*paint_position, *item));
-                items_of_layer.dedup_by_key(|(_, item, _)| *item);
-                let content_bounds =
-                    items_of_layer
-                        .iter()
-                        .fold(IntRect::default(), |bounds, (_, _, reach)| match reach {
-                            Reach::Within(rect) => bounds.united(rect.intersected(cell)),
-                            Reach::Anywhere => cell,
-                            Reach::Nothing => bounds,
-                        });
-                let replay_items_in_paint_order: Vec<TileReplayItem> =
-                    items_of_layer.into_iter().map(|(_, item, _)| item).collect();
-                let mut tile = KeyedTile {
-                    layer_index,
-                    coord,
-                    content_hash: 0,
-                    raster_margin_in_device_pixels,
-                    cuts: cuts.clone(),
-                    content_bounds,
-                    replay_items_in_paint_order,
-                };
-                tile.content_hash = self.content_hash_of_tile(
-                    bound_band,
-                    &tile,
-                    raster_settings_hash_by_layer[layer_index.0],
-                    frame_edge_backdrop_blurs_mirror_at,
-                    near_area.as_mut(),
-                );
-                tiles.push(tile);
-                counts.tiles_keyed += 1;
+            for &item in &tile.replay_items_in_paint_order {
+                hasher.write_content_hash(self.content_hash_of_replay_item(bound_band, item, near_area.as_mut()));
+                // Depth-sorted planes replay in an order their sorting context decides.
+                if self.list.tree_sorts_planes_by_depth
+                    && let Some(root) = self.root_of_context_sorting_item_by_depth(bound_band, item)
+                {
+                    hasher.write_u32(1);
+                    hasher.write_u32(root.map_or(u32::MAX, |root| root.0));
+                }
             }
-            let band_holds_something_in_cell = !tiles.is_empty();
-            if band_holds_something_in_cell {
-                counts.cells_binned += 1;
-            }
-            band_tile_keys.cells.insert(coord, tiles);
+            tile.content_hash = hasher.finish();
         }
-        counts
+        tiles.len()
     }
 }
 #[cfg(test)]
