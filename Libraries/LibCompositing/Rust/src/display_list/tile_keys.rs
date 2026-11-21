@@ -41,7 +41,6 @@ use super::summary::{LiveContent, command_blend, live_content_of};
 use super::tiles::{CellRange, TileCoord, entries_within, for_each_entry_within};
 use super::window_server_placement::RoundedRect;
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
-use crate::host::FfiVisualAnimationTargetKind;
 use crate::visual_context::{
     ClipData, ClipNode, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
 };
@@ -358,7 +357,6 @@ pub struct TileKeyingOfList<'a> {
     tree_sorts_planes_by_depth: bool,
     one_layer_list_cannot_tell_which_records_show_in_tile: bool,
     frame_state_hash: ContentHash,
-    sampled_values_tiles_draw: SampledValuesTilesDraw,
     innermost_composited_effect_by_effect_index: Vec<EffectNodeIndex>,
     /// Per effect, the nearest effect at or around it that the compositor composites or that is not a plain group,
     /// once the coverage of a tile asks.
@@ -366,81 +364,6 @@ pub struct TileKeyingOfList<'a> {
     /// Per effect, the nearest effect at or around it that the compositor composites or whose blend mode can lower the
     /// alpha of what is below it, once the coverage of a tile asks.
     nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell<Vec<EffectNodeIndex>>,
-}
-
-/// What tiles draw of the values that the compositor's animations take at the sample of a tree. A frame can keep the
-/// geometry of a space, and with it the binding of its bands, across samples, as where nothing moves within the space.
-struct SampledValuesTilesDraw {
-    hash: ContentHash,
-    /// Per effect, whether tiles draw a sampled opacity or filter where they draw content of the effect: that of the
-    /// effect or of an effect around it, up to the first one the compositor composites. Empty where tiles draw none.
-    effect_reads_sampled_value_by_effect_index: Vec<bool>,
-}
-
-impl SampledValuesTilesDraw {
-    fn of(tree: &VisualContextTree, innermost_composited_effect_by_effect_index: &[EffectNodeIndex]) -> Self {
-        let mut hasher = ContentHasher::new();
-        let mut effect_value_is_sampled_by_effect_index: Vec<bool> = Vec::new();
-        for animation in tree.visual_animations() {
-            for &node_index in &animation.node_indices {
-                let effect = EffectNodeIndex(node_index);
-                match animation.target_kind {
-                    FfiVisualAnimationTargetKind::BackgroundColor => {
-                        let sampled = tree.sampled_background_color(effect);
-                        hasher.write_u32(node_index);
-                        hasher.write_u32(sampled.map_or(u32::MAX, |color| color.0));
-                        hasher.write_bool(sampled.is_some());
-                    }
-                    FfiVisualAnimationTargetKind::Opacity | FfiVisualAnimationTargetKind::Filter => {
-                        let Some(EffectNodeData::Effects(effects)) =
-                            tree.effect_nodes.get(node_index as usize).map(|node| &node.data)
-                        else {
-                            continue;
-                        };
-                        // Compositing applies the opacity and the filter of an effect the compositor composites.
-                        if innermost_composited_effect_by_effect_index[node_index as usize] == effect {
-                            continue;
-                        }
-                        if effect_value_is_sampled_by_effect_index.is_empty() {
-                            effect_value_is_sampled_by_effect_index.resize(tree.effect_nodes.len(), false);
-                        }
-                        effect_value_is_sampled_by_effect_index[node_index as usize] = true;
-                        hasher.write_u32(node_index);
-                        hasher.write_f32(effects.opacity);
-                        match &effects.filter {
-                            Some(filter) => hasher.write_bytes(filter),
-                            None => hasher.write_u64(u64::MAX),
-                        }
-                    }
-                    FfiVisualAnimationTargetKind::Transform => {}
-                }
-            }
-        }
-        let mut effect_reads_sampled_value_by_effect_index = Vec::new();
-        if !effect_value_is_sampled_by_effect_index.is_empty() {
-            effect_reads_sampled_value_by_effect_index = vec![false; tree.effect_nodes.len()];
-            tree.visit_effect_nodes_parents_first(|index| {
-                let node = &tree.effect_nodes[index];
-                let tiles_draw_effect =
-                    innermost_composited_effect_by_effect_index[index] != EffectNodeIndex(index as u32);
-                effect_reads_sampled_value_by_effect_index[index] = tiles_draw_effect
-                    && (effect_value_is_sampled_by_effect_index[index]
-                        || (!node.parent.is_none()
-                            && effect_reads_sampled_value_by_effect_index[node.parent.0 as usize]));
-            });
-        }
-        Self {
-            hash: hasher.finish(),
-            effect_reads_sampled_value_by_effect_index,
-        }
-    }
-
-    fn effect_reads_sampled_value(&self, effect: EffectNodeIndex) -> bool {
-        self.effect_reads_sampled_value_by_effect_index
-            .get(effect.0 as usize)
-            .copied()
-            .unwrap_or(false)
-    }
 }
 
 impl<'a> TileKeyingOfList<'a> {
@@ -481,7 +404,6 @@ impl<'a> TileKeyingOfList<'a> {
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
             one_layer_list_cannot_tell_which_records_show_in_tile,
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
-            sampled_values_tiles_draw: SampledValuesTilesDraw::of(tree, &innermost_composited_effect_by_effect_index),
             innermost_composited_effect_by_effect_index,
             nearest_composited_or_not_plain_effect_by_effect_index: OnceCell::new(),
             nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell::new(),
@@ -862,7 +784,6 @@ struct PlacedRecordRange {
     begin_offset: u32,
     end_offset: u32,
     reach: Reach<IntRect>,
-    content_hash_without_frame_state: ContentHash,
     context: ContextRef,
     is_spread_by_no_filter: bool,
     device_aligned_fill: Option<DeviceAlignedFill>,
@@ -1064,7 +985,6 @@ pub struct BandTileKeys {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ValuesOfFrameThatTilesOfBandRead {
     frame_state_hash: Option<ContentHash>,
-    sampled_values_hash: ContentHash,
     tree_copy_number: u64,
     raster_settings_hash_of_layers_of_band: ContentHash,
     frame_edge_backdrop_blurs_mirror_at: Option<IntRect>,
@@ -1895,8 +1815,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             begin_offset: table.record(record_indices.start).offset,
             end_offset: table.record(RecordIndexInChunk(record_indices.end.0 - 1)).end_offset,
             reach,
-            content_hash_without_frame_state: self
-                .content_hash_of_records_without_frame_state(chunk, record_indices.clone()),
             context,
             is_spread_by_no_filter: !is_spread_by_filters,
             device_aligned_fill: is_one_record
@@ -2089,24 +2007,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 range_index,
             } => {
                 let range = bound_band.placed_record_range(chunk_index, range_index);
+                let record_indices = range.first_record_index..range.end_record_index;
                 let content_hash = match near_area {
                     Some(near_area) if range.is_spread_by_no_filter => {
                         self.content_hash_of_placed_range_near_area(chunk, range, near_area)
                     }
-                    // The range can be placed under the values of an earlier sample.
-                    _ if self
-                        .list
-                        .sampled_values_tiles_draw
-                        .effect_reads_sampled_value(range.context.effect) =>
-                    {
-                        self.content_hash_of_records_without_frame_state(
-                            chunk,
-                            range.first_record_index..range.end_record_index,
-                        )
-                    }
-                    _ => range.content_hash_without_frame_state,
+                    _ => self.content_hash_of_records_without_frame_state(chunk, record_indices.clone()),
                 };
-                (content_hash, range.first_record_index..range.end_record_index)
+                (content_hash, record_indices)
             }
             TileReplayItem::RecordSpan {
                 begin_offset,
@@ -2808,10 +2716,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
     /// Keys the tiles of the layers of `band_index` within `shown_rect` that are not keyed yet: each replay item of the
     /// band that reaches a tile goes into the layer of the band its paint position falls in there, and the base layer,
     /// if it is one of the band's, holds every tile. Every tile keyed before is keyed again where the frame state that
-    /// records of the band read, the values of the compositor's animations, the tree, the raster settings of a layer of the band, or the
-    /// edge of `frame` that its backdrop blurs mirror at changed, and those outside `kept_rect` are forgotten. `frame`
-    /// is where the frame is in the band's space, where that is not the frame's own. The band is bound to the list and
-    /// the geometry of the frame.
+    /// records of the band read, the tree, the raster settings of a layer of the band, or the edge of `frame` that its
+    /// backdrop blurs mirror at changed, and those outside `kept_rect` are forgotten. `frame` is where the frame is in
+    /// the band's space, where that is not the frame's own. The band is bound to the list and the geometry of the frame.
     ///
     /// Only the cells where the band can hold something are keyed, at most `MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME` of
     /// them, so the work and the tiles of a frame have a bound whatever rect of the space the frame shows.
@@ -2858,7 +2765,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             frame_state_hash: bound_band
                 .replays_records_reading_frame_state_hashed_for_the_list
                 .then_some(list.frame_state_hash),
-            sampled_values_hash: list.sampled_values_tiles_draw.hash,
             tree_copy_number: list.tree.copy.number(),
             raster_settings_hash_of_layers_of_band: raster_settings_hasher.finish(),
             frame_edge_backdrop_blurs_mirror_at: bound_band.backdrop_reads.frame_edge_blurs_mirror_at(frame),
@@ -3051,6 +2957,7 @@ mod tests {
         tree_with_root_isolation_effect,
     };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
+    use crate::host::FfiVisualAnimationTargetKind;
     use crate::visual_context::{EffectsData, SpatialData, TransformData, TransformDataRole};
     use libgfx_rust::{AffineTransform, CompositingAndBlendingOperator};
 
