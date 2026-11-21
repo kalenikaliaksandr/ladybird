@@ -36,7 +36,7 @@ use libcompositing_rust::display_list::reach::Reach;
 use libcompositing_rust::display_list::replay::{CompositeClipsOfRaster, ReplaySelection};
 use libcompositing_rust::display_list::tile_keys::{
     BandTileKeys, ContentHash, FrameStateReadByReplay, LayerRasterSettings, LiveContentVersions, TileCoverage,
-    TileKeyingOfList, TileKeyingOfRasterSpace, one_layer_list_cannot_tell_which_records_show_in_tile,
+    TileKeyingOfList, TileKeyingOfRasterSpace,
 };
 use libcompositing_rust::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
 use libcompositing_rust::scrolling::DisplayList;
@@ -1434,7 +1434,7 @@ impl ContextPresenting {
             .expect("a frame with layers has a stack");
         debug_assert!(Rc::ptr_eq(&layer_update.layers.stack, &stack_of_frames.stack));
         let stack = layer_update.layers.stack.as_ref();
-        let tiles_replay_the_whole_list = one_layer_list_cannot_tell_which_records_show_in_tile(stack);
+        let tiles_replay_the_whole_list = stack.one_layer_list_cannot_tell_which_records_show_in_tile();
         let mut rects_painted_straight = Vec::new();
         for compositing in &layer_update.layers.compositing_of_layers {
             let layer_index = compositing.layer_index;
@@ -1906,7 +1906,7 @@ mod tests {
         let mut layers = ContextLayers::default();
         let not_as_planned = WhyListIsOneLayer::FrameIsNotDrawnAsPlanned;
         let stack = layers.one_layer_stack_of_frame(&display_list, &tree, VIEWPORT, not_as_planned);
-        assert!(one_layer_list_cannot_tell_which_records_show_in_tile(&stack));
+        assert!(stack.one_layer_list_cannot_tell_which_records_show_in_tile());
 
         // The list and the tree are looked at once for the frames that draw them.
         let obstacles_of_list_and_tree = stack.layering_obstacles;

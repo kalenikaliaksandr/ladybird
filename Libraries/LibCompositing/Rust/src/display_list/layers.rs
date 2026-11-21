@@ -848,6 +848,12 @@ impl LayerStack {
         self.why_list_is_one_layer.is_some()
     }
 
+    /// Whether every tile replays the whole list: a stack of one layer whose tree sorts planes by depth cannot tell
+    /// which records show in a tile.
+    pub fn one_layer_list_cannot_tell_which_records_show_in_tile(&self) -> bool {
+        self.replays_whole_list() && self.layering_obstacles.sorts_planes_by_depth
+    }
+
     /// Whether tiles of the space hold content that moves within it as nodes that move on their own, or that the
     /// compositor scrolls without the space following them, do, so that the tiles read where those nodes are. Those of
     /// a space that holds none read no value the compositor animates either.

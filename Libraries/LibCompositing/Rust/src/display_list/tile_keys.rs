@@ -366,12 +366,6 @@ pub struct TileKeyingOfList<'a> {
     nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell<Vec<EffectNodeIndex>>,
 }
 
-/// Whether every tile of `stack` replays the whole list: a stack of one layer whose tree sorts planes by depth cannot
-/// tell which records show in a tile.
-pub fn one_layer_list_cannot_tell_which_records_show_in_tile(stack: &LayerStack) -> bool {
-    stack.replays_whole_list() && stack.layering_obstacles.sorts_planes_by_depth
-}
-
 impl<'a> TileKeyingOfList<'a> {
     /// Prepares keying the tiles of a frame's list, of which `stack` was worked out.
     pub fn new(
@@ -396,7 +390,7 @@ impl<'a> TileKeyingOfList<'a> {
             filters_of_effects: OnceCell::new(),
             filters_inside_composited_effects: OnceCell::new(),
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
-                || one_layer_list_cannot_tell_which_records_show_in_tile(stack),
+                || stack.one_layer_list_cannot_tell_which_records_show_in_tile(),
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
             frame_state_hash: frame_state_hash_of(display_list, &frame_state),
             innermost_composited_effect_by_effect_index,
@@ -3537,7 +3531,7 @@ mod tests {
             Some(WhyListIsOneLayer::FrameIsNotDrawnAsPlanned),
             LayeringObstacles::of(&display_list, &tree),
         );
-        assert!(one_layer_list_cannot_tell_which_records_show_in_tile(&stack));
+        assert!(stack.one_layer_list_cannot_tell_which_records_show_in_tile());
         let list_keying = TileKeyingOfList::new(&display_list, &tree, &stack, NO_FRAME_STATE);
         let geometry = geometry_of_space(&tree, &stack, RasterSpaceIndex::VIEWPORT);
         let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
