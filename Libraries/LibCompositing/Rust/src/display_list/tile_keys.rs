@@ -2078,15 +2078,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         })
     }
 
-    fn item_is_sorted_by_depth(&self, bound_band: &BandBoundToListAndGeometry, item: TileReplayItem) -> bool {
-        let first_run_of_chunk = self.list.display_list.first_run_of_chunk(item.chunk_index());
-        self.records_of_item(bound_band, item).iter().any(|record| {
-            self.list
-                .run_groups
-                .run_is_sorted_by_depth(first_run_of_chunk + record.run_index.0 as usize)
-        })
-    }
-
     fn effect_chain_applied_in_tiles(&self, effect: EffectNodeIndex) -> impl Iterator<Item = EffectNodeIndex> {
         let tree = self.list.tree;
         std::iter::successors((!effect.is_none()).then_some(effect), move |effect| {
@@ -2244,7 +2235,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             && tile
                 .replay_items_in_paint_order
                 .iter()
-                .any(|&item| self.item_is_sorted_by_depth(bound_band, item))
+                .any(|&item| self.root_of_context_sorting_item_by_depth(bound_band, item).is_some())
         {
             return TileCoverage::Unknown;
         }
