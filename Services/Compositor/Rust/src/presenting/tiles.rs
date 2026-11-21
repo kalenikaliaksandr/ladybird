@@ -203,9 +203,9 @@ impl LayerTiles {
             )
         };
         let mut stale_rect = IntRect::default();
-        let cells_shown = cells_shown(shown);
+        debug_assert!(shown.is_sorted_by_key(|tile| tile.coord));
         for (coord, held_tile) in pooled_held_tiles(held_tiles, &self.pool) {
-            if held_tile_lies_in_shown_rect_at_unshown_cell(coord, held_tile, rect_shown_in_layer_space, &cells_shown) {
+            if held_tile_lies_in_shown_rect_at_unshown_cell(coord, held_tile, rect_shown_in_layer_space, shown) {
                 stale_rect = stale_rect.united(in_frame_as_far_as_filters_around_layer_read(
                     held_tile.held_part_of_cell,
                 ));
@@ -453,16 +453,11 @@ impl LayerTiles {
         let tile_pool = &mut self.pool;
 
         let held_tile_count_before = held.by_cell.len();
-        let cells_shown = cells_shown(shown);
+        debug_assert!(shown.is_sorted_by_key(|tile| tile.coord));
         held.by_cell.retain(|coord, content_hash| {
             !coord.cell_rect().intersected(kept_tile_rect).is_empty()
                 && tile_pool.get(content_hash).is_some_and(|held_tile| {
-                    !held_tile_lies_in_shown_rect_at_unshown_cell(
-                        *coord,
-                        held_tile,
-                        rect_shown_in_layer_space,
-                        &cells_shown,
-                    )
+                    !held_tile_lies_in_shown_rect_at_unshown_cell(*coord, held_tile, rect_shown_in_layer_space, shown)
                 })
         });
         let mut held_tiles_changed = held.by_cell.len() != held_tile_count_before;
@@ -821,17 +816,15 @@ fn held_tile_lies_in_shown_rect_at_unshown_cell(
     coord: TileCoord,
     held_tile: &PooledTile,
     rect_shown_in_layer_space: IntRect,
-    cells_shown: &HashSet<TileCoord>,
+    shown_sorted_by_cell: &[TileShownInFrame],
 ) -> bool {
     !held_tile
         .held_part_of_cell
         .intersected(rect_shown_in_layer_space)
         .is_empty()
-        && !cells_shown.contains(&coord)
-}
-
-fn cells_shown(shown: &[TileShownInFrame]) -> HashSet<TileCoord> {
-    shown.iter().map(|tile| tile.coord).collect()
+        && shown_sorted_by_cell
+            .binary_search_by(|tile| tile.coord.cmp(&coord))
+            .is_err()
 }
 
 struct TileToRaster {
