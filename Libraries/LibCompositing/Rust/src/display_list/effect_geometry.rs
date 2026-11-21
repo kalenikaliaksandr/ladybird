@@ -358,13 +358,6 @@ impl FiltersOfEffects {
             .unwrap_or(EffectNodeIndex::NONE)
     }
 
-    /// Whether a filter spreads the content of any effect.
-    pub(crate) fn spread_content(&self) -> bool {
-        self.nearest_spreading_effect_by_effect_index
-            .iter()
-            .any(|effect| !effect.is_none())
-    }
-
     /// The effect whose output clip bounds how far the filters at and above `effect` spread its content, if any does.
     pub(crate) fn effect_bounding_spread_of(&self, effect: EffectNodeIndex) -> Option<EffectNodeIndex> {
         self.outermost_effect_with_filter_if_spread_by_effect_index

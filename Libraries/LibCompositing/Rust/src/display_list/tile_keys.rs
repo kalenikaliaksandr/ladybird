@@ -347,12 +347,13 @@ impl LayerRasterSettings {
 
 pub struct TileKeyingOfList<'a> {
     display_list: &'a DisplayListStorage,
-    run_groups: Arc<RunGroups>,
     effect_clips: &'a EffectClipPlan,
     tree: &'a VisualContextTree,
     frame_state: FrameStateReadByReplay<'a>,
-    filters_of_effects: FiltersOfEffects,
-    filters_inside_composited_effects: FiltersOfEffects,
+    // Worked out on first use, as most frames bind no band and key no tile.
+    run_groups: OnceCell<Arc<RunGroups>>,
+    filters_of_effects: OnceCell<FiltersOfEffects>,
+    filters_inside_composited_effects: OnceCell<FiltersOfEffects>,
     replays_every_record_into_every_tile: bool,
     tree_sorts_planes_by_depth: bool,
     frame_state_hash: ContentHash,
@@ -380,28 +381,20 @@ impl<'a> TileKeyingOfList<'a> {
         frame_state: FrameStateReadByReplay<'a>,
     ) -> Self {
         let layering_obstacles = stack.layering_obstacles;
-        let run_groups = display_list.run_groups(tree);
         let mut is_composited_by_effect_index = vec![false; tree.effect_nodes.len()];
         for composited in &stack.composited_effects {
             is_composited_by_effect_index[composited.effect.0 as usize] = true;
         }
         let innermost_composited_effect_by_effect_index =
             nearest_effects_at_or_above_where(tree, |effect, _| is_composited_by_effect_index[effect.0 as usize]);
-        let filters_of_effects = FiltersOfEffects::of(tree, None, false);
         Self {
             display_list,
-            run_groups,
             effect_clips: display_list.effect_clip_plan(tree),
             tree,
             frame_state,
-            filters_inside_composited_effects: if filters_of_effects.spread_content()
-                && is_composited_by_effect_index.contains(&true)
-            {
-                FiltersOfEffects::of(tree, Some(&innermost_composited_effect_by_effect_index), false)
-            } else {
-                FiltersOfEffects::default()
-            },
-            filters_of_effects,
+            run_groups: OnceCell::new(),
+            filters_of_effects: OnceCell::new(),
+            filters_inside_composited_effects: OnceCell::new(),
             replays_every_record_into_every_tile: layering_obstacles.every_tile_replays_every_record()
                 || one_layer_list_cannot_tell_which_records_show_in_tile(stack),
             tree_sorts_planes_by_depth: layering_obstacles.sorts_planes_by_depth,
@@ -410,6 +403,25 @@ impl<'a> TileKeyingOfList<'a> {
             nearest_composited_or_not_plain_effect_by_effect_index: OnceCell::new(),
             nearest_composited_or_alpha_lowering_effect_by_effect_index: OnceCell::new(),
         }
+    }
+
+    fn run_groups(&self) -> &RunGroups {
+        self.run_groups.get_or_init(|| self.display_list.run_groups(self.tree))
+    }
+
+    fn filters_of_effects(&self) -> &FiltersOfEffects {
+        self.filters_of_effects
+            .get_or_init(|| FiltersOfEffects::of(self.tree, None, false))
+    }
+
+    fn filters_inside_composited_effects(&self) -> &FiltersOfEffects {
+        self.filters_inside_composited_effects.get_or_init(|| {
+            FiltersOfEffects::of(
+                self.tree,
+                Some(&self.innermost_composited_effect_by_effect_index),
+                false,
+            )
+        })
     }
 
     fn compositor_composites(&self, effect: EffectNodeIndex) -> bool {
@@ -1286,7 +1298,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let list = self.list;
         let filters_and_clips = FiltersAndClipsOfList {
             tree: list.tree,
-            filters: &list.filters_of_effects,
+            filters: list.filters_of_effects(),
             effect_clips: list.effect_clips,
         };
         let composited_effect = if context.effect.is_none() {
@@ -1296,7 +1308,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         };
         if composited_effect.is_none()
             || list
-                .filters_of_effects
+                .filters_of_effects()
                 .nearest_spreading_effect_at_or_above(composited_effect)
                 .is_none()
         {
@@ -1304,7 +1316,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         }
         self.geometry.reach_of_content_inside_composited_effect(
             &filters_and_clips,
-            &list.filters_inside_composited_effects,
+            list.filters_inside_composited_effects(),
             rect,
             context,
             composited_effect,
@@ -1805,7 +1817,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let context = chunk.runs()[run_index.0 as usize].context;
         let is_spread_by_filters = !self
             .list
-            .filters_of_effects
+            .filters_of_effects()
             .nearest_spreading_effect_at_or_above(context.effect)
             .is_none();
         let is_one_record = (record_indices.start.0..record_indices.end.0).len() == 1;
@@ -2069,10 +2081,10 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         let first_run_of_chunk = self.list.display_list.first_run_of_chunk(item.chunk_index());
         self.records_of_item(bound_band, item).iter().find_map(|record| {
             self.list
-                .run_groups
+                .run_groups()
                 .run_is_sorted_by_depth(first_run_of_chunk + record.run_index.0 as usize)
                 .then(|| {
-                    self.list.run_groups.root_of_context_sorting_planes_by_depth(
+                    self.list.run_groups().root_of_context_sorting_planes_by_depth(
                         chunk.runs()[record.run_index.0 as usize].context.spatial,
                     )
                 })
@@ -2446,7 +2458,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 
         // A mask or a depth sort reads every run of its run group, so those runs replay whole wherever any of them
         // shows.
-        let run_groups = &list.run_groups;
+        let run_groups = list.run_groups();
         let mut reach_and_first_position_of_run_groups_replayed_whole: BTreeMap<
             RunGroupIndex,
             (Reach<IntRect>, ListPosition),
