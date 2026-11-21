@@ -2156,21 +2156,26 @@ mod tests {
         !layers.take_stack_of_frame(layer_plan, display_list, |_| one_layer, FloatMatrix4x4::identity())
     }
 
-    #[test]
-    fn frames_keep_what_they_kept_of_a_stack_only_while_they_draw_with_the_same_plan() {
-        let tree = tree_of_viewport();
-        let display_list = empty_display_list(&tree);
+    // A plan received again is another plan, even where it holds what the plan before held.
+    fn plan_and_plan_received_again(display_list: &Rc<DisplayList>) -> (ReceivedLayerPlan, ReceivedLayerPlan) {
         let plan = ReceivedLayerPlan {
             viewport_rect: VIEWPORT,
-            stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
+            stack: Rc::new(one_layer_of(display_list, VIEWPORT)),
             nodes_whose_scroll_offset_plan_reads: Rc::default(),
             note_lines: Rc::default(),
         };
-        // A plan received again is another plan, even where it holds what the plan before held.
         let plan_received_again = ReceivedLayerPlan {
             stack: Rc::new((*plan.stack).clone()),
             ..plan.clone()
         };
+        (plan, plan_received_again)
+    }
+
+    #[test]
+    fn frames_keep_what_they_kept_of_a_stack_only_while_they_draw_with_the_same_plan() {
+        let tree = tree_of_viewport();
+        let display_list = empty_display_list(&tree);
+        let (plan, plan_received_again) = plan_and_plan_received_again(&display_list);
         let mut layers = ContextLayers::default();
         let one_layer = || one_layer_of(&display_list, VIEWPORT);
         let mut keeps =
@@ -2502,16 +2507,7 @@ mod tests {
     fn a_plan_whose_frame_shows_more_tiles_than_a_frame_may_is_drawn_as_one_layer_until_another_plan_comes() {
         let tree = tree_of_viewport();
         let display_list = empty_display_list(&tree);
-        let plan = ReceivedLayerPlan {
-            viewport_rect: VIEWPORT,
-            stack: Rc::new(one_layer_of(&display_list, VIEWPORT)),
-            nodes_whose_scroll_offset_plan_reads: Rc::default(),
-            note_lines: Rc::default(),
-        };
-        let plan_received_again = ReceivedLayerPlan {
-            stack: Rc::new((*plan.stack).clone()),
-            ..plan.clone()
-        };
+        let (plan, plan_received_again) = plan_and_plan_received_again(&display_list);
         let mut layers = ContextLayers::default();
         layers.take_stack_of_frame(
             Some(&plan),

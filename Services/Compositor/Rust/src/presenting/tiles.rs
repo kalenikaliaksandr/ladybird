@@ -919,7 +919,6 @@ mod tests {
             .collect()
     }
 
-    // A box that the compositor scales up from nothing shows at a tiny part of its raster scale at first.
     // A layer of another process can show many tiles of one color, with colors that keep any two from joining.
     #[test]
     fn rects_of_a_grid_given_row_by_row_join_into_columns_without_a_search_of_every_joined_rect() {
@@ -941,6 +940,7 @@ mod tests {
         assert_eq!(checkerboard[300 * 300 - 1], (cell(299, 299), 0));
     }
 
+    // A box that the compositor scales up from nothing shows at a tiny part of its raster scale at first.
     #[test]
     fn a_layer_shown_at_a_tiny_scale_draws_its_held_tiles_without_visiting_every_cell_the_viewport_maps_to() {
         let tiny_scale = 1.0e-5;
