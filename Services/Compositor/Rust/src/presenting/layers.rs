@@ -1346,7 +1346,6 @@ impl ContextPresenting {
                 .filter(|tile| matches!(tile.coverage, TileCoverage::OneColor(_)))
                 .count() as u64;
             stale_rect = stale_rect.united(self.layers.tiles.stale_rect_of_layer(
-                &layer.identity,
                 &shown_tiles_by_layer[layer_index.0],
                 compositing,
                 viewport_rect,
@@ -1757,13 +1756,9 @@ impl ContextPresenting {
                 if base_layer_compositing.composite_clip.is_some() {
                     raster.clear(surface, frame.surface_clear_color());
                 }
-                self.layers.tiles.copy_into(
-                    raster,
-                    surface,
-                    &base_layer_compositing.identity,
-                    damage_rect,
-                    base_layer_compositing,
-                );
+                self.layers
+                    .tiles
+                    .copy_into(raster, surface, damage_rect, base_layer_compositing);
             }
         }
         self.composite_layers_above_base_of_stack(
@@ -1895,11 +1890,11 @@ impl ContextPresenting {
                     SpaceToFrame::Offset(offset) => (offset, None),
                     SpaceToFrame::Transform(transform) => (IntPoint::default(), Some(transform)),
                 };
-                for draw in self.layers.tiles.draws_reaching_into(
-                    &compositing.identity,
-                    compositing,
-                    damage_grown_by_filter_reads,
-                ) {
+                for draw in self
+                    .layers
+                    .tiles
+                    .draws_reaching_into(compositing, damage_grown_by_filter_reads)
+                {
                     match draw {
                         TileDraw::TileSurface {
                             surface,
@@ -1992,9 +1987,7 @@ impl ContextPresenting {
             raster.clear(&target, Color::TRANSPARENT);
             let save_count = raster.save(&target);
             raster.translate(&target, -held_rect_in_frame.x as f32, -held_rect_in_frame.y as f32);
-            layers
-                .tiles
-                .copy_into(raster, &target, &compositing.identity, held_rect_in_frame, compositing);
+            layers.tiles.copy_into(raster, &target, held_rect_in_frame, compositing);
             raster.restore_to_count(&target, save_count);
             presentation.latest_surface = Some(presentable);
             presentation.rect_in_frame = held_rect_in_frame;

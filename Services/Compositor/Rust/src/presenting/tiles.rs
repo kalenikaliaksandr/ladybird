@@ -184,7 +184,6 @@ impl LayerTiles {
 
     pub(super) fn stale_rect_of_layer(
         &self,
-        identity: &LayerIdentity,
         shown: &[TileShownInFrame],
         compositing: &LayerCompositingInFrame,
         viewport_rect: IntRect,
@@ -193,7 +192,7 @@ impl LayerTiles {
         let no_held_tiles = BTreeMap::new();
         let held_tiles = self
             .held_by_layer
-            .get(identity)
+            .get(&compositing.identity)
             .map_or(&no_held_tiles, |held| &held.by_cell);
         let rect_shown_in_layer_space =
             compositing.rect_shown_in_layer_space(viewport_rect, composited_filter_read_reach);
@@ -246,11 +245,10 @@ impl LayerTiles {
 
     pub(super) fn draws_reaching_into(
         &self,
-        identity: &LayerIdentity,
         compositing: &LayerCompositingInFrame,
         area_in_frame: IntRect,
     ) -> Vec<TileDraw<'_>> {
-        let Some(held) = self.held_by_layer.get(identity) else {
+        let Some(held) = self.held_by_layer.get(&compositing.identity) else {
             return Vec::new();
         };
         let mut draws = Vec::new();
@@ -293,7 +291,6 @@ impl LayerTiles {
         &self,
         raster: &RasterHost,
         target: &SurfaceHandle,
-        identity: &LayerIdentity,
         area_in_frame: IntRect,
         compositing: &LayerCompositingInFrame,
     ) {
@@ -304,7 +301,7 @@ impl LayerTiles {
         if let Some(composite_clip) = compositing.composite_clip {
             raster.clip_rect(target, composite_clip);
         }
-        for draw in self.draws_reaching_into(identity, compositing, area_in_frame) {
+        for draw in self.draws_reaching_into(compositing, area_in_frame) {
             match draw {
                 TileDraw::TileSurface {
                     surface,
@@ -959,7 +956,7 @@ mod tests {
         assert!(CellRange::touched_by(shown_rect).cell_count() > 1_000_000_000);
         let held_cells = [TileCoord::new(-1, -1), TileCoord::new(0, 0), TileCoord::new(3, 0)];
         let tiles = one_color_tiles_at(&held_cells);
-        let draws = tiles.draws_reaching_into(&LAYER, &layer, VIEWPORT);
+        let draws = tiles.draws_reaching_into(&layer, VIEWPORT);
         assert_eq!(rects_of_draws(&draws), held_cells.map(TileCoord::cell_rect));
     }
 
@@ -993,7 +990,7 @@ mod tests {
                 layer.rect_in_frame(TileCoord::new(0, 0).cell_rect(), VIEWPORT),
                 IntRect::default()
             );
-            assert!(tiles.draws_reaching_into(&LAYER, &layer, VIEWPORT).is_empty());
+            assert!(tiles.draws_reaching_into(&layer, VIEWPORT).is_empty());
         }
     }
 }
