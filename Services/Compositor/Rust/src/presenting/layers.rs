@@ -486,8 +486,7 @@ pub struct ContextLayers {
     layering_obstacles_of_frames_not_drawn_as_planned: Option<LayeringObstaclesOfListAndTree>,
     tiles: LayerTiles,
     presentation_by_layer: HashMap<LayerIdentity, PaintedLayerPresentation>,
-    latest_compositor_overlays_surface: Option<PresentableSurfaceHandle>,
-    compositor_overlays_rect: IntRect,
+    latest_compositor_overlays_surface_and_rect: Option<(PresentableSurfaceHandle, IntRect)>,
     next_presentable_surface_pool: u32,
     /// The plan whose frames show more tiles than a frame may, which frames draw as one layer until another plan comes.
     /// The address of its stack is kept from being taken by the stack of another plan.
@@ -2014,9 +2013,8 @@ impl ContextPresenting {
         if self.layer_overlay.latest_frame().is_some() {
             overlays_rect = overlays_rect.united(self.raster_rect());
         }
-        self.layers.compositor_overlays_rect = overlays_rect;
         if overlays_rect.is_empty() {
-            self.layers.latest_compositor_overlays_surface = None;
+            self.layers.latest_compositor_overlays_surface_and_rect = None;
             return true;
         }
         let Some(presentable) = raster.next_presentable_surface(
@@ -2033,7 +2031,7 @@ impl ContextPresenting {
         raster.translate(&target, -overlays_rect.x as f32, -overlays_rect.y as f32);
         self.paint_overlays(env, &target, frame.frame_inputs, true);
         raster.restore_to_count(&target, save_count);
-        self.layers.latest_compositor_overlays_surface = Some(presentable);
+        self.layers.latest_compositor_overlays_surface_and_rect = Some((presentable, overlays_rect));
         true
     }
 
@@ -2107,11 +2105,11 @@ impl ContextPresenting {
                 presentation.rect_in_frame,
             ));
         }
-        if let Some(surface) = &layers.latest_compositor_overlays_surface {
+        if let Some((surface, rect_in_frame)) = &layers.latest_compositor_overlays_surface_and_rect {
             sublayers.push(unclipped_untransformed_surface_sublayer(
                 COMPOSITOR_OVERLAY_SUBLAYER_IDENTITY,
                 surface,
-                layers.compositor_overlays_rect,
+                *rect_in_frame,
             ));
         }
         sublayers
