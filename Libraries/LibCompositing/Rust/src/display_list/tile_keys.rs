@@ -26,7 +26,7 @@ use super::effect_geometry::{
     FiltersOfEffects, LARGEST_FILTER_READ_REACH_IN_DEVICE_PIXELS, backdrop_filter_read_reach,
     filter_read_reach_in_device_pixels, nearest_effects_at_or_above_where, spreading_filter_of,
 };
-use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack};
+use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack, PlacementNodeBand};
 use super::nested_records::{
     NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
 };
@@ -902,10 +902,28 @@ struct DeclaredMaskAroundRunReplayedWhole {
     next_declared_mask_around: EffectNodeIndex,
 }
 
+type RunsReplayedWhole = HashMap<(ChunkIndexInList, RunIndexInChunk), RunReplayedWholeWhereverRunGroupShows>;
+
+/// The masks with declared content, for a band that replays runs whole: where the list declares the content of each, and
+/// per effect the nearest such mask at or around it.
+struct MasksWithDeclaredContent {
+    declaration_positions_by_mask: HashMap<EffectNodeIndex, Vec<ListPosition>>,
+    nearest_declared_mask_by_effect_index: Vec<EffectNodeIndex>,
+}
+
+impl MasksWithDeclaredContent {
+    fn nearest_declared_mask_at_or_above(&self, effect: EffectNodeIndex) -> EffectNodeIndex {
+        self.nearest_declared_mask_by_effect_index
+            .get(effect.0 as usize)
+            .copied()
+            .unwrap_or(EffectNodeIndex::NONE)
+    }
+}
+
 struct BandBoundToListAndGeometry {
     /// In the order of their chunks, as the spans of a band are in paint order.
     held_chunks: Vec<ChunkHeldByBand>,
-    runs_replayed_whole: HashMap<(ChunkIndexInList, RunIndexInChunk), RunReplayedWholeWhereverRunGroupShows>,
+    runs_replayed_whole: RunsReplayedWhole,
     declared_masks_around_runs_replayed_whole: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole>,
     backdrop_reads: BackdropReadsOfBand,
     items_replayed_in_every_tile: Option<Vec<(ListPosition, TileReplayItem)>>,
@@ -970,6 +988,120 @@ impl BandBoundToListAndGeometry {
         ListSpan {
             begin: ListPosition::new(chunk_index, begin_offset),
             end: ListPosition::new(chunk_index, end_offset),
+        }
+    }
+
+    fn item_replaying_record(
+        &self,
+        display_list: &DisplayListStorage,
+        chunk_index: ChunkIndexInList,
+        record_index: RecordIndexInChunk,
+    ) -> TileReplayItem {
+        let table = display_list.chunk(chunk_index).record_table();
+        let record = table.record(record_index);
+        let record_alone = TileReplayItem::RecordSpan {
+            chunk_index,
+            begin_offset: record.offset,
+            end_offset: record.end_offset,
+        };
+        let Some(held_chunk) = self.held_chunk_if_held(chunk_index) else {
+            return record_alone;
+        };
+        let run_index = record.run_index;
+        if held_chunk.held_run_indices.binary_search(&run_index).is_err() {
+            return record_alone;
+        }
+        let ranges_of_run = &held_chunk.placement.ranges_of_each_run[run_index.0 as usize];
+        if self.runs_replayed_whole.contains_key(&(chunk_index, run_index)) {
+            return TileReplayItem::PlacedRecordRange {
+                chunk_index,
+                range_index: ranges_of_run.whole_run_range_index,
+            };
+        }
+        // The binned ranges of a run are in the order of their records and apart.
+        let first_binned_range_index = ranges_of_run.first_binned_range_index;
+        let binned_ranges = &held_chunk.placement.record_ranges
+            [first_binned_range_index.0 as usize..ranges_of_run.whole_run_range_index.0 as usize];
+        let position_among_binned_ranges =
+            binned_ranges.partition_point(|range| range.end_record_index <= record_index);
+        match binned_ranges.get(position_among_binned_ranges) {
+            Some(range) if range.first_record_index <= record_index => TileReplayItem::PlacedRecordRange {
+                chunk_index,
+                range_index: PlacedRecordRangeIndex(first_binned_range_index.0 + position_among_binned_ranges as u32),
+            },
+            _ => record_alone,
+        }
+    }
+
+    fn for_each_held_item(
+        &self,
+        held_chunk: &ChunkHeldByBand,
+        mut visit: impl FnMut(ListPosition, TileReplayItem, Reach<IntRect>, EffectNodeIndex),
+    ) {
+        for &run_index in &held_chunk.held_run_indices {
+            let ranges_of_run = &held_chunk.placement.ranges_of_each_run[run_index.0 as usize];
+            if let Some(run_replayed_whole) = self.runs_replayed_whole.get(&(held_chunk.chunk_index, run_index)) {
+                let whole_run_range =
+                    &held_chunk.placement.record_ranges[ranges_of_run.whole_run_range_index.0 as usize];
+                visit(
+                    ListPosition::new(held_chunk.chunk_index, whole_run_range.begin_offset),
+                    TileReplayItem::PlacedRecordRange {
+                        chunk_index: held_chunk.chunk_index,
+                        range_index: ranges_of_run.whole_run_range_index,
+                    },
+                    run_replayed_whole.reach,
+                    run_replayed_whole.innermost_declared_mask_around,
+                );
+                continue;
+            }
+            for range_index in (ranges_of_run.first_binned_range_index.0..ranges_of_run.whole_run_range_index.0)
+                .map(PlacedRecordRangeIndex)
+            {
+                let range = &held_chunk.placement.record_ranges[range_index.0 as usize];
+                let paint_position = ListPosition::new(held_chunk.chunk_index, range.begin_offset);
+                visit(
+                    paint_position,
+                    TileReplayItem::PlacedRecordRange {
+                        chunk_index: held_chunk.chunk_index,
+                        range_index,
+                    },
+                    self.backdrop_reads
+                        .reach_extended_through_reads(range.reach, paint_position),
+                    EffectNodeIndex::NONE,
+                );
+            }
+        }
+    }
+
+    fn work_out_reach_of_held_records(&mut self, display_list: &DisplayListStorage) {
+        for held_chunk_index in 0..self.held_chunks.len() {
+            let held_chunk = &self.held_chunks[held_chunk_index];
+            let mut reach_of_runs_replayed_whole = Reach::Nothing;
+            let mut reach_of_runs_binned_range_by_range = Reach::Nothing;
+            for &run_index in &held_chunk.held_run_indices {
+                match self.runs_replayed_whole.get(&(held_chunk.chunk_index, run_index)) {
+                    Some(run_replayed_whole) => {
+                        reach_of_runs_replayed_whole = reach_of_runs_replayed_whole.united(run_replayed_whole.reach);
+                    }
+                    None => {
+                        reach_of_runs_binned_range_by_range = reach_of_runs_binned_range_by_range.united(
+                            held_chunk.placement.ranges_of_each_run[run_index.0 as usize].reach_of_binned_ranges,
+                        );
+                    }
+                }
+            }
+            // A backdrop filter can extend content painted before it past the cells that content reaches.
+            if !self.backdrop_reads.is_empty() {
+                let first_held_offset = held_chunk.held_run_indices.first().map_or(0, |run_index| {
+                    display_list.chunk(held_chunk.chunk_index).runs()[run_index.0 as usize].offset
+                });
+                reach_of_runs_binned_range_by_range = self.backdrop_reads.reach_extended_through_reads(
+                    reach_of_runs_binned_range_by_range,
+                    ListPosition::new(held_chunk.chunk_index, first_held_offset),
+                );
+            }
+            self.held_chunks[held_chunk_index].reach_of_held_records =
+                reach_of_runs_replayed_whole.united(reach_of_runs_binned_range_by_range);
         }
     }
 }
@@ -1045,6 +1177,29 @@ impl BandTileKeys {
 /// shows many more cells of it. This bounds the work and the tiles of the band in such a frame: it keys only the cells
 /// nearest to the middle of the shown rect, and shows nothing in the others.
 pub const MAXIMUM_CELLS_ONE_BAND_KEYS_IN_A_FRAME: usize = 4096;
+
+/// Per chunk that `record_spans` hold records of, in the order of the chunks, the offset ranges they hold there, joined
+/// where they touch.
+fn held_offset_ranges_by_chunk(
+    display_list: &DisplayListStorage,
+    record_spans: &[ListSpan],
+) -> Vec<(ChunkIndexInList, Vec<(u32, u32)>)> {
+    let mut held_offset_ranges_by_chunk: Vec<(ChunkIndexInList, Vec<(u32, u32)>)> = Vec::new();
+    for span in record_spans {
+        for (chunk_index, begin, end) in display_list.parts_of_span(*span) {
+            match held_offset_ranges_by_chunk.last_mut() {
+                Some((last_chunk_index, held_offset_ranges)) if *last_chunk_index == chunk_index => {
+                    match held_offset_ranges.last_mut() {
+                        Some(last) if last.1 == begin => last.1 = end,
+                        _ => held_offset_ranges.push((begin, end)),
+                    }
+                }
+                _ => held_offset_ranges_by_chunk.push((chunk_index, vec![(begin, end)])),
+            }
+        }
+    }
+    held_offset_ranges_by_chunk
+}
 
 /// The runs of a chunk that `held_offset_ranges`, which are in order and of whole runs, hold.
 fn runs_within_held_offset_ranges(
@@ -2273,137 +2428,126 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         coverage
     }
 
-    fn item_replaying_record(
+    fn bind_band_to_list_and_geometry(&self, stack: &LayerStack, band_index: BandIndex) -> BandBoundToListAndGeometry {
+        let display_list = self.list.display_list;
+        let band = &stack.bands[band_index.0];
+        let held_offset_ranges_by_chunk = held_offset_ranges_by_chunk(display_list, &band.record_spans);
+        if self.list.replays_every_record_into_every_tile {
+            return self.band_replaying_every_held_record_in_every_tile(&held_offset_ranges_by_chunk);
+        }
+        let held_chunks = self.held_chunks_with_their_placements(held_offset_ranges_by_chunk);
+        let backdrop_reads = self.backdrop_reads_of_held_runs(stack, band, &held_chunks);
+        let (runs_replayed_whole, masks_with_declared_content) =
+            self.runs_replayed_whole(&held_chunks, &backdrop_reads);
+        let held_runs_read_frame_state_hashed_for_the_list = held_chunks.iter().any(|held_chunk| {
+            let table = display_list.chunk(held_chunk.chunk_index).record_table();
+            held_chunk
+                .held_run_indices
+                .iter()
+                .any(|&run_index| table.run_reads_frame_state_hashed_for_the_list(run_index))
+        });
+        let mut bound_band = BandBoundToListAndGeometry {
+            held_chunks,
+            runs_replayed_whole,
+            declared_masks_around_runs_replayed_whole: HashMap::new(),
+            backdrop_reads,
+            items_replayed_in_every_tile: None,
+            replays_records_reading_frame_state_hashed_for_the_list: held_runs_read_frame_state_hashed_for_the_list,
+        };
+
+        if !masks_with_declared_content.declaration_positions_by_mask.is_empty() {
+            let (declared_masks, declarations_read_frame_state_hashed_for_the_list) =
+                self.declared_masks_around_runs_replayed_whole(&bound_band, &masks_with_declared_content);
+            bound_band.declared_masks_around_runs_replayed_whole = declared_masks;
+            bound_band.replays_records_reading_frame_state_hashed_for_the_list |=
+                declarations_read_frame_state_hashed_for_the_list;
+        }
+
+        bound_band.work_out_reach_of_held_records(display_list);
+        bound_band
+    }
+
+    fn band_replaying_every_held_record_in_every_tile(
         &self,
-        bound_band: &BandBoundToListAndGeometry,
-        chunk_index: ChunkIndexInList,
-        record_index: RecordIndexInChunk,
-    ) -> TileReplayItem {
-        let table = self.list.display_list.chunk(chunk_index).record_table();
-        let record = table.record(record_index);
-        let record_alone = TileReplayItem::RecordSpan {
-            chunk_index,
-            begin_offset: record.offset,
-            end_offset: record.end_offset,
-        };
-        let Some(held_chunk) = bound_band.held_chunk_if_held(chunk_index) else {
-            return record_alone;
-        };
-        let run_index = record.run_index;
-        if held_chunk.held_run_indices.binary_search(&run_index).is_err() {
-            return record_alone;
+        held_offset_ranges_by_chunk: &[(ChunkIndexInList, Vec<(u32, u32)>)],
+    ) -> BandBoundToListAndGeometry {
+        let list = self.list;
+        let display_list = list.display_list;
+        let mut items_replayed_in_every_tile: Vec<(ListPosition, TileReplayItem)> = held_offset_ranges_by_chunk
+            .iter()
+            .flat_map(|(chunk_index, held_offset_ranges)| {
+                held_offset_ranges.iter().map(|&(begin_offset, end_offset)| {
+                    (
+                        ListPosition::new(*chunk_index, begin_offset),
+                        TileReplayItem::RecordSpan {
+                            chunk_index: *chunk_index,
+                            begin_offset,
+                            end_offset,
+                        },
+                    )
+                })
+            })
+            .collect();
+        let tree = list.tree;
+        let mut effect_is_around_held_run = vec![false; tree.effect_nodes.len()];
+        let mut replays_records_reading_frame_state_hashed_for_the_list = false;
+        for (chunk_index, held_offset_ranges) in held_offset_ranges_by_chunk {
+            let chunk = display_list.chunk(*chunk_index);
+            let runs = chunk.runs();
+            for run_index in runs_within_held_offset_ranges(runs, held_offset_ranges) {
+                replays_records_reading_frame_state_hashed_for_the_list |= chunk
+                    .record_table()
+                    .run_reads_frame_state_hashed_for_the_list(run_index);
+                let mut effect = runs[run_index.0 as usize].context.effect;
+                while !effect.is_none() && !effect_is_around_held_run[effect.0 as usize] {
+                    effect_is_around_held_run[effect.0 as usize] = true;
+                    effect = tree.effect_nodes[effect.0 as usize].parent;
+                }
+            }
         }
-        let ranges_of_run = &held_chunk.placement.ranges_of_each_run[run_index.0 as usize];
-        if bound_band.runs_replayed_whole.contains_key(&(chunk_index, run_index)) {
-            return TileReplayItem::PlacedRecordRange {
-                chunk_index,
-                range_index: ranges_of_run.whole_run_range_index,
-            };
+        for declaration in &display_list.summary().mask_declarations {
+            let (mask_effect, declaration_position) = (declaration.mask_effect, declaration.record.position);
+            // A declaration can name any effect node.
+            let mask_is_around_held_run = effect_is_around_held_run.get(mask_effect.0 as usize) == Some(&true)
+                && matches!(tree.effect_nodes[mask_effect.0 as usize].data, EffectNodeData::Mask(_));
+            let declaration_is_held = held_offset_ranges_by_chunk
+                .binary_search_by_key(&declaration_position.chunk_index, |(chunk_index, _)| *chunk_index)
+                .is_ok_and(|position| {
+                    offset_is_held(&held_offset_ranges_by_chunk[position].1, declaration_position.offset)
+                });
+            if !mask_is_around_held_run || declaration_is_held {
+                continue;
+            }
+            let table = display_list.chunk(declaration_position.chunk_index).record_table();
+            let record_index = table
+                .record_indices_between_offsets(declaration_position.offset, declaration_position.offset + 1)
+                .start;
+            replays_records_reading_frame_state_hashed_for_the_list |=
+                table.record(record_index).reads_frame_state_hashed_for_the_list();
+            items_replayed_in_every_tile.push((
+                declaration_position,
+                TileReplayItem::RecordSpan {
+                    chunk_index: declaration_position.chunk_index,
+                    begin_offset: declaration_position.offset,
+                    end_offset: table.record(record_index).end_offset,
+                },
+            ));
         }
-        // The binned ranges of a run are in the order of their records and apart.
-        let first_binned_range_index = ranges_of_run.first_binned_range_index;
-        let binned_ranges = &held_chunk.placement.record_ranges
-            [first_binned_range_index.0 as usize..ranges_of_run.whole_run_range_index.0 as usize];
-        let position_among_binned_ranges =
-            binned_ranges.partition_point(|range| range.end_record_index <= record_index);
-        match binned_ranges.get(position_among_binned_ranges) {
-            Some(range) if range.first_record_index <= record_index => TileReplayItem::PlacedRecordRange {
-                chunk_index,
-                range_index: PlacedRecordRangeIndex(first_binned_range_index.0 + position_among_binned_ranges as u32),
-            },
-            _ => record_alone,
+        BandBoundToListAndGeometry {
+            held_chunks: Vec::new(),
+            runs_replayed_whole: HashMap::new(),
+            declared_masks_around_runs_replayed_whole: HashMap::new(),
+            backdrop_reads: BackdropReadsOfBand::new(Vec::new()),
+            items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
+            replays_records_reading_frame_state_hashed_for_the_list,
         }
     }
 
-    fn bind_band_to_list_and_geometry(&self, stack: &LayerStack, band_index: BandIndex) -> BandBoundToListAndGeometry {
-        let list = self.list;
-        let display_list = list.display_list;
-        let band = &stack.bands[band_index.0];
-        let mut held_offset_ranges_by_chunk: Vec<(ChunkIndexInList, Vec<(u32, u32)>)> = Vec::new();
-        for span in &band.record_spans {
-            for (chunk_index, begin, end) in display_list.parts_of_span(*span) {
-                match held_offset_ranges_by_chunk.last_mut() {
-                    Some((last_chunk_index, held_offset_ranges)) if *last_chunk_index == chunk_index => {
-                        match held_offset_ranges.last_mut() {
-                            Some(last) if last.1 == begin => last.1 = end,
-                            _ => held_offset_ranges.push((begin, end)),
-                        }
-                    }
-                    _ => held_offset_ranges_by_chunk.push((chunk_index, vec![(begin, end)])),
-                }
-            }
-        }
-        if list.replays_every_record_into_every_tile {
-            let mut items_replayed_in_every_tile: Vec<(ListPosition, TileReplayItem)> = held_offset_ranges_by_chunk
-                .iter()
-                .flat_map(|(chunk_index, held_offset_ranges)| {
-                    held_offset_ranges.iter().map(|&(begin_offset, end_offset)| {
-                        (
-                            ListPosition::new(*chunk_index, begin_offset),
-                            TileReplayItem::RecordSpan {
-                                chunk_index: *chunk_index,
-                                begin_offset,
-                                end_offset,
-                            },
-                        )
-                    })
-                })
-                .collect();
-            let tree = list.tree;
-            let mut effect_is_around_held_run = vec![false; tree.effect_nodes.len()];
-            let mut replays_records_reading_frame_state_hashed_for_the_list = false;
-            for (chunk_index, held_offset_ranges) in &held_offset_ranges_by_chunk {
-                let chunk = display_list.chunk(*chunk_index);
-                let runs = chunk.runs();
-                for run_index in runs_within_held_offset_ranges(runs, held_offset_ranges) {
-                    replays_records_reading_frame_state_hashed_for_the_list |= chunk
-                        .record_table()
-                        .run_reads_frame_state_hashed_for_the_list(run_index);
-                    let mut effect = runs[run_index.0 as usize].context.effect;
-                    while !effect.is_none() && !effect_is_around_held_run[effect.0 as usize] {
-                        effect_is_around_held_run[effect.0 as usize] = true;
-                        effect = tree.effect_nodes[effect.0 as usize].parent;
-                    }
-                }
-            }
-            for declaration in &display_list.summary().mask_declarations {
-                let (mask_effect, declaration_position) = (declaration.mask_effect, declaration.record.position);
-                // A declaration can name any effect node.
-                let mask_is_around_held_run = effect_is_around_held_run.get(mask_effect.0 as usize) == Some(&true)
-                    && matches!(tree.effect_nodes[mask_effect.0 as usize].data, EffectNodeData::Mask(_));
-                let declaration_is_held = held_offset_ranges_by_chunk
-                    .binary_search_by_key(&declaration_position.chunk_index, |(chunk_index, _)| *chunk_index)
-                    .is_ok_and(|position| {
-                        offset_is_held(&held_offset_ranges_by_chunk[position].1, declaration_position.offset)
-                    });
-                if !mask_is_around_held_run || declaration_is_held {
-                    continue;
-                }
-                let table = display_list.chunk(declaration_position.chunk_index).record_table();
-                let record_index = table
-                    .record_indices_between_offsets(declaration_position.offset, declaration_position.offset + 1)
-                    .start;
-                replays_records_reading_frame_state_hashed_for_the_list |=
-                    table.record(record_index).reads_frame_state_hashed_for_the_list();
-                items_replayed_in_every_tile.push((
-                    declaration_position,
-                    TileReplayItem::RecordSpan {
-                        chunk_index: declaration_position.chunk_index,
-                        begin_offset: declaration_position.offset,
-                        end_offset: table.record(record_index).end_offset,
-                    },
-                ));
-            }
-            return BandBoundToListAndGeometry {
-                held_chunks: Vec::new(),
-                runs_replayed_whole: HashMap::new(),
-                declared_masks_around_runs_replayed_whole: HashMap::new(),
-                backdrop_reads: BackdropReadsOfBand::new(Vec::new()),
-                items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
-                replays_records_reading_frame_state_hashed_for_the_list,
-            };
-        }
-
+    fn held_chunks_with_their_placements(
+        &self,
+        held_offset_ranges_by_chunk: Vec<(ChunkIndexInList, Vec<(u32, u32)>)>,
+    ) -> Vec<ChunkHeldByBand> {
+        let display_list = self.list.display_list;
         let mut held_chunks: Vec<ChunkHeldByBand> = Vec::with_capacity(held_offset_ranges_by_chunk.len());
         for (chunk_index, held_offset_ranges) in held_offset_ranges_by_chunk {
             let held_run_indices =
@@ -2422,13 +2566,23 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 .all(|pair| pair[0].chunk_index < pair[1].chunk_index),
             "the checks of a plan take only bands whose spans are in paint order"
         );
-        let tree = list.tree;
+        held_chunks
+    }
+
+    fn backdrop_reads_of_held_runs(
+        &self,
+        stack: &LayerStack,
+        band: &PlacementNodeBand,
+        held_chunks: &[ChunkHeldByBand],
+    ) -> BackdropReadsOfBand {
+        let display_list = self.list.display_list;
+        let tree = self.list.tree;
         let effect_composited_around_band = stack.nodes[band.placement_node_index.0]
             .composited_effect
             .unwrap_or(EffectNodeIndex::NONE);
         let mut effect_was_visited = vec![false; tree.effect_nodes.len()];
         let mut backdrop_reads_in_paint_order = Vec::new();
-        for held_chunk in &held_chunks {
+        for held_chunk in held_chunks {
             let runs = display_list.chunk(held_chunk.chunk_index).runs();
             for &run_index in &held_chunk.held_run_indices {
                 let run = &runs[run_index.0 as usize];
@@ -2448,8 +2602,19 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
         }
-        let backdrop_reads = BackdropReadsOfBand::new(backdrop_reads_in_paint_order);
+        BackdropReadsOfBand::new(backdrop_reads_in_paint_order)
+    }
 
+    /// The held runs that replay whole wherever any run of their run group shows, and the masks with declared content
+    /// around them.
+    fn runs_replayed_whole(
+        &self,
+        held_chunks: &[ChunkHeldByBand],
+        backdrop_reads: &BackdropReadsOfBand,
+    ) -> (RunsReplayedWhole, MasksWithDeclaredContent) {
+        let list = self.list;
+        let display_list = list.display_list;
+        let tree = list.tree;
         // A mask or a depth sort reads every run of its run group, so those runs replay whole wherever any of them
         // shows.
         let run_groups = list.run_groups();
@@ -2458,7 +2623,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             (Reach<IntRect>, ListPosition),
         > = BTreeMap::new();
         let mut held_runs_replayed_whole: Vec<(ChunkIndexInList, RunIndexInChunk, RunGroupIndex)> = Vec::new();
-        for held_chunk in &held_chunks {
+        for held_chunk in held_chunks {
             let runs = display_list.chunk(held_chunk.chunk_index).runs();
             for &run_index in &held_chunk.held_run_indices {
                 let position = ListPosition::new(held_chunk.chunk_index, runs[run_index.0 as usize].offset);
@@ -2498,11 +2663,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 matches!(node.data, EffectNodeData::Mask(_)) && declaration_positions_by_mask.contains_key(&effect)
             })
         };
-        let nearest_declared_mask_at_or_above = |effect: EffectNodeIndex| {
-            nearest_declared_mask_by_effect_index
-                .get(effect.0 as usize)
-                .copied()
-                .unwrap_or(EffectNodeIndex::NONE)
+        let masks_with_declared_content = MasksWithDeclaredContent {
+            declaration_positions_by_mask,
+            nearest_declared_mask_by_effect_index,
         };
         let runs_replayed_whole = held_runs_replayed_whole
             .into_iter()
@@ -2511,7 +2674,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     reach_and_first_position_of_run_groups_replayed_whole[&run_group_index];
                 let run_replayed_whole = RunReplayedWholeWhereverRunGroupShows {
                     reach: backdrop_reads.reach_extended_through_reads(run_group_reach, first_position),
-                    innermost_declared_mask_around: nearest_declared_mask_at_or_above(
+                    innermost_declared_mask_around: masks_with_declared_content.nearest_declared_mask_at_or_above(
                         display_list.chunk(chunk_index).runs()[run_index.0 as usize]
                             .context
                             .effect,
@@ -2520,143 +2683,59 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 ((chunk_index, run_index), run_replayed_whole)
             })
             .collect();
-        let held_runs_read_frame_state_hashed_for_the_list = held_chunks.iter().any(|held_chunk| {
-            let table = display_list.chunk(held_chunk.chunk_index).record_table();
-            held_chunk
-                .held_run_indices
-                .iter()
-                .any(|&run_index| table.run_reads_frame_state_hashed_for_the_list(run_index))
-        });
-        let mut bound_band = BandBoundToListAndGeometry {
-            held_chunks,
-            runs_replayed_whole,
-            declared_masks_around_runs_replayed_whole: HashMap::new(),
-            backdrop_reads,
-            items_replayed_in_every_tile: None,
-            replays_records_reading_frame_state_hashed_for_the_list: held_runs_read_frame_state_hashed_for_the_list,
-        };
-
-        if !declaration_positions_by_mask.is_empty() {
-            // Each declared mask is looked at once, and every run inside it shares the chain of declared masks from it
-            // out.
-            let mut declared_masks: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole> = HashMap::new();
-            let mut declared_masks_not_looked_at = Vec::new();
-            let mut declared_items_of_mask = HashSet::new();
-            let mut declarations_read_frame_state_hashed_for_the_list = false;
-            for run_replayed_whole in bound_band.runs_replayed_whole.values() {
-                declared_masks_not_looked_at.clear();
-                let mut mask = run_replayed_whole.innermost_declared_mask_around;
-                while !mask.is_none() && !declared_masks.contains_key(&mask) {
-                    declared_masks_not_looked_at.push(mask);
-                    mask = nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
-                }
-                for &mask in &declared_masks_not_looked_at {
-                    let next_declared_mask_around =
-                        nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
-                    let mut declarations: Vec<(ListPosition, TileReplayItem, Reach<IntRect>)> = Vec::new();
-                    declared_items_of_mask.clear();
-                    for &declaration_position in &declaration_positions_by_mask[&mask] {
-                        let table = display_list.chunk(declaration_position.chunk_index).record_table();
-                        let record_index = table
-                            .record_indices_between_offsets(
-                                declaration_position.offset,
-                                declaration_position.offset + 1,
-                            )
-                            .start;
-                        declarations_read_frame_state_hashed_for_the_list |=
-                            table.record(record_index).reads_frame_state_hashed_for_the_list();
-                        let item =
-                            self.item_replaying_record(&bound_band, declaration_position.chunk_index, record_index);
-                        if !declared_items_of_mask.insert(item) {
-                            continue;
-                        }
-                        declarations.push((bound_band.span_of(item).begin, item, bound_band.reach_of_item(item)));
-                    }
-                    declared_masks.insert(
-                        mask,
-                        DeclaredMaskAroundRunReplayedWhole {
-                            declarations,
-                            next_declared_mask_around,
-                        },
-                    );
-                }
-            }
-            bound_band.declared_masks_around_runs_replayed_whole = declared_masks;
-            bound_band.replays_records_reading_frame_state_hashed_for_the_list |=
-                declarations_read_frame_state_hashed_for_the_list;
-        }
-
-        for held_chunk_index in 0..bound_band.held_chunks.len() {
-            let held_chunk = &bound_band.held_chunks[held_chunk_index];
-            let mut reach_of_runs_replayed_whole = Reach::Nothing;
-            let mut reach_of_runs_binned_range_by_range = Reach::Nothing;
-            for &run_index in &held_chunk.held_run_indices {
-                match bound_band.runs_replayed_whole.get(&(held_chunk.chunk_index, run_index)) {
-                    Some(run_replayed_whole) => {
-                        reach_of_runs_replayed_whole = reach_of_runs_replayed_whole.united(run_replayed_whole.reach);
-                    }
-                    None => {
-                        reach_of_runs_binned_range_by_range = reach_of_runs_binned_range_by_range.united(
-                            held_chunk.placement.ranges_of_each_run[run_index.0 as usize].reach_of_binned_ranges,
-                        );
-                    }
-                }
-            }
-            // A backdrop filter can extend content painted before it past the cells that content reaches.
-            if !bound_band.backdrop_reads.is_empty() {
-                let first_held_offset = held_chunk.held_run_indices.first().map_or(0, |run_index| {
-                    display_list.chunk(held_chunk.chunk_index).runs()[run_index.0 as usize].offset
-                });
-                reach_of_runs_binned_range_by_range = bound_band.backdrop_reads.reach_extended_through_reads(
-                    reach_of_runs_binned_range_by_range,
-                    ListPosition::new(held_chunk.chunk_index, first_held_offset),
-                );
-            }
-            bound_band.held_chunks[held_chunk_index].reach_of_held_records =
-                reach_of_runs_replayed_whole.united(reach_of_runs_binned_range_by_range);
-        }
-        bound_band
+        (runs_replayed_whole, masks_with_declared_content)
     }
 
-    fn for_each_held_item(
+    fn declared_masks_around_runs_replayed_whole(
+        &self,
         bound_band: &BandBoundToListAndGeometry,
-        held_chunk: &ChunkHeldByBand,
-        mut visit: impl FnMut(ListPosition, TileReplayItem, Reach<IntRect>, EffectNodeIndex),
-    ) {
-        for &run_index in &held_chunk.held_run_indices {
-            let ranges_of_run = &held_chunk.placement.ranges_of_each_run[run_index.0 as usize];
-            if let Some(run_replayed_whole) = bound_band.runs_replayed_whole.get(&(held_chunk.chunk_index, run_index)) {
-                let whole_run_range =
-                    &held_chunk.placement.record_ranges[ranges_of_run.whole_run_range_index.0 as usize];
-                visit(
-                    ListPosition::new(held_chunk.chunk_index, whole_run_range.begin_offset),
-                    TileReplayItem::PlacedRecordRange {
-                        chunk_index: held_chunk.chunk_index,
-                        range_index: ranges_of_run.whole_run_range_index,
-                    },
-                    run_replayed_whole.reach,
-                    run_replayed_whole.innermost_declared_mask_around,
-                );
-                continue;
+        masks_with_declared_content: &MasksWithDeclaredContent,
+    ) -> (HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole>, bool) {
+        let display_list = self.list.display_list;
+        let tree = self.list.tree;
+        // Each declared mask is looked at once, and every run inside it shares the chain of declared masks from it
+        // out.
+        let mut declared_masks: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole> = HashMap::new();
+        let mut declared_masks_not_looked_at = Vec::new();
+        let mut declared_items_of_mask = HashSet::new();
+        let mut declarations_read_frame_state_hashed_for_the_list = false;
+        for run_replayed_whole in bound_band.runs_replayed_whole.values() {
+            declared_masks_not_looked_at.clear();
+            let mut mask = run_replayed_whole.innermost_declared_mask_around;
+            while !mask.is_none() && !declared_masks.contains_key(&mask) {
+                declared_masks_not_looked_at.push(mask);
+                mask = masks_with_declared_content
+                    .nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
             }
-            for range_index in (ranges_of_run.first_binned_range_index.0..ranges_of_run.whole_run_range_index.0)
-                .map(PlacedRecordRangeIndex)
-            {
-                let range = &held_chunk.placement.record_ranges[range_index.0 as usize];
-                let paint_position = ListPosition::new(held_chunk.chunk_index, range.begin_offset);
-                visit(
-                    paint_position,
-                    TileReplayItem::PlacedRecordRange {
-                        chunk_index: held_chunk.chunk_index,
-                        range_index,
+            for &mask in &declared_masks_not_looked_at {
+                let next_declared_mask_around = masks_with_declared_content
+                    .nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
+                let mut declarations: Vec<(ListPosition, TileReplayItem, Reach<IntRect>)> = Vec::new();
+                declared_items_of_mask.clear();
+                for &declaration_position in &masks_with_declared_content.declaration_positions_by_mask[&mask] {
+                    let table = display_list.chunk(declaration_position.chunk_index).record_table();
+                    let record_index = table
+                        .record_indices_between_offsets(declaration_position.offset, declaration_position.offset + 1)
+                        .start;
+                    declarations_read_frame_state_hashed_for_the_list |=
+                        table.record(record_index).reads_frame_state_hashed_for_the_list();
+                    let item =
+                        bound_band.item_replaying_record(display_list, declaration_position.chunk_index, record_index);
+                    if !declared_items_of_mask.insert(item) {
+                        continue;
+                    }
+                    declarations.push((bound_band.span_of(item).begin, item, bound_band.reach_of_item(item)));
+                }
+                declared_masks.insert(
+                    mask,
+                    DeclaredMaskAroundRunReplayedWhole {
+                        declarations,
+                        next_declared_mask_around,
                     },
-                    bound_band
-                        .backdrop_reads
-                        .reach_extended_through_reads(range.reach, paint_position),
-                    EffectNodeIndex::NONE,
                 );
             }
         }
+        (declared_masks, declarations_read_frame_state_hashed_for_the_list)
     }
 
     /// The tiles of `band_index` bound to the list and the geometry of the frame and to the band in `stack`, with no
@@ -2839,7 +2918,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     if held_chunk.reach_of_held_records.part_of(new_cells_area).is_empty() {
                         continue;
                     }
-                    Self::for_each_held_item(bound_band, held_chunk, &mut add_to_bins);
+                    bound_band.for_each_held_item(held_chunk, &mut add_to_bins);
                 }
             }
         }
