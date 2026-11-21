@@ -1543,21 +1543,27 @@ impl ContextPresenting {
         layer_update: LayerUpdate,
     ) -> PaintedLayers {
         let painted_layers = PaintedLayers::of_frame(layer_update);
-        let identities_in_stack: HashSet<LayerIdentity> = painted_layers
-            .compositing_of_layers
-            .iter()
-            .map(|compositing| compositing.identity)
-            .collect();
+        let frame_draws_with_stack_of_painted_frame = self
+            .painted_frame
+            .as_ref()
+            .is_some_and(|painted_frame| Rc::ptr_eq(&painted_frame.layers.stack, &painted_layers.stack));
         let layers = &mut self.layers;
-        layers.presentation_by_layer.retain(|identity, presentation| {
-            let is_in_stack = identities_in_stack.contains(identity);
-            if !is_in_stack {
-                env.raster
-                    .drop_presentable_surface_pool(env.context_id, presentation.presentable_surface_pool);
-            }
-            is_in_stack
-        });
-        layers.tiles.keep_only_layers(&identities_in_stack);
+        if !frame_draws_with_stack_of_painted_frame {
+            let identities_in_stack: HashSet<LayerIdentity> = painted_layers
+                .compositing_of_layers
+                .iter()
+                .map(|compositing| compositing.identity)
+                .collect();
+            layers.presentation_by_layer.retain(|identity, presentation| {
+                let is_in_stack = identities_in_stack.contains(identity);
+                if !is_in_stack {
+                    env.raster
+                        .drop_presentable_surface_pool(env.context_id, presentation.presentable_surface_pool);
+                }
+                is_in_stack
+            });
+            layers.tiles.keep_only_layers(&identities_in_stack);
+        }
         layers.tiles.evict_spare_tiles_if_tiles_changed(env);
         painted_layers
     }
