@@ -110,36 +110,74 @@ pub fn tree_with_root_isolation_effect(root_opacity: f32) -> (VisualContextTree,
     (tree, viewport)
 }
 
-/// A tree whose document scrolls by up to 2000 px down the viewport, with the contexts of the viewport and of the
-/// document.
-pub fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
-    let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
-    let document_scroll_node = tree.append_spatial(
+pub fn scroll_node(tree: &mut VisualContextTree, parent: SpatialNodeIndex) -> SpatialNodeIndex {
+    tree.append_spatial(
         SpatialData::Scroll(ScrollData {
             state_slot: NO_SCROLL_STATE_SLOT,
             owner_paintable: NodeSlotId::INVALID,
         }),
+        parent,
+    )
+}
+
+/// The record of a scroller that a wheel scrolls down by up to `max_scroll_offset_y`.
+pub fn scroll_record(
+    node: SpatialNodeIndex,
+    parent: SpatialNodeIndex,
+    scrollport_rect: IntRect,
+    max_scroll_offset_y: f32,
+    is_viewport: bool,
+) -> CompositorScrollNodeRecord {
+    CompositorScrollNodeRecord {
+        scroll_node_index: node,
+        parent_scroll_node_index: parent,
+        scrollport_rect,
+        max_scroll_offset: FloatPoint {
+            x: 0.0,
+            y: max_scroll_offset_y,
+        },
+        is_viewport,
+        can_be_wheel_scrolled_vertically: true,
+        ..CompositorScrollNodeRecord::default()
+    }
+}
+
+/// A tree whose document scrolls by up to 2000 px down the viewport, with the context of the viewport, and those of the
+/// document and of a scroller in it per rect of `nested_scrollers`, which scrolls by up to 500 px.
+pub fn tree_with_document_scroller(nested_scrollers: &[IntRect]) -> (VisualContextTree, ContextRef, Vec<ContextRef>) {
+    let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
+    let document_node = scroll_node(&mut tree, VISUAL_VIEWPORT_NODE_INDEX);
+    let mut records = vec![scroll_record(
+        document_node,
         VISUAL_VIEWPORT_NODE_INDEX,
-    );
-    assert!(
-        tree.set_compositor_scroll_table(CompositorScrollTable {
-            nodes: vec![CompositorScrollNodeRecord {
-                scroll_node_index: document_scroll_node,
-                parent_scroll_node_index: VISUAL_VIEWPORT_NODE_INDEX,
-                scrollport_rect: VIEWPORT,
-                max_scroll_offset: FloatPoint { x: 0.0, y: 2000.0 },
-                is_viewport: true,
-                ..CompositorScrollNodeRecord::default()
-            }]
-            .into(),
-            ..CompositorScrollTable::default()
-        })
-    );
-    let document = ContextRef {
-        spatial: document_scroll_node,
+        VIEWPORT,
+        2000.0,
+        true,
+    )];
+    let mut contexts = vec![ContextRef {
+        spatial: document_node,
         ..viewport
-    };
-    (tree, viewport, document)
+    }];
+    for &scrollport_rect in nested_scrollers {
+        let nested_node = scroll_node(&mut tree, document_node);
+        records.push(scroll_record(nested_node, document_node, scrollport_rect, 500.0, false));
+        contexts.push(ContextRef {
+            spatial: nested_node,
+            ..viewport
+        });
+    }
+    assert!(tree.set_compositor_scroll_table(CompositorScrollTable {
+        nodes: records.into(),
+        ..CompositorScrollTable::default()
+    }));
+    (tree, viewport, contexts)
+}
+
+/// A tree whose document scrolls by up to 2000 px down the viewport, with the contexts of the viewport and of the
+/// document.
+pub fn tree_with_document_scroll() -> (VisualContextTree, ContextRef, ContextRef) {
+    let (tree, viewport, contexts) = tree_with_document_scroller(&[]);
+    (tree, viewport, contexts[0])
 }
 
 pub fn fill(rect: IntRect, color: Color) -> FillRect {

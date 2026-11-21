@@ -389,8 +389,8 @@ mod tests {
     use libcompositing_rust::display_list::layers::planning::InputsOfLayerPlan;
     use libcompositing_rust::display_list::storage::{ChunkIndexInList, DisplayListStorage, ListPosition, ListSpan};
     use libcompositing_rust::ipc_types::LayerPlanOnWire;
-    use libcompositing_rust::visual_context::{TransformData, TransformDataRole, VisualContextTree};
-    use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatPoint, FloatRect};
+    use libcompositing_rust::visual_context::VisualContextTree;
+    use libgfx_rust::{Color, CompositingAndBlendingOperator};
     use libipc_rust::wire::{Decoder, Encoder};
     use std::sync::Arc;
 
@@ -398,16 +398,7 @@ mod tests {
     const DISPLAY_LIST_ID: u64 = 7;
 
     fn scene_with_one_rect() -> (ContextScene, Arc<DisplayListStorage>, Arc<VisualContextTree>) {
-        let tree = Arc::new(VisualContextTree::create(TransformData {
-            matrix: FloatMatrix4x4::identity(),
-            origin: FloatPoint::default(),
-            sorting_context_root_index: None,
-            flattens_inherited_transform: false,
-            role: TransformDataRole::CssTransform,
-            synthetic_plane: false,
-            establishes_sorting_context: false,
-            bounds: FloatRect::default(),
-        }));
+        let tree = Arc::new(VisualContextTree::create_identity());
         let mut builder = DisplayListBuilder::new();
         builder.append(
             &FillRect {

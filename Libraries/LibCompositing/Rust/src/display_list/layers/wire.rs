@@ -923,15 +923,13 @@ mod tests {
     use crate::display_list::placement::{RasterSpace, RasterSpaceGeometry, WhatEverySpaceOfTreeShares};
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, canvas, chunk_of, effects, fill, frosted_glass,
-        opacity_animation_of, raster_settings_hash_by_layer, spinning, transform, tree_with_root_isolation_effect,
+        opacity_animation_of, raster_settings_hash_by_layer, scroll_node, scroll_record, spinning, transform,
+        tree_with_document_scroller, tree_with_root_isolation_effect,
     };
     use crate::display_list::tile_keys::{BandTileKeys, TileKeyingOfList, TileKeyingOfRasterSpace};
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT;
-    use crate::visual_context::{
-        CompositorScrollNodeRecord, CompositorScrollTable, EffectNodeData, EffectsData, ScrollData, SpatialData,
-        StickyData,
-    };
+    use crate::visual_context::{CompositorScrollTable, EffectNodeData, EffectsData, SpatialData, StickyData};
     use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatPoint, FloatRect, FloatSize};
     use std::sync::Arc;
 
@@ -973,67 +971,6 @@ mod tests {
         Decoder::new(&encoder.finish().0, [])
             .decode()
             .expect("a planned stack decodes")
-    }
-
-    fn scroll_node(tree: &mut VisualContextTree, parent: SpatialNodeIndex) -> SpatialNodeIndex {
-        tree.append_spatial(
-            SpatialData::Scroll(ScrollData {
-                state_slot: NO_SCROLL_STATE_SLOT,
-                owner_paintable: NodeSlotId::INVALID,
-            }),
-            parent,
-        )
-    }
-
-    fn scroll_record(
-        node: SpatialNodeIndex,
-        parent: SpatialNodeIndex,
-        scrollport_rect: IntRect,
-        scroll_height: f32,
-        is_viewport: bool,
-    ) -> CompositorScrollNodeRecord {
-        CompositorScrollNodeRecord {
-            scroll_node_index: node,
-            parent_scroll_node_index: parent,
-            scrollport_rect,
-            max_scroll_offset: FloatPoint {
-                x: 0.0,
-                y: scroll_height,
-            },
-            is_viewport,
-            can_be_wheel_scrolled_vertically: true,
-            ..CompositorScrollNodeRecord::default()
-        }
-    }
-
-    // A tree whose document scrolls in the viewport, with the contexts of the viewport and of the document.
-    fn tree_with_document_scroller(nested_scrollers: &[IntRect]) -> (VisualContextTree, ContextRef, Vec<ContextRef>) {
-        let (mut tree, viewport) = tree_with_root_isolation_effect(1.0);
-        let document_node = scroll_node(&mut tree, VISUAL_VIEWPORT_NODE_INDEX);
-        let mut records = vec![scroll_record(
-            document_node,
-            VISUAL_VIEWPORT_NODE_INDEX,
-            VIEWPORT,
-            2000.0,
-            true,
-        )];
-        let mut contexts = vec![ContextRef {
-            spatial: document_node,
-            ..viewport
-        }];
-        for &scrollport_rect in nested_scrollers {
-            let nested_node = scroll_node(&mut tree, document_node);
-            records.push(scroll_record(nested_node, document_node, scrollport_rect, 500.0, false));
-            contexts.push(ContextRef {
-                spatial: nested_node,
-                ..viewport
-            });
-        }
-        assert!(tree.set_compositor_scroll_table(CompositorScrollTable {
-            nodes: records.into(),
-            ..CompositorScrollTable::default()
-        }));
-        (tree, viewport, contexts)
     }
 
     // A long page of fills in the document, each in a chunk of its own, under a header fixed to the viewport.

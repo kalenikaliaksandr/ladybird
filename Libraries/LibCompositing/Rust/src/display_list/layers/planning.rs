@@ -2263,13 +2263,13 @@ mod tests {
     };
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, VIEWPORT, animation_of, canvas, effects, fill, frosted_glass, opacity_animation_of,
-        spinning, transform, transform_animation_of, tree_with_document_scroll, tree_with_root_isolation_effect,
+        scroll_node, scroll_record, spinning, transform, transform_animation_of, tree_with_document_scroll,
+        tree_with_root_isolation_effect,
     };
     use crate::display_list::tiles::TILE_SIZE_IN_DEVICE_PIXELS;
     use crate::node_slot_id::NodeSlotId;
     use crate::visual_context::{
-        CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, ScrollData, SpatialData, TransformData,
-        TransformDataRole,
+        CompositorScrollNodeRecord, CompositorScrollTable, EffectsData, SpatialData, TransformData, TransformDataRole,
     };
     use libgfx_rust::{Color, CompositingAndBlendingOperator, FloatMatrix4x4, FloatRect};
 
@@ -3181,26 +3181,16 @@ mod tests {
         max_scroll_offset_y: f32,
     ) -> ContextRef {
         let clipped_to_scrollport = clipped_context(tree, parent, scrollport, libgfx_rust::CornerRadii::default());
-        let scroll_node = tree.append_spatial(
-            SpatialData::Scroll(ScrollData {
-                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
-                owner_paintable: NodeSlotId::INVALID,
-            }),
+        let scroller = scroll_node(tree, parent.spatial);
+        records.push(scroll_record(
+            scroller,
             parent.spatial,
-        );
-        records.push(CompositorScrollNodeRecord {
-            scroll_node_index: scroll_node,
-            parent_scroll_node_index: parent.spatial,
-            scrollport_rect: scrollport,
-            max_scroll_offset: FloatPoint {
-                x: 0.0,
-                y: max_scroll_offset_y,
-            },
-            can_be_wheel_scrolled_vertically: true,
-            ..CompositorScrollNodeRecord::default()
-        });
+            scrollport,
+            max_scroll_offset_y,
+            false,
+        ));
         ContextRef {
-            spatial: scroll_node,
+            spatial: scroller,
             ..clipped_to_scrollport
         }
     }
@@ -3405,13 +3395,7 @@ mod tests {
     #[test]
     fn a_plan_holds_for_inputs_that_differ_only_in_what_it_does_not_read() {
         let (mut tree, _, document) = tree_with_document_scroll();
-        let scroller = tree.append_spatial(
-            SpatialData::Scroll(ScrollData {
-                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
-                owner_paintable: NodeSlotId::INVALID,
-            }),
-            document.spatial,
-        );
+        let scroller = scroll_node(&mut tree, document.spatial);
         let list = ListOfOneChunk::default()
             .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(
@@ -3457,13 +3441,7 @@ mod tests {
             VIEWPORT
         )));
         let mut tree_of_other_content = (*tree).clone();
-        tree_of_other_content.append_spatial(
-            SpatialData::Scroll(ScrollData {
-                state_slot: crate::visual_context::scroll_state::NO_SCROLL_STATE_SLOT,
-                owner_paintable: NodeSlotId::INVALID,
-            }),
-            document.spatial,
-        );
+        scroll_node(&mut tree_of_other_content, document.spatial);
         assert!(!inputs.plan_alike_as(&InputsOfLayerPlan::new(
             storage,
             Arc::new(tree_of_other_content),
