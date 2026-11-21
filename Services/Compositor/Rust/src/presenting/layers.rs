@@ -229,12 +229,6 @@ impl LayerCompositingInFrame {
     }
 }
 
-fn any_layer_shown_by_window_server(compositing_of_layers: &[LayerCompositingInFrame]) -> bool {
-    compositing_of_layers
-        .iter()
-        .any(|compositing| compositing.shown_by_window_server)
-}
-
 /// The tile keys of a band of the stack of frames, and the geometry they were bound with besides the list of the stack.
 #[derive(Default)]
 struct BandTileKeysOfFrame {
@@ -253,15 +247,9 @@ impl BandTileKeysOfFrame {
 /// What a frame paints of its layers: where it composites them, the tiles it shows of each, and the media and composited
 /// effects it draws.
 pub struct LayerUpdate {
-    /// The stack the frame draws with.
-    stack: Rc<LayerStack>,
-    /// From the base layer up, the layers that can hold something, and where the frame composites each.
-    compositing_of_layers: Vec<LayerCompositingInFrame>,
+    layers: PaintedLayers,
     /// What each composited effect that reads past each of its pixels reads and draws as the frame places it.
     read_reaches_of_composited_effects_in_frame: Vec<IntRect>,
-    window_server_placements_of_media: WindowServerPlacementsOfMedia,
-    content_hash_by_composited_node: HashMap<PlacementNodeIdentity, ContentHash>,
-    media_replayed_by_identity: HashMap<LayerIdentity, MediaRecordsReplayedInFrame>,
     // Per layer of the stack.
     shown_tiles_by_layer: Vec<Vec<TileShownInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
@@ -275,7 +263,7 @@ impl LayerUpdate {
     }
 
     pub fn shown_by_window_server(&self) -> bool {
-        any_layer_shown_by_window_server(&self.compositing_of_layers)
+        self.layers.shown_by_window_server()
     }
 
     /// The damage grown over all that a composited effect reads wherever it reaches that, as compositing the effect
@@ -450,11 +438,13 @@ struct LayeringObstaclesOfListAndTree {
     obstacles: LayeringObstacles,
 }
 
-/// What the latest frame that was painted, or that showed nothing new, did with its layers, which a snapshot of the
-/// frame on screen and what the window server shows above it are composited with until another frame is painted.
+/// What a frame does with its layers. Those of the latest frame that was painted, or that showed nothing new, are what a
+/// snapshot of the frame on screen and what the window server shows above it are composited with until another frame is
+/// painted.
 pub struct PaintedLayers {
-    /// The stack the frame was drawn with.
+    /// The stack the frame draws with.
     stack: Rc<LayerStack>,
+    /// From the base layer up, the layers that can hold something, and where the frame composites each.
     compositing_of_layers: Vec<LayerCompositingInFrame>,
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
     content_hash_by_composited_node: HashMap<PlacementNodeIdentity, ContentHash>,
@@ -462,19 +452,11 @@ pub struct PaintedLayers {
 }
 
 impl PaintedLayers {
-    fn of_frame(layer_update: LayerUpdate) -> Self {
-        Self {
-            stack: layer_update.stack,
-            compositing_of_layers: layer_update.compositing_of_layers,
-            window_server_placements_of_media: layer_update.window_server_placements_of_media,
-            content_hash_by_composited_node: layer_update.content_hash_by_composited_node,
-            media_replayed_by_identity: layer_update.media_replayed_by_identity,
-        }
-    }
-
     /// Whether the window server shows layers above the base layer of the frame.
     pub fn shown_by_window_server(&self) -> bool {
-        any_layer_shown_by_window_server(&self.compositing_of_layers)
+        self.compositing_of_layers
+            .iter()
+            .any(|compositing| compositing.shown_by_window_server)
     }
 }
 
@@ -842,13 +824,13 @@ fn damage_of_layers_moved_by_animated_transforms(
     layer_update: &LayerUpdate,
     viewport_rect: IntRect,
 ) -> Option<IntRect> {
-    if compositing_of_latest_frame.len() != layer_update.compositing_of_layers.len() {
+    if compositing_of_latest_frame.len() != layer_update.layers.compositing_of_layers.len() {
         return None;
     }
     let mut damage = IntRect::default();
     for (latest, current) in compositing_of_latest_frame
         .iter()
-        .zip(&layer_update.compositing_of_layers)
+        .zip(&layer_update.layers.compositing_of_layers)
     {
         if latest == current {
             continue;
@@ -864,7 +846,7 @@ fn damage_of_layers_moved_by_animated_transforms(
             return None;
         }
         let composited_filter_read_reach = layer_update.composited_filter_read_reach_by_layer[current.layer_index.0];
-        let reach_in_layer_space = layer_update.stack.layers[current.layer_index.0].reach;
+        let reach_in_layer_space = layer_update.layers.stack.layers[current.layer_index.0].reach;
         // A new list can shrink the reach of the layer, and the frame before showed every tile it held of the layer.
         let held_in_latest_frame = bounds_of_tiles_held_by(&latest.identity);
         damage = damage
@@ -1352,12 +1334,14 @@ impl ContextPresenting {
             ));
         }
         let layer_update = LayerUpdate {
-            stack: stack_of_frames.stack.clone(),
-            compositing_of_layers,
+            layers: PaintedLayers {
+                stack: stack_of_frames.stack.clone(),
+                compositing_of_layers,
+                window_server_placements_of_media,
+                content_hash_by_composited_node: composited_effects.content_hash_by_composited_node,
+                media_replayed_by_identity,
+            },
             read_reaches_of_composited_effects_in_frame: composited_effects.read_reaches_in_frame,
-            window_server_placements_of_media,
-            content_hash_by_composited_node: composited_effects.content_hash_by_composited_node,
-            media_replayed_by_identity,
             shown_tiles_by_layer,
             composited_filter_read_reach_by_layer,
             frame_allows_lcd_text,
@@ -1453,6 +1437,7 @@ impl ContextPresenting {
             .expect("a frame with layers has a stack");
         let stack = &stack_of_frames.stack;
         let hidden_by_layer: Vec<bool> = layer_update
+            .layers
             .compositing_of_layers
             .iter()
             .map(|compositing| self.layer_overlay.hides_layer(&compositing.identity))
@@ -1462,6 +1447,7 @@ impl ContextPresenting {
         let name_not_shown: Rc<str> = Rc::from("");
         let why_context_shows_no_media = self.why_window_server_shows_no_media_of_this_context(env);
         let layers = layer_update
+            .layers
             .compositing_of_layers
             .iter()
             .enumerate()
@@ -1481,7 +1467,7 @@ impl ContextPresenting {
                                 .or_else(|| {
                                     self.why_window_server_does_not_show_media_layer(
                                         env,
-                                        &layer_update.window_server_placements_of_media,
+                                        &layer_update.layers.window_server_placements_of_media,
                                         layer_index,
                                         layer,
                                         live_content,
@@ -1541,7 +1527,7 @@ impl ContextPresenting {
         env: &PresentingEnvironment<'_>,
         layer_update: LayerUpdate,
     ) -> PaintedLayers {
-        let painted_layers = PaintedLayers::of_frame(layer_update);
+        let painted_layers = layer_update.layers;
         let frame_draws_with_stack_of_painted_frame = self
             .painted_frame
             .as_ref()
@@ -1601,15 +1587,10 @@ impl ContextPresenting {
 
         if layer_update.shown_by_window_server() {
             let presented_to_window_server = rects_painted_straight.is_empty()
-                && self.present_painted_layers_to_window_server(
-                    env,
-                    &layer_update.stack,
-                    &layer_update.compositing_of_layers,
-                    surface,
-                )
+                && self.present_painted_layers_to_window_server(env, &layer_update.layers, surface)
                 && self.present_compositor_overlays_to_window_server(env, frame, surface);
             if !presented_to_window_server {
-                for compositing in &mut layer_update.compositing_of_layers {
+                for compositing in &mut layer_update.layers.compositing_of_layers {
                     compositing.shown_by_window_server = false;
                 }
                 damage_rect = self.raster_rect();
@@ -1661,7 +1642,7 @@ impl ContextPresenting {
             .expect("a frame with layers has a stack");
         let stack = stack_of_frames.stack.as_ref();
         let mut rects_painted_straight = Vec::new();
-        for compositing in &layer_update.compositing_of_layers {
+        for compositing in &layer_update.layers.compositing_of_layers {
             let layer_index = compositing.layer_index;
             let layer = &stack.layers[layer_index.0];
             if matches!(layer.content, LayerContent::Media { .. }) {
@@ -1752,7 +1733,7 @@ impl ContextPresenting {
         let raster = env.raster;
         let save_count = raster.save(surface);
         raster.clip_rect(surface, damage_rect);
-        if let Some(base_layer_compositing) = layer_update.compositing_of_layers.first() {
+        if let Some(base_layer_compositing) = layer_update.layers.compositing_of_layers.first() {
             if self.layer_overlay.hides_layer(&base_layer_compositing.identity) {
                 raster.clear(surface, frame.surface_clear_color());
             } else if self.layers.tiles.has_layer(&base_layer_compositing.identity) {
@@ -1771,8 +1752,7 @@ impl ContextPresenting {
             surface,
             frame,
             damage_rect,
-            &layer_update.stack,
-            &layer_update.compositing_of_layers,
+            &layer_update.layers,
             &layer_update.composited_filter_read_reach_by_layer,
             false,
         );
@@ -1809,16 +1789,7 @@ impl ContextPresenting {
         damage_rect: IntRect,
         painted: &PaintedLayers,
     ) {
-        self.composite_layers_above_base_of_stack(
-            env,
-            surface,
-            frame,
-            damage_rect,
-            &painted.stack,
-            &painted.compositing_of_layers,
-            &[],
-            true,
-        );
+        self.composite_layers_above_base_of_stack(env, surface, frame, damage_rect, painted, &[], true);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1828,11 +1799,11 @@ impl ContextPresenting {
         surface: &SurfaceHandle,
         frame: &FrameToPaint<'_>,
         damage_rect: IntRect,
-        stack: &LayerStack,
-        compositing_of_layers: &[LayerCompositingInFrame],
+        painted_layers: &PaintedLayers,
         composited_filter_read_reach_by_layer: &[i32],
         composites_layers_the_window_server_shows: bool,
     ) {
+        let (stack, compositing_of_layers) = (&painted_layers.stack, &painted_layers.compositing_of_layers);
         if compositing_of_layers
             .iter()
             .skip(1)
@@ -1935,13 +1906,13 @@ impl ContextPresenting {
     fn present_painted_layers_to_window_server(
         &mut self,
         env: &PresentingEnvironment<'_>,
-        stack: &LayerStack,
-        compositing_of_layers: &[LayerCompositingInFrame],
+        painted_layers: &PaintedLayers,
         like: &SurfaceHandle,
     ) -> bool {
         let raster = env.raster;
         let viewport_rect = rect_of_size(self.viewport_size);
         let layers = &mut self.layers;
+        let (stack, compositing_of_layers) = (&painted_layers.stack, &painted_layers.compositing_of_layers);
         for compositing in compositing_of_layers
             .iter()
             .skip(1)
@@ -2430,14 +2401,16 @@ mod tests {
         read_reaches_of_composited_effects_in_frame: Vec<IntRect>,
     ) -> LayerUpdate {
         LayerUpdate {
-            stack,
             shown_tiles_by_layer: compositing_of_layers.iter().map(|_| Vec::new()).collect(),
-            media_replayed_by_identity: HashMap::new(),
             composited_filter_read_reach_by_layer: vec![0; compositing_of_layers.len()],
-            compositing_of_layers,
+            layers: PaintedLayers {
+                stack,
+                compositing_of_layers,
+                window_server_placements_of_media: WindowServerPlacementsOfMedia::default(),
+                content_hash_by_composited_node: HashMap::new(),
+                media_replayed_by_identity: HashMap::new(),
+            },
             read_reaches_of_composited_effects_in_frame,
-            window_server_placements_of_media: WindowServerPlacementsOfMedia::default(),
-            content_hash_by_composited_node: HashMap::new(),
             frame_allows_lcd_text: false,
             work_counts: FrameWorkCounts::default(),
         }
