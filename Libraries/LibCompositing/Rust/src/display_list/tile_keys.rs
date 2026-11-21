@@ -2481,6 +2481,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             RunGroupIndex,
             (Reach<IntRect>, ListPosition),
         > = BTreeMap::new();
+        let mut held_runs_replayed_whole: Vec<(ChunkIndexInList, RunIndexInChunk, RunGroupIndex)> = Vec::new();
         for held_chunk in &held_chunks {
             let runs = display_list.chunk(held_chunk.chunk_index).runs();
             for &run_index in &held_chunk.held_run_indices {
@@ -2502,28 +2503,47 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                         *first_position = (*first_position).min(position);
                     })
                     .or_insert((whole_run_reach, position));
+                held_runs_replayed_whole.push((held_chunk.chunk_index, run_index, run_group_index));
             }
         }
-        let mut runs_replayed_whole = HashMap::new();
-        if !reach_and_first_position_of_run_groups_replayed_whole.is_empty() {
-            for held_chunk in &held_chunks {
-                for &run_index in &held_chunk.held_run_indices {
-                    let run_group_index = run_groups
-                        .group_of_run(display_list.first_run_of_chunk(held_chunk.chunk_index) + run_index.0 as usize);
-                    if let Some(&(run_group_reach, first_position)) =
-                        reach_and_first_position_of_run_groups_replayed_whole.get(&run_group_index)
-                    {
-                        runs_replayed_whole.insert(
-                            (held_chunk.chunk_index, run_index),
-                            RunReplayedWholeWhereverRunGroupShows {
-                                reach: backdrop_reads.reach_extended_through_reads(run_group_reach, first_position),
-                                innermost_declared_mask_around: EffectNodeIndex::NONE,
-                            },
-                        );
-                    }
-                }
+        let mut declaration_positions_by_mask: HashMap<EffectNodeIndex, Vec<ListPosition>> = HashMap::new();
+        if !held_runs_replayed_whole.is_empty() {
+            for declaration in &display_list.summary().mask_declarations {
+                declaration_positions_by_mask
+                    .entry(declaration.mask_effect)
+                    .or_default()
+                    .push(declaration.record.position);
             }
         }
+        let nearest_declared_mask_by_effect_index = if declaration_positions_by_mask.is_empty() {
+            Vec::new()
+        } else {
+            nearest_effects_at_or_above_where(tree, |effect, node| {
+                matches!(node.data, EffectNodeData::Mask(_)) && declaration_positions_by_mask.contains_key(&effect)
+            })
+        };
+        let nearest_declared_mask_at_or_above = |effect: EffectNodeIndex| {
+            nearest_declared_mask_by_effect_index
+                .get(effect.0 as usize)
+                .copied()
+                .unwrap_or(EffectNodeIndex::NONE)
+        };
+        let runs_replayed_whole = held_runs_replayed_whole
+            .into_iter()
+            .map(|(chunk_index, run_index, run_group_index)| {
+                let (run_group_reach, first_position) =
+                    reach_and_first_position_of_run_groups_replayed_whole[&run_group_index];
+                let run_replayed_whole = RunReplayedWholeWhereverRunGroupShows {
+                    reach: backdrop_reads.reach_extended_through_reads(run_group_reach, first_position),
+                    innermost_declared_mask_around: nearest_declared_mask_at_or_above(
+                        display_list.chunk(chunk_index).runs()[run_index.0 as usize]
+                            .context
+                            .effect,
+                    ),
+                };
+                ((chunk_index, run_index), run_replayed_whole)
+            })
+            .collect();
         let held_runs_read_frame_state_hashed_for_the_list = held_chunks.iter().any(|held_chunk| {
             let table = display_list.chunk(held_chunk.chunk_index).record_table();
             held_chunk
@@ -2540,41 +2560,16 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             replays_records_reading_frame_state_hashed_for_the_list: held_runs_read_frame_state_hashed_for_the_list,
         };
 
-        let mask_declarations = &display_list.summary().mask_declarations;
-        if !mask_declarations.is_empty() && !bound_band.runs_replayed_whole.is_empty() {
-            let mut declaration_positions_by_mask: HashMap<EffectNodeIndex, Vec<ListPosition>> = HashMap::new();
-            for declaration in mask_declarations {
-                declaration_positions_by_mask
-                    .entry(declaration.mask_effect)
-                    .or_default()
-                    .push(declaration.record.position);
-            }
-            let nearest_declared_mask_by_effect_index = nearest_effects_at_or_above_where(tree, |effect, node| {
-                matches!(node.data, EffectNodeData::Mask(_)) && declaration_positions_by_mask.contains_key(&effect)
-            });
-            let nearest_declared_mask_at_or_above = |effect: EffectNodeIndex| {
-                if effect.is_none() {
-                    EffectNodeIndex::NONE
-                } else {
-                    nearest_declared_mask_by_effect_index[effect.0 as usize]
-                }
-            };
+        if !declaration_positions_by_mask.is_empty() {
             // Each declared mask is looked at once, and every run inside it shares the chain of declared masks from it
             // out.
             let mut declared_masks: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole> = HashMap::new();
-            let mut innermost_declared_masks_of_runs = Vec::new();
             let mut declared_masks_not_looked_at = Vec::new();
             let mut declared_items_of_mask = HashSet::new();
-            for &run in bound_band.runs_replayed_whole.keys() {
-                let (chunk_index, run_index) = run;
-                let innermost_declared_mask_around = nearest_declared_mask_at_or_above(
-                    display_list.chunk(chunk_index).runs()[run_index.0 as usize]
-                        .context
-                        .effect,
-                );
-                innermost_declared_masks_of_runs.push((run, innermost_declared_mask_around));
+            let mut declarations_read_frame_state_hashed_for_the_list = false;
+            for run_replayed_whole in bound_band.runs_replayed_whole.values() {
                 declared_masks_not_looked_at.clear();
-                let mut mask = innermost_declared_mask_around;
+                let mut mask = run_replayed_whole.innermost_declared_mask_around;
                 while !mask.is_none() && !declared_masks.contains_key(&mask) {
                     declared_masks_not_looked_at.push(mask);
                     mask = nearest_declared_mask_at_or_above(tree.effect_nodes[mask.0 as usize].parent);
@@ -2592,7 +2587,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                                 declaration_position.offset + 1,
                             )
                             .start;
-                        bound_band.replays_records_reading_frame_state_hashed_for_the_list |=
+                        declarations_read_frame_state_hashed_for_the_list |=
                             table.record(record_index).reads_frame_state_hashed_for_the_list();
                         let item =
                             self.item_replaying_record(&bound_band, declaration_position.chunk_index, record_index);
@@ -2610,14 +2605,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     );
                 }
             }
-            for (run, innermost_declared_mask_around) in innermost_declared_masks_of_runs {
-                bound_band
-                    .runs_replayed_whole
-                    .get_mut(&run)
-                    .expect("declared masks are found for runs replayed whole")
-                    .innermost_declared_mask_around = innermost_declared_mask_around;
-            }
             bound_band.declared_masks_around_runs_replayed_whole = declared_masks;
+            bound_band.replays_records_reading_frame_state_hashed_for_the_list |=
+                declarations_read_frame_state_hashed_for_the_list;
         }
 
         for held_chunk_index in 0..bound_band.held_chunks.len() {
