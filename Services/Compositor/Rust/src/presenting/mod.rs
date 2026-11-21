@@ -13,6 +13,7 @@ mod layer_overlay;
 mod layers;
 pub mod pacing;
 mod tiles;
+mod window_server;
 
 use crate::frame_inputs::FrameInputs;
 use crate::host::{ContextTimer, Host, PendingFrame};
