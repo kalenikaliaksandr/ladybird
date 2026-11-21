@@ -313,6 +313,8 @@ struct StackOfFrames {
     /// one viewport, and the scroll offsets the plan reads.
     layer_plan: Option<ReceivedLayerPlan>,
     stack: Rc<LayerStack>,
+    // Keeps the address of the list the frames draw from being taken by another list.
+    display_list: Weak<DisplayList>,
     viewport_to_raster_transform: FloatMatrix4x4,
     raster_spaces: Option<RasterSpaces>,
     geometry_by_space: Vec<Option<CachedRasterSpaceGeometry>>,
@@ -332,6 +334,7 @@ impl StackOfFrames {
     fn new(
         layer_plan: Option<ReceivedLayerPlan>,
         stack: Rc<LayerStack>,
+        display_list: &Rc<DisplayList>,
         viewport_to_raster_transform: FloatMatrix4x4,
         latest: Option<StackOfFrames>,
     ) -> Self {
@@ -355,6 +358,7 @@ impl StackOfFrames {
                 .map(|_| Some(BandTileKeysOfFrame::default()))
                 .collect(),
             stack,
+            display_list: Rc::downgrade(display_list),
             viewport_to_raster_transform,
             raster_spaces: None,
             geometry_by_space,
@@ -557,10 +561,12 @@ impl ContextLayers {
 
     /// Takes the stack a frame draws with: the plan WebContent sent, or for a frame that is not drawn as a plan was
     /// made for, one layer that replays the whole list. Keeps what frames kept of the stack where the frame before drew
-    /// with the same plan, and answers whether the frame took another stack.
+    /// with the same plan, or with the same one layer of the same list under the same raster transform, and answers
+    /// whether the frame took another stack.
     fn take_stack_of_frame(
         &mut self,
         layer_plan: Option<&ReceivedLayerPlan>,
+        display_list: &Rc<DisplayList>,
         one_layer: impl FnOnce(&mut Self) -> LayerStack,
         viewport_to_raster_transform: FloatMatrix4x4,
     ) -> bool {
@@ -575,11 +581,24 @@ impl ContextLayers {
         }
         let stack = match layer_plan {
             Some(layer_plan) => layer_plan.stack.clone(),
-            None => Rc::new(one_layer(self)),
+            None => {
+                let one_layer = one_layer(self);
+                let latest_drew_same_one_layer = self.stack_of_frames.as_ref().is_some_and(|latest| {
+                    latest.layer_plan.is_none()
+                        && latest.viewport_to_raster_transform == viewport_to_raster_transform
+                        && std::ptr::eq(latest.display_list.as_ptr(), Rc::as_ptr(display_list))
+                        && *latest.stack == one_layer
+                });
+                if latest_drew_same_one_layer {
+                    return false;
+                }
+                Rc::new(one_layer)
+            }
         };
         self.stack_of_frames = Some(StackOfFrames::new(
             layer_plan.cloned(),
             stack,
+            display_list,
             viewport_to_raster_transform,
             self.stack_of_frames.take(),
         ));
@@ -1026,7 +1045,9 @@ impl ContextPresenting {
         let one_layer = |layers: &mut ContextLayers| {
             layers.one_layer_stack_of_frame(frame.display_list, tree, viewport_rect, why_list_is_one_layer)
         };
-        let took_another_stack = self.layers.take_stack_of_frame(layer_plan, one_layer, raster_transform);
+        let took_another_stack =
+            self.layers
+                .take_stack_of_frame(layer_plan, frame.display_list, one_layer, raster_transform);
         let took_plan_into_use = layer_plan.is_some() && took_another_stack;
         let layer_update = self.with_stack_of_frames(|this, stack_of_frames| {
             this.layer_update_of_stack(
@@ -2176,9 +2197,10 @@ mod tests {
     fn frame_keeps_what_frames_kept_of_the_stack(
         layers: &mut ContextLayers,
         layer_plan: Option<&ReceivedLayerPlan>,
+        display_list: &Rc<DisplayList>,
         one_layer: LayerStack,
     ) -> bool {
-        !layers.take_stack_of_frame(layer_plan, |_| one_layer, FloatMatrix4x4::identity())
+        !layers.take_stack_of_frame(layer_plan, display_list, |_| one_layer, FloatMatrix4x4::identity())
     }
 
     #[test]
@@ -2198,13 +2220,32 @@ mod tests {
         };
         let mut layers = ContextLayers::default();
         let one_layer = || one_layer_of(&display_list, VIEWPORT);
-        let mut keeps = |layer_plan| frame_keeps_what_frames_kept_of_the_stack(&mut layers, layer_plan, one_layer());
+        let mut keeps =
+            |layer_plan| frame_keeps_what_frames_kept_of_the_stack(&mut layers, layer_plan, &display_list, one_layer());
         assert!(!keeps(Some(&plan)));
         assert!(keeps(Some(&plan)));
         assert!(!keeps(Some(&plan_received_again)));
         assert!(!keeps(None));
-        assert!(!keeps(None));
+        assert!(keeps(None));
         assert!(!keeps(Some(&plan_received_again)));
+    }
+
+    #[test]
+    fn frames_not_drawn_as_planned_keep_their_stack_of_one_layer_only_while_it_is_the_same() {
+        let tree = tree_of_viewport();
+        let display_list = empty_display_list(&tree);
+        let another_display_list = empty_display_list(&tree);
+        let resized_viewport = IntRect::new(0, 0, 400, 300);
+        let mut layers = ContextLayers::default();
+        let mut keeps = |display_list: &Rc<DisplayList>, viewport_rect: IntRect| {
+            let one_layer = one_layer_of(display_list, viewport_rect);
+            frame_keeps_what_frames_kept_of_the_stack(&mut layers, None, display_list, one_layer)
+        };
+        assert!(!keeps(&display_list, VIEWPORT));
+        assert!(keeps(&display_list, VIEWPORT));
+        assert!(!keeps(&another_display_list, VIEWPORT));
+        assert!(!keeps(&another_display_list, resized_viewport));
+        assert!(keeps(&another_display_list, resized_viewport));
     }
 
     #[test]
@@ -2214,15 +2255,25 @@ mod tests {
         let identity = FloatMatrix4x4::identity();
         let resized_viewport = IntRect::new(0, 0, 400, 300);
         let mut layers = ContextLayers::default();
-        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, VIEWPORT), identity);
+        layers.take_stack_of_frame(None, &display_list, |_| one_layer_of(&display_list, VIEWPORT), identity);
         let stack_of_frames = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         let geometry = stack_of_frames.geometries_of_spaces(&tree, &[]).remove(0);
 
-        assert!(layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), identity));
+        assert!(layers.take_stack_of_frame(
+            None,
+            &display_list,
+            |_| one_layer_of(&display_list, resized_viewport),
+            identity
+        ));
         let resized = layers.stack_of_frames.as_mut().expect("the frame took a stack");
         assert!(Rc::ptr_eq(&resized.geometries_of_spaces(&tree, &[])[0], &geometry));
 
-        layers.take_stack_of_frame(None, |_| one_layer_of(&display_list, resized_viewport), scaled_twice());
+        layers.take_stack_of_frame(
+            None,
+            &display_list,
+            |_| one_layer_of(&display_list, resized_viewport),
+            scaled_twice(),
+        );
         let scaled = layers.stack_of_frames.as_ref().expect("the frame took a stack");
         assert!(scaled.geometry_by_space.iter().all(Option::is_none));
     }
@@ -2509,6 +2560,7 @@ mod tests {
         let mut layers = ContextLayers::default();
         layers.take_stack_of_frame(
             Some(&plan),
+            &display_list,
             |_| unreachable!("a frame drawn with a plan takes its stack"),
             FloatMatrix4x4::identity(),
         );
