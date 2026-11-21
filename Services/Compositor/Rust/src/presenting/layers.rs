@@ -261,9 +261,9 @@ pub struct LayerUpdate {
     read_reaches_of_composited_effects_in_frame: Vec<IntRect>,
     window_server_placements_of_media: WindowServerPlacementsOfMedia,
     content_hash_by_composited_node: HashMap<PlacementNodeIdentity, ContentHash>,
+    media_replayed_by_identity: HashMap<LayerIdentity, MediaRecordsReplayedInFrame>,
     // Per layer of the stack.
     shown_tiles_by_layer: Vec<Vec<TileShownInFrame>>,
-    media_replayed_by_layer: Vec<Option<MediaRecordsReplayedInFrame>>,
     composited_filter_read_reach_by_layer: Vec<i32>,
     pub(super) frame_allows_lcd_text: bool,
     work_counts: FrameWorkCounts,
@@ -463,19 +463,12 @@ pub struct PaintedLayers {
 
 impl PaintedLayers {
     fn of_frame(layer_update: LayerUpdate) -> Self {
-        let media_replayed_by_identity = layer_update
-            .stack
-            .layers
-            .iter()
-            .zip(layer_update.media_replayed_by_layer)
-            .filter_map(|(layer, media_replayed)| Some((layer.identity, media_replayed?)))
-            .collect();
         Self {
             stack: layer_update.stack,
             compositing_of_layers: layer_update.compositing_of_layers,
             window_server_placements_of_media: layer_update.window_server_placements_of_media,
             content_hash_by_composited_node: layer_update.content_hash_by_composited_node,
-            media_replayed_by_identity,
+            media_replayed_by_identity: layer_update.media_replayed_by_identity,
         }
     }
 
@@ -1327,7 +1320,7 @@ impl ContextPresenting {
             viewport_rect,
             |identity| self.layer_overlay.hides_layer(identity),
         ) as u64;
-        let mut media_replayed_by_layer = vec![None; stack.layers.len()];
+        let mut media_replayed_by_identity = HashMap::new();
         for compositing in &compositing_of_layers {
             let layer_index = compositing.layer_index;
             let layer = &stack.layers[layer_index.0];
@@ -1345,7 +1338,7 @@ impl ContextPresenting {
                         media_replayed_in_latest_frame.map_or(IntRect::default(), |latest| latest.reach_in_frame),
                     );
                 }
-                media_replayed_by_layer[layer_index.0] = Some(media_replayed);
+                media_replayed_by_identity.insert(layer.identity, media_replayed);
                 continue;
             }
             work_counts.shown_tiles_of_one_color += shown_tiles_by_layer[layer_index.0]
@@ -1366,8 +1359,8 @@ impl ContextPresenting {
             read_reaches_of_composited_effects_in_frame: composited_effects.read_reaches_in_frame,
             window_server_placements_of_media,
             content_hash_by_composited_node: composited_effects.content_hash_by_composited_node,
+            media_replayed_by_identity,
             shown_tiles_by_layer,
-            media_replayed_by_layer,
             composited_filter_read_reach_by_layer,
             frame_allows_lcd_text,
             work_counts,
@@ -2442,7 +2435,7 @@ mod tests {
         LayerUpdate {
             stack,
             shown_tiles_by_layer: compositing_of_layers.iter().map(|_| Vec::new()).collect(),
-            media_replayed_by_layer: vec![None; compositing_of_layers.len()],
+            media_replayed_by_identity: HashMap::new(),
             composited_filter_read_reach_by_layer: vec![0; compositing_of_layers.len()],
             compositing_of_layers,
             read_reaches_of_composited_effects_in_frame,
