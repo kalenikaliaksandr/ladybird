@@ -639,6 +639,7 @@ impl RunSummary {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TapeKind {
     DisplayList,
+    RecordsNestedInDisplayListRecord,
     Canvas2D,
 }
 
@@ -654,9 +655,18 @@ fn validate_header_bytes(bytes: &[u8], kind: TapeKind) -> Result<DisplayListComm
     }
     let header = read_header(bytes);
     match kind {
-        TapeKind::DisplayList => {
+        TapeKind::DisplayList | TapeKind::RecordsNestedInDisplayListRecord => {
             if header.command_type.is_canvas_2d() {
                 return Err("Display list holds a command of the canvas 2D stream");
+            }
+            // Tile keys and caret blinks find carets and scroll bars only among top-level records.
+            if kind == TapeKind::RecordsNestedInDisplayListRecord
+                && matches!(
+                    header.command_type,
+                    DisplayListCommandType::PaintCaret | DisplayListCommandType::PaintScrollBar
+                )
+            {
+                return Err("Display list holds a caret or scroll bar inside another record");
             }
         }
         TapeKind::Canvas2D => {
@@ -788,7 +798,7 @@ pub fn validate_tape(tape: &[u8], run_bytes: &[u8]) -> Result<Vec<DisplayListCom
             Some(&mut summary),
         )?;
         while let Some(records) = pending.pop() {
-            validate_records(records, TapeKind::DisplayList, &mut pending, None)?;
+            validate_records(records, TapeKind::RecordsNestedInDisplayListRecord, &mut pending, None)?;
         }
         if !summary.matches(&run) {
             return Err("Display list command run summary disagrees with its records");
@@ -911,5 +921,76 @@ mod tests {
             ..recorded.command_runs[0]
         }];
         assert!(validate_tape(&widened_tape, &run_table_bytes(&widened_runs)).is_ok());
+    }
+
+    #[test]
+    fn a_caret_or_scroll_bar_is_refused_inside_another_record() {
+        let caret = PaintCaret {
+            rect: IntRect::new(0, 0, 1, 10),
+            color: Color::default(),
+            blink_cycle_start_time_ns: 0,
+            should_blink: true,
+        };
+        let scroll_bar = PaintScrollBar {
+            scroll_node_index: SpatialNodeIndex(1),
+            gutter_rect: IntRect::new(90, 0, 10, 100),
+            thumb_rect: IntRect::new(90, 0, 10, 20),
+            track_rect: IntRect::new(90, 0, 10, 100),
+            expanded_gutter_rect: IntRect::new(86, 0, 14, 100),
+            scroll_size: 0.5,
+            thumb_color: Color::default(),
+            thumb_outline_color: Color::default(),
+            track_color: Color::default(),
+            vertical: true,
+        };
+        let validate = |builder: DisplayListBuilder| {
+            let recorded = builder.finish();
+            validate_tape(&recorded.bytes, &run_table_bytes(&recorded.command_runs))
+        };
+
+        let mut top_level = DisplayListBuilder::new();
+        top_level.append(&caret, &[], ContextRef::default());
+        top_level.append(&scroll_bar, &[], ContextRef::default());
+        assert!(validate(top_level).is_ok());
+
+        let mut caret_in_group = DisplayListBuilder::new();
+        let group = caret_in_group.begin_group::<DrawIsolatedGroup>(Vec::new());
+        caret_in_group.append(&caret, &[], ContextRef::default());
+        let content = caret_in_group.group_content_span(&group);
+        caret_in_group.finish_group(
+            group,
+            &DrawIsolatedGroup {
+                clip_rect: IntRect::new(0, 0, 10, 10).to_float(),
+                content,
+                mask: DisplayListDataSpan::default(),
+                filter: DisplayListDataSpan::default(),
+                opacity: 1.0,
+                compositing_and_blending_operator: CompositingAndBlendingOperator::Normal,
+                mask_kind: MaskKind::Alpha,
+            },
+            ContextRef::default(),
+        );
+        assert_eq!(
+            validate(caret_in_group),
+            Err("Display list holds a caret or scroll bar inside another record")
+        );
+
+        let mut scroll_bar_in_mask_content = DisplayListBuilder::new();
+        let declaration = scroll_bar_in_mask_content.begin_group::<DeclareMaskContent>(Vec::new());
+        scroll_bar_in_mask_content.append(&scroll_bar, &[], ContextRef::default());
+        let content = scroll_bar_in_mask_content.group_content_span(&declaration);
+        scroll_bar_in_mask_content.finish_group(
+            declaration,
+            &DeclareMaskContent {
+                rect: IntRect::new(0, 0, 100, 100),
+                effect: EffectNodeIndex(1),
+                content,
+            },
+            ContextRef::default(),
+        );
+        assert_eq!(
+            validate(scroll_bar_in_mask_content),
+            Err("Display list holds a caret or scroll bar inside another record")
+        );
     }
 }
