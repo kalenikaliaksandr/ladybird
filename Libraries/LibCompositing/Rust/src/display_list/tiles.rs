@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 pub const TILE_SIZE_IN_DEVICE_PIXELS: i32 = 512;
+const MAXIMUM_CELLS_CONTENT_IS_FOLLOWED_INTO_ONE_BY_ONE: u64 = 4096;
 
 /// A cell of the tile grid of a layer's raster space, which starts at the space's origin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -136,6 +137,14 @@ impl CellRange {
         self.row_count() * (i64::from(self.last_column) - i64::from(self.first_column) + 1) as u64
     }
 
+    pub fn holds_every_cell_of(self, other: Self) -> bool {
+        other.is_empty()
+            || (self.first_row <= other.first_row
+                && other.last_row <= self.last_row
+                && self.first_column <= other.first_column
+                && other.last_column <= self.last_column)
+    }
+
     pub fn contains(self, coord: TileCoord) -> bool {
         (self.first_row..=self.last_row).contains(&coord.row)
             && (self.first_column..=self.last_column).contains(&coord.column)
@@ -168,6 +177,24 @@ impl CellRange {
         (self.first_row..=self.last_row)
             .flat_map(move |row| columns.clone().map(move |column| TileCoord::new(column, row)))
     }
+}
+
+/// The cells that `rect` reaches into, row by row. A caller bounds `rect` first, since a rect far larger than the
+/// viewport reaches into a great many cells; to find what a map holds within a rect of any size, it uses
+/// `entries_within` or `for_each_entry_within`.
+pub fn tile_coords_touching(rect: IntRect) -> impl Iterator<Item = TileCoord> {
+    CellRange::touched_by(rect).coords()
+}
+
+/// Whether content within `rect` reaches too many cells to be followed into each of them, and is taken to reach every
+/// cell it can instead.
+pub fn reaches_too_many_cells_to_follow_one_by_one(rect: IntRect) -> bool {
+    tile_count_touching(rect) > MAXIMUM_CELLS_CONTENT_IS_FOLLOWED_INTO_ONE_BY_ONE
+}
+
+/// How many cells `rect` reaches into.
+pub fn tile_count_touching(rect: IntRect) -> u64 {
+    CellRange::touched_by(rect).cell_count()
 }
 
 // A map is looked up row by row where the range has no more rows than the map has entries, and walked whole otherwise,
@@ -222,13 +249,12 @@ mod tests {
 
     #[test]
     fn a_rect_touches_the_cells_it_reaches_into_row_by_row() {
-        let coords: Vec<TileCoord> = CellRange::touched_by(IntRect::new(
+        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(
             TILE_SIZE_IN_DEVICE_PIXELS - 6,
             10,
             TILE_SIZE_IN_DEVICE_PIXELS + 44,
             TILE_SIZE_IN_DEVICE_PIXELS - 6,
         ))
-        .coords()
         .collect();
         assert_eq!(
             coords,
@@ -245,28 +271,26 @@ mod tests {
 
     #[test]
     fn a_rect_ending_on_a_cell_edge_does_not_touch_the_next_cell() {
-        let coords: Vec<TileCoord> = CellRange::touched_by(IntRect::new(
+        let coords: Vec<TileCoord> = tile_coords_touching(IntRect::new(
             0,
             0,
             TILE_SIZE_IN_DEVICE_PIXELS,
             2 * TILE_SIZE_IN_DEVICE_PIXELS,
         ))
-        .coords()
         .collect();
         assert_eq!(coords, [TileCoord::new(0, 0), TileCoord::new(0, 1)]);
     }
 
     #[test]
     fn cells_left_of_and_above_the_origin_have_negative_coords() {
-        let coords: Vec<TileCoord> = CellRange::touched_by(IntRect::new(-1, -TILE_SIZE_IN_DEVICE_PIXELS - 1, 2, 1))
-            .coords()
-            .collect();
+        let coords: Vec<TileCoord> =
+            tile_coords_touching(IntRect::new(-1, -TILE_SIZE_IN_DEVICE_PIXELS - 1, 2, 1)).collect();
         assert_eq!(coords, [TileCoord::new(-1, -2), TileCoord::new(0, -2)]);
     }
 
     #[test]
     fn an_empty_rect_touches_no_cell() {
-        assert_eq!(CellRange::touched_by(IntRect::new(10, 10, 0, 20)).coords().count(), 0);
+        assert_eq!(tile_coords_touching(IntRect::new(10, 10, 0, 20)).count(), 0);
         assert!(CellRange::touched_by(IntRect::new(10, 10, 0, 20)).is_empty());
         assert_eq!(CellRange::default(), CellRange::NONE);
     }

@@ -15,6 +15,6 @@ Layers:
 DisplayList:
 L1 DrawCanvas@s1/e0 dst_rect=[20,20 200x120] canvas_id=canvas1 scaling_mode=Bilinear owner=CanvasBox<CANVAS>#left phase=foreground
 L3 DrawCanvas@s1/e0 dst_rect=[520,20 200x120] canvas_id=canvas2 scaling_mode=Bilinear owner=CanvasBox<CANVAS>#right phase=foreground
-L0,L2,L4 FillRect@s1/e0 rect=[100,60 600x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-both phase=background
-L0,L2,L4 FillRect@s1/e0 rect=[620,100 50x20] color=rgb(0, 128, 0) owner=BlockContainer<DIV>#over-right phase=background
+L2,L4 FillRect@s1/e0 rect=[100,60 600x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-both phase=background
+L2,L4 FillRect@s1/e0 rect=[620,100 50x20] color=rgb(0, 128, 0) owner=BlockContainer<DIV>#over-right phase=background
 

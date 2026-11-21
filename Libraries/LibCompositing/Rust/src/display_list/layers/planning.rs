@@ -34,7 +34,7 @@ use crate::display_list::placement::{
 use crate::display_list::reach::Reach;
 use crate::display_list::storage::{DisplayListStorage, ListPosition, ListSpan, RunIndexInList};
 use crate::display_list::summary::{IndexedRecord, LiveContent};
-use crate::display_list::tiles::CellRange;
+use crate::display_list::tiles::{CellRange, reaches_too_many_cells_to_follow_one_by_one, tile_coords_touching};
 use crate::visual_context::queries::{BackdropReader, NestingOfLiveEffects, backdrop_reader_by_reading_effect_index};
 use crate::visual_context::{EffectNodeData, VisualContextTree};
 use libgfx_rust::{FloatPoint, FloatRect, IntRect};
@@ -1395,24 +1395,45 @@ enum BarrierBeingBuilt {
     },
 }
 
-// Calls `for_layer` with each layer that records of a band at `record_position` within `reach` can go into: the layer
-// below all cuts, and the layer above each of `cuts` painted before them that cuts a tile they reach.
+// Calls `for_layer_and_part_of_reach` with each layer that records of a band at `record_position` go into, and the part
+// of `reach` they go into it in: per tile, the layer above the last of `cuts` painted before them that cuts the tile, or
+// where they reach too many tiles to follow one by one, each layer above a cut painted before them, and the layer below
+// all cuts unless one of those cuts every tile, in all of `reach`.
 fn for_each_layer_records_go_into(
     cuts: &[BarrierCut],
     layer_below_all_cuts: LayerIndex,
     record_position: ListPosition,
     reach: IntRect,
-    mut for_layer: impl FnMut(LayerIndex),
+    mut for_layer_and_part_of_reach: impl FnMut(LayerIndex, IntRect),
 ) {
-    for_layer(layer_below_all_cuts);
-    let cells_reached = CellRange::touched_by(reach).rect();
-    for cut in cuts
+    let count_of_cuts_painted_before = cuts
         .iter()
         .take_while(|cut| cut.barrier_first_record_position <= record_position)
-    {
-        if cut.cuts_cell(cells_reached) {
-            for_layer(cut.layer_above_cut);
+        .count();
+    let cuts_painted_before = &cuts[..count_of_cuts_painted_before];
+    if cuts_painted_before.is_empty() || reaches_too_many_cells_to_follow_one_by_one(reach) {
+        let cells_reached = CellRange::touched_by(reach);
+        let a_cut_painted_before_cuts_every_cell_reached = cuts_painted_before.iter().any(|cut| match cut.cut_reach {
+            Reach::Anywhere => true,
+            Reach::Within(cut_rect) => CellRange::touched_by(cut_rect).holds_every_cell_of(cells_reached),
+            Reach::Nothing => false,
+        });
+        if !a_cut_painted_before_cuts_every_cell_reached {
+            for_layer_and_part_of_reach(layer_below_all_cuts, reach);
         }
+        for cut in cuts_painted_before {
+            for_layer_and_part_of_reach(cut.layer_above_cut, reach);
+        }
+        return;
+    }
+    for coord in tile_coords_touching(reach) {
+        let cell = coord.cell_rect();
+        let layer_in_cell = cuts_painted_before
+            .iter()
+            .rev()
+            .find(|cut| cut.cuts_cell(cell))
+            .map_or(layer_below_all_cuts, |cut| cut.layer_above_cut);
+        for_layer_and_part_of_reach(layer_in_cell, reach.intersected(cell));
     }
 }
 
@@ -1921,9 +1942,15 @@ impl StackBeingBuilt<'_> {
         for &stretch_index in &own_record_stretch_indices {
             let stretch = &placement.record_stretches[stretch_index.0];
             let stretch_span = stretch.record_span;
-            for_each_layer_records_go_into(&cuts, LayerIndex(0), stretch_span.begin, stretch.reach, |layer| {
-                reach_of_painted_layers[layer.0] = reach_of_painted_layers[layer.0].united(stretch.reach);
-            });
+            for_each_layer_records_go_into(
+                &cuts,
+                LayerIndex(0),
+                stretch_span.begin,
+                stretch.reach,
+                |layer, part_of_reach| {
+                    reach_of_painted_layers[layer.0] = reach_of_painted_layers[layer.0].united(part_of_reach);
+                },
+            );
             match record_spans.last_mut() {
                 Some(last) if last.end == stretch_span.begin => last.end = stretch_span.end,
                 _ => record_spans.push(stretch_span),
@@ -2259,7 +2286,7 @@ mod tests {
     use super::*;
     use crate::display_list::commands::{CanvasId, ContextRef};
     use crate::display_list::layers::{
-        CutsOfCell, LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
+        LayerIdentity, NodeNamesFromIndices, WindowServerPresentationOfMedia, media_name,
     };
     use crate::display_list::test_fixtures::{
         GREEN, ListOfOneChunk, VIEWPORT, animation_of, canvas, effects, fill, frosted_glass, opacity_animation_of,
@@ -2339,6 +2366,55 @@ mod tests {
                 "base document band 0",
                 "canvas #0 document",
                 "painted document band 0 above L2"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_fixed_header_painted_after_a_scrolling_document_leaves_the_base_layer_in_the_document() {
+        let (tree, viewport, document) = tree_with_document_scroll();
+        let list = ListOfOneChunk::default()
+            .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
+            .with(fill(IntRect::new(0, 0, 800, 50), GREEN), viewport);
+        let planned = list.planned(&tree, &[]);
+        assert_eq!(
+            kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
+            [
+                "base document band 0",
+                "painted viewport band 0 above band 0 of document"
+            ]
+        );
+        let storage = DisplayListStorage::of_builder(&list.builder);
+        assert_eq!(planned.layers_of_record(storage.span_of_run(1).begin).len(), 1);
+    }
+
+    #[test]
+    fn content_reaching_too_many_cells_to_follow_marks_no_layer_below_a_cut_that_covers_it() {
+        let (mut tree, _, document) = tree_with_document_scroll();
+        let taller_than_the_cells_followed_one_by_one = IntRect::new(0, 0, 800, 4100 * TILE_SIZE_IN_DEVICE_PIXELS);
+        let mut scroll_table = tree.compositor_scroll_table().clone();
+        let mut document_scrolling_past_the_cells_followed_one_by_one = scroll_table.nodes.to_vec();
+        document_scrolling_past_the_cells_followed_one_by_one[0]
+            .max_scroll_offset
+            .y = taller_than_the_cells_followed_one_by_one.height as f32;
+        scroll_table.nodes = document_scrolling_past_the_cells_followed_one_by_one.into();
+        assert!(tree.set_compositor_scroll_table(scroll_table));
+        let sliding_panel = transformed_context(
+            &mut tree,
+            document,
+            taller_than_the_cells_followed_one_by_one.to_float(),
+        );
+        tree.set_visual_animations(vec![sliding(sliding_panel.spatial)]);
+        let list = ListOfOneChunk::default()
+            .with(fill(taller_than_the_cells_followed_one_by_one, GREEN), sliding_panel)
+            .with(fill(taller_than_the_cells_followed_one_by_one, GREEN), document);
+        let planned = list.planned(&tree, &[]);
+        assert_eq!(
+            kinds_of_layers_from_base_up_that_may_hold_content(&planned.stack),
+            [
+                "base viewport band 0",
+                "painted animated@s2 in document band 0",
+                "painted document band 0 above band 0 of animated@s2 in document"
             ]
         );
     }
@@ -3291,13 +3367,12 @@ mod tests {
         tree.set_visual_animations(vec![spinning(spinner.spatial)]);
         // The label and the spinner of the toolbar are in different cells, and the card covers both of them.
         let label = IntRect::new(10, 110, 100, 30);
-        let card = IntRect::new(0, 100, 800, 50);
         assert!(TILE_SIZE_IN_DEVICE_PIXELS < 650);
         let list = ListOfOneChunk::default()
             .with(fill(IntRect::new(0, 0, 800, 2600), GREEN), document)
             .with(fill(label, GREEN), toolbar)
             .with(fill(IntRect::new(650, 105, 40, 40), GREEN), spinner)
-            .with(fill(card, GREEN), document);
+            .with(fill(IntRect::new(0, 100, 800, 50), GREEN), document);
         let planned = list.planned(&tree, &[]);
         assert_eq!(
             space_names(&planned.stack),
@@ -3309,31 +3384,13 @@ mod tests {
             ]
         );
         let storage = DisplayListStorage::of_builder(&list.builder);
-        let card_position = storage.span_of_run(3).begin;
-        let band_of_card = planned
-            .stack
-            .bands
-            .iter()
-            .find(|band| band.record_spans.iter().any(|span| span.contains(card_position)))
-            .expect("a band holds the card");
-        let layers_of_card_by_cell: Vec<LayerIndex> = CellRange::touched_by(card)
-            .coords()
-            .map(|coord| {
-                CutsOfCell::of(band_of_card, coord.cell_rect())
-                    .layer_of_record(card_position)
-                    .0
-            })
-            .collect();
-        assert!(
-            layers_of_card_by_cell.windows(2).all(|pair| pair[0] == pair[1]),
-            "the card goes into one layer in every cell: {layers_of_card_by_cell:?}"
+        let layers_of_card = planned.layers_of_record(storage.span_of_run(3).begin);
+        assert_eq!(
+            layers_of_card.len(),
+            1,
+            "the card goes into one layer in every cell: {layers_of_card:?}"
         );
-        assert!(
-            planned
-                .layers_of_record(card_position)
-                .contains(&layers_of_card_by_cell[0])
-        );
-        let layer_of_card = &planned.stack.layers[layers_of_card_by_cell[0].0];
+        let layer_of_card = &planned.stack.layers[layers_of_card[0].0];
         assert!(matches!(
             layer_of_card.identity,
             LayerIdentity::Painted {

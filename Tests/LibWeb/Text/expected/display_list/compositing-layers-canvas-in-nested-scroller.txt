@@ -14,7 +14,6 @@ ScrollNode scroll_node_index=s2 parent_scroll_node_index=s1 scrollport_rect=[20,
 
 Layers:
   [L0] base space=viewport
-  [L2] painted space=scroller@s2 in document composited within [20,300 300x200] of document
   [L3] canvas #0 space=scroller@s2 in document region=[20,697 203x126] composited within [20,300 300x200] of document shown by the window server: clip=[20,300 300x200]
   [L4] painted space=scroller@s2 in document above L3 composited within [20,300 300x200] of document
 
@@ -27,5 +26,5 @@ L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[20,70
 L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[20,700 200x120] owner=CanvasBox<CANVAS>#canvas phase=scroll-metadata
 L3 DrawCanvas@s2/c0/e0 dst_rect=[20,700 200x120] canvas_id=canvas1 scaling_mode=Bilinear owner=CanvasBox<CANVAS>#canvas phase=foreground
 L0 CompositorWheelHitTestTarget@s2/c0/e0 target_scroll_node_index=s2 rect=[30,720 100x40] owner=BlockContainer<DIV>#over-canvas phase=scroll-metadata
-L2,L4 FillRect@s2/c0/e0 rect=[30,720 100x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-canvas phase=background
+L4 FillRect@s2/c0/e0 rect=[30,720 100x40] color=rgba(255, 255, 255, 0.5) owner=BlockContainer<DIV>#over-canvas phase=background
 

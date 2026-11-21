@@ -15,5 +15,5 @@ Layers:
 
 DisplayList:
 L1 DrawCanvas@s1/e0 dst_rect=[8,8 200x120] canvas_id=canvas1 scaling_mode=Bilinear owner=CanvasBox<CANVAS>#canvas phase=foreground
-L0,L2 FillRect@s4/e0 rect=[8,131 100x100] color=rgb(255, 165, 0) owner=BlockContainer<DIV>#card phase=background
+L2 FillRect@s4/e0 rect=[8,131 100x100] color=rgb(255, 165, 0) owner=BlockContainer<DIV>#card phase=background
 
