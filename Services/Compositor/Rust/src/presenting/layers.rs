@@ -1027,6 +1027,9 @@ impl ContextPresenting {
         invalidates_every_tile: bool,
         frame_allows_lcd_text: bool,
     ) -> (LayerUpdate, IntRect) {
+        if invalidates_every_tile {
+            self.layers.tiles.invalidate_every_tile();
+        }
         let raster_transform = self.raster_transform();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         // A plan places spaces that scroll at whole device pixels of the viewport it was made within, which a raster
@@ -1055,7 +1058,6 @@ impl ContextPresenting {
                 frame,
                 viewport_rect,
                 live_content,
-                invalidates_every_tile,
                 frame_allows_lcd_text,
                 stack_of_frames,
             )
@@ -1111,7 +1113,6 @@ impl ContextPresenting {
         frame: &FrameToPaint<'_>,
         viewport_rect: IntRect,
         live_content: &LiveContent,
-        invalidates_every_tile: bool,
         frame_allows_lcd_text: bool,
         stack_of_frames: &mut StackOfFrames,
     ) -> Option<(LayerUpdate, IntRect)> {
@@ -1158,15 +1159,6 @@ impl ContextPresenting {
                 ..compositing_of_layer(stack, layer_index, &composite_offsets, &spaces_to_frame)
             })
             .collect();
-        if invalidates_every_tile {
-            if let Some(painted_frame) = &mut self.painted_frame {
-                let media_replayed_by_identity = &mut painted_frame.layers.media_replayed_by_identity;
-                for compositing in &compositing_of_layers {
-                    media_replayed_by_identity.remove(&compositing.identity);
-                }
-            }
-            self.layers.tiles.invalidate_every_tile();
-        }
         let scrollbars = frame.frame_inputs.scrollbars_shown_for_the_page();
         let live_content_versions = LiveContentVersionsOfFrame {
             live_content,
