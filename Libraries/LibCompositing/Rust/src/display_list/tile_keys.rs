@@ -12,14 +12,10 @@
 //! band bound to another list or geometry bins its tiles again, and a tile that holds what it held before gets the
 //! content hash it had before.
 
-use super::builder::{
-    HEADER_SIZE, bounding_rect_computed_from_payload, for_each_command, has_inline_clip_in_its_own_space,
-    inline_clips_of, read_command,
-};
+use super::builder::{inline_clips_of, read_command};
 use super::commands::{
-    ClipMode, ClipNodeIndex, ContextRef, DisplayListCommandRun, DisplayListCommandType, DrawCompositedContext,
-    EffectNodeIndex, FillRect, FillRectWithRoundedCorners, FillRoundedRectRing, PaintCaret, PaintScrollBar,
-    SpatialNodeIndex,
+    ClipNodeIndex, ContextRef, DisplayListCommandRun, DrawCompositedContext, EffectNodeIndex, PaintCaret,
+    PaintScrollBar, SpatialNodeIndex,
 };
 use super::effect_clip_plan::EffectClipPlan;
 use super::effect_geometry::{
@@ -27,9 +23,7 @@ use super::effect_geometry::{
     filter_read_reach_in_device_pixels, nearest_effects_at_or_above_where, spreading_filter_of,
 };
 use super::layers::{BandIndex, BarrierCutsOfCell, CutsOfCell, LayerIndex, LayerStack, PlacementNodeBand};
-use super::nested_records::{
-    NestedRecordsRole, for_each_command_including_nested, for_each_nested_record_span, span_bytes,
-};
+use super::nested_records::for_each_command_including_nested;
 use super::placement::{
     ANTIALIASING_MARGIN_IN_DEVICE_PIXELS, FiltersAndClipsOfList, RasterSpaceGeometry, RunGroupIndex, RunGroups,
     enclosing_int_rect_within_extent_limit, is_finite_rect,
@@ -37,19 +31,31 @@ use super::placement::{
 use super::reach::Reach;
 use super::replay::{ScrollbarShownByFrame, caret_is_visible_at_time, scrollbar_shown_by_frame};
 use super::storage::{ChunkIndexInList, DisplayListStorage, ListChunk, ListPosition, ListSpan, RunIndexInChunk};
-use super::summary::{LiveContent, command_blend, live_content_of};
+use super::summary::{LiveContent, live_content_of};
 use super::tiles::{CellRange, TileCoord, entries_within, for_each_entry_within};
 use super::window_server_placement::RoundedRect;
 use crate::display_list::commands::{CanvasId, CompositorContextId, ImageFrameResourceId, VideoSinkHandle};
 use crate::visual_context::{
-    ClipData, ClipNode, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
+    ClipData, ClipNodeData, EffectNodeData, VisualContextTree, WorldTransforms, device_offset_for_index,
 };
 use foldhash::fast::{FixedState, FoldHasher};
-use libgfx_rust::{Color, CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
+use libgfx_rust::{Color, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, IntRect};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
+
+mod chunk_placement;
+mod coverage;
+
+pub(crate) use chunk_placement::ChunkRecord;
+pub use chunk_placement::{ChunkPlacedInRasterSpace, PlacedRecordRangeIndex, RecordIndexInChunk, RecordTable};
+use chunk_placement::{
+    FRAME_STATE_CARET_BLINK_PHASE, FRAME_STATE_LIVE_CONTENT, FRAME_STATE_SAMPLED_BACKGROUND_COLOR,
+    FRAME_STATE_SCROLL_BAR, FRAME_STATE_SPACES_OF_INLINE_CLIPS, PlacedRecordRange,
+    background_color_animation_effect_of,
+};
+pub use coverage::TileCoverage;
 
 pub type ContentHash = u128;
 
@@ -146,167 +152,6 @@ impl ContentHasher {
 
     fn finish(&self) -> ContentHash {
         (u128::from(self.high.finish()) << 64) | u128::from(self.low.finish())
-    }
-}
-
-const FRAME_STATE_CARET_BLINK_PHASE: u8 = 1 << 0;
-const FRAME_STATE_SCROLL_BAR: u8 = 1 << 1;
-const FRAME_STATE_LIVE_CONTENT: u8 = 1 << 2;
-const FRAME_STATE_SPACES_OF_INLINE_CLIPS: u8 = 1 << 3;
-const FRAME_STATE_SAMPLED_BACKGROUND_COLOR: u8 = 1 << 4;
-const FRAME_STATE_HASHED_FOR_THE_LIST: u8 =
-    FRAME_STATE_CARET_BLINK_PHASE | FRAME_STATE_SCROLL_BAR | FRAME_STATE_LIVE_CONTENT;
-
-/// A top-level record of a chunk, with what placing it and hashing tile content read of it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ChunkRecord {
-    pub(crate) offset: u32,
-    pub(crate) end_offset: u32,
-    pub(crate) run_index: RunIndexInChunk,
-    pub(crate) bounding_rect: IntRect,
-    draws_something: bool,
-    frame_state_read_flags: u8,
-    can_lower_destination_alpha: bool,
-    // Record bytes hold no offset into the chunk, so a record hashes alike wherever it is.
-    content_hash_of_bytes: ContentHash,
-}
-
-impl ChunkRecord {
-    fn reads_frame_state_hashed_for_the_list(&self) -> bool {
-        self.frame_state_read_flags & FRAME_STATE_HASHED_FOR_THE_LIST != 0
-    }
-}
-
-/// The index of a top-level record in the `RecordTable` of its chunk.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RecordIndexInChunk(pub u32);
-
-/// The top-level records of a chunk, by run, with what hashing tile content needs of each.
-#[derive(Debug, PartialEq, Eq)]
-pub struct RecordTable {
-    records: Vec<ChunkRecord>,
-    first_record_index_of_each_run: Vec<RecordIndexInChunk>,
-    run_reads_frame_state_hashed_for_the_list_by_run_index: Vec<bool>,
-}
-
-fn frame_state_read_flags_of_record(
-    header: &super::commands::DisplayListCommandHeader,
-    payload: &[u8],
-    record_bytes: &[u8],
-) -> u8 {
-    let mut flags = match header.command_type {
-        DisplayListCommandType::PaintCaret => FRAME_STATE_CARET_BLINK_PHASE,
-        DisplayListCommandType::PaintScrollBar => FRAME_STATE_SCROLL_BAR,
-        _ => 0,
-    };
-    if header.inline_clip_count != 0 && has_inline_clip_in_its_own_space(header, payload) {
-        flags |= FRAME_STATE_SPACES_OF_INLINE_CLIPS;
-    }
-    for_each_command_including_nested(record_bytes, &mut |command_type, _, payload| {
-        if live_content_of(command_type, payload).is_some() {
-            flags |= FRAME_STATE_LIVE_CONTENT;
-        }
-        if !background_color_animation_effect_of(command_type, payload).is_none() {
-            flags |= FRAME_STATE_SAMPLED_BACKGROUND_COLOR;
-        }
-    });
-    flags
-}
-
-// Records nested in a group, a pattern tile or a mask draw into a layer of their own; only those of a vector image draw
-// straight into the destination.
-fn record_can_lower_destination_alpha(command_type: DisplayListCommandType, payload: &[u8]) -> bool {
-    if command_blend(command_type, payload).is_some_and(|(operator, _)| operator.lowers_destination_alpha()) {
-        return true;
-    }
-    let mut can_lower = false;
-    for_each_nested_record_span(command_type, payload, |role, span| {
-        if role == NestedRecordsRole::VectorImage {
-            for_each_command(span_bytes(payload, span), |header, _, payload| {
-                can_lower |= record_can_lower_destination_alpha(header.command_type, payload);
-            });
-        }
-    });
-    can_lower
-}
-
-fn background_color_animation_effect_of(command_type: DisplayListCommandType, payload: &[u8]) -> EffectNodeIndex {
-    match command_type {
-        DisplayListCommandType::FillRect => read_command::<FillRect>(payload).background_color_animation_effect,
-        DisplayListCommandType::FillRectWithRoundedCorners => {
-            read_command::<FillRectWithRoundedCorners>(payload).background_color_animation_effect
-        }
-        _ => EffectNodeIndex::NONE,
-    }
-}
-
-impl RecordTable {
-    pub fn new(records_of_chunk: &[u8], command_runs: &[DisplayListCommandRun]) -> Self {
-        let mut records = Vec::new();
-        let mut first_record_index_of_each_run = Vec::with_capacity(command_runs.len() + 1);
-        let mut run_reads_frame_state_hashed_for_the_list_by_run_index = Vec::with_capacity(command_runs.len());
-        for (run_index, run) in command_runs.iter().enumerate() {
-            let first_record_index_of_run = records.len();
-            first_record_index_of_each_run.push(RecordIndexInChunk(first_record_index_of_run as u32));
-            let run_bytes = &records_of_chunk[run.offset as usize..(run.offset + run.size) as usize];
-            for_each_command(run_bytes, |header, offset_in_run, payload| {
-                let offset = run.offset + offset_in_run as u32;
-                let end_offset = offset + (HEADER_SIZE + payload.len()) as u32;
-                let record_bytes = &records_of_chunk[offset as usize..end_offset as usize];
-                let mut hasher = ContentHasher::new();
-                hasher.write_bytes(record_bytes);
-                let bounding_rect = bounding_rect_computed_from_payload(header, payload);
-                records.push(ChunkRecord {
-                    offset,
-                    end_offset,
-                    run_index: RunIndexInChunk(run_index as u32),
-                    bounding_rect: bounding_rect.unwrap_or_default(),
-                    draws_something: !header.command_type.is_compositor_metadata()
-                        && bounding_rect.is_some_and(|rect| !rect.is_empty()),
-                    frame_state_read_flags: frame_state_read_flags_of_record(header, payload, record_bytes),
-                    can_lower_destination_alpha: record_can_lower_destination_alpha(header.command_type, payload),
-                    content_hash_of_bytes: hasher.finish(),
-                });
-            });
-            run_reads_frame_state_hashed_for_the_list_by_run_index.push(
-                records[first_record_index_of_run..]
-                    .iter()
-                    .any(ChunkRecord::reads_frame_state_hashed_for_the_list),
-            );
-        }
-        first_record_index_of_each_run.push(RecordIndexInChunk(records.len() as u32));
-        Self {
-            records,
-            first_record_index_of_each_run,
-            run_reads_frame_state_hashed_for_the_list_by_run_index,
-        }
-    }
-
-    fn run_reads_frame_state_hashed_for_the_list(&self, run_index: RunIndexInChunk) -> bool {
-        self.run_reads_frame_state_hashed_for_the_list_by_run_index[run_index.0 as usize]
-    }
-
-    pub(crate) fn record(&self, index: RecordIndexInChunk) -> &ChunkRecord {
-        &self.records[index.0 as usize]
-    }
-
-    pub(crate) fn records_in(&self, indices: std::ops::Range<RecordIndexInChunk>) -> &[ChunkRecord] {
-        &self.records[indices.start.0 as usize..indices.end.0 as usize]
-    }
-
-    pub(crate) fn record_indices_of_run(&self, run_index: RunIndexInChunk) -> std::ops::Range<RecordIndexInChunk> {
-        let run_index = run_index.0 as usize;
-        self.first_record_index_of_each_run[run_index]..self.first_record_index_of_each_run[run_index + 1]
-    }
-
-    pub(crate) fn record_indices_between_offsets(
-        &self,
-        begin_offset: u32,
-        end_offset: u32,
-    ) -> std::ops::Range<RecordIndexInChunk> {
-        let first = self.records.partition_point(|record| record.offset < begin_offset);
-        let end = self.records.partition_point(|record| record.offset < end_offset);
-        RecordIndexInChunk(first as u32)..RecordIndexInChunk(end as u32)
     }
 }
 
@@ -420,43 +265,6 @@ impl<'a> TileKeyingOfList<'a> {
 
     fn compositor_composites(&self, effect: EffectNodeIndex) -> bool {
         self.innermost_composited_effect_by_effect_index[effect.0 as usize] == effect
-    }
-
-    /// Whether the effects that tiles apply at and around `effect` are plain groups.
-    fn effects_applied_in_tiles_are_plain_groups(&self, effect: EffectNodeIndex) -> bool {
-        if effect.is_none() {
-            return true;
-        }
-        let nearest = self
-            .nearest_composited_or_not_plain_effect_by_effect_index
-            .get_or_init(|| {
-                nearest_effects_at_or_above_where(self.tree, |effect, node| {
-                    self.compositor_composites(effect)
-                        || !matches!(&node.data, EffectNodeData::Effects(effects)
-                            if effects.opacity == 1.0
-                                && effects.filter.is_none()
-                                && effects.backdrop_filter.is_none()
-                                && effects.blend_mode == CompositingAndBlendingOperator::Normal)
-                })
-            })[effect.0 as usize];
-        nearest.is_none() || self.compositor_composites(nearest)
-    }
-
-    /// Whether an effect that tiles apply at or around `effect` blends in a way that can lower the alpha below it.
-    fn effects_applied_in_tiles_can_lower_destination_alpha(&self, effect: EffectNodeIndex) -> bool {
-        if effect.is_none() {
-            return false;
-        }
-        let nearest = self
-            .nearest_composited_or_alpha_lowering_effect_by_effect_index
-            .get_or_init(|| {
-                nearest_effects_at_or_above_where(self.tree, |effect, node| {
-                    self.compositor_composites(effect)
-                        || matches!(&node.data, EffectNodeData::Effects(effects)
-                            if effects.blend_mode.lowers_destination_alpha())
-                })
-            })[effect.0 as usize];
-        !nearest.is_none() && !self.compositor_composites(nearest)
     }
 }
 
@@ -692,14 +500,6 @@ impl RoundedRect {
         })
     }
 
-    fn covers(&self, area: FloatRect) -> bool {
-        self.rect.contains_rect(area) && !self.rounded_corner_reaches_into(area)
-    }
-
-    fn misses(&self, area: FloatRect) -> bool {
-        self.rect.intersected(area).is_empty()
-    }
-
     fn write_part_within_or_whole_if_corner_reaches_in(&self, hasher: &mut ContentHasher, area: FloatRect) {
         for (horizontal, vertical) in self.horizontal_and_vertical_radii_clockwise_from_top_left {
             hasher.write_f32(horizontal);
@@ -721,82 +521,6 @@ impl RoundedRect {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct DeviceAlignedFill {
-    rect: RoundedRect,
-    unfilled_inner_rect_of_ring: Option<RoundedRect>,
-    content_hash_except_rects: ContentHash,
-    color: Color,
-    draws_recorded_color_with_source_over: bool,
-}
-
-/// What a tile holds over a part of its cell, as its records tell without rastering it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TileCoverage {
-    /// Every pixel of one color, which a raster gives exactly: the clear color of its layer, or an opaque one.
-    OneColor(Color),
-    /// Every pixel opaque, of more than one color.
-    Opaque,
-    Unknown,
-}
-
-impl TileCoverage {
-    pub fn is_opaque(self) -> bool {
-        match self {
-            TileCoverage::OneColor(color) => color.alpha() == 255,
-            TileCoverage::Opaque => true,
-            TileCoverage::Unknown => false,
-        }
-    }
-
-    fn under_plain_fill_of(self, color: Color) -> Self {
-        match color.alpha() {
-            255 => TileCoverage::OneColor(color),
-            0 => self,
-            _ if self.is_opaque() => TileCoverage::Opaque,
-            _ => TileCoverage::Unknown,
-        }
-    }
-
-    fn under_content_other_than_plain_fill(self, content_can_lower_destination_alpha: bool) -> Self {
-        if self.is_opaque() && !content_can_lower_destination_alpha {
-            TileCoverage::Opaque
-        } else {
-            TileCoverage::Unknown
-        }
-    }
-}
-
-/// The clips, and the effects whose output clips, a walk for the coverage of a tile found to leave its area unclipped,
-/// so that walks of chains that share nodes stop where they meet.
-#[derive(Default)]
-struct WhatLeavesAreaOfTileUnclipped {
-    clips: HashSet<ClipNodeIndex>,
-    effects: HashSet<EffectNodeIndex>,
-}
-
-enum WhatOneFillDoesWithinArea {
-    DrawsNothing,
-    CoversItWith(Color),
-}
-
-/// The index of a range in the `record_ranges` of a `ChunkPlacedInRasterSpace`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PlacedRecordRangeIndex(pub u32);
-
-#[derive(Clone, Copy, Debug)]
-struct PlacedRecordRange {
-    run_index: RunIndexInChunk,
-    first_record_index: RecordIndexInChunk,
-    end_record_index: RecordIndexInChunk,
-    begin_offset: u32,
-    end_offset: u32,
-    reach: Reach<IntRect>,
-    context: ContextRef,
-    is_spread_by_no_filter: bool,
-    device_aligned_fill: Option<DeviceAlignedFill>,
-}
-
 struct ContentHashesNearArea {
     area: FloatRect,
     content_hash_by_clip: HashMap<u32, ContentHash>,
@@ -814,29 +538,6 @@ impl ContentHashesNearArea {
                 content_hash_by_effect: HashMap::new(),
             }
         })
-    }
-}
-
-/// The ranges of a run: those it is binned as, from `first_binned_range_index` up to the range of the whole run.
-#[derive(Clone, Copy, Debug, Default)]
-struct PlacedRecordRangesOfRun {
-    first_binned_range_index: PlacedRecordRangeIndex,
-    whole_run_range_index: PlacedRecordRangeIndex,
-    reach_of_binned_ranges: Reach<IntRect>,
-}
-
-/// What the records of a chunk hold in one raster space, as the geometry of the space places the visual contexts of
-/// the chunk's runs it holds: the record ranges the records are binned into tiles as, the reach of each, and the
-/// content hash of what each draws. A chunk caches its latest placements for every list that names it.
-pub struct ChunkPlacedInRasterSpace {
-    placement_inputs_hash: ContentHash,
-    record_ranges: Vec<PlacedRecordRange>,
-    ranges_of_each_run: Vec<PlacedRecordRangesOfRun>,
-}
-
-impl ChunkPlacedInRasterSpace {
-    pub fn placement_inputs_hash(&self) -> ContentHash {
-        self.placement_inputs_hash
     }
 }
 
@@ -1955,205 +1656,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
         hasher.finish()
     }
 
-    fn place_record_range(
-        &self,
-        chunk: &ListChunk,
-        run_index: RunIndexInChunk,
-        record_indices: std::ops::Range<RecordIndexInChunk>,
-        reach: Reach<IntRect>,
-    ) -> PlacedRecordRange {
-        let table = chunk.record_table();
-        let context = chunk.runs()[run_index.0 as usize].context;
-        let is_spread_by_filters = !self
-            .list
-            .filters_of_effects()
-            .nearest_spreading_effect_at_or_above(context.effect)
-            .is_none();
-        let is_one_record = (record_indices.start.0..record_indices.end.0).len() == 1;
-        PlacedRecordRange {
-            run_index,
-            first_record_index: record_indices.start,
-            end_record_index: record_indices.end,
-            begin_offset: table.record(record_indices.start).offset,
-            end_offset: table.record(RecordIndexInChunk(record_indices.end.0 - 1)).end_offset,
-            reach,
-            context,
-            is_spread_by_no_filter: !is_spread_by_filters,
-            device_aligned_fill: is_one_record
-                .then(|| self.device_aligned_fill_of_record(chunk, table.record(record_indices.start), context))
-                .flatten(),
-        }
-    }
-
-    fn device_aligned_fill_of_record(
-        &self,
-        chunk: &ListChunk,
-        record: &ChunkRecord,
-        context: ContextRef,
-    ) -> Option<DeviceAlignedFill> {
-        let (header, payload) = chunk.record_at(record.offset);
-        if header.inline_clip_count != 0 || header.has_inline_transform {
-            return None;
-        }
-        let mut hasher = ContentHasher::new();
-        hasher.write_u32(header.command_type as u32);
-        let color;
-        let draws_recorded_color_with_source_over;
-        let (rect, corner_radii, unfilled_inner_rect_of_ring) = match header.command_type {
-            DisplayListCommandType::FillRect => {
-                let fill = read_command::<FillRect>(payload);
-                hasher.write_u32(fill.color.0);
-                hasher.write_u32(fill.compositing_and_blending_operator as u32);
-                hasher.write_u32(fill.background_color_animation_effect.0);
-                color = fill.color;
-                draws_recorded_color_with_source_over = fill.compositing_and_blending_operator
-                    == CompositingAndBlendingOperator::Normal
-                    && fill.background_color_animation_effect.is_none();
-                (fill.rect, CornerRadii::default(), None)
-            }
-            DisplayListCommandType::FillRectWithRoundedCorners => {
-                let fill = read_command::<FillRectWithRoundedCorners>(payload);
-                hasher.write_u32(fill.color.0);
-                hasher.write_u32(fill.background_color_animation_effect.0);
-                color = fill.color;
-                draws_recorded_color_with_source_over = fill.background_color_animation_effect.is_none();
-                (fill.rect, fill.corner_radii, None)
-            }
-            DisplayListCommandType::FillRoundedRectRing => {
-                let ring = read_command::<FillRoundedRectRing>(payload);
-                hasher.write_u32(ring.color.0);
-                color = ring.color;
-                draws_recorded_color_with_source_over = true;
-                let top_width = ring.top_width.clamp(0, ring.rect.height.max(0));
-                let bottom_width = ring.bottom_width.clamp(0, (ring.rect.height - top_width).max(0));
-                let left_width = ring.left_width.clamp(0, ring.rect.width.max(0));
-                let right_width = ring.right_width.clamp(0, (ring.rect.width - left_width).max(0));
-                for width in [top_width, right_width, bottom_width, left_width] {
-                    hasher.write_i32(width);
-                }
-                let (Some(unfilled_inner_x), Some(unfilled_inner_y)) =
-                    (ring.rect.x.checked_add(left_width), ring.rect.y.checked_add(top_width))
-                else {
-                    return None;
-                };
-                let unfilled_inner_rect = IntRect::new(
-                    unfilled_inner_x,
-                    unfilled_inner_y,
-                    ring.rect.width - left_width - right_width,
-                    ring.rect.height - top_width - bottom_width,
-                );
-                (ring.rect, ring.corner_radii, Some(unfilled_inner_rect))
-            }
-            _ => return None,
-        };
-        let unfilled_inner_rect_of_ring = match unfilled_inner_rect_of_ring {
-            Some(unfilled_inner_rect) => Some(RoundedRect::device_aligned_of(
-                &self.geometry.world,
-                context.spatial,
-                unfilled_inner_rect.to_float(),
-                &CornerRadii::default(),
-            )?),
-            None => None,
-        };
-        Some(DeviceAlignedFill {
-            rect: RoundedRect::device_aligned_of(
-                &self.geometry.world,
-                context.spatial,
-                rect.to_float(),
-                &corner_radii,
-            )?,
-            unfilled_inner_rect_of_ring,
-            content_hash_except_rects: hasher.finish(),
-            color,
-            draws_recorded_color_with_source_over,
-        })
-    }
-
-    fn place_runs_of_chunk(
-        &self,
-        chunk: &ListChunk,
-        run_indices: &[RunIndexInChunk],
-        placement_inputs_hash: ContentHash,
-    ) -> ChunkPlacedInRasterSpace {
-        let table = chunk.record_table();
-        let mut record_ranges = Vec::new();
-        let mut ranges_of_each_run = vec![PlacedRecordRangesOfRun::default(); chunk.runs().len()];
-        for &run_index in run_indices {
-            let run = &chunk.runs()[run_index.0 as usize];
-            let record_indices_of_run = table.record_indices_of_run(run_index);
-            let run_reach = self.reach_of_content_within(run.ink_bounds.to_float(), run.context);
-            let first_binned_range_index = PlacedRecordRangeIndex(record_ranges.len() as u32);
-            let mut reach_of_binned_ranges = Reach::Nothing;
-            if run_reach != Reach::Nothing {
-                if !self.geometry.world.draw_matrix(run.context.spatial).is_2d_affine() {
-                    record_ranges.push(self.place_record_range(
-                        chunk,
-                        run_index,
-                        record_indices_of_run.clone(),
-                        run_reach,
-                    ));
-                    reach_of_binned_ranges = run_reach;
-                } else {
-                    for record_index in
-                        (record_indices_of_run.start.0..record_indices_of_run.end.0).map(RecordIndexInChunk)
-                    {
-                        let record = table.record(record_index);
-                        if !record.draws_something {
-                            continue;
-                        }
-                        let record_reach = self.reach_of_content_within(record.bounding_rect.to_float(), run.context);
-                        if record_reach == Reach::Nothing {
-                            continue;
-                        }
-                        record_ranges.push(self.place_record_range(
-                            chunk,
-                            run_index,
-                            record_index..RecordIndexInChunk(record_index.0 + 1),
-                            record_reach,
-                        ));
-                        reach_of_binned_ranges = reach_of_binned_ranges.united(record_reach);
-                    }
-                }
-            }
-            let whole_run_range_index = PlacedRecordRangeIndex(record_ranges.len() as u32);
-            record_ranges.push(self.place_record_range(chunk, run_index, record_indices_of_run, run_reach));
-            ranges_of_each_run[run_index.0 as usize] = PlacedRecordRangesOfRun {
-                first_binned_range_index,
-                whole_run_range_index,
-                reach_of_binned_ranges,
-            };
-        }
-        ChunkPlacedInRasterSpace {
-            placement_inputs_hash,
-            record_ranges,
-            ranges_of_each_run,
-        }
-    }
-
-    fn placement_of_runs_of_chunk(
-        &self,
-        chunk_index: ChunkIndexInList,
-        run_indices: &[RunIndexInChunk],
-    ) -> Arc<ChunkPlacedInRasterSpace> {
-        let chunk = self.list.display_list.chunk(chunk_index);
-        let mut hasher = ContentHasher::new();
-        for &run_index in run_indices {
-            hasher.write_u32(run_index.0);
-            hasher.write_content_hash(self.context_content_hash(
-                chunk.runs()[run_index.0 as usize].context,
-                EffectHashScope::WhatPlacingReads,
-            ));
-        }
-        let placement_inputs_hash = hasher.finish();
-        let (placement, newly_placed) = chunk.find_or_make_placement(placement_inputs_hash, || {
-            self.place_runs_of_chunk(chunk, run_indices, placement_inputs_hash)
-        });
-        if newly_placed {
-            self.chunks_placed.set(self.chunks_placed.get() + 1);
-        }
-        placement
-    }
-
     fn content_hash_of_replay_item(
         &self,
         bound_band: &BandBoundToListAndGeometry,
@@ -2238,194 +1740,6 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                     )
                 })
         })
-    }
-
-    fn effect_chain_applied_in_tiles(&self, effect: EffectNodeIndex) -> impl Iterator<Item = EffectNodeIndex> {
-        let tree = self.list.tree;
-        std::iter::successors((!effect.is_none()).then_some(effect), move |effect| {
-            Some(tree.effect_nodes[effect.0 as usize].parent).filter(|parent| !parent.is_none())
-        })
-        .take_while(|&effect| !self.list.compositor_composites(effect))
-    }
-
-    fn clip_node_leaves_area_unclipped(&self, node: &ClipNode, area_in_device_pixels: FloatRect) -> bool {
-        let ClipNodeData::Rect(ClipData {
-            rect,
-            corner_radii,
-            mode: ClipMode::Intersect,
-        }) = &node.data
-        else {
-            return false;
-        };
-        !node.clips_everything
-            && RoundedRect::device_aligned_of(&self.geometry.world, node.spatial, *rect, corner_radii)
-                .is_some_and(|rect| rect.covers(area_in_device_pixels))
-    }
-
-    fn clip_chain_leaves_area_unclipped(
-        &self,
-        clip: ClipNodeIndex,
-        area_in_device_pixels: FloatRect,
-        known: &mut WhatLeavesAreaOfTileUnclipped,
-    ) -> bool {
-        let tree = self.list.tree;
-        let mut clips_walked = Vec::new();
-        let mut clip = clip;
-        while !clip.is_none() && !known.clips.contains(&clip) {
-            let node = &tree.clip_nodes[clip.0 as usize];
-            if !self.geometry.clip_is_left_to_composite(clip)
-                && !self.clip_node_leaves_area_unclipped(node, area_in_device_pixels)
-            {
-                return false;
-            }
-            clips_walked.push(clip);
-            clip = node.parent;
-        }
-        known.clips.extend(clips_walked);
-        true
-    }
-
-    fn output_clips_of_effects_applied_in_tiles_leave_area_unclipped(
-        &self,
-        effect: EffectNodeIndex,
-        area_in_device_pixels: FloatRect,
-        known: &mut WhatLeavesAreaOfTileUnclipped,
-    ) -> bool {
-        let mut effects_walked = Vec::new();
-        for effect in self.effect_chain_applied_in_tiles(effect) {
-            if known.effects.contains(&effect) {
-                break;
-            }
-            if !self.clip_chain_leaves_area_unclipped(
-                self.list.effect_clips.output_clip(effect),
-                area_in_device_pixels,
-                known,
-            ) {
-                return false;
-            }
-            effects_walked.push(effect);
-        }
-        known.effects.extend(effects_walked);
-        true
-    }
-
-    fn context_applies_no_clip_or_effect_within(
-        &self,
-        context: ContextRef,
-        area_in_device_pixels: FloatRect,
-        known: &mut WhatLeavesAreaOfTileUnclipped,
-    ) -> bool {
-        let backface_culled = self
-            .geometry
-            .world
-            .backface_culled
-            .get(context.spatial.0 as usize)
-            .copied()
-            .unwrap_or(false);
-        !backface_culled
-            && self.list.effects_applied_in_tiles_are_plain_groups(context.effect)
-            && self.clip_chain_leaves_area_unclipped(context.clip, area_in_device_pixels, known)
-            && self.output_clips_of_effects_applied_in_tiles_leave_area_unclipped(
-                context.effect,
-                area_in_device_pixels,
-                known,
-            )
-    }
-
-    fn what_one_fill_item_does_within_area(
-        &self,
-        bound_band: &BandBoundToListAndGeometry,
-        item: TileReplayItem,
-        area_in_device_pixels: FloatRect,
-        known: &mut WhatLeavesAreaOfTileUnclipped,
-    ) -> Option<WhatOneFillDoesWithinArea> {
-        let TileReplayItem::PlacedRecordRange {
-            chunk_index,
-            range_index,
-        } = item
-        else {
-            return None;
-        };
-        let range = bound_band.placed_record_range(chunk_index, range_index);
-        let fill = range.device_aligned_fill.as_ref()?;
-        // The inner rect's corners curve only within the outer rect's corners.
-        let area_is_inside_unfilled_inner_rect = fill.rect.covers(area_in_device_pixels)
-            && fill
-                .unfilled_inner_rect_of_ring
-                .is_some_and(|unfilled_inner_rect| unfilled_inner_rect.covers(area_in_device_pixels));
-        if (fill.rect.misses(area_in_device_pixels) || area_is_inside_unfilled_inner_rect)
-            && range.is_spread_by_no_filter
-        {
-            return Some(WhatOneFillDoesWithinArea::DrawsNothing);
-        }
-        let fill_covers_area = fill.rect.covers(area_in_device_pixels)
-            && fill
-                .unfilled_inner_rect_of_ring
-                .is_none_or(|unfilled_inner_rect| unfilled_inner_rect.misses(area_in_device_pixels));
-        (fill_covers_area
-            && fill.draws_recorded_color_with_source_over
-            && self.context_applies_no_clip_or_effect_within(range.context, area_in_device_pixels, known))
-        .then_some(WhatOneFillDoesWithinArea::CoversItWith(fill.color))
-    }
-
-    fn item_can_lower_destination_alpha(&self, bound_band: &BandBoundToListAndGeometry, item: TileReplayItem) -> bool {
-        let chunk = self.list.display_list.chunk(item.chunk_index());
-        self.records_of_item(bound_band, item).iter().any(|record| {
-            let context = chunk.runs()[record.run_index.0 as usize].context;
-            record.can_lower_destination_alpha
-                || self
-                    .list
-                    .effects_applied_in_tiles_can_lower_destination_alpha(context.effect)
-        })
-    }
-
-    /// What a raster of `tile` holds over `area` of its cell, in the device pixels of the space, as its replay items
-    /// tell in paint order from `clear_color`, the color its layer's surface starts as.
-    pub fn coverage_of_tile(
-        &self,
-        band_tile_keys: &BandTileKeys,
-        tile: &KeyedTile,
-        area: IntRect,
-        clear_color: Color,
-    ) -> TileCoverage {
-        let bound_band = &band_tile_keys.bound_band;
-        if self.list.replays_every_record_into_every_tile || area.is_empty() {
-            return TileCoverage::Unknown;
-        }
-        // Fills are walked in list order, which depth-sorted planes are not replayed in.
-        if self.list.tree_sorts_planes_by_depth
-            && tile
-                .replay_items_in_paint_order
-                .iter()
-                .any(|&item| self.root_of_context_sorting_item_by_depth(bound_band, item).is_some())
-        {
-            return TileCoverage::Unknown;
-        }
-        let area_in_device_pixels = area.to_float();
-        let mut known_to_leave_area_unclipped = WhatLeavesAreaOfTileUnclipped::default();
-        let mut coverage = TileCoverage::OneColor(clear_color);
-        for &item in &tile.replay_items_in_paint_order {
-            if matches!(item, TileReplayItem::PlacedRecordRange { .. })
-                && bound_band.reach_of_item(item).part_of(area).is_empty()
-            {
-                continue;
-            }
-            coverage = match self.what_one_fill_item_does_within_area(
-                bound_band,
-                item,
-                area_in_device_pixels,
-                &mut known_to_leave_area_unclipped,
-            ) {
-                Some(WhatOneFillDoesWithinArea::DrawsNothing) => coverage,
-                Some(WhatOneFillDoesWithinArea::CoversItWith(color)) => coverage.under_plain_fill_of(color),
-                None => coverage
-                    .under_content_other_than_plain_fill(self.item_can_lower_destination_alpha(bound_band, item)),
-            };
-            if coverage == TileCoverage::Unknown {
-                break;
-            }
-        }
-        coverage
     }
 
     fn bind_band_to_list_and_geometry(&self, stack: &LayerStack, band_index: BandIndex) -> BandBoundToListAndGeometry {
@@ -3013,7 +2327,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 mod tests {
     use super::*;
     use crate::display_list::builder::DisplayListBuilder;
-    use crate::display_list::commands::{DeclareMaskContent, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
+    use crate::display_list::commands::{
+        ClipMode, DeclareMaskContent, FillRect, FillRoundedRectRing, VISUAL_VIEWPORT_NODE_INDEX,
+    };
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
     use crate::display_list::layers::{LayerIdentity, LayerStack, LayeringObstacles, SpaceToFrame, WhyListIsOneLayer};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
