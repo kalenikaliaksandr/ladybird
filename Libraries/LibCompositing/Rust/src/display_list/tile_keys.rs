@@ -155,6 +155,8 @@ const FRAME_STATE_SCROLL_BAR: u8 = 1 << 1;
 const FRAME_STATE_LIVE_CONTENT: u8 = 1 << 2;
 const FRAME_STATE_SPACES_OF_INLINE_CLIPS: u8 = 1 << 3;
 const FRAME_STATE_SAMPLED_BACKGROUND_COLOR: u8 = 1 << 4;
+const FRAME_STATE_HASHED_FOR_THE_LIST: u8 =
+    FRAME_STATE_CARET_BLINK_PHASE | FRAME_STATE_SCROLL_BAR | FRAME_STATE_LIVE_CONTENT;
 
 /// A top-level record of a chunk, with what placing it and hashing tile content read of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +172,12 @@ pub(crate) struct ChunkRecord {
     content_hash_of_bytes: ContentHash,
 }
 
+impl ChunkRecord {
+    fn reads_frame_state_hashed_for_the_list(&self) -> bool {
+        self.frame_state_read_flags & FRAME_STATE_HASHED_FOR_THE_LIST != 0
+    }
+}
+
 /// The index of a top-level record in the `RecordTable` of its chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RecordIndexInChunk(pub u32);
@@ -179,6 +187,7 @@ pub struct RecordIndexInChunk(pub u32);
 pub struct RecordTable {
     records: Vec<ChunkRecord>,
     first_record_index_of_each_run: Vec<RecordIndexInChunk>,
+    run_reads_frame_state_hashed_for_the_list_by_run_index: Vec<bool>,
 }
 
 fn frame_state_read_flags_of_record(
@@ -236,8 +245,10 @@ impl RecordTable {
     pub fn new(records_of_chunk: &[u8], command_runs: &[DisplayListCommandRun]) -> Self {
         let mut records = Vec::new();
         let mut first_record_index_of_each_run = Vec::with_capacity(command_runs.len() + 1);
+        let mut run_reads_frame_state_hashed_for_the_list_by_run_index = Vec::with_capacity(command_runs.len());
         for (run_index, run) in command_runs.iter().enumerate() {
-            first_record_index_of_each_run.push(RecordIndexInChunk(records.len() as u32));
+            let first_record_index_of_run = records.len();
+            first_record_index_of_each_run.push(RecordIndexInChunk(first_record_index_of_run as u32));
             let run_bytes = &records_of_chunk[run.offset as usize..(run.offset + run.size) as usize];
             for_each_command(run_bytes, |header, offset_in_run, payload| {
                 let offset = run.offset + offset_in_run as u32;
@@ -258,12 +269,22 @@ impl RecordTable {
                     content_hash_of_bytes: hasher.finish(),
                 });
             });
+            run_reads_frame_state_hashed_for_the_list_by_run_index.push(
+                records[first_record_index_of_run..]
+                    .iter()
+                    .any(ChunkRecord::reads_frame_state_hashed_for_the_list),
+            );
         }
         first_record_index_of_each_run.push(RecordIndexInChunk(records.len() as u32));
         Self {
             records,
             first_record_index_of_each_run,
+            run_reads_frame_state_hashed_for_the_list_by_run_index,
         }
+    }
+
+    fn run_reads_frame_state_hashed_for_the_list(&self, run_index: RunIndexInChunk) -> bool {
+        self.run_reads_frame_state_hashed_for_the_list_by_run_index[run_index.0 as usize]
     }
 
     pub(crate) fn record(&self, index: RecordIndexInChunk) -> &ChunkRecord {
@@ -958,6 +979,7 @@ struct BandBoundToListAndGeometry {
     declared_masks_around_runs_replayed_whole: HashMap<EffectNodeIndex, DeclaredMaskAroundRunReplayedWhole>,
     backdrop_reads: BackdropReadsOfBand,
     items_replayed_in_every_tile: Option<Vec<(ListPosition, TileReplayItem)>>,
+    replays_records_reading_frame_state_hashed_for_the_list: bool,
 }
 
 impl BandBoundToListAndGeometry {
@@ -1041,7 +1063,7 @@ pub struct BandTileKeys {
 /// where any of these differs from the frame before.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ValuesOfFrameThatTilesOfBandRead {
-    frame_state_hash: ContentHash,
+    frame_state_hash: Option<ContentHash>,
     sampled_values_hash: ContentHash,
     tree_copy_number: u64,
     raster_settings_hash_of_layers_of_band: ContentHash,
@@ -2451,9 +2473,14 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 .collect();
             let tree = list.tree;
             let mut effect_is_around_held_run = vec![false; tree.effect_nodes.len()];
+            let mut replays_records_reading_frame_state_hashed_for_the_list = false;
             for (chunk_index, held_offset_ranges) in &held_offset_ranges_by_chunk {
-                let runs = display_list.chunk(*chunk_index).runs();
+                let chunk = display_list.chunk(*chunk_index);
+                let runs = chunk.runs();
                 for run_index in runs_within_held_offset_ranges(runs, held_offset_ranges) {
+                    replays_records_reading_frame_state_hashed_for_the_list |= chunk
+                        .record_table()
+                        .run_reads_frame_state_hashed_for_the_list(run_index);
                     let mut effect = runs[run_index.0 as usize].context.effect;
                     while !effect.is_none() && !effect_is_around_held_run[effect.0 as usize] {
                         effect_is_around_held_run[effect.0 as usize] = true;
@@ -2478,6 +2505,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 let record_index = table
                     .record_indices_between_offsets(declaration_position.offset, declaration_position.offset + 1)
                     .start;
+                replays_records_reading_frame_state_hashed_for_the_list |=
+                    table.record(record_index).reads_frame_state_hashed_for_the_list();
                 items_replayed_in_every_tile.push((
                     declaration_position,
                     TileReplayItem::RecordSpan {
@@ -2493,6 +2522,7 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 declared_masks_around_runs_replayed_whole: HashMap::new(),
                 backdrop_reads: BackdropReadsOfBand::new(Vec::new()),
                 items_replayed_in_every_tile: Some(items_replayed_in_every_tile),
+                replays_records_reading_frame_state_hashed_for_the_list,
             };
         }
 
@@ -2592,12 +2622,20 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                 }
             }
         }
+        let held_runs_read_frame_state_hashed_for_the_list = held_chunks.iter().any(|held_chunk| {
+            let table = display_list.chunk(held_chunk.chunk_index).record_table();
+            held_chunk
+                .held_run_indices
+                .iter()
+                .any(|&run_index| table.run_reads_frame_state_hashed_for_the_list(run_index))
+        });
         let mut bound_band = BandBoundToListAndGeometry {
             held_chunks,
             runs_replayed_whole,
             declared_masks_around_runs_replayed_whole: HashMap::new(),
             backdrop_reads,
             items_replayed_in_every_tile: None,
+            replays_records_reading_frame_state_hashed_for_the_list: held_runs_read_frame_state_hashed_for_the_list,
         };
 
         let mask_declarations = &display_list.summary().mask_declarations;
@@ -2652,6 +2690,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
                                 declaration_position.offset + 1,
                             )
                             .start;
+                        bound_band.replays_records_reading_frame_state_hashed_for_the_list |=
+                            table.record(record_index).reads_frame_state_hashed_for_the_list();
                         let item =
                             self.item_replaying_record(&bound_band, declaration_position.chunk_index, record_index);
                         if !declared_items_of_mask.insert(item) {
@@ -2762,8 +2802,8 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
 
     /// Keys the tiles of the layers of `band_index` within `shown_rect` that are not keyed yet: each replay item of the
     /// band that reaches a tile goes into the layer of the band its paint position falls in there, and the base layer,
-    /// if it is one of the band's, holds every tile. Every tile keyed before is keyed again where the frame state of the
-    /// list, the values of the compositor's animations, the tree, the raster settings of a layer of the band, or the
+    /// if it is one of the band's, holds every tile. Every tile keyed before is keyed again where the frame state that
+    /// records of the band read, the values of the compositor's animations, the tree, the raster settings of a layer of the band, or the
     /// edge of `frame` that its backdrop blurs mirror at changed, and those outside `kept_rect` are forgotten. `frame`
     /// is where the frame is in the band's space, where that is not the frame's own. The band is bound to the list and
     /// the geometry of the frame.
@@ -2810,7 +2850,9 @@ impl<'a> TileKeyingOfRasterSpace<'a> {
             raster_settings_hasher.write_content_hash(raster_settings_hash_by_layer[layer_index.0]);
         }
         let values_of_frame = ValuesOfFrameThatTilesOfBandRead {
-            frame_state_hash: list.frame_state_hash,
+            frame_state_hash: bound_band
+                .replays_records_reading_frame_state_hashed_for_the_list
+                .then_some(list.frame_state_hash),
             sampled_values_hash: list.sampled_values_tiles_draw.hash,
             tree_copy_number: list.tree.copy.number(),
             raster_settings_hash_of_layers_of_band: raster_settings_hasher.finish(),
@@ -2996,10 +3038,10 @@ mod tests {
     use crate::display_list::builder::DisplayListBuilder;
     use crate::display_list::commands::{DeclareMaskContent, FillRect, VISUAL_VIEWPORT_NODE_INDEX};
     use crate::display_list::layers::planning::{LayerStackInputs, plan_layer_stack};
-    use crate::display_list::layers::{LayerStack, LayeringObstacles, SpaceToFrame};
+    use crate::display_list::layers::{LayerIdentity, LayerStack, LayeringObstacles, SpaceToFrame};
     use crate::display_list::placement::{RasterSpaceIndex, RasterSpaces, WhatEverySpaceOfTreeShares};
     use crate::display_list::test_fixtures::{
-        GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, animation_of, chunk_of, effects, fill, frosted_glass,
+        GREEN, ListOfOneChunk, NO_FRAME_STATE, VIEWPORT, animation_of, canvas, chunk_of, effects, fill, frosted_glass,
         opacity_animation_of, raster_settings_hash_by_layer, transform_animation_of, tree_with_document_scroll,
         tree_with_root_isolation_effect,
     };
@@ -3285,6 +3327,111 @@ mod tests {
                 (counts, tiles_within(&band_tile_keys, VIEWPORT))
             })
             .collect()
+    }
+
+    struct CanvasesAtGeneration(u64);
+
+    impl LiveContentVersions for CanvasesAtGeneration {
+        fn canvas_content_generation(&self, _: CanvasId) -> u64 {
+            self.0
+        }
+        fn video_frame_id(&self, _: VideoSinkHandle) -> Option<u64> {
+            None
+        }
+        fn image_frame_pixel_generation(&self, _: ImageFrameResourceId) -> Option<u64> {
+            None
+        }
+        fn nested_context_frame_generation(&self, _: CompositorContextId) -> Option<u64> {
+            None
+        }
+    }
+
+    // The tiles keyed in each frame of the band that holds the record of `run_index`, under one geometry, as the
+    // canvases of the list are at a new generation in each frame.
+    fn tiles_keyed_in_frames_with_a_new_canvas_generation(
+        list: &ListOfOneChunk,
+        tree: &VisualContextTree,
+        run_index: usize,
+    ) -> Vec<usize> {
+        let display_list = DisplayListStorage::of_builder(&list.builder);
+        let stack = stack_of(&display_list, tree);
+        let position = display_list.span_of_run(run_index).begin;
+        let band_index = BandIndex(
+            stack
+                .bands
+                .iter()
+                .position(|band| band.record_spans.iter().any(|span| span.contains(position)))
+                .expect("a band holds the record"),
+        );
+        let raster_space_index = stack.nodes[stack.bands[band_index.0].placement_node_index.0].raster_space_index;
+        let geometry = geometry_of_space(tree, &stack, raster_space_index);
+        let mut band_tile_keys = BandTileKeys::default();
+        (0..3)
+            .map(|generation| {
+                let live_content = CanvasesAtGeneration(generation);
+                let frame_state = FrameStateReadByReplay {
+                    live_content: &live_content,
+                    ..NO_FRAME_STATE
+                };
+                let list_keying = TileKeyingOfList::new(&display_list, tree, &stack, frame_state);
+                let raster_space = TileKeyingOfRasterSpace::new(&list_keying, &geometry);
+                if generation == 0 {
+                    raster_space.bind_band(&mut band_tile_keys, &stack, band_index);
+                }
+                key_band(&raster_space, &mut band_tile_keys, &stack, band_index, VIEWPORT).tiles_keyed
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_canvas_frame_keys_again_only_the_bands_whose_records_draw_the_canvas() {
+        let canvas_rect = IntRect::new(100, 100, 200, 100);
+        let (tree, root) = tree_with_root_isolation_effect(1.0);
+        let list_with_canvas_in_own_layer = ListOfOneChunk::default()
+            .with(fill(VIEWPORT, GREEN), root)
+            .with(canvas(canvas_rect, 1), root);
+        let display_list = DisplayListStorage::of_builder(&list_with_canvas_in_own_layer.builder);
+        assert!(
+            stack_of(&display_list, &tree)
+                .layers
+                .iter()
+                .any(|layer| matches!(layer.identity, LayerIdentity::Media { .. }))
+        );
+        let tiles_keyed = tiles_keyed_in_frames_with_a_new_canvas_generation(&list_with_canvas_in_own_layer, &tree, 0);
+        assert!(tiles_keyed[0] > 0);
+        assert_eq!(tiles_keyed[1..], [0, 0]);
+
+        let (mut tree, root) = tree_with_root_isolation_effect(1.0);
+        let moved_by_filter = tree.append_effect_node_under(
+            root,
+            EffectNodeData::Effects(EffectsData {
+                isolation: false,
+                opacity: 1.0,
+                blend_mode: CompositingAndBlendingOperator::Normal,
+                filter: Some(Arc::new(
+                    libgfx_rust::filter::Filter::Offset {
+                        dx: 40.0,
+                        dy: 0.0,
+                        input: None,
+                    }
+                    .serialize(),
+                )),
+                backdrop_filter: None,
+            }),
+        );
+        let list_with_canvas_in_filter = ListOfOneChunk::default()
+            .with(fill(VIEWPORT, GREEN), root)
+            .with(canvas(canvas_rect, 1), moved_by_filter);
+        let display_list = DisplayListStorage::of_builder(&list_with_canvas_in_filter.builder);
+        assert!(
+            !stack_of(&display_list, &tree)
+                .layers
+                .iter()
+                .any(|layer| matches!(layer.identity, LayerIdentity::Media { .. }))
+        );
+        let tiles_keyed = tiles_keyed_in_frames_with_a_new_canvas_generation(&list_with_canvas_in_filter, &tree, 1);
+        assert!(tiles_keyed[0] > 0);
+        assert_eq!(tiles_keyed[1..], [tiles_keyed[0], tiles_keyed[0]]);
     }
 
     fn cells_whose_hashes_differ(
