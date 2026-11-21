@@ -2945,7 +2945,7 @@ mod tests {
         let list_keying = TileKeyingOfList::new(&list.display_list, &tree, &list.stack, NO_FRAME_STATE);
         assert_eq!(
             list_keying
-                .filters_of_effects
+                .filters_of_effects()
                 .nearest_spreading_effect_at_or_above(list.effect_without_layer),
             blurred.effect
         );
