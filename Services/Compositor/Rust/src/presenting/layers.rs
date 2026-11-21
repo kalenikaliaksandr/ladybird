@@ -909,16 +909,7 @@ impl ContextPresenting {
             self.layers
                 .take_stack_of_frame(layer_plan, frame.display_list, one_layer, raster_transform);
         let took_plan_into_use = layer_plan.is_some() && took_another_stack;
-        let layer_update = self.with_stack_of_frames(|this, stack_of_frames| {
-            this.layer_update_of_stack(
-                env,
-                frame,
-                viewport_rect,
-                live_content,
-                frame_allows_lcd_text,
-                stack_of_frames,
-            )
-        });
+        let layer_update = self.layer_update_of_stack(env, frame, viewport_rect, live_content, frame_allows_lcd_text);
         let Some((mut layer_update, stale_rect)) = layer_update else {
             // Frames draw the plan as one layer from now on. The budget does not hold a frame of one layer, so the frame
             // is worked out once more at most.
@@ -952,18 +943,6 @@ impl ContextPresenting {
         )
     }
 
-    fn with_stack_of_frames<R>(&mut self, work: impl FnOnce(&mut Self, &mut StackOfFrames) -> R) -> R {
-        let mut stack_of_frames = self
-            .layers
-            .stack_of_frames
-            .take()
-            .expect("a frame with layers has a stack");
-        let result = work(self, &mut stack_of_frames);
-        self.layers.stack_of_frames = Some(stack_of_frames);
-        result
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn layer_update_of_stack(
         &mut self,
         env: &PresentingEnvironment<'_>,
@@ -971,14 +950,23 @@ impl ContextPresenting {
         viewport_rect: IntRect,
         live_content: &LiveContent,
         frame_allows_lcd_text: bool,
-        stack_of_frames: &mut StackOfFrames,
     ) -> Option<(LayerUpdate, IntRect)> {
         let storage = frame.display_list.storage();
         let tree = frame.frame_inputs.visual_context_tree.as_arc();
         let scroll_offsets = frame.frame_inputs.presented_scroll_state_snapshot.device_offsets();
         let raster_transform = self.raster_transform();
+        let stack_of_frames = self
+            .layers
+            .stack_of_frames
+            .as_mut()
+            .expect("a frame with layers has a stack");
         let geometries = stack_of_frames.geometries_of_spaces(tree, scroll_offsets);
-        let stack = stack_of_frames.stack.as_ref();
+        let stack_the_frame_draws_with = stack_of_frames.stack.clone();
+        let mut tile_budget = stack_of_frames
+            .layer_plan
+            .is_some()
+            .then(|| TileBudgetOfFrame::within(viewport_rect));
+        let stack = stack_the_frame_draws_with.as_ref();
         // Built at the first question, as only media the window server may show and spaces whose anchors the
         // compositor animates ask for it.
         let world_transforms_of_frame = OnceCell::new();
@@ -1055,11 +1043,13 @@ impl ContextPresenting {
         let mut work_counts = FrameWorkCounts::default();
         let mut shown_tiles_by_layer: Vec<Vec<TileShownInFrame>> =
             (0..stack.layers.len()).map(|_| Vec::new()).collect();
-        let mut tile_budget = stack_of_frames
-            .layer_plan
-            .is_some()
-            .then(|| TileBudgetOfFrame::within(viewport_rect));
         let mut frame_shows_too_many_tiles = false;
+        let band_tile_keys_by_band = &mut self
+            .layers
+            .stack_of_frames
+            .as_mut()
+            .expect("a frame with layers has a stack")
+            .band_tile_keys;
         for (band_position, band) in stack.bands.iter().enumerate() {
             let band_index = BandIndex(band_position);
             if !stack.band_has_layer_at_or_above_base_layer(band_index) {
@@ -1075,7 +1065,7 @@ impl ContextPresenting {
             // Frames drawn with one stack draw one list, so the tile keys of the band are bound to the list and the band
             // of the frame.
             let geometry = &geometries[raster_space_index.0];
-            let band_tile_keys_slot = &mut stack_of_frames.band_tile_keys[band_position];
+            let band_tile_keys_slot = &mut band_tile_keys_by_band[band_position];
             let band_tile_keys = match band_tile_keys_slot {
                 Some(band_tile_keys) if Rc::ptr_eq(&band_tile_keys.geometry, geometry) => band_tile_keys,
                 _ => band_tile_keys_slot.insert(BandTileKeysOfFrame {
@@ -1212,7 +1202,7 @@ impl ContextPresenting {
         }
         let layer_update = LayerUpdate {
             layers: PaintedLayers {
-                stack: stack_of_frames.stack.clone(),
+                stack: stack_the_frame_draws_with,
                 compositing_of_layers,
                 window_server_placements_of_media,
                 content_hash_by_composited_node: composited_effects.content_hash_by_composited_node,
@@ -1244,7 +1234,7 @@ impl ContextPresenting {
             .stack_of_frames
             .as_ref()
             .expect("a frame with layers has a stack");
-        let stack = &stack_of_frames.stack;
+        let stack = &layer_update.layers.stack;
         let hidden_by_layer: Vec<bool> = layer_update
             .layers
             .compositing_of_layers
@@ -1442,7 +1432,8 @@ impl ContextPresenting {
             .stack_of_frames
             .as_ref()
             .expect("a frame with layers has a stack");
-        let stack = stack_of_frames.stack.as_ref();
+        debug_assert!(Rc::ptr_eq(&layer_update.layers.stack, &stack_of_frames.stack));
+        let stack = layer_update.layers.stack.as_ref();
         let tiles_replay_the_whole_list = one_layer_list_cannot_tell_which_records_show_in_tile(stack);
         let mut rects_painted_straight = Vec::new();
         for compositing in &layer_update.layers.compositing_of_layers {
