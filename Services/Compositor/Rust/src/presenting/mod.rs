@@ -908,7 +908,7 @@ impl ContextPresenting {
                     .overlays
                     .draws_same_as(&painted_frame.frame_inputs.overlays)
             });
-            let sublayers_of_tiles_rastered_for_frame = if frame_damage.layers.window_server_shows_tiles() {
+            let sublayers_of_tiles_rastered_for_frame = if frame_damage.layers.shown_by_window_server() {
                 Some(self.present_layers_of_frame_painted_into_no_store(
                     env,
                     &frame,

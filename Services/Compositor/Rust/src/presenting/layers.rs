@@ -204,12 +204,6 @@ impl LayerUpdate {
         self.layers.window_server_shows_every_layer()
     }
 
-    /// Whether the window server shows layers of the frame tile by tile, which the frame rasters the tiles of even
-    /// where it paints nothing into a store.
-    pub fn window_server_shows_tiles(&self) -> bool {
-        self.layers.shown_by_window_server() && self.layers.window_server_compositing.shows_tiles_of_painted_layers
-    }
-
     /// Has the frame hold every layer, as where the window server could not be given what it was to show.
     pub(super) fn hold_every_layer_in_frame(&mut self) {
         for compositing in &mut self.layers.compositing_of_layers {
@@ -456,12 +450,6 @@ impl PaintedLayers {
         self.compositing_of_layers
             .first()
             .is_some_and(|base_layer_compositing| base_layer_compositing.shown_by_window_server)
-    }
-
-    /// Whether the window server shows the tiles of the layer by itself, so that what changes of them changes
-    /// nothing of what the frame holds.
-    fn window_server_shows_tiles_of(&self, compositing: &LayerCompositingInFrame) -> bool {
-        compositing.shown_by_window_server && self.window_server_compositing.shows_tiles_of_painted_layers
     }
 }
 
@@ -885,9 +873,8 @@ fn damage_of_layers_moved_by_animated_transforms(
         }
         // The window server moves and clips a layer it shows tile by tile, which changes nothing of what the frame
         // holds.
-        let window_server_shows_layer_in_both_frames = latest.identity == current.identity
-            && latest.shown_by_window_server
-            && layer_update.layers.window_server_shows_tiles_of(current);
+        let window_server_shows_layer_in_both_frames =
+            latest.identity == current.identity && latest.shown_by_window_server && current.shown_by_window_server;
         if window_server_shows_layer_in_both_frames {
             continue;
         }
@@ -1122,9 +1109,8 @@ impl ContextPresenting {
             world_transforms_of_frame
                 .get_or_init(|| WorldTransforms::new(tree, scroll_offsets, Some(FloatMatrix4x4::identity())))
         };
-        let window_server_may_show_media = self.why_window_server_shows_no_media_of_this_context(env).is_none();
         let window_server_compositing = self.window_server_compositing(env);
-        let window_server_placements_of_media = if window_server_may_show_media {
+        let window_server_placements_of_media = if window_server_compositing.shows_tiles_of_painted_layers {
             stack.window_server_placements_of_media(storage, tree, world_of_frame, extent_of_viewport_space)
         } else {
             WindowServerPlacementsOfMedia::default()
@@ -1141,29 +1127,25 @@ impl ContextPresenting {
         } else {
             WindowServerPlacementsOfEffects::default()
         };
-        let shown_by_window_server_by_layer = if window_server_may_show_media {
-            stack.layers_the_window_server_shows(
-                &composite_offsets,
-                &WhatWindowServerShowsOfFrame {
-                    compositing: window_server_compositing,
-                    can_show_media_of_layer: &|layer_index| {
-                        self.why_window_server_does_not_show_media_layer(
-                            env,
-                            &window_server_placements_of_media,
-                            layer_index,
-                            &stack.layers[layer_index.0],
-                            live_content,
-                        )
-                        .is_none()
-                    },
-                    can_composite_effect_of_node: &|node_index| {
-                        matches!(window_server_placements_of_effects.of_node(node_index), Some(Ok(_)))
-                    },
+        let shown_by_window_server_by_layer = stack.layers_the_window_server_shows(
+            &composite_offsets,
+            &WhatWindowServerShowsOfFrame {
+                compositing: window_server_compositing,
+                can_show_media_of_layer: &|layer_index| {
+                    self.why_window_server_does_not_show_media_layer(
+                        env,
+                        &window_server_placements_of_media,
+                        layer_index,
+                        &stack.layers[layer_index.0],
+                        live_content,
+                    )
+                    .is_none()
                 },
-            )
-        } else {
-            vec![false; stack.layers.len()]
-        };
+                can_composite_effect_of_node: &|node_index| {
+                    matches!(window_server_placements_of_effects.of_node(node_index), Some(Ok(_)))
+                },
+            },
+        );
         let compositing_of_layers: Vec<LayerCompositingInFrame> = (stack.base_layer.0..stack.layers.len())
             .map(LayerIndex)
             .filter(|&layer_index| layer_index == stack.base_layer || stack.layers[layer_index.0].may_hold_content)
@@ -1373,7 +1355,7 @@ impl ContextPresenting {
                 .count() as u64;
             // The window server shows the tiles of the layer as they are, so the frame holds nothing that goes stale
             // with them.
-            if compositing.shown_by_window_server && window_server_compositing.shows_tiles_of_painted_layers {
+            if compositing.shown_by_window_server {
                 continue;
             }
             stale_rect = stale_rect.united(self.layers.tiles.stale_rect_of_layer(
@@ -1602,7 +1584,6 @@ impl ContextPresenting {
                 .iter()
                 .map(|compositing| compositing.identity)
                 .collect();
-            layers.window_server.keep_only_layers(&identities_in_stack);
             layers.tiles.keep_only_layers(&identities_in_stack);
         }
         layers.tiles.evict_spare_tiles_if_tiles_changed(env);
@@ -1788,7 +1769,7 @@ impl ContextPresenting {
                 replay_with_scroll_offsets(env, target, frame, selection, &geometry.raster_scroll_offsets);
             };
             if let LayerContent::OwnSurface { record_span } = layer.content {
-                if layer_update.layers.window_server_shows_tiles_of(compositing) {
+                if compositing.shown_by_window_server {
                     let painting = OwnSurfacePainting {
                         content_hash: layer_update.layers.media_replayed_by_identity[&compositing.identity]
                             .content_hash,
@@ -1833,7 +1814,7 @@ impl ContextPresenting {
                     ),
                     clear_color: clear_color_of_layer(stack, layer_index, surface_clear_color),
                     rastered_within: stack.rect_rasters_of_space_stay_within(raster_space_index),
-                    shown_by_window_server: layer_update.layers.window_server_shows_tiles_of(compositing),
+                    shown_by_window_server: compositing.shown_by_window_server,
                     window_server_shows_tiles: layer_update
                         .layers
                         .window_server_compositing
