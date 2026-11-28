@@ -1,0 +1,6 @@
+:local-link with pushState #a in the same task, rule added: [a]
+:local-link with pushState #a in the same task, pushState #r: [restamped]
+:not(:local-link), rule added: [a, restamped]
+:not(:local-link), pushState #r: [a, b]
+:has(:local-link), rule added: [b-wrapper]
+:has(:local-link), pushState #r: [restamped-wrapper]

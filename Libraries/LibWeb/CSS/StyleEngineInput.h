@@ -176,6 +176,9 @@ WEB_API void record_element_emptiness_changed(DOM::Element&, DOM::Node const& ch
 WEB_API bool can_record_element_state_change(DOM::Element&);
 // Whether nothing reads the validity of the element, which notes it as withheld from the engine.
 WEB_API bool element_validity_is_withheld(DOM::Element&);
+// Whether the style engine needs no :local-link state of the links of the document: it does not track the tree, or no
+// selector tests :local-link. In the second case, this notes the state as withheld from the engine.
+WEB_API bool local_link_states_are_withheld(DOM::Document&);
 WEB_API void record_element_state_changed(DOM::Element&, PseudoClass, bool new_value);
 
 // Called before each style flush. The user-agent and user origins have no sheet list to announce

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<script src="../../include.js"></script>
+<a id="a" href="#a">a</a>
+<a id="b" href="#b">b</a>
+<a id="empty-fragment" href="#">empty fragment</a>
+<a id="no-fragment" href="">no fragment</a>
+<a id="query" href="?q#a">query</a>
+<a id="encoded" href="#%C3%A9">encoded</a>
+<a id="unencoded" href="#&#xE9;">unencoded</a>
+<a id="space" href="#x y">space</a>
+<a id="other-page" href="other.html#a">other page</a>
+<a id="restamped" href="#none">restamped</a>
+<map name="m"><area id="area" href="#a"></map>
+<svg><a id="svg-a" href="#a"><text>svg</text></a></svg>
+<div id="host"></div>
+<script>
+    test(() => {
+        const shadow = document.getElementById("host").attachShadow({ mode: "open" });
+        shadow.innerHTML = `<a id="shadow-a" href="#a">shadow</a>`;
+        const links = [...document.querySelectorAll("a[id], area[id]"), shadow.getElementById("shadow-a")];
+        let ruleAdded = false;
+        const report = label => {
+            const local = links.filter(link => link.matches(":local-link")).map(link => link.id);
+            let line = `${label}: [${local.join(", ")}]`;
+            if (ruleAdded) {
+                const styled = links.filter(link => getComputedStyle(link).color === "rgb(0, 128, 0)").map(link => link.id);
+                if (styled.join() !== local.join())
+                    line += `, but styled as [${styled.join(", ")}]`;
+            }
+            println(line);
+            document.body.offsetWidth;
+        };
+
+        document.body.offsetWidth;
+        report("no fragment");
+
+        // No selector tests :local-link yet. A link that gets a new href while it is a local link
+        // is a local link to the style engine until the engine is told otherwise.
+        history.replaceState(null, "", "#r");
+        document.getElementById("restamped").setAttribute("href", "#r");
+        report("href set to #r at #r");
+        history.pushState(null, "", "#b");
+        report("pushState #b");
+        location.hash = "é";
+        report("location.hash U+00E9");
+        location.hash = "x y";
+        report("location.hash 'x y'");
+        location.hash = "";
+        report("location.hash empty");
+        history.replaceState(null, "", location.pathname + "?q#a");
+        report("replaceState ?q#a");
+        history.replaceState(null, "", location.pathname + "#a");
+        report("replaceState #a");
+
+        // From here on, a selector tests :local-link in the document and in the shadow tree.
+        const css = ":local-link { color: rgb(0, 128, 0); }";
+        const style = document.createElement("style");
+        style.textContent = css;
+        document.head.appendChild(style);
+        const shadowStyle = document.createElement("style");
+        shadowStyle.textContent = css;
+        shadow.appendChild(shadowStyle);
+        ruleAdded = true;
+        report("rule added");
+
+        history.pushState(null, "", "#r");
+        report("pushState #r");
+        location.hash = "%C3%A9";
+        report("location.hash %C3%A9");
+        history.replaceState(null, "", "#");
+        report("replaceState #");
+        history.replaceState(null, "", location.pathname);
+        report("replaceState without fragment");
+        history.replaceState(null, "", location.pathname + "?q#a");
+        report("replaceState ?q#a");
+        history.replaceState(null, "", location.pathname + "#a");
+        report("replaceState #a");
+    });
+</script>

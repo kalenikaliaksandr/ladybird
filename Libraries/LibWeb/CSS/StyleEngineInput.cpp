@@ -2013,8 +2013,9 @@ void publish_withheld_element_features(StyleEngine& style_engine, StyleComputer&
         if (!element.is_connected() || element.initial_style_features_pending())
             return;
         auto node = element.style_node_id();
-        if (now_read.local_link_state && element.matches_local_link_pseudo_class())
-            style_engine.record_state_delta({ .node = node.value(), .fact = *local_link, .new_value = true });
+        // NB: A link can keep a state from before a URL change that we did not publish. Give each link its state now.
+        if (now_read.local_link_state && element.matches_link_pseudo_class())
+            style_engine.record_state_delta({ .node = node.value(), .fact = *local_link, .new_value = element.matches_local_link_pseudo_class() });
         if (now_read.validity_state && SelectorMatching::element_can_have_validity(element))
             Invalidation::record_validity_states(element);
         for (auto const& [name, atom] : names_now_read) {
@@ -3412,6 +3413,18 @@ bool element_validity_is_withheld(DOM::Element& element)
     if (!style_engine || !style_engine->validity_is_known_untested())
         return false;
     style_engine->note_validity_state_withheld();
+    return true;
+}
+
+bool local_link_states_are_withheld(DOM::Document& document)
+{
+    // NB: If the style engine does not track the tree, it has no state to change.
+    if (!document.style_engine_tracks_tree())
+        return true;
+    auto& style_engine = document.style_computer().style_engine();
+    if (!style_engine.local_link_is_known_untested())
+        return false;
+    style_engine.note_local_link_state_withheld();
     return true;
 }
 

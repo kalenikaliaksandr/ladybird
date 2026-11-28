@@ -270,11 +270,12 @@ public:
     {
         return StyleEngineFFI::document_host_validity_is_known_untested(host());
     }
-    // What an element arrives with that the host knows nothing reads is withheld from the engine: whether a link is a
-    // local link where no selector tests `:local-link`, a control's validity where none tests that, and each attribute
-    // no selector and no attr() reads. Each
-    // withheld fact notes the element it was withheld from, so that once something may read it, it is published for
-    // those elements alone.
+    // What the host knows nothing reads is withheld from the engine: whether a link is a local link where no selector
+    // tests `:local-link`, as the link arrives and as the document URL or the base URL changes; a control's validity
+    // where none tests that; and each attribute no selector and no attr() reads. The host notes which fact it withheld,
+    // not the elements it withheld it from. Once something may read a withheld fact, it is published for each element
+    // that has a style node: each link gets the `:local-link` state it holds then, false as well as true, as a state
+    // from before a withheld URL change can be stale.
     struct WithheldAttributeName {
         Utf16FlyString local_name;
         Optional<Utf16FlyString> namespace_uri;

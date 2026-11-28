@@ -2188,31 +2188,35 @@ void Document::respond_to_base_url_changes(URL::URL const& old_document_url, URL
     if (resolved_urls_unchanged && old_document_url == new_document_url)
         return;
 
-    auto encoding = encoding_or_default();
-    auto local_link_match = [&](Optional<URL::URL> const& target_url, URL::URL const& document_url) {
-        if (!target_url.has_value())
-            return false;
-        if (target_url->fragment().has_value())
-            return document_url.equals(*target_url, URL::ExcludeFragment::No);
-        return document_url.equals(*target_url, URL::ExcludeFragment::Yes);
-    };
+    // OPTIMIZATION: If the style engine does not track the tree, it has no state to change. If no selector tests
+    //               :local-link, the engine gets the state of each link when a selector starts to test it.
+    if (!CSS::local_link_states_are_withheld(*this)) {
+        auto encoding = encoding_or_default();
+        auto local_link_match = [&](Optional<URL::URL> const& target_url, URL::URL const& document_url) {
+            if (!target_url.has_value())
+                return false;
+            if (target_url->fragment().has_value())
+                return document_url.equals(*target_url, URL::ExcludeFragment::No);
+            return document_url.equals(*target_url, URL::ExcludeFragment::Yes);
+        };
 
-    for_each_shadow_including_descendant([&](Node& node) {
-        auto* element = as_if<Element>(node);
-        if (!element || !element->matches_link_pseudo_class())
+        for_each_shadow_including_descendant([&](Node& node) {
+            auto* element = as_if<Element>(node);
+            if (!element || !element->matches_link_pseudo_class())
+                return TraversalDecision::Continue;
+
+            auto href = element->get_attribute_value(HTML::AttributeNames::href);
+            auto old_target_url = DOMURL::parse(href, old_base_url, encoding.utf16_view());
+            auto new_target_url = resolved_urls_unchanged ? old_target_url : DOMURL::parse(href, new_base_url, encoding.utf16_view());
+
+            auto was_local_link = local_link_match(old_target_url, old_document_url);
+            auto is_local_link = local_link_match(new_target_url, new_document_url);
+            if (was_local_link != is_local_link)
+                CSS::record_element_state_changed(*element, CSS::PseudoClass::LocalLink, is_local_link);
+
             return TraversalDecision::Continue;
-
-        auto href = element->get_attribute_value(HTML::AttributeNames::href);
-        auto old_target_url = DOMURL::parse(href, old_base_url, encoding.utf16_view());
-        auto new_target_url = resolved_urls_unchanged ? old_target_url : DOMURL::parse(href, new_base_url, encoding.utf16_view());
-
-        auto was_local_link = local_link_match(old_target_url, old_document_url);
-        auto is_local_link = local_link_match(new_target_url, new_document_url);
-        if (was_local_link != is_local_link)
-            CSS::record_element_state_changed(*element, CSS::PseudoClass::LocalLink, is_local_link);
-
-        return TraversalDecision::Continue;
-    });
+        });
+    }
 
     // A table's, a table section's, a row's or a cell's background attribute maps to an image hint
     // resolved against the base URL when it is published, so publish those hints again.

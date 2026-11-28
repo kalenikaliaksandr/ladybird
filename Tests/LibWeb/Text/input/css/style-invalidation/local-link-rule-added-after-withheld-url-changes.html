@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<script src="../../include.js"></script>
+<script>
+    // Each case uses a document of its own: once a selector tests :local-link in a document, it stays tested.
+    function loadDocument() {
+        return new Promise(resolve => {
+            const iframe = document.createElement("iframe");
+            iframe.onload = () => resolve(iframe.contentWindow);
+            iframe.src = URL.createObjectURL(new Blob(["<!DOCTYPE html><body></body>"], { type: "text/html" }));
+            document.body.appendChild(iframe);
+        });
+    }
+
+    async function runCase(label, selector, addRuleAndChangeUrl) {
+        const win = await loadDocument();
+        const doc = win.document;
+        doc.body.innerHTML = `
+            <div id="a-wrapper"><a id="a" href="#a">a</a></div>
+            <div id="b-wrapper"><a id="b" href="#b">b</a></div>
+            <div id="restamped-wrapper"><a id="restamped" href="#none">restamped</a></div>`;
+        const targets = [...doc.querySelectorAll(selector.startsWith("div") ? "div" : "a")];
+        const report = step => {
+            const matched = targets.filter(target => target.matches(selector)).map(target => target.id);
+            const styled = targets.filter(target => win.getComputedStyle(target).color === "rgb(0, 128, 0)").map(target => target.id);
+            let line = `${label}, ${step}: [${matched.join(", ")}]`;
+            if (styled.join() !== matched.join())
+                line += `, but styled as [${styled.join(", ")}]`;
+            println(line);
+            doc.body.offsetWidth;
+        };
+
+        // No selector tests :local-link yet. The link that gets a new href is a local link to the style engine
+        // until the engine is told otherwise.
+        doc.body.offsetWidth;
+        win.history.replaceState(null, "", "#r");
+        doc.getElementById("restamped").setAttribute("href", "#r");
+        doc.body.offsetWidth;
+        win.history.pushState(null, "", "#b");
+        doc.body.offsetWidth;
+
+        const style = doc.createElement("style");
+        style.textContent = `${selector} { color: rgb(0, 128, 0); }`;
+        addRuleAndChangeUrl(() => doc.head.appendChild(style), url => win.history.pushState(null, "", url));
+        report("rule added");
+        win.history.pushState(null, "", "#r");
+        report("pushState #r");
+    }
+
+    asyncTest(async done => {
+        await runCase(":local-link with pushState #a in the same task", "a:local-link", (addRule, changeUrl) => {
+            addRule();
+            changeUrl("#a");
+        });
+        await runCase(":not(:local-link)", "a:not(:local-link)", addRule => addRule());
+        await runCase(":has(:local-link)", "div:has(> :local-link)", addRule => addRule());
+        done();
+    });
+</script>
