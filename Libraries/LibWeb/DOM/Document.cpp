@@ -2182,8 +2182,10 @@ void Document::respond_to_base_url_changes(URL::URL const& old_document_url, URL
     //        the link walk below will need to take those pseudo-classes into account.
     auto const& new_document_url = m_url;
     auto new_base_url = base_url();
-    bool const base_url_unchanged = (old_base_url == new_base_url);
-    if (base_url_unchanged && old_document_url == new_document_url)
+    // NB: The URL parser does not copy the fragment of the base URL. If only that fragment changes, the URLs that we
+    //     parse against the base URL do not change.
+    bool const resolved_urls_unchanged = old_base_url.equals(new_base_url, URL::ExcludeFragment::Yes);
+    if (resolved_urls_unchanged && old_document_url == new_document_url)
         return;
 
     auto encoding = encoding_or_default();
@@ -2202,7 +2204,7 @@ void Document::respond_to_base_url_changes(URL::URL const& old_document_url, URL
 
         auto href = element->get_attribute_value(HTML::AttributeNames::href);
         auto old_target_url = DOMURL::parse(href, old_base_url, encoding.utf16_view());
-        auto new_target_url = base_url_unchanged ? old_target_url : DOMURL::parse(href, new_base_url, encoding.utf16_view());
+        auto new_target_url = resolved_urls_unchanged ? old_target_url : DOMURL::parse(href, new_base_url, encoding.utf16_view());
 
         auto was_local_link = local_link_match(old_target_url, old_document_url);
         auto is_local_link = local_link_match(new_target_url, new_document_url);
@@ -2214,7 +2216,7 @@ void Document::respond_to_base_url_changes(URL::URL const& old_document_url, URL
 
     // A table's, a table section's, a row's or a cell's background attribute maps to an image hint
     // resolved against the base URL when it is published, so publish those hints again.
-    if (!base_url_unchanged) {
+    if (!resolved_urls_unchanged) {
         for_each_shadow_including_descendant([&](Node& node) {
             if (auto* element = as_if<Element>(node); element && element->has_attribute(HTML::AttributeNames::background)
                 && element->is_presentational_hint(HTML::AttributeNames::background))

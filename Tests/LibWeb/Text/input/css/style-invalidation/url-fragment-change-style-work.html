@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<script src="../../include.js"></script>
+<script src="../../work-test.js"></script>
+<script src="structural-matrix.js"></script>
+<a id="flip" href="#flip">flip</a>
+<table><tr><td id="cell" background="a.png">cell</td></tr></table>
+<script>
+    test(() => {
+        // No selector tests :local-link, so a link whose :local-link state flips is not restyled. A change of only
+        // the fragment of the base URL resolves no URL to a new value, so the background hint of the cell stays.
+        internals.updateStyle();
+        printPassWithStyleWork("pushState #flip", styleWork(() => history.pushState(null, "", "#flip")));
+        printPassWithStyleWork("replaceState #elsewhere", styleWork(() => history.replaceState(null, "", "#elsewhere")));
+        printPassWithStyleWork("location.hash flip", styleWork(() => { location.hash = "flip"; }));
+        printPassWithStyleWork("replaceState ?q", styleWork(() => history.replaceState(null, "", "?q")));
+        printPassWithStyleWork("replaceState ?q#x", styleWork(() => history.replaceState(null, "", "?q#x")));
+
+        const base = document.createElement("base");
+        printPassWithStyleWork("<base href=#base> inserted", styleWork(() => {
+            base.href = "#base";
+            document.head.appendChild(base);
+        }));
+        printPassWithStyleWork("<base href=#other>", styleWork(() => { base.href = "#other"; }));
+        printPassWithStyleWork("<base href=sub/>", styleWork(() => { base.href = "sub/"; }));
+        println(`cell background: ${getComputedStyle(cell).backgroundImage.includes("/sub/a.png") ? "sub/a.png" : "a.png"}`);
+        printPassWithStyleWork("replaceState under <base>", styleWork(() => history.replaceState(null, "", location.pathname + "?q#y")));
+    });
+</script>

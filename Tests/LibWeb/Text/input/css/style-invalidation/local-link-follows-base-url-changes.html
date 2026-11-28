@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<script src="../../include.js"></script>
+<a id="document-a" href="#a">document a</a>
+<table><tr><td id="cell" background="a.png">cell</td></tr></table>
+<div id="host"></div>
+<script>
+    test(() => {
+        // Only the shadow tree has a :local-link rule.
+        const shadow = document.getElementById("host").attachShadow({ mode: "open" });
+        shadow.innerHTML = `
+            <style>:local-link { color: rgb(0, 128, 0); }</style>
+            <a id="a" href="#a">a</a>
+            <a id="no-fragment" href="">no fragment</a>
+            <a id="self-from-sub" href="../local-link-follows-base-url-changes.html#a">self from sub</a>`;
+        const links = [document.getElementById("document-a"), ...shadow.querySelectorAll("a")];
+        const cell = document.getElementById("cell");
+        const report = label => {
+            const local = links.filter(link => link.matches(":local-link")).map(link => link.id);
+            const styled = links.filter(link => getComputedStyle(link).color === "rgb(0, 128, 0)").map(link => link.id);
+            const image = getComputedStyle(cell).backgroundImage;
+            const background = image.includes("/sub/a.png") ? "sub/a.png" : image.includes("/a.png") ? "a.png" : image;
+            println(`${label}: local [${local.join(", ")}], styled [${styled.join(", ")}], cell ${background}`);
+            document.body.offsetWidth;
+        };
+
+        document.body.offsetWidth;
+        report("no <base>");
+        location.hash = "a";
+        report("location.hash a");
+
+        // A base URL that changes only in its fragment resolves each URL as before.
+        const base = document.createElement("base");
+        base.href = "#base";
+        document.head.appendChild(base);
+        report("<base href=#base>");
+        base.href = "#other";
+        report("<base href=#other>");
+        base.href = "sub/";
+        report("<base href=sub/>");
+        base.href = "sub/#x";
+        report("<base href=sub/#x>");
+        history.replaceState(null, "", location.pathname + "#b");
+        report("replaceState #b");
+        base.href = "#c";
+        report("<base href=#c>");
+        history.replaceState(null, "", location.pathname + "#a");
+        report("replaceState #a");
+    });
+</script>

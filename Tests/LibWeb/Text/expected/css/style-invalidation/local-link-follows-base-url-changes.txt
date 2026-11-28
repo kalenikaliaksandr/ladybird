@@ -1,0 +1,9 @@
+no <base>: local [no-fragment], styled [no-fragment], cell a.png
+location.hash a: local [document-a, a, no-fragment], styled [a, no-fragment], cell a.png
+<base href=#base>: local [document-a, a, no-fragment], styled [a, no-fragment], cell a.png
+<base href=#other>: local [document-a, a, no-fragment], styled [a, no-fragment], cell a.png
+<base href=sub/>: local [self-from-sub], styled [self-from-sub], cell sub/a.png
+<base href=sub/#x>: local [self-from-sub], styled [self-from-sub], cell sub/a.png
+replaceState #b: local [], styled [], cell sub/a.png
+<base href=#c>: local [no-fragment], styled [no-fragment], cell a.png
+replaceState #a: local [document-a, a, no-fragment], styled [a, no-fragment], cell a.png

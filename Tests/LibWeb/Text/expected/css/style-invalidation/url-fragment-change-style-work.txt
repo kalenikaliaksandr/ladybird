@@ -1,0 +1,10 @@
+PASS: pushState #flip (restyled: [])
+PASS: replaceState #elsewhere (restyled: [])
+PASS: location.hash flip (restyled: [])
+PASS: replaceState ?q (restyled: [cell])
+PASS: replaceState ?q#x (restyled: [])
+PASS: <base href=#base> inserted (restyled: [])
+PASS: <base href=#other> (restyled: [])
+PASS: <base href=sub/> (restyled: [cell])
+cell background: sub/a.png
+PASS: replaceState under <base> (restyled: [])
