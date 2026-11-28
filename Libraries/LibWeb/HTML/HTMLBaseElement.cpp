@@ -47,8 +47,14 @@ void HTMLBaseElement::removed_from(IsSubtreeRoot is_subtree_root, Node* old_ance
     // The frozen base URL must be immediately set for an element whenever any of the following situations occur:
     // - The base element becomes the first base element in tree order with an href content attribute in its Document.
     auto first_base_element_with_href_in_document = document().first_base_element_with_href_in_tree_order();
-    if (first_base_element_with_href_in_document && first_base_element_with_href_in_document != old_first_base_element_with_href_in_tree_order)
+    if (first_base_element_with_href_in_document && first_base_element_with_href_in_document != old_first_base_element_with_href_in_tree_order) {
         first_base_element_with_href_in_document->set_the_frozen_base_url(old_base_url);
+        return;
+    }
+
+    // AD-HOC: The spec does not respond to base URL changes here. But if this element was the first base element with
+    //         an href attribute and no other one stays, the base URL changes to the fallback base URL.
+    document().respond_to_base_url_changes(document().url(), old_base_url);
 }
 
 void HTMLBaseElement::attribute_changed(Utf16FlyString const& name, Optional<Utf16String> const& old_value, Optional<Utf16String> const& value, Optional<Utf16FlyString> const& namespace_)
@@ -64,8 +70,14 @@ void HTMLBaseElement::attribute_changed(Utf16FlyString const& name, Optional<Utf
     document().update_base_element({});
 
     auto first_base_element_with_href_in_document = document().first_base_element_with_href_in_tree_order();
-    if (first_base_element_with_href_in_document.ptr() == this)
+    if (first_base_element_with_href_in_document.ptr() == this) {
         set_the_frozen_base_url(old_base_url);
+        return;
+    }
+
+    // AD-HOC: The spec does not respond to base URL changes here. But if this element was the first base element with
+    //         an href attribute and lost that attribute, the base URL changes.
+    document().respond_to_base_url_changes(document().url(), old_base_url);
 }
 
 // https://html.spec.whatwg.org/multipage/semantics.html#set-the-frozen-base-url
@@ -90,6 +102,9 @@ void HTMLBaseElement::set_the_frozen_base_url(URL::URL const& old_base_url)
         // then set element's frozen base URL to document's fallback base URL and return.
         m_frozen_base_url = document.fallback_base_url();
         document.did_set_frozen_base_url({});
+        // AD-HOC: The spec does not respond to base URL changes here. But if the base URL was an earlier frozen base URL,
+        //         it changes to the fallback base URL.
+        document.respond_to_base_url_changes(document.url(), old_base_url);
         return;
     }
 

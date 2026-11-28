@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<script src="../../include.js"></script>
+<style>:local-link { color: rgb(0, 128, 0); }</style>
+<a id="no-fragment" href="">no fragment</a>
+<a id="self-from-sub" href="../local-link-follows-base-url-fallback.html">self from sub</a>
+<table><tr><td id="cell" background="a.png">cell</td></tr></table>
+<script>
+    test(() => {
+        // Each change below takes the base URL from sub/ back to the URL of the document, with no change to the
+        // document URL.
+        const links = [...document.querySelectorAll("a")];
+        const cell = document.getElementById("cell");
+        const report = label => {
+            const local = links.filter(link => link.matches(":local-link")).map(link => link.id);
+            const styled = links.filter(link => getComputedStyle(link).color === "rgb(0, 128, 0)").map(link => link.id);
+            const image = getComputedStyle(cell).backgroundImage;
+            const background = image.includes("/sub/a.png") ? "sub/a.png" : image.includes("/a.png") ? "a.png" : image;
+            let line = `${label}: local [${local.join(", ")}]`;
+            if (styled.join() !== local.join())
+                line += `, but styled as [${styled.join(", ")}]`;
+            println(`${line}, cell ${background}`);
+            document.body.offsetWidth;
+        };
+
+        document.body.offsetWidth;
+        report("no <base>");
+
+        const base = document.createElement("base");
+        base.href = "sub/";
+        document.head.appendChild(base);
+        report("<base href=sub/> inserted");
+        base.remove();
+        report("<base> removed");
+
+        document.head.appendChild(base);
+        report("<base href=sub/> inserted again");
+        base.removeAttribute("href");
+        report("href removed");
+
+        for (const href of ["data:text/plain,x", "javascript:void(0)", "http://["]) {
+            base.href = "sub/";
+            report("href set to sub/");
+            base.href = href;
+            report(`href set to ${href}`);
+        }
+    });
+</script>

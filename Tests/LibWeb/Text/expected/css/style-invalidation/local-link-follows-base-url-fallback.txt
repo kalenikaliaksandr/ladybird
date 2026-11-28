@@ -1,0 +1,11 @@
+no <base>: local [no-fragment], cell a.png
+<base href=sub/> inserted: local [self-from-sub], cell sub/a.png
+<base> removed: local [no-fragment], cell a.png
+<base href=sub/> inserted again: local [self-from-sub], cell sub/a.png
+href removed: local [no-fragment], cell a.png
+href set to sub/: local [self-from-sub], cell sub/a.png
+href set to data:text/plain,x: local [no-fragment], cell a.png
+href set to sub/: local [self-from-sub], cell sub/a.png
+href set to javascript:void(0): local [no-fragment], cell a.png
+href set to sub/: local [self-from-sub], cell sub/a.png
+href set to http://[: local [no-fragment], cell a.png
